@@ -32,6 +32,10 @@ function getMocks() {
 
 const baseConfig: ResolvedConfig = {
   apiKey: 'test-key',
+  ai: {
+    providers: { anthropic: { apiKey: 'test-anthropic-key' } },
+    defaultProvider: 'anthropic',
+  },
   registryUrl: 'https://registry.example.com/api',
   validationUrl: 'https://ops.example.com/api',
   dashboardUrl: 'https://app.example.com',

@@ -21,6 +21,11 @@ export class RegistryClient {
   private cache = new Map<string, ResolvedDefinition>();
   private sdk: RegistrySdk;
 
+  /** Expose underlying registry SDK for direct access (e.g., model catalog) */
+  get registrySdk(): RegistrySdk {
+    return this.sdk;
+  }
+
   constructor(private config: ResolvedConfig) {
     this.sdk = new RegistrySdk({
       apiKey: config.apiKey,

@@ -45,7 +45,7 @@ export interface ValidatorRuntime {
 
   /** Default execution settings */
   defaults: {
-    model: 'haiku' | 'sonnet' | 'opus';
+    model: string;
     timeout: number;
   };
 
@@ -67,7 +67,7 @@ export interface ExecutorRuntime {
 
   /** Default execution settings */
   defaults: {
-    model: 'haiku' | 'sonnet' | 'opus';
+    model: string;
     timeout: number;
   };
 

@@ -135,7 +135,7 @@ export class AgentExecutor {
     const defaults = runtime?.defaults ?? {};
 
     return {
-      model: (options?.model ?? defaults.model ?? this.config.modelOverride ?? 'sonnet') as ResolvedExecutionContext['model'],
+      model: options?.model ?? defaults.model ?? this.config.ai.modelOverride ?? 'sonnet',
       maxTokens: options?.maxTokens ?? (defaults as { maxTokens?: number }).maxTokens ?? 8192,
       timeoutMs: options?.timeoutMs ?? defaults.timeout ?? this.config.timeout ?? 300_000,
       thresholds: this.resolveThresholds(options?.thresholds, (defaults as { thresholds?: { pass?: number; warn?: number } }).thresholds),

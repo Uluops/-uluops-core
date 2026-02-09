@@ -9,6 +9,10 @@ import type { ResolvedDefinition, ValidatorRuntime, ExecutorRuntime } from '../.
 
 const baseConfig: ResolvedConfig = {
   apiKey: 'test-key',
+  ai: {
+    providers: { anthropic: { apiKey: 'test-anthropic-key' } },
+    defaultProvider: 'anthropic',
+  },
   registryUrl: 'https://registry.example.com/api',
   validationUrl: 'https://ops.example.com/api',
   dashboardUrl: 'https://app.example.com',
@@ -56,12 +60,12 @@ function mockAIProvider(overrides?: Partial<AIGenerateResult>): AIProvider {
         cache_read_input_tokens: 25,
       },
       toolCallCount: 3,
-      model: 'claude-sonnet-4-5-20250929',
+      model: 'anthropic:claude-sonnet-4-5-20250929',
+      provider: 'anthropic',
       steps: 4,
       finishReason: 'stop',
       ...overrides,
     }),
-    resolveModel: vi.fn((alias: string) => `claude-${alias}-resolved`),
   } as unknown as AIProvider;
 }
 
@@ -163,7 +167,7 @@ describe('AgentExecutor', () => {
       expect(result.metrics.cacheCreationTokens).toBe(50);
       expect(result.metrics.cacheReadTokens).toBe(25);
       expect(result.metrics.totalEffectiveTokens).toBe(750); // 500 + 200 + 50
-      expect(result.metrics.model).toBe('claude-sonnet-4-5-20250929');
+      expect(result.metrics.model).toBe('anthropic:claude-sonnet-4-5-20250929');
       expect(result.metrics.durationMs).toBeGreaterThan(0);
     });
 
@@ -240,13 +244,16 @@ describe('AgentExecutor', () => {
 
     it('config modelOverride used when no agent/option model', async () => {
       const ai = mockAIProvider();
-      const config = { ...baseConfig, modelOverride: 'opus' as const };
+      const config: ResolvedConfig = {
+        ...baseConfig,
+        ai: { ...baseConfig.ai, modelOverride: 'opus' },
+      };
       const executor = new AgentExecutor(config, ai);
 
       const defWithoutModel = makeValidatorDef({
         runtime: {
           prompt: 'test',
-          defaults: { model: undefined as unknown as 'haiku' | 'sonnet' | 'opus', timeout: 30000 },
+          defaults: { model: undefined as unknown as string, timeout: 30000 },
           config: { maxScore: 100, threshold: 75, categories: [], outputSchema: 'json' },
         } as ValidatorRuntime,
       });
@@ -295,7 +302,6 @@ describe('AgentExecutor', () => {
     it('propagates AI provider errors', async () => {
       const ai = {
         generate: vi.fn().mockRejectedValue(new Error('Rate limit exceeded')),
-        resolveModel: vi.fn(),
       } as unknown as AIProvider;
       const executor = new AgentExecutor(baseConfig, ai);
 

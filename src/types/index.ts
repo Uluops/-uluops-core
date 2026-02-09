@@ -1,5 +1,5 @@
 // Configuration
-export type { UluOpsConfig, ResolvedConfig } from './config.js';
+export type { UluOpsConfig, AIConfig, AIProviderCredentials, ResolvedConfig, ResolvedAIConfig } from './config.js';
 
 // Execution (base types)
 export type {
@@ -66,7 +66,7 @@ export type {
 export type { Tool, ToolUseBlock, ToolResult } from './tools.js';
 
 // AI
-export type { UsageMetrics, ModelAlias, GenerateOptions, GenerateResult } from './ai.js';
+export type { UsageMetrics } from './ai.js';
 
 // Parser
 export type {

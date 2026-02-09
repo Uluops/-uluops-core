@@ -1,9 +1,73 @@
 /**
+ * AI provider credentials
+ */
+export interface AIProviderCredentials {
+  /** Provider API key. Falls back to standard env var (e.g., ANTHROPIC_API_KEY) */
+  apiKey?: string;
+}
+
+/**
+ * AI configuration — provider credentials and model resolution.
+ *
+ * Provider names match models.dev / AI SDK conventions
+ * (e.g., 'anthropic', 'openai', 'google').
+ */
+export interface AIConfig {
+  /**
+   * Provider credentials keyed by provider name.
+   * Only configured providers can be used for execution.
+   * `@ai-sdk/anthropic` is bundled; other providers are peer dependencies.
+   *
+   * @example
+   * ```typescript
+   * providers: {
+   *   anthropic: { apiKey: process.env.ANTHROPIC_API_KEY },
+   *   openai: { apiKey: process.env.OPENAI_API_KEY },
+   * }
+   * ```
+   */
+  providers: Record<string, AIProviderCredentials>;
+
+  /**
+   * Default provider when model alias doesn't include a provider prefix.
+   * @default 'anthropic'
+   */
+  defaultProvider?: string;
+
+  /**
+   * Model override for all executions (alias, tier, or provider:modelId).
+   * When set, overrides model selection from definition files.
+   */
+  modelOverride?: string;
+}
+
+/**
+ * Resolved AI configuration with defaults applied
+ */
+export interface ResolvedAIConfig {
+  providers: Record<string, { apiKey: string }>;
+  defaultProvider: string;
+  modelOverride?: string;
+}
+
+/**
  * SDK Configuration
  */
 export interface UluOpsConfig {
-  /** API key for authentication (used for both services). Falls back to ULUOPS_API_KEY or ULU_API_KEY env var. */
+  /**
+   * UluOps platform API key for registry and validation services.
+   * Falls back to ULUOPS_API_KEY or ULU_API_KEY env var.
+   * This key authenticates against UluOps services only, NOT AI providers.
+   */
   apiKey?: string;
+
+  /**
+   * AI provider configuration.
+   * Separates AI provider credentials from UluOps platform auth.
+   *
+   * If omitted, defaults to Anthropic with ANTHROPIC_API_KEY env var.
+   */
+  ai?: AIConfig;
 
   /**
    * Base URL for uluops-registry-api
@@ -45,9 +109,6 @@ export interface UluOpsConfig {
   /** Request timeout in ms (default: 300000) */
   timeout?: number;
 
-  /** Model override for all executions */
-  modelOverride?: 'haiku' | 'sonnet' | 'opus';
-
   /** Default project name for validation service */
   defaultProject?: string;
 }
@@ -57,6 +118,7 @@ export interface UluOpsConfig {
  */
 export interface ResolvedConfig {
   apiKey: string;
+  ai: ResolvedAIConfig;
   registryUrl: string;
   validationUrl: string;
   dashboardUrl: string;
@@ -64,6 +126,5 @@ export interface ResolvedConfig {
   trackingEnabled: boolean;
   hashVerificationEnabled: boolean;
   timeout: number;
-  modelOverride?: 'haiku' | 'sonnet' | 'opus';
   defaultProject?: string;
 }

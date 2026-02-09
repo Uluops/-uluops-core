@@ -30,6 +30,27 @@ export class HashVerificationError extends UluOpsError {
   }
 }
 
+export class ConfigurationError extends UluOpsError {
+  constructor(message: string) {
+    super(message);
+    this.name = 'ConfigurationError';
+  }
+}
+
+export class ModelNotFoundError extends UluOpsError {
+  constructor(message: string) {
+    super(message);
+    this.name = 'ModelNotFoundError';
+  }
+}
+
+export class CapabilityError extends UluOpsError {
+  constructor(message: string) {
+    super(message);
+    this.name = 'CapabilityError';
+  }
+}
+
 /**
  * Error codes for validation service errors
  */

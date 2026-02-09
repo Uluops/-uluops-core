@@ -5,7 +5,7 @@
 **Created:** 2026-01-10
 **Updated:** 2026-02-05
 **Parent Specs:** uluops-core-sdk-spec-v0.8.0, uluops-ai-sdk-integration-spec-v0.1.0
-**Dependencies:** Vercel AI SDK v6.x, @uluops/sdk-core
+**Dependencies:** Vercel AI SDK v6.x, @uluops/sdk-core, @uluops/registry-sdk
 
 ---
 
@@ -333,11 +333,66 @@ The SDK automatically reads from environment variables as fallbacks when config 
 // src/types/config.ts
 
 /**
+ * AI provider credentials
+ */
+export interface AIProviderCredentials {
+  /** Provider API key. Falls back to standard env var (e.g., ANTHROPIC_API_KEY) */
+  apiKey?: string;
+}
+
+/**
+ * AI configuration — provider credentials and model resolution
+ */
+export interface AIConfig {
+  /**
+   * Provider credentials keyed by provider name.
+   * Provider names match models.dev / AI SDK conventions.
+   *
+   * Only configured providers can be used for execution.
+   * @ai-sdk/anthropic is bundled; other providers are peer dependencies.
+   *
+   * @example
+   * ```typescript
+   * providers: {
+   *   anthropic: { apiKey: process.env.ANTHROPIC_API_KEY },
+   *   openai: { apiKey: process.env.OPENAI_API_KEY },
+   * }
+   * ```
+   */
+  providers: Record<string, AIProviderCredentials>;
+
+  /**
+   * Default provider when model alias doesn't include a provider prefix.
+   * @default 'anthropic'
+   */
+  defaultProvider?: string;
+
+  /**
+   * Model override for all executions (alias, tier, or provider:modelId).
+   * When set, overrides model selection from definition files.
+   */
+  modelOverride?: string;
+
+}
+
+/**
  * SDK Configuration
  */
 export interface UluOpsConfig {
-  /** API key for authentication (used for both services). Falls back to ULUOPS_API_KEY or ULU_API_KEY env var. */
+  /**
+   * UluOps platform API key for registry and validation services.
+   * Falls back to ULUOPS_API_KEY or ULU_API_KEY env var.
+   * This key authenticates against UluOps services only, NOT AI providers.
+   */
   apiKey?: string;
+
+  /**
+   * AI provider configuration.
+   * Separates AI provider credentials from UluOps platform auth.
+   *
+   * If omitted, defaults to Anthropic with ANTHROPIC_API_KEY env var.
+   */
+  ai?: AIConfig;
 
   /**
    * Base URL for uluops-registry-api
@@ -379,12 +434,17 @@ export interface UluOpsConfig {
   /** Request timeout in ms (default: 300000) */
   timeout?: number;
 
-  /** Model override for all executions */
-  modelOverride?: 'haiku' | 'sonnet' | 'opus';
-
   /** Default project name for validation service */
   defaultProject?: string;
+}
 
+/**
+ * Resolved AI configuration with defaults applied
+ */
+export interface ResolvedAIConfig {
+  providers: Record<string, { apiKey: string }>;
+  defaultProvider: string;
+  modelOverride?: string;
 }
 
 /**
@@ -392,6 +452,7 @@ export interface UluOpsConfig {
  */
 export interface ResolvedConfig {
   apiKey: string;
+  ai: ResolvedAIConfig;
   registryUrl: string;
   validationUrl: string;
   dashboardUrl: string;
@@ -399,7 +460,6 @@ export interface ResolvedConfig {
   trackingEnabled: boolean;
   hashVerificationEnabled: boolean;
   timeout: number;
-  modelOverride?: 'haiku' | 'sonnet' | 'opus';
   defaultProject?: string;
 }
 ```
@@ -528,8 +588,8 @@ export interface ExecutionMetrics {
  * ```
  */
 export interface ExecutionOptions {
-  /** Model override: 'haiku' | 'sonnet' | 'opus' */
-  model?: 'haiku' | 'sonnet' | 'opus';
+  /** Model override: alias ('sonnet'), tier ('premium'), or 'provider:modelId' */
+  model?: string;
 
   /** Maximum tokens for response */
   maxTokens?: number;
@@ -555,8 +615,8 @@ export interface ExecutionOptions {
  * Used internally by AgentExecutor
  */
 export interface ResolvedExecutionContext {
-  /** Resolved model (from options > agent defaults > config default) */
-  model: 'haiku' | 'sonnet' | 'opus';
+  /** Resolved model: alias, tier, or provider:modelId (from options > agent defaults > config default) */
+  model: string;
 
   /** Resolved max tokens */
   maxTokens: number;
@@ -855,8 +915,8 @@ export interface CommandDefinition {
     execution: {
       /** Model selection */
       model: {
-        default: 'haiku' | 'sonnet' | 'opus';
-        allowed?: Array<'haiku' | 'sonnet' | 'opus'>;
+        default: string;     // alias ('sonnet'), tier ('premium'), or 'provider:modelId'
+        allowed?: string[];  // optional allowlist of model aliases/IDs
       };
 
       /** Timeout in ms */
@@ -1621,7 +1681,7 @@ export interface ValidatorRuntime {
 
   /** Default execution settings */
   defaults: {
-    model: 'haiku' | 'sonnet' | 'opus';
+    model: string;   // alias, tier, or provider:modelId
     timeout: number;
   };
 
@@ -1644,7 +1704,7 @@ export interface ExecutorRuntime {
 
   /** Default execution settings */
   defaults: {
-    model: 'haiku' | 'sonnet' | 'opus';
+    model: string;   // alias, tier, or provider:modelId
     timeout: number;
   };
 
@@ -2560,19 +2620,20 @@ export class ToolHandler {
 
 ### AIProvider
 
-**Replaces ClaudeAdapter (v0.9.0).** AI SDK-based provider for LLM interactions. Leverages Vercel AI SDK v6 for automatic tool loop management and built-in retry logic. Currently Anthropic-only; additional providers can be added in future versions.
+**Replaces ClaudeAdapter (v0.9.0).** Multi-provider AI SDK-based provider for LLM interactions. Leverages Vercel AI SDK v6 for automatic tool loop management and built-in retry logic. Resolves model aliases dynamically via the UluOps Registry model catalog. Ships with `@ai-sdk/anthropic` bundled; additional providers (OpenAI, Google, etc.) are peer dependencies.
 
 > **Design Note (v0.9.0):** AIProvider replaces ClaudeAdapter, eliminating ~380 lines of custom retry/error/tool-loop code in favor of AI SDK's battle-tested implementation. The tool loop is now handled by AI SDK's `maxSteps` parameter, removing the need for manual iteration in AgentExecutor.
+>
+> **Multi-Provider Design:** Model alias resolution is fully registry-backed. The registry `models` table syncs from models.dev, which uses the same naming conventions as the AI SDK (`@ai-sdk/anthropic`, `@ai-sdk/openai`, etc.). This means aliases like `"sonnet"` resolve to `anthropic:claude-sonnet-4-5-20250929` via `registry.models.resolveAlias()`, and the provider:modelId format maps directly to AI SDK provider instances.
 
 ```typescript
 // src/ai/AIProvider.ts
 
-import { generateText, CoreTool, APICallError, RetryError } from 'ai';
-import { anthropic } from '@ai-sdk/anthropic';
-import type {
-  ResolvedConfig,
-  UsageMetrics,
-} from '../types';
+import { generateText, CoreTool, LanguageModel, APICallError, RetryError } from 'ai';
+import { createAnthropic } from '@ai-sdk/anthropic';
+import type { ResolvedConfig, ResolvedAIConfig } from '../types/config.js';
+import type { UsageMetrics } from '../types/execution.js';
+import type { ModelCatalog, ResolvedModel } from './ModelCatalog.js';
 import {
   SdkApiError,
   RateLimitError,
@@ -2581,11 +2642,6 @@ import {
   ServiceUnavailableError,
   TimeoutError,
 } from '@uluops/sdk-core/errors';
-
-/**
- * Model alias to provider-specific model ID
- */
-export type ModelAlias = 'haiku' | 'sonnet' | 'opus';
 
 /**
  * Result from AI provider generation
@@ -2600,8 +2656,11 @@ export interface GenerateResult {
   /** Number of tool calls made */
   toolCallCount: number;
 
-  /** Resolved model ID that was used */
+  /** Resolved provider:modelId that was used */
   model: string;
+
+  /** Provider name (e.g., 'anthropic', 'openai') */
+  provider: string;
 
   /** Number of steps (LLM calls) in the tool loop */
   steps: number;
@@ -2611,8 +2670,8 @@ export interface GenerateResult {
  * Options for generation
  */
 export interface GenerateOptions {
-  /** Model alias or full model ID */
-  model: ModelAlias | string;
+  /** Model alias (e.g., 'sonnet'), tier (e.g., 'premium'), or full provider:modelId */
+  model: string;
 
   /** System prompt */
   system: string;
@@ -2634,64 +2693,89 @@ export interface GenerateOptions {
 
   /** Temperature (0-1) */
   temperature?: number;
+
+  /** Required capabilities (validated before execution) */
+  requiredCapabilities?: Array<'tools' | 'vision' | 'streaming' | 'extendedThinking'>;
 }
 
 /**
- * AI SDK-based provider for LLM interactions
+ * Multi-provider AI SDK wrapper with registry-backed model resolution
  *
  * AIProvider wraps Vercel AI SDK to provide:
- * - Model alias resolution (sonnet → claude-sonnet-4-5-20250929)
+ * - Registry-backed model alias resolution (sonnet → anthropic:claude-sonnet-4-5-20250929)
+ * - Multi-provider support (Anthropic bundled, others via peer dependencies)
+ * - Capability pre-flight checks (tools, vision, streaming, extendedThinking)
  * - Unified generation interface with automatic tool loops
  * - Error mapping to UluOps error types
  * - Usage metrics in UluOps format
  *
- * Replaces ClaudeAdapter with significantly less code by leveraging
- * AI SDK's built-in retry logic, tool loop management, and provider abstractions.
- *
  * @example
  * ```typescript
- * const provider = new AIProvider(config);
+ * const provider = new AIProvider(config, modelCatalog);
  *
  * const result = await provider.generate({
- *   model: 'sonnet',
+ *   model: 'sonnet',                    // Registry alias
  *   system: renderedPrompt,
  *   prompt: 'Analyze this codebase',
  *   tools: toolAdapter.getTools(),
  *   maxSteps: 50,
+ *   requiredCapabilities: ['tools'],    // Pre-flight check
  * });
  *
- * console.log(result.text);          // Final response
- * console.log(result.toolCallCount); // Total tool calls
+ * console.log(result.text);            // Final response
+ * console.log(result.provider);        // 'anthropic'
+ * console.log(result.model);           // 'anthropic:claude-sonnet-4-5-20250929'
  * ```
  */
 export class AIProvider {
-  /** Model alias to full Anthropic model ID */
-  private static readonly MODEL_MAP: Record<ModelAlias, string> = {
-    haiku: 'claude-haiku-4-5-20251001',
-    sonnet: 'claude-sonnet-4-5-20250929',
-    opus: 'claude-opus-4-6',
-  };
+  /**
+   * Initialized AI SDK provider instances, keyed by provider name.
+   * Created lazily on first use for each provider.
+   */
+  private providers = new Map<string, (modelId: string) => LanguageModel>();
 
-  constructor(private config: ResolvedConfig) {}
+  constructor(
+    private config: ResolvedConfig,
+    private catalog: ModelCatalog,
+  ) {
+    this.initializeProviders(config.ai);
+  }
 
   /**
    * Generate text with automatic tool loop handling
    *
-   * Uses AI SDK's `generateText` with `maxSteps` to handle the complete
-   * tool loop automatically. No manual iteration required.
+   * Resolution flow:
+   * 1. Resolve model alias → provider:modelId via ModelCatalog
+   * 2. Check config.ai.providers has credentials for that provider
+   * 3. Validate required capabilities (if specified)
+   * 4. Get AI SDK LanguageModel instance from provider factory
+   * 5. Call generateText with maxSteps for automatic tool loop
    *
    * @param options - Generation options
    * @returns Generation result with text, usage, and metrics
+   * @throws {ConfigurationError} If provider not configured or missing credentials
+   * @throws {ModelNotFoundError} If alias cannot be resolved
+   * @throws {CapabilityError} If model lacks required capabilities
    * @throws {RateLimitError} If rate limited after retries
    * @throws {UnauthorizedError} If API key is invalid
    * @throws {SdkApiError} For other API errors
    */
   async generate(options: GenerateOptions): Promise<GenerateResult> {
-    const resolvedModel = this.resolveModel(options.model);
+    // Apply model override if configured
+    const modelInput = this.config.ai.modelOverride ?? options.model;
+
+    // Resolve alias → provider:modelId with capability check
+    const resolved = await this.catalog.resolve(modelInput, {
+      requiredCapabilities: options.requiredCapabilities,
+    });
+
+    // Get provider factory
+    const factory = this.getProviderFactory(resolved.provider);
+    const languageModel = factory(resolved.providerModelId);
 
     try {
       const result = await generateText({
-        model: this.getModel(resolvedModel),
+        model: languageModel,
         system: options.system,
         prompt: options.prompt,
         tools: options.tools,
@@ -2713,7 +2797,8 @@ export class AIProvider {
         text: result.text,
         usage: this.mapUsage(result.usage, result.providerMetadata),
         toolCallCount,
-        model: resolvedModel,
+        model: `${resolved.provider}:${resolved.modelId}`,
+        provider: resolved.provider,
         steps: result.steps.length,
       };
     } catch (error) {
@@ -2721,23 +2806,106 @@ export class AIProvider {
     }
   }
 
+  // ─────────────────────────────────────────────────────────────────────────
+  // Provider Management
+  // ─────────────────────────────────────────────────────────────────────────
+
   /**
-   * Resolve model alias to full model ID
+   * Initialize AI SDK provider factories from config.
+   *
+   * @ai-sdk/anthropic is bundled and always available.
+   * Other providers are dynamically imported as peer dependencies.
    */
-  resolveModel(alias: ModelAlias | string): string {
-    return AIProvider.MODEL_MAP[alias as ModelAlias] ?? alias;
+  private initializeProviders(aiConfig: ResolvedAIConfig): void {
+    for (const [providerName, creds] of Object.entries(aiConfig.providers)) {
+      switch (providerName) {
+        case 'anthropic': {
+          const anthropic = createAnthropic({ apiKey: creds.apiKey });
+          this.providers.set('anthropic', (modelId) => anthropic(modelId));
+          break;
+        }
+        default: {
+          // Defer initialization — dynamic import on first use
+          // Supports any AI SDK provider package: @ai-sdk/openai, @ai-sdk/google, etc.
+          this.providers.set(providerName, this.createDynamicFactory(providerName, creds.apiKey));
+          break;
+        }
+      }
+    }
   }
 
   /**
-   * Get AI SDK model instance for the resolved model ID
+   * Create a lazy-loading provider factory for non-bundled providers.
+   *
+   * Dynamically imports `@ai-sdk/<provider>` and calls its default export
+   * with the API key. Falls back to a clear error if the package isn't installed.
+   */
+  private createDynamicFactory(
+    providerName: string,
+    apiKey: string,
+  ): (modelId: string) => LanguageModel {
+    let cachedFactory: ((modelId: string) => LanguageModel) | undefined;
+
+    return (modelId: string): LanguageModel => {
+      if (!cachedFactory) {
+        // Dynamic import happens synchronously after first call triggers async init.
+        // In practice, callers should call ensureProvider() during generate() setup.
+        throw new ConfigurationError(
+          `Provider "${providerName}" requires @ai-sdk/${providerName} to be installed. ` +
+          `Run: npm install @ai-sdk/${providerName}`
+        );
+      }
+      return cachedFactory(modelId);
+    };
+  }
+
+  /**
+   * Ensure a dynamic provider is loaded. Called before generate().
    * @internal
    */
-  private getModel(modelId: string) {
-    // Currently only Anthropic; future: switch on providerType
-    return anthropic(modelId, {
-      apiKey: this.config.apiKey,
-    });
+  async ensureProvider(providerName: string): Promise<void> {
+    if (providerName === 'anthropic') return; // Always available
+
+    try {
+      const mod = await import(`@ai-sdk/${providerName}`);
+      const createProvider = mod[`create${providerName.charAt(0).toUpperCase() + providerName.slice(1)}`]
+        ?? mod.default;
+
+      if (!createProvider) {
+        throw new Error(`No default export or create function found`);
+      }
+
+      const creds = this.config.ai.providers[providerName];
+      const provider = createProvider({ apiKey: creds?.apiKey });
+      this.providers.set(providerName, (modelId) => provider(modelId));
+    } catch (error) {
+      if ((error as NodeJS.ErrnoException).code === 'ERR_MODULE_NOT_FOUND') {
+        throw new ConfigurationError(
+          `Provider "${providerName}" requires @ai-sdk/${providerName}. ` +
+          `Install: npm install @ai-sdk/${providerName}`
+        );
+      }
+      throw error;
+    }
   }
+
+  /**
+   * Get provider factory, throwing if not configured.
+   */
+  private getProviderFactory(providerName: string): (modelId: string) => LanguageModel {
+    const factory = this.providers.get(providerName);
+    if (!factory) {
+      throw new ConfigurationError(
+        `AI provider "${providerName}" is not configured. ` +
+        `Add it to config.ai.providers: { ${providerName}: { apiKey: '...' } }`
+      );
+    }
+    return factory;
+  }
+
+  // ─────────────────────────────────────────────────────────────────────────
+  // Usage + Error Mapping
+  // ─────────────────────────────────────────────────────────────────────────
 
   /**
    * Convert AI SDK usage to UluOps format
@@ -2773,8 +2941,6 @@ export class AIProvider {
 
   /**
    * Map AI SDK errors to sdk-core error types
-   *
-   * Uses @uluops/sdk-core error hierarchy for consistency across the SDK.
    * @internal
    */
   private mapError(error: unknown): SdkApiError {
@@ -2814,18 +2980,286 @@ export class AIProvider {
       0
     );
   }
+}
+```
+
+### ModelCatalog
+
+Registry-backed model catalog with TTL cache. Resolves aliases, validates capabilities, and provides model metadata for cost estimation. Uses `@uluops/registry-sdk` models endpoint as single source of truth.
+
+```typescript
+// src/ai/ModelCatalog.ts
+
+import type { RegistryClient as RegistrySdk } from '@uluops/registry-sdk';
+import type {
+  Model,
+  ModelAlias,
+  AliasResolution,
+  ModelCapabilities,
+  ModelTier,
+} from '@uluops/registry-sdk/types';
+
+/**
+ * Resolved model with provider routing information
+ */
+export interface ResolvedModel {
+  /** Provider name (e.g., 'anthropic', 'openai') */
+  provider: string;
+
+  /** Model ID in registry (e.g., 'claude-sonnet-4-5-20250929') */
+  modelId: string;
+
+  /** Provider-specific model ID for AI SDK (e.g., 'claude-sonnet-4-5-20250929') */
+  providerModelId: string;
+
+  /** Model tier for cost estimation */
+  tier: ModelTier;
+
+  /** Model capabilities */
+  capabilities: ModelCapabilities;
+
+  /** Original input that resolved to this model */
+  resolvedFrom: string;
+}
+
+/**
+ * Options for model resolution
+ */
+export interface ResolveOptions {
+  /** Capabilities the model must support */
+  requiredCapabilities?: Array<keyof ModelCapabilities>;
+
+  /** Preferred provider (used when alias maps to multiple providers) */
+  preferredProvider?: string;
+}
+
+/**
+ * Registry-backed model catalog with TTL cache
+ *
+ * Resolution priority:
+ * 1. Explicit provider:modelId (e.g., "anthropic:claude-sonnet-4-5-20250929") — direct lookup
+ * 2. Registry alias (e.g., "sonnet") — resolves via models.resolveAlias()
+ * 3. Tier name (e.g., "premium") — resolves to default model for tier
+ *
+ * @example
+ * ```typescript
+ * const catalog = new ModelCatalog(registrySdk);
+ *
+ * // Alias resolution
+ * const model = await catalog.resolve('sonnet');
+ * // → { provider: 'anthropic', modelId: 'claude-sonnet-4-5-20250929', tier: 'premium', ... }
+ *
+ * // With capability check
+ * const model = await catalog.resolve('haiku', {
+ *   requiredCapabilities: ['tools', 'vision'],
+ * });
+ *
+ * // Direct provider:modelId
+ * const model = await catalog.resolve('openai:gpt-4o');
+ *
+ * // Manually refresh cache (e.g., after admin syncs models)
+ * await catalog.refresh();
+ * ```
+ */
+export class ModelCatalog {
+  private aliasCache = new Map<string, AliasResolution>();
+  private modelCache = new Map<string, Model>();
+
+  constructor(private sdk: RegistrySdk) {}
 
   /**
-   * Parse retry-after header from API error
-   * @internal
+   * Resolve a model input to a fully-qualified ResolvedModel.
+   *
+   * @param input - Alias ('sonnet'), tier ('premium'), or 'provider:modelId'
+   * @param opts - Resolution options (capability checks, provider preference)
+   * @returns Resolved model with provider, capabilities, and tier
+   * @throws {ModelNotFoundError} If alias/model cannot be resolved
+   * @throws {CapabilityError} If model lacks required capabilities
    */
-  private parseRetryAfter(error: { headers?: Record<string, string> }): number | undefined {
-    const retryAfter = error.headers?.['retry-after'];
-    if (retryAfter) {
-      const value = parseInt(retryAfter, 10);
-      return isNaN(value) ? undefined : value;
+  async resolve(input: string, opts?: ResolveOptions): Promise<ResolvedModel> {
+    // 1. Check for explicit provider:modelId format
+    if (input.includes(':')) {
+      return this.resolveExplicit(input, opts);
     }
-    return undefined;
+
+    // 2. Try alias resolution
+    const aliasResult = await this.resolveAlias(input);
+    if (aliasResult) {
+      const resolved = this.toResolvedModel(aliasResult, input);
+      this.validateCapabilities(resolved, opts?.requiredCapabilities);
+      return resolved;
+    }
+
+    // 3. Try tier resolution
+    const tierResult = await this.resolveByTier(input, opts);
+    if (tierResult) return tierResult;
+
+    throw new ModelNotFoundError(
+      `Cannot resolve model "${input}". Not found as alias, tier, or provider:modelId. ` +
+      `Available aliases: ${await this.listAliasNames()}`
+    );
+  }
+
+  /**
+   * List all available aliases
+   */
+  async listAliases(): Promise<ModelAlias[]> {
+    const result = await this.sdk.models.listAliases();
+    return result.aliases;
+  }
+
+  /**
+   * List available models, optionally filtered
+   */
+  async listModels(filter?: {
+    provider?: string;
+    tier?: ModelTier;
+    capability?: keyof ModelCapabilities;
+  }): Promise<Model[]> {
+    const result = await this.sdk.models.list(filter);
+    return result.models;
+  }
+
+  /**
+   * Force cache refresh
+   */
+  async refresh(): Promise<void> {
+    this.aliasCache.clear();
+    this.modelCache.clear();
+  }
+
+  // ─────────────────────────────────────────────────────────────────────────
+  // Private: Resolution Strategies
+  // ─────────────────────────────────────────────────────────────────────────
+
+  private async resolveExplicit(
+    providerModelId: string,
+    opts?: ResolveOptions,
+  ): Promise<ResolvedModel> {
+    const [provider, modelId] = providerModelId.split(':', 2) as [string, string];
+
+    // Look up in registry for capabilities/tier
+    const model = await this.getModel(provider, modelId);
+    if (!model) {
+      // Allow unregistered models (user may have access to models not in registry)
+      return {
+        provider,
+        modelId,
+        providerModelId: modelId,
+        tier: 'standard',
+        capabilities: { vision: false, tools: true, streaming: true, extendedThinking: false },
+        resolvedFrom: providerModelId,
+      };
+    }
+
+    const resolved: ResolvedModel = {
+      provider: model.provider,
+      modelId: model.modelId,
+      providerModelId: model.providerModelId,
+      tier: model.tier,
+      capabilities: model.capabilities,
+      resolvedFrom: providerModelId,
+    };
+
+    this.validateCapabilities(resolved, opts?.requiredCapabilities);
+    return resolved;
+  }
+
+  private async resolveAlias(alias: string): Promise<AliasResolution | null> {
+    if (this.aliasCache.has(alias)) {
+      return this.aliasCache.get(alias)!;
+    }
+
+    try {
+      const result = await this.sdk.models.resolveAlias(alias);
+      this.aliasCache.set(alias, result);
+      return result;
+    } catch {
+      return null;
+    }
+  }
+
+  private async resolveByTier(
+    tier: string,
+    opts?: ResolveOptions,
+  ): Promise<ResolvedModel | null> {
+    const validTiers = ['budget', 'standard', 'premium', 'reasoning'];
+    if (!validTiers.includes(tier)) return null;
+
+    const models = await this.sdk.models.list({
+      tier: tier as ModelTier,
+      ...(opts?.preferredProvider ? { provider: opts.preferredProvider } : {}),
+    });
+
+    if (models.models.length === 0) return null;
+
+    // Pick first available model for the tier
+    const model = models.models[0]!;
+    const resolved: ResolvedModel = {
+      provider: model.provider,
+      modelId: model.modelId,
+      providerModelId: model.providerModelId,
+      tier: model.tier,
+      capabilities: model.capabilities,
+      resolvedFrom: tier,
+    };
+
+    this.validateCapabilities(resolved, opts?.requiredCapabilities);
+    return resolved;
+  }
+
+  // ─────────────────────────────────────────────────────────────────────────
+  // Private: Cache + Helpers
+  // ─────────────────────────────────────────────────────────────────────────
+
+  private async getModel(provider: string, modelId: string): Promise<Model | null> {
+    const key = `${provider}:${modelId}`;
+    if (this.modelCache.has(key)) return this.modelCache.get(key)!;
+
+    try {
+      const model = await this.sdk.models.get(provider, modelId);
+      this.modelCache.set(key, model);
+      return model;
+    } catch {
+      return null;
+    }
+  }
+
+  private toResolvedModel(alias: AliasResolution, input: string): ResolvedModel {
+    const model = alias.model;
+    return {
+      provider: model?.provider ?? alias.target.split(':')[0] ?? 'unknown',
+      modelId: model?.modelId ?? alias.target.split(':')[1] ?? alias.target,
+      providerModelId: model?.providerModelId ?? alias.target,
+      tier: model?.tier ?? 'standard',
+      capabilities: model?.capabilities ?? { vision: false, tools: true, streaming: true, extendedThinking: false },
+      resolvedFrom: input,
+    };
+  }
+
+  private validateCapabilities(
+    model: ResolvedModel,
+    required?: Array<keyof ModelCapabilities>,
+  ): void {
+    if (!required || required.length === 0) return;
+
+    const missing = required.filter(cap => !model.capabilities[cap]);
+    if (missing.length > 0) {
+      throw new CapabilityError(
+        `Model "${model.resolvedFrom}" (${model.provider}:${model.modelId}) ` +
+        `lacks required capabilities: ${missing.join(', ')}. ` +
+        `Model capabilities: ${JSON.stringify(model.capabilities)}`
+      );
+    }
+  }
+
+  private async listAliasNames(): Promise<string> {
+    try {
+      const aliases = await this.listAliases();
+      return aliases.map(a => a.alias).join(', ');
+    } catch {
+      return '(unable to fetch)';
+    }
   }
 }
 ```
@@ -3107,7 +3541,7 @@ export class AgentExecutor {
     const defaults = runtime?.defaults || {};
 
     return {
-      model: options?.model || defaults.model || this.config.modelOverride || 'sonnet',
+      model: options?.model || defaults.model || this.config.ai.modelOverride || 'sonnet',
       maxTokens: options?.maxTokens || defaults.maxTokens || 8192,
       timeoutMs: options?.timeoutMs || defaults.timeout || this.config.timeout || 300000,
       thresholds: options?.thresholds || defaults.thresholds,
@@ -5419,7 +5853,10 @@ export class UluOpsClient {
 
     this.registry = new RegistryClient(this.config);
     this.validation = new ValidationClient(this.config);
-    const aiProvider = new AIProvider(this.config);
+
+    // ModelCatalog resolves aliases via registry (no auto-sync; cache cleared on refresh())
+    const modelCatalog = new ModelCatalog(this.registry.sdk);
+    const aiProvider = new AIProvider(this.config, modelCatalog);
 
     // AgentExecutor is the primary execution engine (v0.8.0)
     this.agentExecutor = new AgentExecutor(this.config, aiProvider, this.registry);
@@ -5769,8 +6206,12 @@ export class UluOpsClient {
       );
     }
 
+    // Resolve AI provider configuration
+    const ai = this.resolveAIConfig(config.ai);
+
     return {
       apiKey,
+      ai,
       registryUrl: config.registryUrl || process.env.ULUOPS_REGISTRY_URL || 'https://registry.uluops.ai/api',
       validationUrl: config.validationUrl || process.env.ULUOPS_VALIDATION_URL || 'https://ops.uluops.ai/api',
       dashboardUrl: config.dashboardUrl || process.env.ULUOPS_DASHBOARD_URL || 'https://app.uluops.ai',
@@ -5778,8 +6219,44 @@ export class UluOpsClient {
       trackingEnabled: config.trackingEnabled ?? (process.env.ULUOPS_TRACKING_ENABLED !== 'false'),
       hashVerificationEnabled: config.hashVerificationEnabled ?? true,
       timeout: config.timeout || 300000,
-      modelOverride: config.modelOverride,
       defaultProject: config.defaultProject || process.env.ULUOPS_PROJECT,
+    };
+  }
+
+  /**
+   * Resolve AI config with env var fallbacks.
+   *
+   * Default behavior (no ai config provided):
+   * - Anthropic provider with ANTHROPIC_API_KEY env var
+   * - Default provider: 'anthropic'
+   * - 24h catalog TTL
+   *
+   * Env var convention: <PROVIDER>_API_KEY (e.g., ANTHROPIC_API_KEY, OPENAI_API_KEY)
+   */
+  private resolveAIConfig(ai?: AIConfig): ResolvedAIConfig {
+    const providers: Record<string, { apiKey: string }> = {};
+
+    if (ai?.providers) {
+      // Use explicitly configured providers with env var fallback
+      for (const [name, creds] of Object.entries(ai.providers)) {
+        const envKey = `${name.toUpperCase()}_API_KEY`;
+        const apiKey = creds.apiKey || process.env[envKey];
+        if (apiKey) {
+          providers[name] = { apiKey };
+        }
+      }
+    } else {
+      // Default: Anthropic only, from env var
+      const anthropicKey = process.env.ANTHROPIC_API_KEY;
+      if (anthropicKey) {
+        providers.anthropic = { apiKey: anthropicKey };
+      }
+    }
+
+    return {
+      providers,
+      defaultProvider: ai?.defaultProvider ?? 'anthropic',
+      modelOverride: ai?.modelOverride,
     };
   }
 
@@ -5817,14 +6294,16 @@ export { ValidationClient } from './validation/ValidationClient';
 
 // AI SDK Integration
 export { AIProvider } from './ai/AIProvider';
-export type { GenerateResult, GenerateOptions, ModelAlias } from './ai/AIProvider';
+export type { GenerateResult, GenerateOptions } from './ai/AIProvider';
+export { ModelCatalog } from './ai/ModelCatalog';
+export type { ResolvedModel, ResolveOptions } from './ai/ModelCatalog';
 export { ToolAdapter } from './ai/ToolAdapter';
 
 // Utilities
 export { OutputExtractor } from './parser/OutputExtractor';
 
 // Types - Config
-export type { UluOpsConfig, ResolvedConfig } from './types/config';
+export type { UluOpsConfig, AIConfig, AIProviderCredentials, ResolvedConfig, ResolvedAIConfig } from './types/config';
 
 // Types - Execution
 export type {
@@ -5925,6 +6404,9 @@ export {
   ExecutionError,
   PreflightError,
   HashVerificationError,
+  ConfigurationError,
+  ModelNotFoundError,
+  CapabilityError,
   ValidationError,
   ValidationErrorCodes,
   WorkflowError,
@@ -6211,6 +6693,27 @@ export class HashVerificationError extends UluOpsError {
   }
 }
 
+export class ConfigurationError extends UluOpsError {
+  constructor(message: string) {
+    super(message);
+    this.name = 'ConfigurationError';
+  }
+}
+
+export class ModelNotFoundError extends UluOpsError {
+  constructor(message: string) {
+    super(message);
+    this.name = 'ModelNotFoundError';
+  }
+}
+
+export class CapabilityError extends UluOpsError {
+  constructor(message: string) {
+    super(message);
+    this.name = 'CapabilityError';
+  }
+}
+
 /**
  * Error codes for validation service errors
  * These align with the Validation API's error response codes
@@ -6323,19 +6826,38 @@ export class ParseError extends UluOpsError {
 
 See [Core Types > Configuration](#configuration) for the complete `UluOpsConfig` and `ResolvedConfig` interface definitions.
 
-**Quick Reference:**
+**Quick Reference — Platform:**
 
 | Option | Type | Default | Description |
 |--------|------|---------|-------------|
-| `apiKey` | `string` | *required* | API key for authentication |
+| `apiKey` | `string` | *required* | UluOps platform API key (NOT for AI providers) |
 | `registryUrl` | `string` | `"https://registry.uluops.ai/api"` | Registry API base URL |
 | `validationUrl` | `string` | `"https://ops.uluops.ai/api"` | Validation API base URL |
 | `localDefinitions` | `string` | - | Local definitions directory |
 | `trackingEnabled` | `boolean` | `true` | Enable validation service submission |
 | `hashVerificationEnabled` | `boolean` | `true` | Enable definition hash verification |
 | `timeout` | `number` | `300000` | Request timeout in ms |
-| `modelOverride` | `'haiku' \| 'sonnet' \| 'opus'` | - | Override model for all executions |
 | `defaultProject` | `string` | - | Default project name |
+
+**Quick Reference — AI (`config.ai`):**
+
+| Option | Type | Default | Description |
+|--------|------|---------|-------------|
+| `ai.providers` | `Record<string, { apiKey? }>` | `{ anthropic: { } }` | AI provider credentials |
+| `ai.defaultProvider` | `string` | `'anthropic'` | Default provider for unqualified aliases |
+| `ai.modelOverride` | `string` | - | Override model for all executions (alias, tier, or provider:modelId) |
+
+**Environment Variable Fallbacks:**
+
+| Variable | Fallback for |
+|----------|-------------|
+| `ULUOPS_API_KEY` / `ULU_API_KEY` | `config.apiKey` |
+| `ANTHROPIC_API_KEY` | `config.ai.providers.anthropic.apiKey` |
+| `OPENAI_API_KEY` | `config.ai.providers.openai.apiKey` |
+| `<PROVIDER>_API_KEY` | `config.ai.providers.<provider>.apiKey` |
+| `ULUOPS_REGISTRY_URL` | `config.registryUrl` |
+| `ULUOPS_VALIDATION_URL` | `config.validationUrl` |
+| `ULUOPS_PROJECT` | `config.defaultProject` |
 
 ---
 
@@ -6343,20 +6865,37 @@ See [Core Types > Configuration](#configuration) for the complete `UluOpsConfig`
 
 ### API Key Management
 
+The SDK manages two distinct sets of credentials:
+
+1. **UluOps Platform Key** (`config.apiKey`) — Authenticates against UluOps Registry and Validation services
+2. **AI Provider Keys** (`config.ai.providers.<name>.apiKey`) — Authenticates against AI providers (Anthropic, OpenAI, etc.)
+
+These are intentionally separated. The UluOps platform key should never be sent to AI providers, and AI provider keys should never be sent to UluOps services.
+
 - **Never commit API keys** - Use environment variables or secure secret management
 - **Rotate keys periodically** - Recommended rotation every 90 days
 - **Use scoped keys** - When available, use keys with minimal required permissions
 - **Audit key usage** - Monitor dashboard for unexpected usage patterns
 
 ```typescript
-// ✅ Good: Environment variable
+// ✅ Good: Environment variables for both key types
 const client = new UluOpsClient({
   apiKey: process.env.ULUOPS_API_KEY!,
+  ai: {
+    providers: {
+      anthropic: { apiKey: process.env.ANTHROPIC_API_KEY! },
+    },
+  },
 });
 
-// ❌ Bad: Hardcoded key
+// ✅ Also good: Rely entirely on env var fallbacks (zero-config)
+const client = new UluOpsClient({});
+// Uses ULUOPS_API_KEY for platform, ANTHROPIC_API_KEY for AI
+
+// ❌ Bad: Hardcoded keys
 const client = new UluOpsClient({
   apiKey: 'sk-ulu-xxx...',  // Never do this
+  ai: { providers: { anthropic: { apiKey: 'sk-ant-xxx...' } } }, // Never do this
 });
 ```
 
@@ -6434,23 +6973,27 @@ import { ClaudeAdapter } from '@uluops/core';
 const claude = new ClaudeAdapter(config);
 const response = await claude.send(request);
 
-// After (v0.9.0)
-import { AIProvider } from '@uluops/core';
-const provider = new AIProvider(config);
+// After (v0.9.0) — model aliases resolve via registry
+import { AIProvider, ModelCatalog } from '@uluops/core';
+const catalog = new ModelCatalog(registrySdk);
+const provider = new AIProvider(config, catalog);
 const result = await provider.generate({
-  model: 'sonnet',
+  model: 'sonnet',                    // Registry alias → anthropic:claude-sonnet-4-5-20250929
   system: prompt,
   prompt: message,
   tools: toolAdapter.getTools(),
   maxSteps: 50,
+  requiredCapabilities: ['tools'],
 });
 ```
 
 ### New Features
 
-- **`AIProvider`**: AI SDK-based provider with automatic tool loops
+- **`AIProvider`**: Multi-provider AI SDK wrapper with registry-backed model resolution
+- **`ModelCatalog`**: Registry-backed model alias resolution with capability checks
 - **`ToolAdapter`**: Converts ToolHandler tools to AI SDK Zod-based format
-- **Multi-provider support**: `provider: 'anthropic' | 'openai' | 'google'`
+- **Multi-provider support**: Any AI SDK provider (`@ai-sdk/anthropic`, `@ai-sdk/openai`, etc.)
+- **Separate AI credentials**: `config.ai.providers` separated from UluOps platform key
 - **`AgentResult` discriminated union**: `ValidatorAgentResult` | `ExecutorAgentResult`
 - **`PipelineHandle` class**: Concrete implementation for async pipeline monitoring
 

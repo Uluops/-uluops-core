@@ -1,7 +1,8 @@
-import { generateText, stepCountIs, type ToolSet } from 'ai';
-import { createAnthropic, type AnthropicProvider } from '@ai-sdk/anthropic';
-import type { UsageMetrics, ModelAlias } from '../types/ai.js';
-import type { ResolvedConfig } from '../types/config.js';
+import { generateText, stepCountIs, type LanguageModel, type ToolSet } from 'ai';
+import { createAnthropic } from '@ai-sdk/anthropic';
+import type { UsageMetrics } from '../types/ai.js';
+import type { ResolvedConfig, ResolvedAIConfig } from '../types/config.js';
+import type { ModelCatalog } from './ModelCatalog.js';
 import {
   SdkApiError,
   RateLimitError,
@@ -9,7 +10,9 @@ import {
   ForbiddenError,
   ServiceUnavailableError,
   TimeoutError,
-} from '@uluops/sdk-core/errors';
+  ConfigurationError,
+} from '../errors/index.js';
+import type { ModelCapabilities } from '@uluops/registry-sdk';
 
 /**
  * Result from AI provider generation
@@ -24,8 +27,11 @@ export interface AIGenerateResult {
   /** Number of tool calls made */
   toolCallCount: number;
 
-  /** Resolved model ID that was used */
+  /** Resolved provider:modelId that was used */
   model: string;
+
+  /** Provider name (e.g., 'anthropic', 'openai') */
+  provider: string;
 
   /** Number of steps (LLM calls) in the tool loop */
   steps: number;
@@ -38,8 +44,8 @@ export interface AIGenerateResult {
  * Options for generation
  */
 export interface AIGenerateOptions {
-  /** Model alias or full model ID */
-  model: ModelAlias | string;
+  /** Model alias (e.g., 'sonnet'), tier (e.g., 'premium'), or full provider:modelId */
+  model: string;
 
   /** System prompt */
   system: string;
@@ -61,42 +67,61 @@ export interface AIGenerateOptions {
 
   /** Temperature (0-1) */
   temperature?: number;
+
+  /** Required capabilities (validated before execution) */
+  requiredCapabilities?: Array<keyof ModelCapabilities>;
 }
 
 /**
- * AI SDK-based provider for LLM interactions.
+ * Multi-provider AI SDK wrapper with registry-backed model resolution.
  *
  * Wraps Vercel AI SDK v6 to provide:
- * - Model alias resolution (sonnet -> claude-sonnet-4-5-20250929)
+ * - Registry-backed model alias resolution (sonnet → anthropic:claude-sonnet-4-5-20250929)
+ * - Multi-provider support (Anthropic bundled, others via peer dependencies)
+ * - Capability pre-flight checks (tools, vision, streaming, extendedThinking)
  * - Unified generation with automatic tool loops
  * - Error mapping to UluOps error types
  * - Usage metrics in UluOps format
  */
 export class AIProvider {
-  private static readonly MODEL_MAP: Record<ModelAlias, string> = {
-    haiku: 'claude-haiku-4-5-20251001',
-    sonnet: 'claude-sonnet-4-5-20250929',
-    opus: 'claude-opus-4-6',
-  };
+  /** Initialized AI SDK provider factories, keyed by provider name */
+  private providers = new Map<string, (modelId: string) => LanguageModel>();
 
-  private provider: AnthropicProvider;
-
-  constructor(private config: ResolvedConfig) {
-    this.provider = createAnthropic({
-      apiKey: this.config.apiKey,
-    });
+  constructor(
+    private config: ResolvedConfig,
+    private catalog: ModelCatalog,
+  ) {
+    this.initializeProviders(config.ai);
   }
 
   /**
    * Generate text with automatic tool loop handling.
-   * Uses AI SDK's `generateText` with `maxSteps`.
+   *
+   * Resolution flow:
+   * 1. Resolve model alias → provider:modelId via ModelCatalog
+   * 2. Validate required capabilities (if specified)
+   * 3. Get AI SDK LanguageModel from provider factory
+   * 4. Call generateText with maxSteps for automatic tool loop
    */
   async generate(options: AIGenerateOptions): Promise<AIGenerateResult> {
-    const resolvedModel = this.resolveModel(options.model);
+    // Apply model override if configured
+    const modelInput = this.config.ai.modelOverride ?? options.model;
+
+    // Resolve alias → provider:modelId with capability check
+    const resolved = await this.catalog.resolve(modelInput, {
+      requiredCapabilities: options.requiredCapabilities,
+    });
+
+    // Ensure provider is loaded (for dynamic providers)
+    await this.ensureProvider(resolved.provider);
+
+    // Get provider factory
+    const factory = this.getProviderFactory(resolved.provider);
+    const languageModel = factory(resolved.providerModelId);
 
     try {
       const result = await generateText({
-        model: this.provider(resolvedModel),
+        model: languageModel,
         system: options.system,
         prompt: options.prompt,
         tools: options.tools,
@@ -118,7 +143,8 @@ export class AIProvider {
         text: result.text,
         usage: this.mapUsage(result.usage, result.providerMetadata),
         toolCallCount,
-        model: resolvedModel,
+        model: `${resolved.provider}:${resolved.modelId}`,
+        provider: resolved.provider,
         steps: result.steps.length,
         finishReason: result.finishReason,
       };
@@ -127,12 +153,87 @@ export class AIProvider {
     }
   }
 
+  // ─────────────────────────────────────────────────────────────────────────
+  // Provider Management
+  // ─────────────────────────────────────────────────────────────────────────
+
   /**
-   * Resolve model alias to full model ID
+   * Initialize AI SDK provider factories from config.
+   * @ai-sdk/anthropic is bundled and always available.
    */
-  resolveModel(alias: ModelAlias | string): string {
-    return AIProvider.MODEL_MAP[alias as ModelAlias] ?? alias;
+  private initializeProviders(aiConfig: ResolvedAIConfig): void {
+    for (const [providerName, creds] of Object.entries(aiConfig.providers)) {
+      if (providerName === 'anthropic') {
+        const anthropic = createAnthropic({ apiKey: creds.apiKey });
+        this.providers.set('anthropic', (modelId) => anthropic(modelId));
+      }
+      // Non-anthropic providers are loaded lazily in ensureProvider()
+    }
   }
+
+  /**
+   * Ensure a provider is loaded. Dynamically imports non-bundled providers.
+   */
+  async ensureProvider(providerName: string): Promise<void> {
+    if (this.providers.has(providerName)) return;
+
+    const creds = this.config.ai.providers[providerName];
+    if (!creds) {
+      throw new ConfigurationError(
+        `AI provider "${providerName}" is not configured. ` +
+        `Add it to config.ai.providers: { ${providerName}: { apiKey: '...' } }`,
+      );
+    }
+
+    try {
+      // Dynamic import of @ai-sdk/<provider>
+      const mod = await import(`@ai-sdk/${providerName}`) as Record<string, unknown>;
+
+      // Try standard naming: createOpenAI, createGoogle, etc.
+      const factoryName = `create${providerName.charAt(0).toUpperCase() + providerName.slice(1)}`;
+      const createProvider = (mod[factoryName] ?? mod['default']) as
+        ((opts: { apiKey: string }) => (modelId: string) => LanguageModel) | undefined;
+
+      if (!createProvider || typeof createProvider !== 'function') {
+        throw new ConfigurationError(
+          `@ai-sdk/${providerName} does not export ${factoryName} or default. ` +
+          `Check the package documentation.`,
+        );
+      }
+
+      const provider = createProvider({ apiKey: creds.apiKey });
+      this.providers.set(providerName, (modelId) => provider(modelId));
+    } catch (error) {
+      if (error instanceof ConfigurationError) throw error;
+
+      const errCode = (error as NodeJS.ErrnoException).code;
+      if (errCode === 'ERR_MODULE_NOT_FOUND' || errCode === 'MODULE_NOT_FOUND') {
+        throw new ConfigurationError(
+          `Provider "${providerName}" requires @ai-sdk/${providerName}. ` +
+          `Install: npm install @ai-sdk/${providerName}`,
+        );
+      }
+      throw error;
+    }
+  }
+
+  /**
+   * Get provider factory, throwing if not configured.
+   */
+  private getProviderFactory(providerName: string): (modelId: string) => LanguageModel {
+    const factory = this.providers.get(providerName);
+    if (!factory) {
+      throw new ConfigurationError(
+        `AI provider "${providerName}" is not configured. ` +
+        `Add it to config.ai.providers: { ${providerName}: { apiKey: '...' } }`,
+      );
+    }
+    return factory;
+  }
+
+  // ─────────────────────────────────────────────────────────────────────────
+  // Usage + Error Mapping
+  // ─────────────────────────────────────────────────────────────────────────
 
   /**
    * Convert AI SDK usage to UluOps format

@@ -1,11 +1,12 @@
 import { RegistryClient } from '../registry/RegistryClient.js';
 import { ValidationClient } from '../validation/ValidationClient.js';
 import { AIProvider } from '../ai/AIProvider.js';
+import { ModelCatalog } from '../ai/ModelCatalog.js';
 import { AgentExecutor } from '../executor/AgentExecutor.js';
 import { CommandExecutor } from '../executor/CommandExecutor.js';
 import { WorkflowExecutor } from '../executor/WorkflowExecutor.js';
 import { PipelineExecutor } from '../executor/PipelineExecutor.js';
-import type { UluOpsConfig, ResolvedConfig } from '../types/config.js';
+import type { UluOpsConfig, AIConfig, ResolvedConfig, ResolvedAIConfig } from '../types/config.js';
 import type { ExecutionInput, ExecutionResult, ExecutionOptions } from '../types/execution.js';
 import type { AgentResult } from '../types/agent.js';
 import type { CommandResult } from '../types/command.js';
@@ -42,7 +43,10 @@ export class UluOpsClient {
 
     this.registry = new RegistryClient(this.config);
     this.validation = new ValidationClient(this.config);
-    const aiProvider = new AIProvider(this.config);
+
+    // ModelCatalog resolves aliases via registry (no auto-sync; cache cleared via refresh())
+    const modelCatalog = new ModelCatalog(this.registry.registrySdk);
+    const aiProvider = new AIProvider(this.config, modelCatalog);
 
     this.agentExecutor = new AgentExecutor(this.config, aiProvider);
     this.commandExecutor = new CommandExecutor(this.agentExecutor, this.registry);
@@ -271,6 +275,7 @@ export class UluOpsClient {
 
     return {
       apiKey,
+      ai: this.resolveAIConfig(config.ai),
       registryUrl: config.registryUrl ?? process.env['ULUOPS_REGISTRY_URL'] ?? 'https://registry.uluops.ai/api',
       validationUrl: config.validationUrl ?? process.env['ULUOPS_VALIDATION_URL'] ?? 'https://ops.uluops.ai/api',
       dashboardUrl: config.dashboardUrl ?? process.env['ULUOPS_DASHBOARD_URL'] ?? 'https://app.uluops.ai',
@@ -278,8 +283,40 @@ export class UluOpsClient {
       trackingEnabled: config.trackingEnabled ?? (process.env['ULUOPS_TRACKING_ENABLED'] !== 'false'),
       hashVerificationEnabled: config.hashVerificationEnabled ?? true,
       timeout: config.timeout ?? 300000,
-      modelOverride: config.modelOverride,
       defaultProject: config.defaultProject ?? process.env['ULUOPS_PROJECT'],
+    };
+  }
+
+  /**
+   * Resolve AI config with env var fallbacks.
+   *
+   * Default: Anthropic provider with ANTHROPIC_API_KEY env var.
+   * Env var convention: <PROVIDER>_API_KEY (e.g., ANTHROPIC_API_KEY, OPENAI_API_KEY)
+   */
+  private resolveAIConfig(ai?: AIConfig): ResolvedAIConfig {
+    const providers: Record<string, { apiKey: string }> = {};
+
+    if (ai?.providers) {
+      // Use explicitly configured providers with env var fallback
+      for (const [name, creds] of Object.entries(ai.providers)) {
+        const envKey = `${name.toUpperCase()}_API_KEY`;
+        const apiKey = creds.apiKey ?? process.env[envKey];
+        if (apiKey) {
+          providers[name] = { apiKey };
+        }
+      }
+    } else {
+      // Default: Anthropic only, from env var
+      const anthropicKey = process.env['ANTHROPIC_API_KEY'];
+      if (anthropicKey) {
+        providers.anthropic = { apiKey: anthropicKey };
+      }
+    }
+
+    return {
+      providers,
+      defaultProvider: ai?.defaultProvider ?? 'anthropic',
+      modelOverride: ai?.modelOverride,
     };
   }
 

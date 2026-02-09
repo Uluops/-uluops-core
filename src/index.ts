@@ -14,6 +14,8 @@ export { ValidationClient } from './validation/ValidationClient.js';
 // ─── AI SDK Integration ───────────────────────────────────────────────────────
 export { AIProvider } from './ai/AIProvider.js';
 export type { AIGenerateResult, AIGenerateOptions } from './ai/AIProvider.js';
+export { ModelCatalog } from './ai/ModelCatalog.js';
+export type { ResolvedModel, ResolveOptions } from './ai/ModelCatalog.js';
 export { ToolAdapter } from './ai/ToolAdapter.js';
 
 // ─── Utilities ────────────────────────────────────────────────────────────────
@@ -21,7 +23,7 @@ export { OutputExtractor } from './parser/OutputExtractor.js';
 export { ToolHandler } from './executor/ToolHandler.js';
 
 // ─── Types: Config ────────────────────────────────────────────────────────────
-export type { UluOpsConfig, ResolvedConfig } from './types/config.js';
+export type { UluOpsConfig, AIConfig, AIProviderCredentials, ResolvedConfig, ResolvedAIConfig } from './types/config.js';
 
 // ─── Types: Execution ─────────────────────────────────────────────────────────
 export type {
@@ -114,7 +116,7 @@ export type {
 export type { Tool, ToolUseBlock, ToolResult } from './types/tools.js';
 
 // ─── Types: AI ────────────────────────────────────────────────────────────────
-export type { UsageMetrics, ModelAlias } from './types/ai.js';
+export type { UsageMetrics } from './types/ai.js';
 
 // ─── Errors: Core SDK ─────────────────────────────────────────────────────────
 export {
@@ -122,6 +124,9 @@ export {
   ExecutionError,
   PreflightError,
   HashVerificationError,
+  ConfigurationError,
+  ModelNotFoundError,
+  CapabilityError,
   ValidationError,
   ValidationErrorCodes,
   WorkflowError,

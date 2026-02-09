@@ -104,8 +104,8 @@ export interface ExecutionMetrics {
  * Call-time execution options for direct agent runs
  */
 export interface ExecutionOptions {
-  /** Model override: 'haiku' | 'sonnet' | 'opus' */
-  model?: 'haiku' | 'sonnet' | 'opus';
+  /** Model override: alias ('sonnet'), tier ('premium'), or 'provider:modelId' */
+  model?: string;
 
   /** Maximum tokens for response */
   maxTokens?: number;
@@ -131,8 +131,8 @@ export interface ExecutionOptions {
  * Used internally by AgentExecutor
  */
 export interface ResolvedExecutionContext {
-  /** Resolved model (from options > agent defaults > config default) */
-  model: 'haiku' | 'sonnet' | 'opus';
+  /** Resolved model: alias, tier, or provider:modelId (from options > agent defaults > config default) */
+  model: string;
 
   /** Resolved max tokens */
   maxTokens: number;
