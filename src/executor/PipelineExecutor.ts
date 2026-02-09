@@ -155,7 +155,7 @@ export class PipelineExecutor {
     const stageResult = stageId ? context[stageId] : undefined;
     if (!stageResult || typeof stageResult !== 'object') return false;
 
-    const actual = (stageResult as unknown as Record<string, unknown>)[field!];
+    const actual = this.getField(stageResult, field!);
     const expected = numVal !== undefined ? Number(numVal) : (strVal1 ?? strVal2);
 
     switch (op) {
@@ -167,6 +167,11 @@ export class PipelineExecutor {
       case '<':  return Number(actual) < Number(expected);
       default:   return false;
     }
+  }
+
+  /** Safely access a field on an object via runtime narrowing (avoids double assertion). */
+  private getField(obj: object, field: string): unknown {
+    return field in obj ? (obj as Record<string, unknown>)[field] : undefined;
   }
 
   private createSkippedStage(stage: StageDefinition, reason: string): StageResult {

@@ -15,7 +15,8 @@ export class ToolHandler {
   }
 
   /**
-   * Get tool definitions for LLM API
+   * Get tool definitions for LLM API.
+   * Returns read_file, list_files, and search_content tools.
    */
   getTools(): Tool[] {
     return [
@@ -77,7 +78,12 @@ export class ToolHandler {
   }
 
   /**
-   * Fulfill a tool call from the LLM
+   * Fulfill a tool call from the LLM.
+   * Dispatches to read_file, list_files, or search_content handlers.
+   * All paths are sandboxed to the base path.
+   *
+   * @param toolUse - Tool use block from the LLM response
+   * @returns Tool result with content or error
    */
   async fulfill(toolUse: ToolUseBlock): Promise<ToolResult> {
     try {

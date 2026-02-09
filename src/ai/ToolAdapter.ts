@@ -12,7 +12,10 @@ export class ToolAdapter {
   constructor(private toolHandler: ToolHandler) {}
 
   /**
-   * Get AI SDK compatible tools from ToolHandler
+   * Get AI SDK v6 compatible tools from ToolHandler.
+   * Converts JSON Schema tool definitions to Zod-based AI SDK tools.
+   *
+   * @returns ToolSet with read_file, list_files, and search_content tools
    */
   getTools(): ToolSet {
     return {

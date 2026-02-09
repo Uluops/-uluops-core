@@ -203,22 +203,27 @@ export class UluOpsClient {
 
   // ─── Convenience Methods ────────────────────────────────────────────────
 
+  /** Run the built-in `validate` command against a target. */
   async validate(target: string, options?: Record<string, unknown>): Promise<CommandResult> {
     return this.runCommand('validate', { target, options });
   }
 
+  /** Run the built-in `security` command against a target. */
   async security(target: string, options?: Record<string, unknown>): Promise<CommandResult> {
     return this.runCommand('security', { target, options });
   }
 
+  /** Run the built-in `optimize` command against a target. */
   async optimize(target: string, options?: Record<string, unknown>): Promise<CommandResult> {
     return this.runCommand('optimize', { target, options });
   }
 
+  /** Run the built-in `ship` workflow against a target. */
   async ship(target: string, options?: Record<string, unknown>): Promise<WorkflowResult> {
     return this.runWorkflow('ship', { target, options });
   }
 
+  /** Run the built-in `post-implementation` workflow against a target. */
   async postImplementation(target: string, options?: Record<string, unknown>): Promise<WorkflowResult> {
     return this.runWorkflow('post-implementation', { target, options });
   }
@@ -322,11 +327,13 @@ export class UluOpsClient {
   }
 
   private extractInterface(definition: unknown): unknown {
-    const def = definition as Record<string, Record<string, unknown>>;
-    if (def['agent']) return def['agent']['interface'];
-    if (def['command']) return def['command']['interface'];
-    if (def['workflow']) return def['workflow']['interface'];
-    if (def['pipeline']) return def['pipeline']['interface'];
+    const def = definition as Record<string, unknown>;
+    for (const key of ['agent', 'command', 'workflow', 'pipeline']) {
+      const section = def[key];
+      if (section && typeof section === 'object') {
+        return (section as Record<string, unknown>)['interface'];
+      }
+    }
     return {};
   }
 }
