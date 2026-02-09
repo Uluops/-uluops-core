@@ -18,8 +18,16 @@ export type {
 // Agent
 export type {
   AgentDefinition,
-  AgentCategory,
-  AgentTask,
+  AgentInterface,
+  AgentDefaults,
+  AgentMission,
+  AgentScoring,
+  AgentDecisions,
+  AgentTasks,
+  AgentCompletion,
+  AgentOutput,
+  ScoringCategory,
+  ScoringCriterion,
   ValidatorAgentResult,
   ExecutorAgentResult,
   AgentResult,

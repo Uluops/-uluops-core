@@ -457,19 +457,51 @@ describe('RegistryClient', () => {
   // ─────────────────────────────────────────────────────────────────────────────
 
   describe('local rendering', () => {
-    it('renders agent prompt with role and expertise', async () => {
+    it('renders agent prompt from ADL v3 definition', async () => {
       const agentYaml = yaml.stringify({
         agent: {
-          interface: { name: 'render-test', version: '1.0.0', agentType: 'validator' },
-          behavior: {
-            role: 'A TypeScript expert',
-            expertise: ['TypeScript', 'Node.js'],
-            methodology: 'Review code line by line.',
+          interface: {
+            name: 'render-test',
+            version: '1.0.0',
+            displayName: 'Render Test',
+            description: 'Test agent for rendering',
+            agentType: 'validator',
+            domain: 'software',
+          },
+          defaults: { model: 'sonnet', timeout: 300000 },
+          mission: {
+            opener: 'You are a strict TypeScript code validator.',
+            outcome_framing: 'Provide a PASS/FAIL decision.',
+            stakes: 'Issues missed here reach production.',
+            role_boundaries: ['Focus on code quality only'],
+          },
+          scoring: {
+            maxScore: 100,
             categories: [
-              { name: 'Quality', weight: 50, criteria: ['readability', 'maintainability'] },
+              {
+                id: 'quality',
+                name: 'Code Quality',
+                weight: 50,
+                criteria: [
+                  { id: 'readability', name: 'Readability', points: 25 },
+                  { id: 'maintainability', name: 'Maintainability', points: 25 },
+                ],
+              },
             ],
           },
-          output: { format: 'JSON' },
+          decisions: {
+            vocabulary: { positive: 'PASS', negative: 'FAIL', conditional: null },
+            thresholds: [
+              { decision: 'positive', min_score: 70, label: 'Passing' },
+              { decision: 'negative', max_score: 69, label: 'Failing' },
+            ],
+          },
+          auto_fail: {
+            conditions: [
+              { id: 'af1', display_id: 'AF-001', name: 'Security vulnerability', severity: 'critical', detection: { method: 'semantic' } },
+            ],
+          },
+          output: { format: 'markdown' },
         },
       });
       await fs.writeFile(path.join(tmpDir, 'render-test.agent.yaml'), agentYaml);
@@ -477,12 +509,19 @@ describe('RegistryClient', () => {
       const client = new RegistryClient({ ...baseConfig, localDefinitions: tmpDir });
       const result = await client.resolve('render-test');
 
-      const runtime = result.runtime as { prompt: string };
-      expect(runtime.prompt).toContain('You are A TypeScript expert');
-      expect(runtime.prompt).toContain('TypeScript, Node.js');
-      expect(runtime.prompt).toContain('Review code line by line');
-      expect(runtime.prompt).toContain('Quality (weight: 50)');
-      expect(runtime.prompt).toContain('JSON format');
+      const runtime = result.runtime as { prompt: string; defaults: { model: string; timeout: number }; config: Record<string, unknown> };
+      // Prompt is YAML content (fallback when registry API unavailable)
+      expect(runtime.prompt).toContain('strict TypeScript code validator');
+      expect(runtime.prompt).toContain('PASS/FAIL decision');
+      expect(runtime.prompt).toContain('Code Quality');
+      expect(runtime.prompt).toContain('Readability');
+      expect(runtime.prompt).toContain('AF-001');
+      // Defaults populated from agent.defaults section
+      expect(runtime.defaults.model).toBe('sonnet');
+      expect(runtime.defaults.timeout).toBe(300000);
+      // Config populated from scoring
+      expect(runtime.config.maxScore).toBe(100);
+      expect(runtime.config.threshold).toBe(70);
     });
 
     it('renders command prompt with agent refs', async () => {
@@ -499,10 +538,11 @@ describe('RegistryClient', () => {
       const result = await client.resolve('cmd-render', undefined, 'command');
 
       const runtime = result.runtime as { prompt: string };
-      expect(runtime.prompt).toContain('[Command: cmd-render]');
-      expect(runtime.prompt).toContain('agent-a@1.0.0, agent-b@2.0.0');
+      // Prompt is YAML content (fallback when registry API unavailable)
+      expect(runtime.prompt).toContain('cmd-render');
+      expect(runtime.prompt).toContain('agent-a@1.0.0');
+      expect(runtime.prompt).toContain('agent-b@2.0.0');
       expect(runtime.prompt).toContain('opus');
-      expect(runtime.prompt).toContain('80');
     });
   });
 });

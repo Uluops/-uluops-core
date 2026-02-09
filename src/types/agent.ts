@@ -1,70 +1,399 @@
 import type { Domain, AgentType, ExecutionMetrics, Recommendation } from './execution.js';
 import type { Finding, ArtifactResult } from './command.js';
 
+// ─────────────────────────────────────────────────────────────────────────────
+// Agent Definition — matches ADL v1.6.0 schema
+// ─────────────────────────────────────────────────────────────────────────────
+
 /**
- * Agent definition - the atomic validation/execution unit
- * Agents are NOT directly executable; they must be wrapped in a Command
+ * Agent definition — the atomic validation/execution unit.
+ * Matches the ADL v1.6.0 JSON schema structure.
+ *
+ * Agents are NOT directly executable; they must be wrapped in a Command.
  */
 export interface AgentDefinition {
   agent: {
-    /** Agent metadata */
-    interface: {
-      name: string;
-      version: string;
-      displayName: string;
-      description: string;
-      domain: Domain;
-      subdomain?: string;
-      agentType: AgentType;
-      tags?: string[];
-    };
+    /** Agent metadata (required) */
+    interface: AgentInterface;
 
-    /** Agent behavior specification */
-    behavior: {
-      /** Role description for the agent */
-      role: string;
+    /** Default execution settings */
+    defaults?: AgentDefaults;
 
-      /** Core competencies */
-      expertise: string[];
+    /** Execution context configuration */
+    context?: AgentContext;
 
-      /** Evaluation methodology */
-      methodology?: string;
+    /** Agent identity, purpose framing, and behavioral boundaries */
+    mission?: AgentMission;
 
-      /** Scoring categories (for validators) */
-      categories?: AgentCategory[];
+    /** Embedded domain expertise for scoring categories */
+    knowledge_base?: AgentKnowledgeBase;
 
-      /** Task types (for executors) */
-      tasks?: AgentTask[];
-    };
+    /** Scoring configuration — required for validators, forbidden for executors */
+    scoring?: AgentScoring;
+
+    /** Decision vocabulary and thresholds — required for validators */
+    decisions?: AgentDecisions;
+
+    /** Task definitions — required for executors, forbidden for validators */
+    tasks?: AgentTasks;
+
+    /** Completion criteria — required for executors */
+    completion?: AgentCompletion;
+
+    /** Auto-fail conditions */
+    auto_fail?: AgentAutoFail;
+
+    /** Severity deduction scale */
+    deductions?: AgentDeductions;
+
+    /** Rollback configuration — executors only */
+    rollback?: AgentRollback;
+
+    /** Reasoning process and scaffolding */
+    process?: AgentProcess;
 
     /** Output specification */
-    output: {
-      /** Expected output format */
-      format: 'json' | 'markdown' | 'structured';
+    output?: AgentOutput;
 
-      /** JSON schema for structured output (optional) */
-      schema?: Record<string, unknown>;
-    };
+    /** Edge case handling */
+    edge_cases?: AgentEdgeCase[];
+
+    /** Communication tone */
+    tone?: AgentTone;
   };
 }
 
-/**
- * Scoring category for validator agents
- */
-export interface AgentCategory {
+// ─────────────────────────────────────────────────────────────────────────────
+// Interface Section
+// ─────────────────────────────────────────────────────────────────────────────
+
+export interface AgentInterface {
+  name: string;
+  version: string;
+  displayName: string;
+  description: string;
+  agentType: AgentType;
+  domain: Domain;
+  subdomain?: string;
+  domain_profile?: string;
+  risk_level?: 'low' | 'standard' | 'high' | 'critical';
+  tools?: string[];
+  tags?: string[];
+  triggers?: AgentTriggers;
+  dependencies?: AgentDependencies;
+}
+
+export interface AgentTriggers {
+  file_patterns?: string[];
+  explicit_only?: boolean;
+}
+
+export interface AgentDependencies {
+  requires?: string[];
+  recommends?: string[];
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// Defaults Section
+// ─────────────────────────────────────────────────────────────────────────────
+
+export interface AgentDefaults {
+  model?: string;
+  timeout?: number;
+  max_tokens?: number;
+  temperature?: number;
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// Context Section
+// ─────────────────────────────────────────────────────────────────────────────
+
+export interface AgentContext {
+  working_directory?: string;
+  environment?: Record<string, string>;
+  timeout_behavior?: 'fail' | 'warn' | 'continue';
+  shell?: 'bash' | 'sh' | 'zsh' | 'powershell';
+  data_sources?: unknown[];
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// Mission Section
+// ─────────────────────────────────────────────────────────────────────────────
+
+export interface AgentMission {
+  /** Present-tense immersive opening statement */
+  opener?: string;
+  /** Why this validation matters */
+  stakes?: string;
+  /** What the agent produces */
+  outcome_framing?: string;
+  /** Agent scope and limitations */
+  role_boundaries?: string[];
+  /** Whether issues must include taxonomy classification */
+  taxonomy_mandate?: boolean;
+  /** Why this decision vocabulary was chosen */
+  vocabulary_rationale?: string;
+  /** Hard boundaries — what agent must NOT do */
+  explicit_prohibitions?: string[];
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// Knowledge Base Section
+// ─────────────────────────────────────────────────────────────────────────────
+
+export interface AgentKnowledgeBase {
+  sections?: KnowledgeSection[];
+  failure_code_examples?: FailureCodeExample[];
+  global_references?: string[];
+}
+
+export interface KnowledgeSection {
+  category_ref: string;
+  what_to_check?: string[];
+  detection_patterns?: unknown[];
+  red_flags?: CodeExample[];
+  safe_patterns?: CodeExample[];
+  references?: string[];
+  common_mistakes?: CommonMistake[];
+}
+
+export interface CodeExample {
+  description: string;
+  code?: string;
+  language?: string;
+  severity?: string;
+  why?: string;
+}
+
+export interface CommonMistake {
+  mistake: string;
+  why_wrong: string;
+  correct_approach: string;
+}
+
+export interface FailureCodeExample {
+  issue: string;
+  failure_code: string;
+  explanation: string;
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// Scoring Section (validators)
+// ─────────────────────────────────────────────────────────────────────────────
+
+export interface AgentScoring {
+  maxScore: number;
+  categories: ScoringCategory[];
+  calibration_examples?: CalibrationExample[];
+  constraints?: ScoringConstraints;
+}
+
+export interface ScoringCategory {
+  id: string;
   name: string;
   weight: number;
+  description?: string;
+  criteria: ScoringCriterion[];
+}
+
+export interface ScoringCriterion {
+  id: string;
+  name: string;
+  points: number;
+  description?: string;
+  failure_taxonomy?: FailureTaxonomy;
+  verification?: CriterionVerification;
+}
+
+export interface FailureTaxonomy {
+  domain: 'structural' | 'semantic' | 'pragmatic' | 'epistemic';
+  failure_mode: string;
+  default_severity: 'critical' | 'high' | 'medium' | 'low' | 'info';
+}
+
+export interface CriterionVerification {
+  method: 'manual' | 'automated' | 'hybrid';
+  checks?: string[];
+  automation?: { tool: string; pattern?: string };
+}
+
+export interface CalibrationExample {
+  score: number;
+  scenario: string;
+  description?: string;
+  deductions?: Array<{
+    criterion: string;
+    points_lost: number;
+    reason: string;
+  }>;
+}
+
+export interface ScoringConstraints {
+  min_categories?: number;
+  max_categories?: number;
+  min_category_weight?: number;
+  max_category_weight?: number;
+  min_criterion_points?: number;
+  max_criterion_points?: number;
+  total_must_equal?: number;
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// Decisions Section (validators)
+// ─────────────────────────────────────────────────────────────────────────────
+
+export interface AgentDecisions {
+  vocabulary: {
+    positive: string;
+    negative: string;
+    conditional?: string | null;
+  };
+  thresholds?: DecisionThreshold[];
+  preset?: 'low_risk' | 'quality_gate' | 'high_stakes' | 'security' | 'critical' | null;
+  tracking?: {
+    category: 'gate' | 'safety' | 'advisory';
+    notify_on?: string[];
+  };
+  success_criteria?: {
+    description: string;
+    criteria: string[];
+  };
+}
+
+export interface DecisionThreshold {
+  decision: 'positive' | 'conditional' | 'negative';
+  min_score?: number;
+  max_score?: number;
+  label?: string;
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// Tasks Section (executors)
+// ─────────────────────────────────────────────────────────────────────────────
+
+export interface AgentTasks {
+  inputs: TaskInput[];
+  operations: TaskOperation[];
+  outputs: TaskOutput[];
+}
+
+export interface TaskInput {
+  name: string;
+  type: string;
+  description: string;
+  required?: boolean;
+  default?: unknown;
+}
+
+export interface TaskOperation {
+  id: string;
+  name: string;
+  description: string;
+  steps?: string[];
+  depends_on?: string[];
+}
+
+export interface TaskOutput {
+  name: string;
+  type: string;
+  description: string;
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// Completion Section (executors)
+// ─────────────────────────────────────────────────────────────────────────────
+
+export interface AgentCompletion {
+  vocabulary: {
+    complete: string;
+    partial: string;
+    failed: string;
+  };
   criteria: string[];
 }
 
-/**
- * Task type for executor agents
- */
-export interface AgentTask {
+// ─────────────────────────────────────────────────────────────────────────────
+// Auto-Fail Section
+// ─────────────────────────────────────────────────────────────────────────────
+
+export interface AgentAutoFail {
+  enabled?: boolean;
+  conditions: AutoFailCondition[];
+}
+
+export interface AutoFailCondition {
+  id: string;
+  display_id: string;
   name: string;
-  description: string;
-  inputs?: string[];
-  outputs?: string[];
+  severity: 'critical';
+  detection: {
+    method: 'pattern' | 'semantic' | 'tool';
+    patterns?: string[];
+    description?: string;
+    command?: string;
+    failure_condition?: string;
+  };
+  category_override?: string;
+  evidence_required?: boolean;
+  remediation?: string;
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// Other Sections
+// ─────────────────────────────────────────────────────────────────────────────
+
+export interface AgentDeductions {
+  severity_scale?: Record<string, { points: number; description: string }>;
+}
+
+export interface AgentRollback {
+  enabled: boolean;
+  strategy?: string;
+  preserve_logs?: boolean;
+}
+
+export interface AgentProcess {
+  reasoning_scaffolding?: string[];
+  pre_decision_checklist?: string[];
+  phases?: Array<{
+    name: string;
+    actions: Array<{ action: string; description: string }>;
+  }>;
+}
+
+export interface AgentOutput {
+  format: 'markdown' | 'json' | 'html' | 'structured';
+  schema?: string;
+  token_budget?: { target: number; max: number; guidance?: string };
+  section_order?: string[];
+  sections?: Array<{ id: string; condition?: string; template: string }>;
+  symbols?: Record<string, string>;
+  classification?: { enabled: boolean; allow_secondary?: boolean; taxonomy_version?: string };
+  examples?: Array<{ scenario: string; input_summary?: string; output: string }>;
+}
+
+export interface AgentEdgeCase {
+  id: string;
+  condition: string;
+  condition_expression?: string;
+  behavior?: string[];
+  score_adjustment?: {
+    exclude_categories?: string[];
+    rescale?: boolean;
+    fixed_score?: number;
+  };
+  report_wording?: string;
+  judgment_rationale?: string;
+  decision_override?: {
+    affects_decision: boolean;
+    forced_decision?: string;
+    override_rationale?: string;
+  };
+}
+
+export interface AgentTone {
+  attributes?: string[];
+  guidelines?: string[];
 }
 
 // ─────────────────────────────────────────────────────────────────────────────

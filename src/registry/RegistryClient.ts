@@ -6,7 +6,6 @@ import { RegistryClient as RegistrySdk } from '@uluops/registry-sdk';
 import type { ResolvedConfig } from '../types/config.js';
 import type { DefinitionType } from '../types/execution.js';
 import type { AgentDefinition } from '../types/agent.js';
-import type { CommandDefinition } from '../types/command.js';
 import type { ResolvedDefinition, DefinitionSummary } from '../types/registry.js';
 import { HashVerificationError } from '../errors/index.js';
 
@@ -121,25 +120,28 @@ export class RegistryClient {
       : allCandidates;
 
     for (const candidate of candidates) {
+      let yamlContent: string;
       try {
-        const yamlContent = await fs.readFile(candidate.path, 'utf-8');
-        const definition = yaml.parse(yamlContent) as Record<string, unknown>;
-        const hash = this.computeHash(yamlContent);
-
-        return {
-          type: candidate.type,
-          name,
-          version: this.extractVersion(definition, candidate.type),
-          hash,
-          yaml: yamlContent,
-          definition: this.castDefinition(definition),
-          runtime: this.renderLocally(definition, candidate.type),
-          domain: this.extractDomain(definition, candidate.type) as ResolvedDefinition['domain'],
-          agentType: this.extractAgentType(definition, candidate.type),
-        };
+        yamlContent = await fs.readFile(candidate.path, 'utf-8');
       } catch {
-        // File doesn't exist, try next
+        // File doesn't exist, try next candidate
+        continue;
       }
+
+      const definition = yaml.parse(yamlContent) as Record<string, unknown>;
+      const hash = this.computeHash(yamlContent);
+
+      return {
+        type: candidate.type,
+        name,
+        version: this.extractVersion(definition, candidate.type),
+        hash,
+        yaml: yamlContent,
+        definition: this.castDefinition(definition),
+        runtime: await this.renderLocally(yamlContent, definition, candidate.type),
+        domain: this.extractDomain(definition, candidate.type) as ResolvedDefinition['domain'],
+        agentType: this.extractAgentType(definition, candidate.type),
+      };
     }
 
     return null;
@@ -244,57 +246,93 @@ export class RegistryClient {
     return parsed as unknown as ResolvedDefinition['definition'];
   }
 
-  private renderLocally(
+  /**
+   * Build runtime from local YAML definition.
+   *
+   * Uses registry-sdk render.preview() to get the proper rendered markdown,
+   * falling back to YAML passthrough if the registry API is unavailable.
+   */
+  private async renderLocally(
+    yamlContent: string,
     definition: Record<string, unknown>,
     type: DefinitionType,
-  ): ResolvedDefinition['runtime'] {
-    switch (type) {
-      case 'agent': {
-        const agent = definition['agent'] as AgentDefinition['agent'] | undefined;
-        if (!agent) return { prompt: '' } as ResolvedDefinition['runtime'];
-        return { prompt: this.renderAgentPrompt(agent) } as ResolvedDefinition['runtime'];
-      }
-      case 'command': {
-        const command = definition['command'] as CommandDefinition['command'] | undefined;
-        if (!command) return { prompt: '' } as ResolvedDefinition['runtime'];
-        return { prompt: this.renderCommandPrompt(command) } as ResolvedDefinition['runtime'];
-      }
-      case 'workflow':
-      case 'pipeline':
-        return definition as unknown as ResolvedDefinition['runtime'];
-      default:
-        return { prompt: '' } as ResolvedDefinition['runtime'];
+  ): Promise<ResolvedDefinition['runtime']> {
+    // Try registry API render first (proper template-based rendering)
+    const rendered = await this.tryRenderViaAPI(type, yamlContent);
+
+    if (type === 'agent') {
+      const agent = definition['agent'] as AgentDefinition['agent'] | undefined;
+      if (!agent) return { prompt: '' } as ResolvedDefinition['runtime'];
+
+      return {
+        prompt: rendered ?? yamlContent,
+        defaults: {
+          model: agent.defaults?.model ?? 'sonnet',
+          timeout: agent.defaults?.timeout ?? 300_000,
+        },
+        config: this.buildAgentConfig(agent),
+      } as ResolvedDefinition['runtime'];
+    }
+
+    if (type === 'command') {
+      return {
+        prompt: rendered ?? yamlContent,
+      } as ResolvedDefinition['runtime'];
+    }
+
+    // Workflows and pipelines: use definition as runtime
+    return definition as unknown as ResolvedDefinition['runtime'];
+  }
+
+  /**
+   * Try to render YAML via the registry API's render.preview() endpoint.
+   * Returns the rendered markdown, or null if the API is unavailable.
+   */
+  private async tryRenderViaAPI(type: DefinitionType, yamlContent: string): Promise<string | null> {
+    try {
+      const result = await this.sdk.render.preview(type as 'agent' | 'command' | 'workflow' | 'pipeline', { yaml: yamlContent });
+      return result.markdown;
+    } catch {
+      // Registry API unavailable — fall back to YAML passthrough
+      return null;
     }
   }
 
-  private renderAgentPrompt(agent: AgentDefinition['agent']): string {
-    const parts = [
-      `You are ${agent.behavior.role}`,
-      '',
-      `Your expertise includes: ${agent.behavior.expertise.join(', ')}`,
-    ];
-
-    if (agent.behavior.methodology) {
-      parts.push('', agent.behavior.methodology);
+  /**
+   * Build runtime config from ADL v1.6.0 scoring/decisions sections.
+   */
+  private buildAgentConfig(agent: AgentDefinition['agent']): Record<string, unknown> {
+    if (agent.interface.agentType === 'validator' && agent.scoring) {
+      const passThreshold = agent.decisions?.thresholds?.find(t => t.decision === 'positive');
+      return {
+        maxScore: agent.scoring.maxScore,
+        threshold: passThreshold?.min_score ?? 75,
+        categories: agent.scoring.categories.map(c => ({
+          name: c.name,
+          weight: c.weight,
+          criteria: c.criteria.map(cr => ({
+            name: cr.name,
+            points: cr.points,
+            description: cr.description,
+          })),
+          description: c.description,
+        })),
+        outputSchema: agent.output?.format ?? 'markdown',
+      };
     }
 
-    if (agent.behavior.categories) {
-      parts.push(
-        '',
-        'Evaluate the following categories:',
-        ...agent.behavior.categories.map(
-          c => `- ${c.name} (weight: ${c.weight}): ${c.criteria.join(', ')}`,
-        ),
-      );
+    if (agent.tasks) {
+      return {
+        mode: 'execute',
+        inputs: agent.tasks.inputs,
+        tasks: agent.tasks.operations,
+        outputs: agent.tasks.outputs,
+        completionCriteria: agent.completion?.criteria ?? [],
+        outputSchema: agent.output?.format ?? 'markdown',
+      };
     }
 
-    parts.push('', `Provide your assessment in ${agent.output.format} format.`);
-    return parts.join('\n');
-  }
-
-  private renderCommandPrompt(command: CommandDefinition['command']): string {
-    const agentRefs = command.agents.join(', ');
-    return `[Command: ${command.interface.name}]\nAgents: ${agentRefs}\nModel: ${command.execution.model.default}\nThreshold: ${command.execution.thresholds?.pass ?? 70}`;
+    return {};
   }
 
   // ─────────────────────────────────────────────────────────────────────────────
@@ -316,11 +354,11 @@ export class RegistryClient {
   private extractAgentType(
     def: Record<string, unknown>,
     type: DefinitionType,
-  ): 'validator' | 'executor' | undefined {
+  ): ResolvedDefinition['agentType'] {
     if (type !== 'agent') return undefined;
     const agent = def.agent as Record<string, unknown> | undefined;
     const iface = agent?.interface as Record<string, unknown> | undefined;
-    return iface?.agentType as 'validator' | 'executor' | undefined;
+    return iface?.agentType as ResolvedDefinition['agentType'];
   }
 
   // ─────────────────────────────────────────────────────────────────────────────

@@ -23,7 +23,7 @@ export type Domain =
 /**
  * Agent type discriminator
  */
-export type AgentType = 'validator' | 'executor';
+export type AgentType = 'validator' | 'executor' | 'analyst' | 'generator';
 
 /**
  * Base input for all execution types
