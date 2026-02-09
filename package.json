@@ -1,0 +1,73 @@
+{
+  "name": "@uluops/core",
+  "version": "0.1.0",
+  "description": "The foundational execution engine for UluOps. Orchestrates AI-powered code analysis through a 4-layer execution hierarchy (Agent > Command > Workflow > Pipeline), manages LLM tool loops via Vercel AI SDK, and integrates with UluOps Registry and Validation services.",
+  "type": "module",
+  "main": "dist/index.js",
+  "types": "dist/index.d.ts",
+  "exports": {
+    ".": {
+      "import": "./dist/index.js",
+      "types": "./dist/index.d.ts"
+    },
+    "./types": {
+      "import": "./dist/types/index.js",
+      "types": "./dist/types/index.d.ts"
+    },
+    "./errors": {
+      "import": "./dist/errors/index.js",
+      "types": "./dist/errors/index.d.ts"
+    }
+  },
+  "files": [
+    "dist"
+  ],
+  "scripts": {
+    "build": "tsc",
+    "typecheck": "tsc --noEmit",
+    "test": "vitest run",
+    "test:watch": "vitest watch",
+    "test:coverage": "vitest run --coverage",
+    "lint": "eslint src/",
+    "prepublishOnly": "npm run build"
+  },
+  "keywords": [
+    "uluops",
+    "validation",
+    "agent",
+    "workflow",
+    "pipeline",
+    "sdk",
+    "llm",
+    "ai"
+  ],
+  "author": "Uluops <engineering@uluops.com>",
+  "license": "MIT",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/Uluops/-uluops-core.git"
+  },
+  "dependencies": {
+    "@uluops/sdk-core": "file:../sdk-core",
+    "@uluops/ops-sdk": "file:../ops-sdk",
+    "@uluops/registry-sdk": "file:../registry-sdk",
+    "ai": "^6.0.0",
+    "@ai-sdk/anthropic": "^3.0.0",
+    "glob": "^11.0.0",
+    "yaml": "^2.7.0",
+    "zod": "^3.24.1"
+  },
+  "devDependencies": {
+    "@types/node": "^22.12.0",
+    "@typescript-eslint/eslint-plugin": "^8.54.0",
+    "@typescript-eslint/parser": "^8.54.0",
+    "eslint": "^9.39.2",
+    "nock": "^14.0.1",
+    "typescript": "^5.7.3",
+    "typescript-eslint": "^8.54.0",
+    "vitest": "^3.0.4"
+  },
+  "engines": {
+    "node": ">=18.0.0"
+  }
+}

@@ -1,0 +1,185 @@
+import * as fs from 'node:fs/promises';
+import * as path from 'node:path';
+import { glob } from 'glob';
+import type { Tool, ToolUseBlock, ToolResult } from '../types/index.js';
+
+/**
+ * Handles filesystem tool calls, fulfilling them against the local target directory.
+ * All paths are sandboxed to the base path to prevent directory traversal.
+ */
+export class ToolHandler {
+  private basePath: string;
+
+  constructor(basePath: string) {
+    this.basePath = path.resolve(basePath);
+  }
+
+  /**
+   * Get tool definitions for LLM API
+   */
+  getTools(): Tool[] {
+    return [
+      {
+        name: 'read_file',
+        description: 'Read the contents of a file. Returns the full file content.',
+        input_schema: {
+          type: 'object',
+          properties: {
+            path: {
+              type: 'string',
+              description: 'File path relative to target directory',
+            },
+          },
+          required: ['path'],
+        },
+      },
+      {
+        name: 'list_files',
+        description: 'List files in a directory. Supports glob patterns.',
+        input_schema: {
+          type: 'object',
+          properties: {
+            path: {
+              type: 'string',
+              description: 'Directory path relative to target',
+            },
+            pattern: {
+              type: 'string',
+              description: 'Glob pattern (e.g., "**/*.ts"). Defaults to "*"',
+            },
+          },
+          required: ['path'],
+        },
+      },
+      {
+        name: 'search_content',
+        description: 'Search for a pattern across files. Returns matching lines with context.',
+        input_schema: {
+          type: 'object',
+          properties: {
+            pattern: {
+              type: 'string',
+              description: 'Search pattern (supports regex)',
+            },
+            file_pattern: {
+              type: 'string',
+              description: 'Glob pattern for files to search (e.g., "**/*.ts")',
+            },
+            max_results: {
+              type: 'integer',
+              description: 'Maximum matches to return. Default: 50',
+            },
+          },
+          required: ['pattern'],
+        },
+      },
+    ];
+  }
+
+  /**
+   * Fulfill a tool call from the LLM
+   */
+  async fulfill(toolUse: ToolUseBlock): Promise<ToolResult> {
+    try {
+      const relativePath = String(toolUse.input['path'] || '.');
+      const fullPath = path.resolve(this.basePath, relativePath);
+
+      if (!this.isPathSafe(fullPath)) {
+        return {
+          tool_use_id: toolUse.id,
+          content: `Error: Path "${relativePath}" is outside the target directory`,
+          is_error: true,
+        };
+      }
+
+      switch (toolUse.name) {
+        case 'read_file':
+          return await this.readFile(toolUse.id, fullPath);
+
+        case 'list_files':
+          return await this.listFiles(toolUse.id, fullPath, toolUse.input['pattern'] as string | undefined);
+
+        case 'search_content':
+          return await this.searchContent(toolUse.id, {
+            pattern: toolUse.input['pattern'] as string,
+            filePattern: toolUse.input['file_pattern'] as string | undefined,
+            maxResults: (toolUse.input['max_results'] as number | undefined) ?? 50,
+          });
+
+        default:
+          return {
+            tool_use_id: toolUse.id,
+            content: `Unknown tool: ${toolUse.name}`,
+            is_error: true,
+          };
+      }
+    } catch (error) {
+      return {
+        tool_use_id: toolUse.id,
+        content: `Error: ${error instanceof Error ? error.message : String(error)}`,
+        is_error: true,
+      };
+    }
+  }
+
+  /**
+   * Check if resolved path is within base path (security)
+   */
+  private isPathSafe(fullPath: string): boolean {
+    const resolved = path.resolve(fullPath);
+    return resolved.startsWith(this.basePath);
+  }
+
+  private async readFile(id: string, filePath: string): Promise<ToolResult> {
+    const content = await fs.readFile(filePath, 'utf-8');
+    return { tool_use_id: id, content };
+  }
+
+  private async listFiles(id: string, dirPath: string, pattern?: string): Promise<ToolResult> {
+    const files = await glob(pattern ?? '*', {
+      cwd: dirPath,
+      nodir: true,
+      ignore: ['**/node_modules/**', '**/.git/**', '**/dist/**', '**/build/**'],
+    });
+    return { tool_use_id: id, content: files.join('\n') };
+  }
+
+  private async searchContent(
+    id: string,
+    opts: { pattern: string; filePattern?: string; maxResults: number },
+  ): Promise<ToolResult> {
+    const files = await glob(opts.filePattern ?? '**/*', {
+      cwd: this.basePath,
+      nodir: true,
+      ignore: ['**/node_modules/**', '**/.git/**'],
+    });
+
+    const regex = new RegExp(opts.pattern, 'gi');
+    const results: Array<{ file: string; line: number; content: string }> = [];
+
+    for (const file of files) {
+      if (results.length >= opts.maxResults) break;
+
+      try {
+        const content = await fs.readFile(path.join(this.basePath, file), 'utf-8');
+        const lines = content.split('\n');
+
+        for (let i = 0; i < lines.length; i++) {
+          const lineContent = lines[i];
+          if (lineContent !== undefined && regex.test(lineContent)) {
+            results.push({ file, line: i + 1, content: lineContent.trim() });
+            if (results.length >= opts.maxResults) break;
+          }
+          regex.lastIndex = 0;
+        }
+      } catch {
+        // Skip files that can't be read (binary, etc.)
+      }
+    }
+
+    return {
+      tool_use_id: id,
+      content: JSON.stringify(results, null, 2),
+    };
+  }
+}
