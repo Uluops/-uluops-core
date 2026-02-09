@@ -6,6 +6,7 @@ import type { CommandDefinition } from '../types/command.js';
 import type { ExecutionInput, Recommendation } from '../types/execution.js';
 import type { CommandResult, CommandMetrics } from '../types/command.js';
 import type { AgentResult, ValidatorAgentResult } from '../types/agent.js';
+import { parseRef } from '../utils/parseRef.js';
 
 /**
  * Executes command definitions.
@@ -40,7 +41,7 @@ export class CommandExecutor {
     // 3. Single-agent: delegate to AgentExecutor
     if (agentRefs.length === 1) {
       const ref = agentRefs[0]!;
-      const [name, version] = this.parseRef(ref);
+      const [name, version] = parseRef(ref);
       const agentResolved = await this.registry.resolve(name, version, 'agent');
 
       const agentResult = await this.agentExecutor.execute(agentResolved, input, {
@@ -56,7 +57,7 @@ export class CommandExecutor {
     const agentResults: AgentResult[] = [];
 
     for (const ref of agentRefs) {
-      const [name, version] = this.parseRef(ref);
+      const [name, version] = parseRef(ref);
       const agentResolved = await this.registry.resolve(name, version, 'agent');
 
       const result = await this.agentExecutor.execute(agentResolved, input, {
@@ -74,11 +75,6 @@ export class CommandExecutor {
       startTime,
       def.command.aggregation ?? { method: 'average' },
     );
-  }
-
-  private parseRef(ref: string): [string, string | undefined] {
-    const parts = ref.split('@');
-    return [parts[0]!, parts[1]];
   }
 
   /**

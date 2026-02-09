@@ -14,6 +14,7 @@ import type { WorkflowResult } from '../types/workflow.js';
 import type { PipelineHandle } from '../types/pipeline.js';
 import type { DefinitionSummary } from '../types/registry.js';
 import type { DefinitionType } from '../types/execution.js';
+import { parseRef } from '../utils/parseRef.js';
 import type { RunSubmissionResponse, RunHistoryEntry, ValidationQueryOptions } from '../types/validation.js';
 
 /**
@@ -71,7 +72,7 @@ export class UluOpsClient {
     target: string,
     options?: ExecutionOptions,
   ): Promise<AgentResult> {
-    const [refName, refVersion] = this.parseRef(name);
+    const [refName, refVersion] = parseRef(name);
     const resolved = await this.registry.resolve(refName, refVersion, 'agent');
 
     if (resolved.type !== 'agent') {
@@ -99,11 +100,11 @@ export class UluOpsClient {
    * Ideal for CI/CD pipelines and team-standardized validation.
    */
   async runCommand(name: string, input: ExecutionInput): Promise<CommandResult> {
-    const [refName, refVersion] = this.parseRef(name);
+    const [refName, refVersion] = parseRef(name);
     const resolved = await this.registry.resolve(refName, refVersion, 'command');
 
     if (resolved.type !== 'command') {
-      throw new Error(`${name} is not a command (type: ${resolved.type})`);
+      throw new Error(`${name} is not a command (type: ${resolved.type}). Use runAgent() for agents or runWorkflow() for workflows.`);
     }
 
     const result = await this.commandExecutor.execute(resolved, input);
@@ -124,11 +125,11 @@ export class UluOpsClient {
    * Execute a workflow with multi-phase orchestration.
    */
   async runWorkflow(name: string, input: ExecutionInput): Promise<WorkflowResult> {
-    const [refName, refVersion] = this.parseRef(name);
+    const [refName, refVersion] = parseRef(name);
     const resolved = await this.registry.resolve(refName, refVersion, 'workflow');
 
     if (resolved.type !== 'workflow') {
-      throw new Error(`${name} is not a workflow (type: ${resolved.type})`);
+      throw new Error(`${name} is not a workflow (type: ${resolved.type}). Use runAgent() for agents or runCommand() for commands.`);
     }
 
     const result = await this.workflowExecutor.execute(resolved, input);
@@ -152,7 +153,7 @@ export class UluOpsClient {
    * Agents are directly executable (wrapped as ExecutionResult).
    */
   async run(name: string, input: ExecutionInput): Promise<ExecutionResult | AgentResult> {
-    const [refName, refVersion] = this.parseRef(name);
+    const [refName, refVersion] = parseRef(name);
     const resolved = await this.registry.resolve(refName, refVersion);
     let result: ExecutionResult | AgentResult;
 
@@ -190,11 +191,11 @@ export class UluOpsClient {
    * Returns a PipelineHandle for monitoring and control.
    */
   async startPipeline(name: string, input: ExecutionInput): Promise<PipelineHandle> {
-    const [refName, refVersion] = this.parseRef(name);
+    const [refName, refVersion] = parseRef(name);
     const resolved = await this.registry.resolve(refName, refVersion, 'pipeline');
 
     if (resolved.type !== 'pipeline') {
-      throw new Error(`${name} is not a pipeline (type: ${resolved.type})`);
+      throw new Error(`${name} is not a pipeline (type: ${resolved.type}). Use runWorkflow() for workflows or runCommand() for commands.`);
     }
 
     return this.pipelineExecutor.start(resolved, input);
@@ -318,11 +319,6 @@ export class UluOpsClient {
       defaultProvider: ai?.defaultProvider ?? 'anthropic',
       modelOverride: ai?.modelOverride,
     };
-  }
-
-  private parseRef(ref: string): [string, string | undefined] {
-    const parts = ref.split('@');
-    return [parts[0]!, parts[1]];
   }
 
   private extractInterface(definition: unknown): unknown {

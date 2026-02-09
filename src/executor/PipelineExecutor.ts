@@ -5,6 +5,7 @@ import type { ResolvedDefinition } from '../types/registry.js';
 import type { PipelineDefinition, StageDefinition, PipelineResult, StageResult, PipelineState, PipelineHandle as IPipelineHandle } from '../types/pipeline.js';
 import type { ExecutionInput } from '../types/execution.js';
 import { PipelineError } from '../errors/index.js';
+import { parseRef } from '../utils/parseRef.js';
 
 /**
  * Executes pipelines with multi-stage orchestration and async support.
@@ -92,7 +93,7 @@ export class PipelineExecutor {
   }
 
   private async executeStage(stage: StageDefinition, input: ExecutionInput): Promise<StageResult> {
-    const [refName, refVersion] = stage.ref.split('@') as [string, string | undefined];
+    const [refName, refVersion] = parseRef(stage.ref);
     const resolved = await this.registry.resolve(refName, refVersion, stage.type);
     const startTime = Date.now();
 

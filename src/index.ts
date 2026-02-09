@@ -21,6 +21,7 @@ export { ToolAdapter } from './ai/ToolAdapter.js';
 // ─── Utilities ────────────────────────────────────────────────────────────────
 export { OutputExtractor } from './parser/OutputExtractor.js';
 export { ToolHandler } from './executor/ToolHandler.js';
+export { parseRef } from './utils/parseRef.js';
 
 // ─── Types: Config ────────────────────────────────────────────────────────────
 export type { UluOpsConfig, AIConfig, AIProviderCredentials, ResolvedConfig, ResolvedAIConfig } from './types/config.js';

@@ -132,8 +132,8 @@ export class RegistryClient {
           version: this.extractVersion(definition, candidate.type),
           hash,
           yaml: yamlContent,
-          definition: definition as unknown as ResolvedDefinition['definition'],
-          runtime: this.renderLocally(definition, candidate.type) as unknown as ResolvedDefinition['runtime'],
+          definition: this.castDefinition(definition),
+          runtime: this.renderLocally(definition, candidate.type),
           domain: this.extractDomain(definition, candidate.type) as ResolvedDefinition['domain'],
           agentType: this.extractAgentType(definition, candidate.type),
         };
@@ -235,26 +235,35 @@ export class RegistryClient {
   // Private: Local Rendering
   // ─────────────────────────────────────────────────────────────────────────────
 
+  /**
+   * Cast parsed YAML to typed definition.
+   * Content is validated by file extension; full schema validation is registry-side.
+   */
+  private castDefinition(parsed: Record<string, unknown>): ResolvedDefinition['definition'] {
+    // Record<string, unknown> → unknown → target type (single unsafe boundary, clearly marked)
+    return parsed as unknown as ResolvedDefinition['definition'];
+  }
+
   private renderLocally(
     definition: Record<string, unknown>,
     type: DefinitionType,
-  ): Record<string, unknown> | string {
+  ): ResolvedDefinition['runtime'] {
     switch (type) {
       case 'agent': {
         const agent = definition['agent'] as AgentDefinition['agent'] | undefined;
-        if (!agent) return { prompt: '' };
-        return { prompt: this.renderAgentPrompt(agent) };
+        if (!agent) return { prompt: '' } as ResolvedDefinition['runtime'];
+        return { prompt: this.renderAgentPrompt(agent) } as ResolvedDefinition['runtime'];
       }
       case 'command': {
         const command = definition['command'] as CommandDefinition['command'] | undefined;
-        if (!command) return { prompt: '' };
-        return { prompt: this.renderCommandPrompt(command) };
+        if (!command) return { prompt: '' } as ResolvedDefinition['runtime'];
+        return { prompt: this.renderCommandPrompt(command) } as ResolvedDefinition['runtime'];
       }
       case 'workflow':
       case 'pipeline':
-        return definition;
+        return definition as unknown as ResolvedDefinition['runtime'];
       default:
-        return { prompt: '' };
+        return { prompt: '' } as ResolvedDefinition['runtime'];
     }
   }
 
