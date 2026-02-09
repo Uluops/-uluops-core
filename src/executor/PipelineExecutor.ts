@@ -230,16 +230,15 @@ class PipelineHandle implements IPipelineHandle {
     const durationMs = Date.now() - this.state.startTime;
 
     const stageScores = this.state.stageResults
-      .filter(s => s.result?.score !== undefined)
-      .map(s => s.result!.score!);
+      .map(s => s.result?.score)
+      .filter((score): score is number => score !== undefined);
 
     const score = stageScores.length > 0
       ? stageScores.reduce((a, b) => a + b, 0) / stageScores.length
       : 0;
 
     const recommendations = this.state.stageResults
-      .filter(s => s.result?.recommendations)
-      .flatMap(s => s.result!.recommendations);
+      .flatMap(s => s.result?.recommendations ?? []);
 
     const decision = this.computeDecision();
 

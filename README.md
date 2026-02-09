@@ -35,6 +35,43 @@ const wfResult = await client.runWorkflow('ship', { target: './src' });
 const autoResult = await client.run('code-validator', { target: './src' });
 ```
 
+## Convenience Methods
+
+For common workflows, `UluOpsClient` provides shorthand methods:
+
+```typescript
+// Validation
+const result = await client.validate('./src');
+
+// Security audit
+const secResult = await client.security('./src');
+
+// Code optimization analysis
+const optResult = await client.optimize('./src');
+
+// Ship workflow (full pre-release validation)
+const shipResult = await client.ship('./src');
+
+// Post-implementation validation
+const postResult = await client.postImplementation('./src');
+```
+
+Discovery and tracking:
+
+```typescript
+// List available definitions
+const definitions = await client.list({ type: 'agent', domain: 'software' });
+
+// Inspect a definition
+const info = await client.describe('code-validator');
+
+// Query validation history
+const history = await client.getHistory('my-project');
+
+// Submit results manually
+await client.submitResults('my-project', 'custom', result);
+```
+
 ## Architecture
 
 ```

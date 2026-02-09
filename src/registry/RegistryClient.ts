@@ -235,10 +235,16 @@ export class RegistryClient {
     type: DefinitionType,
   ): Record<string, unknown> | string {
     switch (type) {
-      case 'agent':
-        return { prompt: this.renderAgentPrompt(definition as unknown as AgentDefinition) };
-      case 'command':
-        return { prompt: this.renderCommandPrompt(definition as unknown as CommandDefinition) };
+      case 'agent': {
+        const agent = definition['agent'] as AgentDefinition['agent'] | undefined;
+        if (!agent) return { prompt: '' };
+        return { prompt: this.renderAgentPrompt(agent) };
+      }
+      case 'command': {
+        const command = definition['command'] as CommandDefinition['command'] | undefined;
+        if (!command) return { prompt: '' };
+        return { prompt: this.renderCommandPrompt(command) };
+      }
       case 'workflow':
       case 'pipeline':
         return definition;
@@ -247,8 +253,7 @@ export class RegistryClient {
     }
   }
 
-  private renderAgentPrompt(def: AgentDefinition): string {
-    const agent = def.agent;
+  private renderAgentPrompt(agent: AgentDefinition['agent']): string {
     const parts = [
       `You are ${agent.behavior.role}`,
       '',
@@ -273,9 +278,9 @@ export class RegistryClient {
     return parts.join('\n');
   }
 
-  private renderCommandPrompt(def: CommandDefinition): string {
-    const agentRefs = def.command.agents.join(', ');
-    return `[Command: ${def.command.interface.name}]\nAgents: ${agentRefs}\nModel: ${def.command.execution.model.default}\nThreshold: ${def.command.execution.thresholds?.pass ?? 70}`;
+  private renderCommandPrompt(command: CommandDefinition['command']): string {
+    const agentRefs = command.agents.join(', ');
+    return `[Command: ${command.interface.name}]\nAgents: ${agentRefs}\nModel: ${command.execution.model.default}\nThreshold: ${command.execution.thresholds?.pass ?? 70}`;
   }
 
   // ─────────────────────────────────────────────────────────────────────────────

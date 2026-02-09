@@ -268,6 +268,84 @@ describe('CommandExecutor', () => {
     });
   });
 
+  describe('threshold boundary conditions', () => {
+    it('PASS at exact pass threshold (score=75)', async () => {
+      const results = [
+        makeValidatorResult({ name: 'agent-a', score: 75 }),
+        makeValidatorResult({ name: 'agent-b', score: 75 }),
+      ];
+      const agentExec = makeAgentExecutor(results);
+      const registry = makeRegistry();
+      const executor = new CommandExecutor(agentExec, registry);
+
+      const cmdDef = makeCommandDef({
+        agents: ['agent-a@1.0.0', 'agent-b@1.0.0'],
+      });
+
+      const result = await executor.execute(cmdDef, { target: '/tmp/test' });
+
+      expect(result.score).toBe(75);
+      expect(result.decision).toBe('PASS');
+    });
+
+    it('WARN at one below pass threshold (score=74)', async () => {
+      const results = [
+        makeValidatorResult({ name: 'agent-a', score: 74 }),
+        makeValidatorResult({ name: 'agent-b', score: 74 }),
+      ];
+      const agentExec = makeAgentExecutor(results);
+      const registry = makeRegistry();
+      const executor = new CommandExecutor(agentExec, registry);
+
+      const cmdDef = makeCommandDef({
+        agents: ['agent-a@1.0.0', 'agent-b@1.0.0'],
+      });
+
+      const result = await executor.execute(cmdDef, { target: '/tmp/test' });
+
+      expect(result.score).toBe(74);
+      expect(result.decision).toBe('WARN');
+    });
+
+    it('WARN at exact warn threshold (score=50)', async () => {
+      const results = [
+        makeValidatorResult({ name: 'agent-a', score: 50 }),
+        makeValidatorResult({ name: 'agent-b', score: 50 }),
+      ];
+      const agentExec = makeAgentExecutor(results);
+      const registry = makeRegistry();
+      const executor = new CommandExecutor(agentExec, registry);
+
+      const cmdDef = makeCommandDef({
+        agents: ['agent-a@1.0.0', 'agent-b@1.0.0'],
+      });
+
+      const result = await executor.execute(cmdDef, { target: '/tmp/test' });
+
+      expect(result.score).toBe(50);
+      expect(result.decision).toBe('WARN');
+    });
+
+    it('FAIL at one below warn threshold (score=49)', async () => {
+      const results = [
+        makeValidatorResult({ name: 'agent-a', score: 49 }),
+        makeValidatorResult({ name: 'agent-b', score: 49 }),
+      ];
+      const agentExec = makeAgentExecutor(results);
+      const registry = makeRegistry();
+      const executor = new CommandExecutor(agentExec, registry);
+
+      const cmdDef = makeCommandDef({
+        agents: ['agent-a@1.0.0', 'agent-b@1.0.0'],
+      });
+
+      const result = await executor.execute(cmdDef, { target: '/tmp/test' });
+
+      expect(result.score).toBe(49);
+      expect(result.decision).toBe('FAIL');
+    });
+  });
+
   describe('preflight checks', () => {
     it('runs preflight checks before execution', async () => {
       const agentExec = makeAgentExecutor([makeValidatorResult()]);
