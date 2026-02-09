@@ -17,6 +17,9 @@ import type { DefinitionType } from '../types/execution.js';
 import { parseRef } from '../utils/parseRef.js';
 import type { RunSubmissionResponse, RunHistoryEntry, ValidationQueryOptions } from '../types/validation.js';
 
+/** Default request timeout: 5 minutes */
+const DEFAULT_TIMEOUT_MS = 300_000;
+
 /**
  * Unified UluOps SDK client.
  *
@@ -230,10 +233,12 @@ export class UluOpsClient {
 
   // ─── Discovery ──────────────────────────────────────────────────────────
 
+  /** List available definitions from local files and registry. */
   async list(filter?: { type?: DefinitionType; domain?: string }): Promise<DefinitionSummary[]> {
     return this.registry.list(filter);
   }
 
+  /** Inspect a definition's metadata and interface. */
   async describe(name: string): Promise<{
     type: DefinitionType;
     name: string;
@@ -253,6 +258,7 @@ export class UluOpsClient {
 
   // ─── Validation Service Delegation ──────────────────────────────────────
 
+  /** Query validation run history for a project. */
   async getHistory(
     project: string,
     options?: ValidationQueryOptions,
@@ -260,6 +266,7 @@ export class UluOpsClient {
     return this.validation.getHistory(project, options);
   }
 
+  /** Manually submit execution results to the validation service. */
   async submitResults(
     project: string,
     workflowType: string,
@@ -288,7 +295,7 @@ export class UluOpsClient {
       localDefinitions: config.localDefinitions ?? process.env['ULUOPS_LOCAL_DEFINITIONS'],
       trackingEnabled: config.trackingEnabled ?? (process.env['ULUOPS_TRACKING_ENABLED'] !== 'false'),
       hashVerificationEnabled: config.hashVerificationEnabled ?? true,
-      timeout: config.timeout ?? 300000,
+      timeout: config.timeout ?? DEFAULT_TIMEOUT_MS,
       defaultProject: config.defaultProject ?? process.env['ULUOPS_PROJECT'],
     };
   }

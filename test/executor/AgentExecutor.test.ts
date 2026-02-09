@@ -7,6 +7,13 @@ import type { AIProvider, AIGenerateResult } from '../../src/ai/AIProvider.js';
 import type { ResolvedConfig } from '../../src/types/config.js';
 import type { ResolvedDefinition, ValidatorRuntime, ExecutorRuntime } from '../../src/types/registry.js';
 
+// Mock token counts for AI provider responses
+const MOCK_INPUT_TOKENS = 500;
+const MOCK_OUTPUT_TOKENS = 200;
+const MOCK_CACHE_CREATION_TOKENS = 50;
+const MOCK_CACHE_READ_TOKENS = 25;
+const MOCK_TOTAL_EFFECTIVE_TOKENS = MOCK_INPUT_TOKENS + MOCK_OUTPUT_TOKENS + MOCK_CACHE_CREATION_TOKENS;
+
 const baseConfig: ResolvedConfig = {
   apiKey: 'test-key',
   ai: {
@@ -54,10 +61,10 @@ function mockAIProvider(overrides?: Partial<AIGenerateResult>): AIProvider {
         ],
       }),
       usage: {
-        input_tokens: 500,
-        output_tokens: 200,
-        cache_creation_input_tokens: 50,
-        cache_read_input_tokens: 25,
+        input_tokens: MOCK_INPUT_TOKENS,
+        output_tokens: MOCK_OUTPUT_TOKENS,
+        cache_creation_input_tokens: MOCK_CACHE_CREATION_TOKENS,
+        cache_read_input_tokens: MOCK_CACHE_READ_TOKENS,
       },
       toolCallCount: 3,
       model: 'anthropic:claude-sonnet-4-5-20250929',
@@ -162,11 +169,11 @@ describe('AgentExecutor', () => {
 
       const result = await executor.execute(makeValidatorDef(), { target: tmpDir });
 
-      expect(result.metrics.inputTokens).toBe(500);
-      expect(result.metrics.outputTokens).toBe(200);
-      expect(result.metrics.cacheCreationTokens).toBe(50);
-      expect(result.metrics.cacheReadTokens).toBe(25);
-      expect(result.metrics.totalEffectiveTokens).toBe(750); // 500 + 200 + 50
+      expect(result.metrics.inputTokens).toBe(MOCK_INPUT_TOKENS);
+      expect(result.metrics.outputTokens).toBe(MOCK_OUTPUT_TOKENS);
+      expect(result.metrics.cacheCreationTokens).toBe(MOCK_CACHE_CREATION_TOKENS);
+      expect(result.metrics.cacheReadTokens).toBe(MOCK_CACHE_READ_TOKENS);
+      expect(result.metrics.totalEffectiveTokens).toBe(MOCK_TOTAL_EFFECTIVE_TOKENS);
       expect(result.metrics.model).toBe('anthropic:claude-sonnet-4-5-20250929');
       expect(result.metrics.durationMs).toBeGreaterThan(0);
     });
