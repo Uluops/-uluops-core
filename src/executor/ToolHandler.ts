@@ -2,16 +2,22 @@ import * as fs from 'node:fs/promises';
 import * as path from 'node:path';
 import { glob } from 'glob';
 import type { Tool, ToolUseBlock, ToolResult } from '../types/index.js';
+import type { Logger } from '@uluops/sdk-core';
 
 /**
  * Handles filesystem tool calls, fulfilling them against the local target directory.
  * All paths are sandboxed to the base path to prevent directory traversal.
  */
+/** No-op logger for when none is provided */
+const noopLogger: Logger = { debug() {}, info() {}, warn() {}, error() {} };
+
 export class ToolHandler {
   private basePath: string;
+  private logger: Logger;
 
-  constructor(basePath: string) {
+  constructor(basePath: string, logger?: Logger) {
     this.basePath = path.resolve(basePath);
+    this.logger = logger ?? noopLogger;
   }
 
   /**
@@ -86,6 +92,8 @@ export class ToolHandler {
    * @returns Tool result with content or error
    */
   async fulfill(toolUse: ToolUseBlock): Promise<ToolResult> {
+    this.logger.debug(`Tool: ${toolUse.name}(${JSON.stringify(toolUse.input).substring(0, 200)})`);
+
     try {
       const relativePath = String(toolUse.input['path'] || '.');
       const fullPath = path.resolve(this.basePath, relativePath);
@@ -138,6 +146,7 @@ export class ToolHandler {
 
   private async readFile(id: string, filePath: string): Promise<ToolResult> {
     const content = await fs.readFile(filePath, 'utf-8');
+    this.logger.debug(`read_file: ${path.relative(this.basePath, filePath)} (${content.length} chars)`);
     return { tool_use_id: id, content };
   }
 
@@ -147,6 +156,7 @@ export class ToolHandler {
       nodir: true,
       ignore: ['**/node_modules/**', '**/.git/**', '**/dist/**', '**/build/**'],
     });
+    this.logger.debug(`list_files: ${files.length} files in ${path.relative(this.basePath, dirPath) || '.'}`);
     return { tool_use_id: id, content: files.join('\n') };
   }
 
@@ -178,11 +188,12 @@ export class ToolHandler {
           }
           regex.lastIndex = 0;
         }
-      } catch {
-        // Skip files that can't be read (binary, etc.)
+      } catch (error) {
+        this.logger.debug(`Skipped unreadable file: ${file} (${error instanceof Error ? error.message : 'unknown'})`);
       }
     }
 
+    this.logger.debug(`search_content: ${results.length} matches for "${opts.pattern}"`);
     return {
       tool_use_id: id,
       content: JSON.stringify(results, null, 2),

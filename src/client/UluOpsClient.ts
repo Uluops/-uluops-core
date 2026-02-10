@@ -6,6 +6,7 @@ import { AgentExecutor } from '../executor/AgentExecutor.js';
 import { CommandExecutor } from '../executor/CommandExecutor.js';
 import { WorkflowExecutor } from '../executor/WorkflowExecutor.js';
 import { PipelineExecutor } from '../executor/PipelineExecutor.js';
+import { createLogger } from '@uluops/sdk-core';
 import type { UluOpsConfig, AIConfig, ResolvedConfig, ResolvedAIConfig } from '../types/config.js';
 import type { ExecutionInput, ExecutionResult, ExecutionOptions } from '../types/execution.js';
 import type { AgentResult } from '../types/agent.js';
@@ -45,14 +46,16 @@ export class UluOpsClient {
   constructor(config: UluOpsConfig) {
     this.config = this.resolveConfig(config);
 
-    this.registry = new RegistryClient(this.config);
+    const logger = createLogger('[core]', this.config.debug);
+
+    this.registry = new RegistryClient(this.config, logger);
     this.validation = new ValidationClient(this.config);
 
     // ModelCatalog resolves aliases via registry (no auto-sync; cache cleared via refresh())
     const modelCatalog = new ModelCatalog(this.registry.registrySdk);
-    const aiProvider = new AIProvider(this.config, modelCatalog);
+    const aiProvider = new AIProvider(this.config, modelCatalog, logger);
 
-    this.agentExecutor = new AgentExecutor(this.config, aiProvider);
+    this.agentExecutor = new AgentExecutor(this.config, aiProvider, logger);
     this.commandExecutor = new CommandExecutor(this.agentExecutor, this.registry);
     this.workflowExecutor = new WorkflowExecutor(this.commandExecutor, this.registry);
     this.pipelineExecutor = new PipelineExecutor(
@@ -298,6 +301,7 @@ export class UluOpsClient {
       timeout: config.timeout ?? DEFAULT_TIMEOUT_MS,
       defaultProject: config.defaultProject ?? process.env['ULUOPS_PROJECT'],
       defaultThinkingBudget: config.defaultThinkingBudget ?? 10_000,
+      debug: config.debug ?? (process.env['ULUOPS_DEBUG'] === 'true'),
     };
   }
 

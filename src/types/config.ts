@@ -118,6 +118,13 @@ export interface UluOpsConfig {
    * @default 10000
    */
   defaultThinkingBudget?: number;
+
+  /**
+   * Enable detailed execution logging (model resolution, prompt sizes,
+   * per-step tool calls, usage). Falls back to ULUOPS_DEBUG env var.
+   * @default false
+   */
+  debug?: boolean;
 }
 
 /**
@@ -135,4 +142,5 @@ export interface ResolvedConfig {
   timeout: number;
   defaultProject?: string;
   defaultThinkingBudget: number;
+  debug: boolean;
 }

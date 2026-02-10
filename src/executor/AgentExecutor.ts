@@ -8,6 +8,7 @@ import type { ResolvedDefinition, ValidatorRuntime, ExecutorRuntime } from '../t
 import type { ExecutionInput, ExecutionOptions, ResolvedExecutionContext, Recommendation } from '../types/execution.js';
 import type { AgentResult, ValidatorAgentResult, ExecutorAgentResult } from '../types/agent.js';
 import type { UsageMetrics } from '../types/ai.js';
+import type { Logger } from '@uluops/sdk-core';
 
 /**
  * Primary executor for single-agent runs.
@@ -27,6 +28,7 @@ export class AgentExecutor {
   constructor(
     private config: ResolvedConfig,
     private aiProvider: AIProvider,
+    private logger: Logger,
   ) {}
 
   /**
@@ -40,8 +42,12 @@ export class AgentExecutor {
     const startTime = Date.now();
     const agentType = resolved.agentType ?? 'validator';
 
+    this.logger.info(`Agent: ${resolved.name} v${resolved.version} (${agentType})`);
+    this.logger.debug(`Target: ${input.target}`);
+
     // 1. Merge options with agent defaults
     const context = this.resolveContext(resolved, options);
+    this.logger.debug(`Context: model=${context.model}, maxSteps=${context.maxSteps}, temp=${context.temperature}, timeout=${context.timeoutMs}ms`);
 
     // 2. Determine if bash tool should be enabled (opt-in via agent tools list)
     const runtime = resolved.runtime as ValidatorRuntime | ExecutorRuntime;
@@ -52,7 +58,7 @@ export class AgentExecutor {
     }
 
     // 3. Setup tool handler and AI SDK tool adapter
-    const toolHandler = new ToolHandler(input.target);
+    const toolHandler = new ToolHandler(input.target, this.logger);
     const toolAdapter = new ToolAdapter(toolHandler, additionalTools);
 
     // 4. Get the system prompt
@@ -73,11 +79,17 @@ export class AgentExecutor {
       temperature: context.temperature,
     });
 
-    // 6. Parse structured output
-    const parsed = this.outputExtractor.extract(result.text, agentType);
+    // 6. Parse structured output with metadata
+    const extraction = this.outputExtractor.extractWithMetadata(result.text, agentType);
+    const parsed = extraction.output;
+    this.logger.info(`Output extraction: method=${extraction.method}, confidence=${extraction.confidence}`);
+    if (extraction.warnings.length > 0) {
+      this.logger.warn(`Extraction warnings: ${extraction.warnings.join('; ')}`);
+    }
 
     // 7. Build recommendations
     const recommendations = this.flattenRecommendations(parsed, resolved.name);
+    this.logger.info(`Result: decision=${parsed.decision}, score=${parsed.score ?? 'N/A'}, recommendations=${recommendations.length}`);
 
     // 8. Compute metrics
     const durationMs = Date.now() - startTime;

@@ -16,6 +16,7 @@ import {
   ConfigurationError,
 } from '../errors/index.js';
 import type { ModelCapabilities } from '@uluops/registry-sdk';
+import type { Logger } from '@uluops/sdk-core';
 
 const execAsync = promisify(exec);
 
@@ -104,6 +105,7 @@ export class AIProvider {
   constructor(
     private config: ResolvedConfig,
     private catalog: ModelCatalog,
+    private logger: Logger,
   ) {
     this.initializeProviders(config.ai);
   }
@@ -140,7 +142,18 @@ export class AIProvider {
     // Build system message with cache control for Anthropic
     const system = this.buildSystemMessage(resolved.provider, options.system);
 
+    // Log pre-generation context
+    this.logger.info(`Model: ${resolved.provider}:${resolved.modelId} (from "${modelInput}")`);
+    this.logger.debug(`System prompt: ${options.system.length} chars`);
+    this.logger.debug(`User prompt: ${options.prompt.length} chars`);
+    if (options.tools) {
+      this.logger.debug(`Tools: ${Object.keys(options.tools).join(', ')}`);
+    }
+    this.logger.debug(`Config: maxTokens=${options.maxTokens ?? 8192}, maxSteps=${options.maxSteps ?? 50}, temp=${options.temperature ?? 0}`);
+
     try {
+      let stepCount = 0;
+
       const result = await generateText({
         model: languageModel,
         system,
@@ -153,6 +166,16 @@ export class AIProvider {
           ? AbortSignal.timeout(options.timeoutMs)
           : undefined,
         ...(providerOptions ? { providerOptions } : {}),
+        onStepFinish: (step) => {
+          stepCount++;
+          const toolNames = step.toolCalls?.map(tc => tc.toolName) ?? [];
+          const usage = step.usage;
+          this.logger.info(
+            `Step ${stepCount}: ${step.finishReason}` +
+            (toolNames.length > 0 ? ` | tools: [${toolNames.join(', ')}]` : '') +
+            ` | usage: ${usage.inputTokens ?? 0}in/${usage.outputTokens ?? 0}out`,
+          );
+        },
       });
 
       // Count tool calls across all steps
@@ -161,9 +184,20 @@ export class AIProvider {
         0,
       );
 
+      const usage = this.mapUsage(result.usage, result.providerMetadata);
+
+      this.logger.info(
+        `Complete: ${result.steps.length} steps, ${toolCallCount} tool calls, finish=${result.finishReason}`,
+      );
+      this.logger.info(
+        `Usage: ${usage.input_tokens}in / ${usage.output_tokens}out` +
+        (usage.cache_creation_input_tokens ? ` / cache_write=${usage.cache_creation_input_tokens}` : '') +
+        (usage.cache_read_input_tokens ? ` / cache_read=${usage.cache_read_input_tokens}` : ''),
+      );
+
       return {
         text: result.text,
-        usage: this.mapUsage(result.usage, result.providerMetadata),
+        usage,
         toolCallCount,
         model: `${resolved.provider}:${resolved.modelId}`,
         provider: resolved.provider,
@@ -406,6 +440,8 @@ export class AIProvider {
    * Map AI SDK errors to sdk-core error types
    */
   private mapError(error: unknown): Error {
+    this.logger.error(`AI SDK error: ${error instanceof Error ? error.message : String(error)}`);
+
     if (isAPICallError(error)) {
       const status = error.statusCode ?? 0;
 

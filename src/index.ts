@@ -128,6 +128,9 @@ export type { Tool, ToolUseBlock, ToolResult } from './types/tools.js';
 // ─── Types: AI ────────────────────────────────────────────────────────────────
 export type { UsageMetrics } from './types/ai.js';
 
+// ─── Logger (re-exported from @uluops/sdk-core) ──────────────────────────────
+export type { Logger } from '@uluops/sdk-core';
+
 // ─── Errors: Core SDK ─────────────────────────────────────────────────────────
 export {
   UluOpsError,

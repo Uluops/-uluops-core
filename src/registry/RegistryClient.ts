@@ -8,6 +8,7 @@ import type { DefinitionType } from '../types/execution.js';
 import type { AgentDefinition } from '../types/agent.js';
 import type { ResolvedDefinition, DefinitionSummary } from '../types/registry.js';
 import { HashVerificationError } from '../errors/index.js';
+import type { Logger } from '@uluops/sdk-core';
 
 /**
  * Definition resolver with local development fallback and hash verification.
@@ -19,13 +20,15 @@ import { HashVerificationError } from '../errors/index.js';
 export class RegistryClient {
   private cache = new Map<string, ResolvedDefinition>();
   private sdk: RegistrySdk;
+  private logger: Logger;
 
   /** Expose underlying registry SDK for direct access (e.g., model catalog) */
   get registrySdk(): RegistrySdk {
     return this.sdk;
   }
 
-  constructor(private config: ResolvedConfig) {
+  constructor(private config: ResolvedConfig, logger: Logger) {
+    this.logger = logger;
     this.sdk = new RegistrySdk({
       apiKey: config.apiKey,
       baseUrl: config.registryUrl,
@@ -45,6 +48,7 @@ export class RegistryClient {
     const cacheKey = `${type ?? 'any'}:${name}@${version ?? 'latest'}`;
 
     if (this.cache.has(cacheKey)) {
+      this.logger.debug(`Cache hit: ${cacheKey}`);
       return this.cache.get(cacheKey)!;
     }
 
@@ -84,8 +88,9 @@ export class RegistryClient {
           results.push(r);
         }
       }
-    } catch {
-      // Registry unavailable — return local results only (if any)
+    } catch (error) {
+      this.logger.warn(`Registry unavailable for listing: ${error instanceof Error ? error.message : String(error)}`);
+      // Return local results only (if any)
       if (results.length === 0) {
         throw new Error(
           'No definitions found. Registry is unreachable and no local definitions are configured. ' +
@@ -140,6 +145,7 @@ export class RegistryClient {
 
       const definition = yaml.parse(yamlContent) as Record<string, unknown>;
       const hash = this.computeHash(yamlContent);
+      this.logger.debug(`Resolved locally: ${name} @ ${candidate.path}`);
 
       return {
         type: candidate.type,
@@ -301,9 +307,10 @@ export class RegistryClient {
   private async tryRenderViaAPI(type: DefinitionType, yamlContent: string): Promise<string | null> {
     try {
       const result = await this.sdk.render.preview(type as 'agent' | 'command' | 'workflow' | 'pipeline', { yaml: yamlContent });
+      this.logger.debug(`Render via API: ${result.markdown.length} chars`);
       return result.markdown;
-    } catch {
-      // Registry API unavailable — fall back to YAML passthrough
+    } catch (error) {
+      this.logger.warn(`Render API unavailable, falling back to raw YAML: ${error instanceof Error ? error.message : String(error)}`);
       return null;
     }
   }
@@ -402,8 +409,8 @@ export class RegistryClient {
             }
           }
         }
-      } catch {
-        // Directory doesn't exist or isn't readable
+      } catch (error) {
+        this.logger.debug(`Local dir scan failed for ${type}: ${error instanceof Error ? error.message : String(error)}`);
       }
     }
 
