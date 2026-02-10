@@ -6,6 +6,8 @@ import type { PipelineDefinition, StageDefinition, PipelineResult, StageResult, 
 import type { ExecutionInput } from '../types/execution.js';
 import { PipelineError } from '../errors/index.js';
 import { parseRef } from '../utils/parseRef.js';
+import { formatErrorMessage } from '../utils/formatError.js';
+import { sumTokenMetrics } from '../utils/sumTokenMetrics.js';
 
 /**
  * Executes pipelines with multi-stage orchestration and async support.
@@ -43,7 +45,7 @@ export class PipelineExecutor {
     execution.catch((error) => {
       if (state.status === 'running') {
         state.status = 'failed';
-        state.error = error instanceof Error ? error.message : String(error);
+        state.error = formatErrorMessage(error);
       }
     });
 
@@ -94,7 +96,7 @@ export class PipelineExecutor {
       }
     } catch (error) {
       state.status = 'failed';
-      state.error = error instanceof Error ? error.message : String(error);
+      state.error = formatErrorMessage(error);
     }
   }
 
@@ -131,7 +133,7 @@ export class PipelineExecutor {
         name: stage.name,
         type: stage.type,
         status: 'failed',
-        skipReason: error instanceof Error ? error.message : String(error),
+        skipReason: formatErrorMessage(error),
         durationMs: Date.now() - startTime,
       };
     }
@@ -267,9 +269,11 @@ class PipelineHandle implements IPipelineHandle {
       stages: this.state.stageResults,
       recommendations,
       metrics: {
-        inputTokens: this.state.stageResults.reduce((sum, s) => sum + (s.result?.metrics?.inputTokens ?? 0), 0),
-        outputTokens: this.state.stageResults.reduce((sum, s) => sum + (s.result?.metrics?.outputTokens ?? 0), 0),
-        totalEffectiveTokens: this.state.stageResults.reduce((sum, s) => sum + (s.result?.metrics?.totalEffectiveTokens ?? 0), 0),
+        ...sumTokenMetrics(
+          this.state.stageResults
+            .map(s => s.result?.metrics)
+            .filter((m): m is NonNullable<typeof m> => m != null),
+        ),
         durationMs,
         model: 'mixed',
         stagesExecuted: this.state.stageResults.filter(s => s.status === 'completed').length,

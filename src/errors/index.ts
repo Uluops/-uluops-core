@@ -2,6 +2,7 @@ import { UluOpsError } from './UluOpsError.js';
 
 export { UluOpsError } from './UluOpsError.js';
 
+/** Thrown when agent/command/workflow execution fails. May include a partial result. */
 export class ExecutionError extends UluOpsError {
   constructor(
     message: string,
@@ -12,6 +13,7 @@ export class ExecutionError extends UluOpsError {
   }
 }
 
+/** Thrown when a preflight check fails (e.g. missing env var, unavailable tool). */
 export class PreflightError extends UluOpsError {
   constructor(
     message: string,
@@ -23,6 +25,7 @@ export class PreflightError extends UluOpsError {
   }
 }
 
+/** Thrown when a definition's SHA-256 hash does not match the expected value. */
 export class HashVerificationError extends UluOpsError {
   constructor(message: string) {
     super(message);

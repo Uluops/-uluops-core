@@ -4,6 +4,7 @@ import { createAnthropic, type AnthropicProvider } from '@ai-sdk/anthropic';
 import { exec } from 'child_process';
 import { promisify } from 'util';
 import type { UsageMetrics } from '../types/ai.js';
+import { formatErrorMessage } from '../utils/formatError.js';
 import type { ResolvedConfig, ResolvedAIConfig } from '../types/config.js';
 import type { ModelCatalog, ResolvedModel } from './ModelCatalog.js';
 import {
@@ -440,7 +441,7 @@ export class AIProvider {
    * Map AI SDK errors to sdk-core error types
    */
   private mapError(error: unknown): Error {
-    this.logger.error(`AI SDK error: ${error instanceof Error ? error.message : String(error)}`);
+    this.logger.error(`AI SDK error: ${formatErrorMessage(error)}`);
 
     if (isAPICallError(error)) {
       const status = error.statusCode ?? 0;
@@ -471,7 +472,7 @@ export class AIProvider {
 
     return new SdkApiError(
       0,
-      error instanceof Error ? error.message : String(error),
+      formatErrorMessage(error),
     );
   }
 }

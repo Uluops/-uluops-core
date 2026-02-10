@@ -8,6 +8,7 @@ import type { DefinitionType } from '../types/execution.js';
 import type { AgentDefinition } from '../types/agent.js';
 import type { ResolvedDefinition, DefinitionSummary } from '../types/registry.js';
 import { HashVerificationError } from '../errors/index.js';
+import { formatErrorMessage } from '../utils/formatError.js';
 import type { Logger } from '@uluops/sdk-core';
 
 /**
@@ -90,7 +91,7 @@ export class RegistryClient {
         }
       }
     } catch (error) {
-      this.logger.warn(`Registry unavailable for listing: ${error instanceof Error ? error.message : String(error)}`);
+      this.logger.warn(`Registry unavailable for listing: ${formatErrorMessage(error)}`);
       // Return local results only (if any)
       if (results.length === 0) {
         throw new Error(
@@ -229,6 +230,7 @@ export class RegistryClient {
       version: def.version,
       hash: def.hash,
       yaml: def.yaml ?? '',
+      // SAFETY: YAML structure validated by registry API before storage; full schema validation is registry-side
       definition: (def.yaml ? this.safeParseYaml(def.yaml, name) : {}) as unknown as ResolvedDefinition['definition'],
       runtime: { prompt: rendered.markdown } as ResolvedDefinition['runtime'],
       domain: (def.domain ?? 'general') as ResolvedDefinition['domain'],
@@ -245,7 +247,7 @@ export class RegistryClient {
       return yaml.parse(yamlContent) as Record<string, unknown>;
     } catch (error) {
       throw new Error(
-        `Failed to parse YAML for "${context}": ${error instanceof Error ? error.message : String(error)}`,
+        `Failed to parse YAML for "${context}": ${formatErrorMessage(error)}`,
       );
     }
   }
@@ -278,7 +280,7 @@ export class RegistryClient {
    * Content is validated by file extension; full schema validation is registry-side.
    */
   private castDefinition(parsed: Record<string, unknown>): ResolvedDefinition['definition'] {
-    // Record<string, unknown> → unknown → target type (single unsafe boundary, clearly marked)
+    // SAFETY: YAML structure validated by file extension matching; full schema validation is registry-side
     return parsed as unknown as ResolvedDefinition['definition'];
   }
 
@@ -316,7 +318,7 @@ export class RegistryClient {
       } as ResolvedDefinition['runtime'];
     }
 
-    // Workflows and pipelines: use definition as runtime
+    // SAFETY: Workflow/pipeline definitions ARE the runtime — the parsed YAML structure is used directly
     return definition as unknown as ResolvedDefinition['runtime'];
   }
 
@@ -330,7 +332,7 @@ export class RegistryClient {
       this.logger.debug(`Render via API: ${result.markdown.length} chars`);
       return result.markdown;
     } catch (error) {
-      this.logger.warn(`Render API unavailable, falling back to raw YAML: ${error instanceof Error ? error.message : String(error)}`);
+      this.logger.warn(`Render API unavailable, falling back to raw YAML: ${formatErrorMessage(error)}`);
       return null;
     }
   }
@@ -430,7 +432,7 @@ export class RegistryClient {
           }
         }
       } catch (error) {
-        this.logger.debug(`Local dir scan failed for ${type}: ${error instanceof Error ? error.message : String(error)}`);
+        this.logger.debug(`Local dir scan failed for ${type}: ${formatErrorMessage(error)}`);
       }
     }
 

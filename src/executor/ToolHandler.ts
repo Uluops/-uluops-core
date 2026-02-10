@@ -3,6 +3,7 @@ import * as path from 'node:path';
 import { glob } from 'glob';
 import type { Tool, ToolUseBlock, ToolResult } from '../types/index.js';
 import type { Logger } from '@uluops/sdk-core';
+import { formatErrorMessage } from '../utils/formatError.js';
 
 /**
  * Handles filesystem tool calls, fulfilling them against the local target directory.
@@ -130,7 +131,7 @@ export class ToolHandler {
     } catch (error) {
       return {
         tool_use_id: toolUse.id,
-        content: `Error: ${error instanceof Error ? error.message : String(error)}`,
+        content: `Error: ${formatErrorMessage(error)}`,
         is_error: true,
       };
     }

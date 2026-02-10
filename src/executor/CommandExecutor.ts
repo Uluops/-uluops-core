@@ -7,6 +7,7 @@ import type { ExecutionInput, Recommendation } from '../types/execution.js';
 import type { CommandResult, CommandMetrics } from '../types/command.js';
 import type { AgentResult, ValidatorAgentResult } from '../types/agent.js';
 import { parseRef } from '../utils/parseRef.js';
+import { sumTokenMetrics } from '../utils/sumTokenMetrics.js';
 
 /**
  * Executes command definitions.
@@ -195,11 +196,7 @@ export class CommandExecutor {
 
     // Aggregate metrics
     const metrics: CommandMetrics = {
-      inputTokens: results.reduce((sum, r) => sum + r.metrics.inputTokens, 0),
-      outputTokens: results.reduce((sum, r) => sum + r.metrics.outputTokens, 0),
-      cacheCreationTokens: results.reduce((sum, r) => sum + (r.metrics.cacheCreationTokens ?? 0), 0),
-      cacheReadTokens: results.reduce((sum, r) => sum + (r.metrics.cacheReadTokens ?? 0), 0),
-      totalEffectiveTokens: results.reduce((sum, r) => sum + r.metrics.totalEffectiveTokens, 0),
+      ...sumTokenMetrics(results.map(r => r.metrics)),
       durationMs,
       model: 'mixed',
       toolCalls: 0,

@@ -5,6 +5,8 @@ import type { WorkflowDefinition, WorkflowResult, PhaseResult, PhaseDefinition }
 import type { CommandResult } from '../types/command.js';
 import type { ExecutionInput, Recommendation } from '../types/execution.js';
 import { WorkflowError } from '../errors/index.js';
+import { formatErrorMessage } from '../utils/formatError.js';
+import { sumTokenMetrics } from '../utils/sumTokenMetrics.js';
 
 /**
  * Executes workflows with multi-phase orchestration.
@@ -27,7 +29,6 @@ export class WorkflowExecutor {
     const def = resolved.definition as WorkflowDefinition;
     const phaseResults: PhaseResult[] = [];
     const allRecommendations: Recommendation[] = [];
-    const totalTokens = { input: 0, output: 0, cacheCreation: 0, cacheRead: 0 };
 
     try {
       for (const phase of def.workflow.orchestration.phases) {
@@ -47,13 +48,9 @@ export class WorkflowExecutor {
         const phaseResult = await this.executePhase(phase, input);
         phaseResults.push(phaseResult);
 
-        // Accumulate recommendations and metrics
+        // Accumulate recommendations
         for (const cmd of phaseResult.commands) {
           allRecommendations.push(...cmd.recommendations);
-          totalTokens.input += cmd.metrics.inputTokens;
-          totalTokens.output += cmd.metrics.outputTokens;
-          totalTokens.cacheCreation += cmd.metrics.cacheCreationTokens ?? 0;
-          totalTokens.cacheRead += cmd.metrics.cacheReadTokens ?? 0;
         }
 
         // Check gate
@@ -66,13 +63,14 @@ export class WorkflowExecutor {
       }
     } catch (error) {
       throw new WorkflowError(
-        `Workflow failed: ${error instanceof Error ? error.message : String(error)}`,
+        `Workflow failed: ${formatErrorMessage(error)}`,
         { partialResult: this.buildPartialResult(def, phaseResults, allRecommendations, startTime, resolved.hash) },
       );
     }
 
     const aggregated = this.aggregate(def.workflow.aggregation, phaseResults);
     const durationMs = Date.now() - startTime;
+    const tokenTotals = sumTokenMetrics(phaseResults.flatMap(p => p.commands.map(c => c.metrics)));
 
     return {
       type: 'workflow',
@@ -85,11 +83,7 @@ export class WorkflowExecutor {
       recommendations: this.deduplicateRecommendations(allRecommendations),
       durationMs,
       metrics: {
-        inputTokens: totalTokens.input,
-        outputTokens: totalTokens.output,
-        cacheCreationTokens: totalTokens.cacheCreation,
-        cacheReadTokens: totalTokens.cacheRead,
-        totalEffectiveTokens: totalTokens.input + totalTokens.output + totalTokens.cacheCreation,
+        ...tokenTotals,
         durationMs,
         model: 'mixed',
         phasesExecuted: phaseResults.filter(p => p.decision !== 'skipped').length,
