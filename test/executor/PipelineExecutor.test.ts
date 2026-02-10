@@ -358,11 +358,14 @@ describe('PipelineExecutor', () => {
       // Resolve stage-1 so the background execution can proceed
       resolveCmd!(makeCommandResult());
 
-      // Give it a tick to finish
-      await new Promise(r => setTimeout(r, 50));
+      // Flush microtask queue so the background promise chain settles
+      // (resolveCmd → push stage result → check cancel → break → exit)
+      await new Promise(r => setTimeout(r, 0));
+      await new Promise(r => setTimeout(r, 0));
 
       const result = await handle.status();
-      expect(result.stages.length).toBeLessThanOrEqual(2); // May have only 1 stage
+      expect(result.stages).toHaveLength(1); // Only stage-1 ran; stage-2 was cancelled
+      expect(result.status).toBe('cancelled');
     });
 
     it('handle.cancel() throws on already-complete pipeline', async () => {

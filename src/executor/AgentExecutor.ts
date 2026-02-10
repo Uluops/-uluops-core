@@ -153,18 +153,19 @@ export class AgentExecutor {
     resolved: ResolvedDefinition,
     options?: ExecutionOptions,
   ): ResolvedExecutionContext {
-    const runtime = resolved.runtime as (ValidatorRuntime | ExecutorRuntime) & {
-      defaults?: { model?: string; timeout?: number; maxTokens?: number; temperature?: number; thresholds?: { pass: number; warn: number } };
-    };
-    const defaults = runtime?.defaults ?? {};
+    const runtime = resolved.runtime as ValidatorRuntime | ExecutorRuntime;
+    const defaults = runtime?.defaults;
 
     return {
-      model: options?.model ?? defaults.model ?? this.config.ai.modelOverride ?? 'sonnet',
-      maxTokens: options?.maxTokens ?? (defaults as { maxTokens?: number }).maxTokens ?? 8192,
-      timeoutMs: options?.timeoutMs ?? defaults.timeout ?? this.config.timeout ?? 300_000,
-      temperature: options?.temperature ?? defaults.temperature ?? 0,
+      model: options?.model ?? defaults?.model ?? this.config.ai.modelOverride ?? 'sonnet',
+      maxTokens: options?.maxTokens ?? defaults?.maxTokens ?? 8192,
+      timeoutMs: options?.timeoutMs ?? defaults?.timeout ?? this.config.timeout ?? 300_000,
+      temperature: options?.temperature ?? defaults?.temperature ?? 0,
       maxSteps: options?.maxSteps ?? 50,
-      thresholds: this.resolveThresholds(options?.thresholds, (defaults as { thresholds?: { pass?: number; warn?: number } }).thresholds),
+      thresholds: this.resolveThresholds(
+        options?.thresholds,
+        'thresholds' in defaults ? defaults.thresholds : undefined,
+      ),
       trackResults: options?.trackResults ?? this.config.trackingEnabled,
       project: options?.project ?? this.config.defaultProject,
     };

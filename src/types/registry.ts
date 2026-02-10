@@ -47,6 +47,9 @@ export interface ValidatorRuntime {
   defaults: {
     model: string;
     timeout: number;
+    maxTokens?: number;
+    temperature?: number;
+    thresholds?: { pass?: number; warn?: number };
   };
 
   /** Scoring configuration */
@@ -69,6 +72,8 @@ export interface ExecutorRuntime {
   defaults: {
     model: string;
     timeout: number;
+    maxTokens?: number;
+    temperature?: number;
   };
 
   /** Execution configuration */

@@ -159,8 +159,8 @@ export class PipelineExecutor {
     const expected = numVal !== undefined ? Number(numVal) : (strVal1 ?? strVal2);
 
     switch (op) {
-      case '==': return actual == expected;
-      case '!=': return actual != expected;
+      case '==': return String(actual) === String(expected);
+      case '!=': return String(actual) !== String(expected);
       case '>=': return Number(actual) >= Number(expected);
       case '<=': return Number(actual) <= Number(expected);
       case '>':  return Number(actual) > Number(expected);

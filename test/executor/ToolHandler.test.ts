@@ -125,6 +125,35 @@ describe('ToolHandler', () => {
     });
   });
 
+  describe('symlink handling', () => {
+    it('symlink within base directory pointing outside is not blocked (known limitation)', async () => {
+      // isPathSafe uses path.resolve() which does NOT follow symlinks.
+      // A symlink inside the base dir pointing outside passes the prefix check.
+      const outsideDir = await fs.mkdtemp(path.join(os.tmpdir(), 'outside-'));
+      await fs.writeFile(path.join(outsideDir, 'secret.txt'), 'sensitive data');
+
+      try {
+        await fs.symlink(outsideDir, path.join(tmpDir, 'escape-link'));
+
+        // The path resolves to <tmpDir>/escape-link/secret.txt which passes startsWith(tmpDir)
+        const result = await handler.fulfill(makeToolUse('read_file', { path: 'escape-link/secret.txt' }));
+
+        // Known limitation: this reads the file through the symlink
+        expect(result.is_error).toBeUndefined();
+        expect(result.content).toBe('sensitive data');
+      } finally {
+        await fs.rm(outsideDir, { recursive: true, force: true });
+      }
+    });
+
+    it('symlink-based path traversal via .. is still blocked', async () => {
+      // Even with symlinks, explicit ../.. traversal is caught by path.resolve
+      const result = await handler.fulfill(makeToolUse('read_file', { path: 'src/../../etc/passwd' }));
+      expect(result.is_error).toBe(true);
+      expect(result.content).toContain('outside the target directory');
+    });
+  });
+
   describe('unknown tool', () => {
     it('returns error for unknown tool name', async () => {
       const result = await handler.fulfill(makeToolUse('delete_file', { path: 'test.ts' }));

@@ -107,7 +107,7 @@ async function checkGitClean(input: ExecutionInput): Promise<void> {
   } catch (error) {
     if (error instanceof PreflightError) throw error;
     throw new PreflightError(
-      'Failed to check git status (is this a git repository?)',
+      `Failed to check git status: ${error instanceof Error ? error.message : 'is this a git repository?'}`,
       'git_clean',
     );
   }
