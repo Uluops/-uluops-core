@@ -5,6 +5,9 @@ import * as os from 'node:os';
 import * as yaml from 'yaml';
 import { RegistryClient } from '../../src/registry/RegistryClient.js';
 import type { ResolvedConfig } from '../../src/types/config.js';
+import type { Logger } from '@uluops/sdk-core';
+
+const noopLogger: Logger = { debug() {}, info() {}, warn() {}, error() {} };
 
 // Module-level mock references (vi.mock is hoisted, so these are safe)
 const mockDefinitionsList = vi.fn();
@@ -42,6 +45,7 @@ const baseConfig: ResolvedConfig = {
   trackingEnabled: true,
   hashVerificationEnabled: false,
   timeout: 30000,
+  debug: false,
 };
 
 describe('RegistryClient', () => {
@@ -82,7 +86,7 @@ describe('RegistryClient', () => {
 
       await fs.writeFile(path.join(tmpDir, 'test-validator.agent.yaml'), agentYaml);
 
-      const client = new RegistryClient({ ...baseConfig, localDefinitions: tmpDir });
+      const client = new RegistryClient({ ...baseConfig, localDefinitions: tmpDir }, noopLogger);
       const result = await client.resolve('test-validator');
 
       expect(result.type).toBe('agent');
@@ -112,7 +116,7 @@ describe('RegistryClient', () => {
 
       await fs.writeFile(path.join(tmpDir, 'code-validator.command.yaml'), cmdYaml);
 
-      const client = new RegistryClient({ ...baseConfig, localDefinitions: tmpDir });
+      const client = new RegistryClient({ ...baseConfig, localDefinitions: tmpDir }, noopLogger);
       const result = await client.resolve('code-validator', undefined, 'command');
 
       expect(result.type).toBe('command');
@@ -141,7 +145,7 @@ describe('RegistryClient', () => {
 
       await fs.writeFile(path.join(tmpDir, 'agents', 'sub-agent.agent.yaml'), agentYaml);
 
-      const client = new RegistryClient({ ...baseConfig, localDefinitions: tmpDir });
+      const client = new RegistryClient({ ...baseConfig, localDefinitions: tmpDir }, noopLogger);
       const result = await client.resolve('sub-agent', undefined, 'agent');
 
       expect(result.type).toBe('agent');
@@ -160,7 +164,7 @@ describe('RegistryClient', () => {
         yaml.stringify({ command: { interface: { name: 'shared', version: '2.0.0' }, agents: ['x'], execution: { model: { default: 'sonnet' } } } }),
       );
 
-      const client = new RegistryClient({ ...baseConfig, localDefinitions: tmpDir });
+      const client = new RegistryClient({ ...baseConfig, localDefinitions: tmpDir }, noopLogger);
 
       const agent = await client.resolve('shared', undefined, 'agent');
       expect(agent.type).toBe('agent');
@@ -190,7 +194,7 @@ describe('RegistryClient', () => {
       });
       mocks.render.get.mockResolvedValueOnce({ markdown: 'rendered prompt' });
 
-      const client = new RegistryClient({ ...baseConfig, localDefinitions: tmpDir });
+      const client = new RegistryClient({ ...baseConfig, localDefinitions: tmpDir }, noopLogger);
       const result = await client.resolve('remote-agent');
 
       expect(result.name).toBe('remote-agent');
@@ -213,7 +217,7 @@ describe('RegistryClient', () => {
       });
       await fs.writeFile(path.join(tmpDir, 'cached.agent.yaml'), agentYaml);
 
-      const client = new RegistryClient({ ...baseConfig, localDefinitions: tmpDir });
+      const client = new RegistryClient({ ...baseConfig, localDefinitions: tmpDir }, noopLogger);
 
       const first = await client.resolve('cached');
       const second = await client.resolve('cached');
@@ -231,7 +235,7 @@ describe('RegistryClient', () => {
       });
       await fs.writeFile(path.join(tmpDir, 'cached2.agent.yaml'), agentYaml);
 
-      const client = new RegistryClient({ ...baseConfig, localDefinitions: tmpDir });
+      const client = new RegistryClient({ ...baseConfig, localDefinitions: tmpDir }, noopLogger);
 
       const first = await client.resolve('cached2');
       client.clearCache();
@@ -263,7 +267,7 @@ describe('RegistryClient', () => {
       });
       mocks.render.get.mockResolvedValueOnce({ markdown: '# Command prompt' });
 
-      const client = new RegistryClient(baseConfig); // No localDefinitions
+      const client = new RegistryClient(baseConfig, noopLogger); // No localDefinitions
       const result = await client.resolve('remote-cmd');
 
       expect(result.name).toBe('remote-cmd');
@@ -284,7 +288,7 @@ describe('RegistryClient', () => {
       });
       mocks.render.get.mockResolvedValueOnce({ markdown: 'prompt' });
 
-      const client = new RegistryClient(baseConfig);
+      const client = new RegistryClient(baseConfig, noopLogger);
       await client.resolve('typed-agent', undefined, 'agent');
 
       // Should NOT have called list since type was provided
@@ -299,7 +303,7 @@ describe('RegistryClient', () => {
       const mocks = getMocks();
       mocks.definitions.list.mockResolvedValueOnce({ definitions: [], total: 0 });
 
-      const client = new RegistryClient(baseConfig);
+      const client = new RegistryClient(baseConfig, noopLogger);
       await expect(client.resolve('nonexistent')).rejects.toThrow('not found in registry');
     });
 
@@ -313,7 +317,7 @@ describe('RegistryClient', () => {
         total: 2,
       });
 
-      const client = new RegistryClient(baseConfig);
+      const client = new RegistryClient(baseConfig, noopLogger);
       await expect(client.resolve('ambiguous')).rejects.toThrow('Multiple definitions');
     });
   });
@@ -341,7 +345,7 @@ describe('RegistryClient', () => {
       });
       mocks.render.get.mockResolvedValueOnce({ markdown: 'prompt' });
 
-      const client = new RegistryClient({ ...baseConfig, hashVerificationEnabled: true });
+      const client = new RegistryClient({ ...baseConfig, hashVerificationEnabled: true }, noopLogger);
       // Should not throw
       const result = await client.resolve('hashed', undefined, 'agent');
       expect(result.hash).toBe(expectedHash);
@@ -359,7 +363,7 @@ describe('RegistryClient', () => {
       });
       mocks.render.get.mockResolvedValueOnce({ markdown: 'prompt' });
 
-      const client = new RegistryClient({ ...baseConfig, hashVerificationEnabled: true });
+      const client = new RegistryClient({ ...baseConfig, hashVerificationEnabled: true }, noopLogger);
       await expect(client.resolve('tampered', undefined, 'agent')).rejects.toThrow('Hash mismatch');
     });
 
@@ -375,7 +379,7 @@ describe('RegistryClient', () => {
       });
       mocks.render.get.mockResolvedValueOnce({ markdown: 'prompt' });
 
-      const client = new RegistryClient({ ...baseConfig, hashVerificationEnabled: false });
+      const client = new RegistryClient({ ...baseConfig, hashVerificationEnabled: false }, noopLogger);
       // Should not throw despite wrong hash
       const result = await client.resolve('no-check', undefined, 'agent');
       expect(result.name).toBe('no-check');
@@ -396,7 +400,7 @@ describe('RegistryClient', () => {
       const mocks = getMocks();
       mocks.definitions.list.mockResolvedValueOnce({ definitions: [], total: 0 });
 
-      const client = new RegistryClient({ ...baseConfig, localDefinitions: tmpDir });
+      const client = new RegistryClient({ ...baseConfig, localDefinitions: tmpDir }, noopLogger);
       const results = await client.list();
 
       expect(results.length).toBe(1);
@@ -419,7 +423,7 @@ describe('RegistryClient', () => {
         total: 2,
       });
 
-      const client = new RegistryClient({ ...baseConfig, localDefinitions: tmpDir });
+      const client = new RegistryClient({ ...baseConfig, localDefinitions: tmpDir }, noopLogger);
       const results = await client.list();
 
       expect(results.length).toBe(2);
@@ -444,7 +448,7 @@ describe('RegistryClient', () => {
       const mocks = getMocks();
       mocks.definitions.list.mockResolvedValueOnce({ definitions: [], total: 0 });
 
-      const client = new RegistryClient({ ...baseConfig, localDefinitions: tmpDir });
+      const client = new RegistryClient({ ...baseConfig, localDefinitions: tmpDir }, noopLogger);
       const results = await client.list({ type: 'agent' });
 
       expect(results.length).toBe(1);
@@ -506,7 +510,7 @@ describe('RegistryClient', () => {
       });
       await fs.writeFile(path.join(tmpDir, 'render-test.agent.yaml'), agentYaml);
 
-      const client = new RegistryClient({ ...baseConfig, localDefinitions: tmpDir });
+      const client = new RegistryClient({ ...baseConfig, localDefinitions: tmpDir }, noopLogger);
       const result = await client.resolve('render-test');
 
       const runtime = result.runtime as { prompt: string; defaults: { model: string; timeout: number }; config: Record<string, unknown> };
@@ -534,7 +538,7 @@ describe('RegistryClient', () => {
       });
       await fs.writeFile(path.join(tmpDir, 'cmd-render.command.yaml'), cmdYaml);
 
-      const client = new RegistryClient({ ...baseConfig, localDefinitions: tmpDir });
+      const client = new RegistryClient({ ...baseConfig, localDefinitions: tmpDir }, noopLogger);
       const result = await client.resolve('cmd-render', undefined, 'command');
 
       const runtime = result.runtime as { prompt: string };

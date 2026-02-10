@@ -6,6 +6,9 @@ import { AgentExecutor } from '../../src/executor/AgentExecutor.js';
 import type { AIProvider, AIGenerateResult } from '../../src/ai/AIProvider.js';
 import type { ResolvedConfig } from '../../src/types/config.js';
 import type { ResolvedDefinition, ValidatorRuntime, ExecutorRuntime } from '../../src/types/registry.js';
+import type { Logger } from '@uluops/sdk-core';
+
+const noopLogger: Logger = { debug() {}, info() {}, warn() {}, error() {} };
 
 // Mock token counts for AI provider responses
 const MOCK_INPUT_TOKENS = 500;
@@ -26,6 +29,7 @@ const baseConfig: ResolvedConfig = {
   trackingEnabled: true,
   hashVerificationEnabled: true,
   timeout: 30000,
+  debug: false,
 };
 
 function mockAIProvider(overrides?: Partial<AIGenerateResult>): AIProvider {
@@ -129,7 +133,7 @@ describe('AgentExecutor', () => {
   describe('validator execution', () => {
     it('executes a validator agent and returns ValidatorAgentResult', async () => {
       const ai = mockAIProvider();
-      const executor = new AgentExecutor(baseConfig, ai);
+      const executor = new AgentExecutor(baseConfig, ai, noopLogger);
 
       const result = await executor.execute(makeValidatorDef(), { target: tmpDir });
 
@@ -151,7 +155,7 @@ describe('AgentExecutor', () => {
 
     it('flattens recommendations from parsed categories', async () => {
       const ai = mockAIProvider();
-      const executor = new AgentExecutor(baseConfig, ai);
+      const executor = new AgentExecutor(baseConfig, ai, noopLogger);
 
       const result = await executor.execute(makeValidatorDef(), { target: tmpDir });
 
@@ -165,7 +169,7 @@ describe('AgentExecutor', () => {
 
     it('computes metrics from AI SDK usage', async () => {
       const ai = mockAIProvider();
-      const executor = new AgentExecutor(baseConfig, ai);
+      const executor = new AgentExecutor(baseConfig, ai, noopLogger);
 
       const result = await executor.execute(makeValidatorDef(), { target: tmpDir });
 
@@ -180,7 +184,7 @@ describe('AgentExecutor', () => {
 
     it('passes threshold from options', async () => {
       const ai = mockAIProvider();
-      const executor = new AgentExecutor(baseConfig, ai);
+      const executor = new AgentExecutor(baseConfig, ai, noopLogger);
 
       const result = await executor.execute(
         makeValidatorDef(),
@@ -204,7 +208,7 @@ describe('AgentExecutor', () => {
           ],
         }),
       });
-      const executor = new AgentExecutor(baseConfig, ai);
+      const executor = new AgentExecutor(baseConfig, ai, noopLogger);
 
       const result = await executor.execute(makeExecutorDef(), { target: tmpDir });
 
@@ -223,7 +227,7 @@ describe('AgentExecutor', () => {
   describe('context resolution', () => {
     it('uses agent defaults when no options provided', async () => {
       const ai = mockAIProvider();
-      const executor = new AgentExecutor(baseConfig, ai);
+      const executor = new AgentExecutor(baseConfig, ai, noopLogger);
 
       await executor.execute(makeValidatorDef(), { target: tmpDir });
 
@@ -235,7 +239,7 @@ describe('AgentExecutor', () => {
 
     it('options override agent defaults', async () => {
       const ai = mockAIProvider();
-      const executor = new AgentExecutor(baseConfig, ai);
+      const executor = new AgentExecutor(baseConfig, ai, noopLogger);
 
       await executor.execute(
         makeValidatorDef(),
@@ -255,7 +259,7 @@ describe('AgentExecutor', () => {
         ...baseConfig,
         ai: { ...baseConfig.ai, modelOverride: 'opus' },
       };
-      const executor = new AgentExecutor(config, ai);
+      const executor = new AgentExecutor(config, ai, noopLogger);
 
       const defWithoutModel = makeValidatorDef({
         runtime: {
@@ -275,7 +279,7 @@ describe('AgentExecutor', () => {
   describe('initial message', () => {
     it('includes project structure in initial message', async () => {
       const ai = mockAIProvider();
-      const executor = new AgentExecutor(baseConfig, ai);
+      const executor = new AgentExecutor(baseConfig, ai, noopLogger);
 
       await executor.execute(makeValidatorDef(), { target: tmpDir });
 
@@ -292,7 +296,7 @@ describe('AgentExecutor', () => {
 
     it('passes options in initial message', async () => {
       const ai = mockAIProvider();
-      const executor = new AgentExecutor(baseConfig, ai);
+      const executor = new AgentExecutor(baseConfig, ai, noopLogger);
 
       await executor.execute(
         makeValidatorDef(),
@@ -310,7 +314,7 @@ describe('AgentExecutor', () => {
       const ai = {
         generate: vi.fn().mockRejectedValue(new Error('Rate limit exceeded')),
       } as unknown as AIProvider;
-      const executor = new AgentExecutor(baseConfig, ai);
+      const executor = new AgentExecutor(baseConfig, ai, noopLogger);
 
       await expect(
         executor.execute(makeValidatorDef(), { target: tmpDir }),
@@ -321,7 +325,7 @@ describe('AgentExecutor', () => {
       const ai = mockAIProvider({
         text: '{}',
       });
-      const executor = new AgentExecutor(baseConfig, ai);
+      const executor = new AgentExecutor(baseConfig, ai, noopLogger);
 
       const result = await executor.execute(makeValidatorDef(), { target: tmpDir });
 

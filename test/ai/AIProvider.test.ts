@@ -2,6 +2,9 @@ import { describe, it, expect, vi, beforeEach } from 'vitest';
 import { AIProvider } from '../../src/ai/AIProvider.js';
 import type { ModelCatalog, ResolvedModel } from '../../src/ai/ModelCatalog.js';
 import type { ResolvedConfig } from '../../src/types/config.js';
+import type { Logger } from '@uluops/sdk-core';
+
+const noopLogger: Logger = { debug() {}, info() {}, warn() {}, error() {} };
 
 // Mock the AI SDK
 vi.mock('ai', () => ({
@@ -29,6 +32,7 @@ const mockConfig: ResolvedConfig = {
   trackingEnabled: true,
   hashVerificationEnabled: true,
   timeout: 300_000,
+  debug: false,
 };
 
 function makeResolvedModel(overrides?: Partial<ResolvedModel>): ResolvedModel {
@@ -75,7 +79,7 @@ describe('AIProvider', () => {
       } as never);
 
       const catalog = mockCatalog();
-      const provider = new AIProvider(mockConfig, catalog);
+      const provider = new AIProvider(mockConfig, catalog, noopLogger);
       const result = await provider.generate({
         model: 'sonnet',
         system: 'You are a code reviewer.',
@@ -114,7 +118,7 @@ describe('AIProvider', () => {
         ...mockConfig,
         ai: { ...mockConfig.ai, modelOverride: 'haiku' },
       };
-      const provider = new AIProvider(configWithOverride, catalog);
+      const provider = new AIProvider(configWithOverride, catalog, noopLogger);
       await provider.generate({
         model: 'sonnet',
         system: 'test',
@@ -140,7 +144,7 @@ describe('AIProvider', () => {
       } as never);
 
       const catalog = mockCatalog();
-      const provider = new AIProvider(mockConfig, catalog);
+      const provider = new AIProvider(mockConfig, catalog, noopLogger);
       await provider.generate({
         model: 'sonnet',
         system: 'test',
@@ -172,7 +176,7 @@ describe('AIProvider', () => {
         providerMetadata: {},
       } as never);
 
-      const provider = new AIProvider(mockConfig, mockCatalog());
+      const provider = new AIProvider(mockConfig, mockCatalog(), noopLogger);
       const result = await provider.generate({
         model: 'sonnet',
         system: 'test',
@@ -202,7 +206,7 @@ describe('AIProvider', () => {
         },
       } as never);
 
-      const provider = new AIProvider(mockConfig, mockCatalog());
+      const provider = new AIProvider(mockConfig, mockCatalog(), noopLogger);
       const result = await provider.generate({
         model: 'sonnet',
         system: 'test',
@@ -221,7 +225,7 @@ describe('AIProvider', () => {
       Object.assign(error, { statusCode: 429 });
       mockGenerateText.mockRejectedValueOnce(error);
 
-      const provider = new AIProvider(mockConfig, mockCatalog());
+      const provider = new AIProvider(mockConfig, mockCatalog(), noopLogger);
       await expect(provider.generate({
         model: 'sonnet',
         system: 'test',
@@ -237,7 +241,7 @@ describe('AIProvider', () => {
       Object.assign(error, { statusCode: 401 });
       mockGenerateText.mockRejectedValueOnce(error);
 
-      const provider = new AIProvider(mockConfig, mockCatalog());
+      const provider = new AIProvider(mockConfig, mockCatalog(), noopLogger);
       await expect(provider.generate({
         model: 'sonnet',
         system: 'test',
@@ -253,7 +257,7 @@ describe('AIProvider', () => {
       Object.assign(error, { statusCode: 403 });
       mockGenerateText.mockRejectedValueOnce(error);
 
-      const provider = new AIProvider(mockConfig, mockCatalog());
+      const provider = new AIProvider(mockConfig, mockCatalog(), noopLogger);
       await expect(provider.generate({
         model: 'sonnet',
         system: 'test',
@@ -269,7 +273,7 @@ describe('AIProvider', () => {
       Object.assign(error, { statusCode: 500 });
       mockGenerateText.mockRejectedValueOnce(error);
 
-      const provider = new AIProvider(mockConfig, mockCatalog());
+      const provider = new AIProvider(mockConfig, mockCatalog(), noopLogger);
       await expect(provider.generate({
         model: 'sonnet',
         system: 'test',
@@ -285,7 +289,7 @@ describe('AIProvider', () => {
       error.name = 'AbortError';
       mockGenerateText.mockRejectedValueOnce(error);
 
-      const provider = new AIProvider(mockConfig, mockCatalog());
+      const provider = new AIProvider(mockConfig, mockCatalog(), noopLogger);
       await expect(provider.generate({
         model: 'sonnet',
         system: 'test',
@@ -301,7 +305,7 @@ describe('AIProvider', () => {
       error.name = 'RetryError';
       mockGenerateText.mockRejectedValueOnce(error);
 
-      const provider = new AIProvider(mockConfig, mockCatalog());
+      const provider = new AIProvider(mockConfig, mockCatalog(), noopLogger);
       await expect(provider.generate({
         model: 'sonnet',
         system: 'test',
@@ -312,13 +316,13 @@ describe('AIProvider', () => {
 
   describe('ensureProvider', () => {
     it('does not throw for already-loaded providers', async () => {
-      const provider = new AIProvider(mockConfig, mockCatalog());
+      const provider = new AIProvider(mockConfig, mockCatalog(), noopLogger);
       // anthropic is loaded in constructor
       await expect(provider.ensureProvider('anthropic')).resolves.toBeUndefined();
     });
 
     it('throws ConfigurationError for unconfigured provider', async () => {
-      const provider = new AIProvider(mockConfig, mockCatalog());
+      const provider = new AIProvider(mockConfig, mockCatalog(), noopLogger);
       await expect(provider.ensureProvider('openai')).rejects.toThrow(
         'AI provider "openai" is not configured',
       );

@@ -33,6 +33,7 @@ const baseConfig: ResolvedConfig = {
   trackingEnabled: true,
   hashVerificationEnabled: true,
   timeout: 30000,
+  debug: false,
 };
 
 function makeResult(overrides?: Partial<ExecutionResult>): ExecutionResult {

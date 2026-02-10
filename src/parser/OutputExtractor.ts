@@ -210,20 +210,40 @@ export class OutputExtractor {
     }
 
     const obj = raw as Record<string, unknown>;
+
+    // Unwrap common nesting: { result: { decision, score, ... }, categories, ... }
+    const result = (obj['result'] && typeof obj['result'] === 'object')
+      ? obj['result'] as Record<string, unknown>
+      : undefined;
+
+    // Resolve decision: top-level > result.decision > result.status
+    const rawDecision = obj['decision']
+      ?? result?.['decision']
+      ?? result?.['status']
+      ?? obj['status']
+      ?? 'UNKNOWN';
+
     const output: ParsedOutput = {
-      decision: this.normalizeDecision(String(obj['decision'] ?? 'UNKNOWN'), agentType),
+      decision: this.normalizeDecision(String(rawDecision), agentType),
       rawJson: raw,
     };
 
-    if (typeof obj['score'] === 'number') {
-      output.score = obj['score'];
-    } else if (typeof obj['score'] === 'string') {
-      output.score = parseFloat(obj['score']);
+    // Resolve score: top-level > result.score
+    const rawScore = obj['score'] ?? result?.['score'];
+    if (typeof rawScore === 'number') {
+      output.score = rawScore;
+    } else if (typeof rawScore === 'string') {
+      output.score = parseFloat(rawScore);
     }
 
     if (agentType === 'validator') {
-      if (typeof obj['maxScore'] === 'number' || typeof obj['max_score'] === 'number') {
-        output.maxScore = (obj['maxScore'] as number | undefined) ?? (obj['max_score'] as number);
+      // Resolve maxScore: top-level > result.max_score > result.maxScore
+      const rawMaxScore = obj['maxScore'] ?? obj['max_score']
+        ?? result?.['max_score'] ?? result?.['maxScore'];
+      if (typeof rawMaxScore === 'number') {
+        output.maxScore = rawMaxScore;
+      } else if (typeof rawMaxScore === 'string') {
+        output.maxScore = parseInt(rawMaxScore, 10);
       }
 
       if (Array.isArray(obj['categories'])) {

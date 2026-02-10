@@ -83,6 +83,10 @@ export class AgentExecutor {
     const extraction = this.outputExtractor.extractWithMetadata(result.text, agentType);
     const parsed = extraction.output;
     this.logger.info(`Output extraction: method=${extraction.method}, confidence=${extraction.confidence}`);
+    if (parsed.rawJson) {
+      const keys = Object.keys(parsed.rawJson as Record<string, unknown>);
+      this.logger.debug(`Raw JSON keys: [${keys.join(', ')}]`);
+    }
     if (extraction.warnings.length > 0) {
       this.logger.warn(`Extraction warnings: ${extraction.warnings.join('; ')}`);
     }
