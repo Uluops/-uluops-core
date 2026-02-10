@@ -186,6 +186,57 @@ After further analysis:
         extractor.extract('No structure here', 'validator', { strict: true });
       }).toThrow(ParseError);
     });
+
+    it('handles empty string input', () => {
+      const result = extractor.extractWithMetadata('', 'validator');
+      expect(result.output.decision).toBe('ERROR');
+      expect(result.output.score).toBe(0);
+      expect(result.confidence).toBe(0);
+    });
+
+    it('handles whitespace-only input', () => {
+      const result = extractor.extractWithMetadata('   \n\n\t  ', 'validator');
+      expect(result.output.decision).toBe('ERROR');
+      expect(result.output.score).toBe(0);
+    });
+
+    it('handles JSON with missing decision field', () => {
+      const content = '```json\n{"score": 85, "maxScore": 100}\n```';
+      const result = extractor.extract(content, 'validator');
+      // Should still extract with a default/derived decision
+      expect(result.score).toBe(85);
+      expect(typeof result.decision).toBe('string');
+    });
+
+    it('handles nested result wrapper', () => {
+      const content = '```json\n{"result": {"decision": "PASS", "score": 85}}\n```';
+      const result = extractor.extract(content, 'validator');
+      expect(result.decision).toBe('PASS');
+      expect(result.score).toBe(85);
+    });
+
+    it('handles score of zero as valid (not undefined)', () => {
+      const content = '```json\n{"decision": "FAIL", "score": 0, "maxScore": 100}\n```';
+      const result = extractor.extract(content, 'validator');
+      expect(result.decision).toBe('FAIL');
+      expect(result.score).toBe(0);
+      expect(result.maxScore).toBe(100);
+    });
+
+    it('handles truncated JSON in code fence', () => {
+      const content = '```json\n{"decision": "PASS", "score": 85, "categories": [\n```';
+      const result = extractor.extractWithMetadata(content, 'validator');
+      // Should either extract partial data or fall through to other methods
+      expect(result.output).toBeDefined();
+      expect(typeof result.output.decision).toBe('string');
+    });
+
+    it('only unwraps one level of result nesting', () => {
+      const content = '```json\n{"result": {"result": {"decision": "PASS", "score": 90}}}\n```';
+      const result = extractor.extract(content, 'validator');
+      // Double-nested result.result is not unwrapped — only one level
+      expect(result.decision).toBe('UNKNOWN');
+    });
   });
 
   describe('score parsing', () => {

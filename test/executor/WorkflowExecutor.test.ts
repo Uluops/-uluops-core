@@ -493,6 +493,149 @@ describe('WorkflowExecutor', () => {
     });
   });
 
+  describe('empty phase/stage edge cases', () => {
+    it('phase with empty commands array returns score 0', async () => {
+      const cmdExec = makeCommandExecutor();
+      const registry = makeRegistry();
+      const executor = new WorkflowExecutor(cmdExec, registry);
+
+      const def = makeWorkflowDef({
+        orchestration: {
+          phases: [
+            { id: 'empty', name: 'Empty Phase', commands: [] },
+          ],
+          on_failure: 'stop',
+        },
+      });
+
+      const result = await executor.execute(def, { target: '/tmp/test' });
+
+      expect(result.phases).toHaveLength(1);
+      expect(result.phases[0]!.score).toBe(0);
+      expect(result.phases[0]!.commands).toHaveLength(0);
+      expect(cmdExec.execute).not.toHaveBeenCalled();
+    });
+
+    it('empty commands phase with gate blocks at threshold', async () => {
+      const cmdExec = makeCommandExecutor();
+      const registry = makeRegistry();
+      const executor = new WorkflowExecutor(cmdExec, registry);
+
+      const def = makeWorkflowDef({
+        orchestration: {
+          phases: [
+            { id: 'empty', name: 'Empty Phase', commands: [], gate: { threshold: 70, aggregate: 'average', on_fail: 'block' } },
+          ],
+          on_failure: 'stop',
+        },
+      });
+
+      const result = await executor.execute(def, { target: '/tmp/test' });
+
+      expect(result.phases[0]!.decision).toBe('blocked');
+      expect(result.decision).toBe('BLOCK');
+    });
+
+    it('all phases skipped results in SHIP decision with score 0', async () => {
+      const cmdExec = makeCommandExecutor();
+      const registry = makeRegistry();
+      const executor = new WorkflowExecutor(cmdExec, registry);
+
+      const def = makeWorkflowDef({
+        orchestration: {
+          phases: [
+            { id: 'p1', name: 'Phase 1', commands: ['cmd-a'], skip_if: '{{ input.skip }}' },
+            { id: 'p2', name: 'Phase 2', commands: ['cmd-b'], skip_if: '{{ input.skip }}' },
+          ],
+          on_failure: 'stop',
+        },
+      });
+
+      const result = await executor.execute(
+        def,
+        { target: '/tmp/test', options: { skip: true } },
+      );
+
+      expect(result.phases).toHaveLength(2);
+      expect(result.phases[0]!.decision).toBe('skipped');
+      expect(result.phases[1]!.decision).toBe('skipped');
+      expect(result.score).toBe(0);
+      expect(result.decision).toBe('SHIP');
+      expect(result.metrics.phasesSkipped).toBe(2);
+      expect(result.metrics.phasesExecuted).toBe(0);
+    });
+
+    it('empty commands phase does not produce recommendations', async () => {
+      const cmdExec = makeCommandExecutor();
+      const registry = makeRegistry();
+      const executor = new WorkflowExecutor(cmdExec, registry);
+
+      const def = makeWorkflowDef({
+        orchestration: {
+          phases: [
+            { id: 'empty', name: 'Empty', commands: [] },
+          ],
+          on_failure: 'stop',
+        },
+      });
+
+      const result = await executor.execute(def, { target: '/tmp/test' });
+
+      expect(result.recommendations).toHaveLength(0);
+      expect(result.metrics.inputTokens).toBe(0);
+      expect(result.metrics.outputTokens).toBe(0);
+    });
+
+    it('empty commands phase with no gate passes', async () => {
+      const cmdExec = makeCommandExecutor();
+      const registry = makeRegistry();
+      const executor = new WorkflowExecutor(cmdExec, registry);
+
+      const def = makeWorkflowDef({
+        orchestration: {
+          phases: [
+            { id: 'empty', name: 'Empty', commands: [] },
+          ],
+          on_failure: 'stop',
+        },
+      });
+
+      const result = await executor.execute(def, { target: '/tmp/test' });
+
+      // No gate defined → evaluateGate returns 'passed' regardless of score
+      expect(result.phases[0]!.decision).toBe('passed');
+      expect(result.decision).toBe('SHIP');
+    });
+
+    it('mix of skipped and empty phases produces correct metrics', async () => {
+      const cmdExec = makeCommandExecutor([makeCommandResult({ score: 80 })]);
+      const registry = makeRegistry();
+      const executor = new WorkflowExecutor(cmdExec, registry);
+
+      const def = makeWorkflowDef({
+        orchestration: {
+          phases: [
+            { id: 'skip', name: 'Skipped', commands: ['cmd-a'], skip_if: '{{ input.skip }}' },
+            { id: 'run', name: 'Runs', commands: ['cmd-b'] },
+          ],
+          on_failure: 'continue',
+        },
+      });
+
+      const result = await executor.execute(
+        def,
+        { target: '/tmp/test', options: { skip: true } },
+      );
+
+      expect(result.phases[0]!.decision).toBe('skipped');
+      expect(result.phases[1]!.decision).toBe('passed');
+      expect(result.metrics.phasesSkipped).toBe(1);
+      expect(result.metrics.phasesExecuted).toBe(1);
+      expect(result.metrics.phasesPassed).toBe(1);
+      expect(result.score).toBe(80); // Only non-skipped phase counts
+    });
+  });
+
   describe('error handling', () => {
     it('throws WorkflowError with partial result on command failure', async () => {
       const cmdExec = {
