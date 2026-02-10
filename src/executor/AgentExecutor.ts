@@ -1,3 +1,4 @@
+import type { ToolSet } from 'ai';
 import type { AIProvider } from '../ai/AIProvider.js';
 import { ToolHandler } from './ToolHandler.js';
 import { ToolAdapter } from '../ai/ToolAdapter.js';
@@ -42,27 +43,34 @@ export class AgentExecutor {
     // 1. Merge options with agent defaults
     const context = this.resolveContext(resolved, options);
 
-    // 2. Setup tool handler and AI SDK tool adapter
-    const toolHandler = new ToolHandler(input.target);
-    const toolAdapter = new ToolAdapter(toolHandler);
-
-    // 3. Get the system prompt
+    // 2. Determine if bash tool should be enabled (opt-in via agent tools list)
     const runtime = resolved.runtime as ValidatorRuntime | ExecutorRuntime;
+    const agentTools = (runtime as { interface?: { tools?: string[] } }).interface?.tools;
+    let additionalTools: ToolSet | undefined;
+    if (agentTools?.includes('bash')) {
+      additionalTools = this.aiProvider.createBashTool(input.target, context.timeoutMs);
+    }
+
+    // 3. Setup tool handler and AI SDK tool adapter
+    const toolHandler = new ToolHandler(input.target);
+    const toolAdapter = new ToolAdapter(toolHandler, additionalTools);
+
+    // 4. Get the system prompt
     const systemPrompt = runtime.prompt;
 
-    // 4. Build initial context message
+    // 5. Build initial context message
     const initialMessage = await this.buildInitialMessage(input, toolHandler);
 
-    // 5. Execute via AI SDK (tool loop handled automatically)
+    // 6. Execute via AI SDK (tool loop handled automatically)
     const result = await this.aiProvider.generate({
       model: context.model,
       system: systemPrompt,
       prompt: initialMessage,
       tools: toolAdapter.getTools(),
       maxTokens: context.maxTokens,
-      maxSteps: 50,
+      maxSteps: context.maxSteps,
       timeoutMs: context.timeoutMs,
-      temperature: 0,
+      temperature: context.temperature,
     });
 
     // 6. Parse structured output
@@ -130,7 +138,7 @@ export class AgentExecutor {
     options?: ExecutionOptions,
   ): ResolvedExecutionContext {
     const runtime = resolved.runtime as (ValidatorRuntime | ExecutorRuntime) & {
-      defaults?: { model?: string; timeout?: number; maxTokens?: number; thresholds?: { pass: number; warn: number } };
+      defaults?: { model?: string; timeout?: number; maxTokens?: number; temperature?: number; thresholds?: { pass: number; warn: number } };
     };
     const defaults = runtime?.defaults ?? {};
 
@@ -138,6 +146,8 @@ export class AgentExecutor {
       model: options?.model ?? defaults.model ?? this.config.ai.modelOverride ?? 'sonnet',
       maxTokens: options?.maxTokens ?? (defaults as { maxTokens?: number }).maxTokens ?? 8192,
       timeoutMs: options?.timeoutMs ?? defaults.timeout ?? this.config.timeout ?? 300_000,
+      temperature: options?.temperature ?? defaults.temperature ?? 0,
+      maxSteps: options?.maxSteps ?? 50,
       thresholds: this.resolveThresholds(options?.thresholds, (defaults as { thresholds?: { pass?: number; warn?: number } }).thresholds),
       trackResults: options?.trackResults ?? this.config.trackingEnabled,
       project: options?.project ?? this.config.defaultProject,

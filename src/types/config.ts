@@ -111,6 +111,13 @@ export interface UluOpsConfig {
 
   /** Default project name for validation service */
   defaultProject?: string;
+
+  /**
+   * Default extended thinking budget in tokens.
+   * Used when a model supports extendedThinking and no per-call budget is specified.
+   * @default 10000
+   */
+  defaultThinkingBudget?: number;
 }
 
 /**
@@ -127,4 +134,5 @@ export interface ResolvedConfig {
   hashVerificationEnabled: boolean;
   timeout: number;
   defaultProject?: string;
+  defaultThinkingBudget: number;
 }

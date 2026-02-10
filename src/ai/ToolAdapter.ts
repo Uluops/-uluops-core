@@ -9,16 +9,20 @@ import type { ToolHandler } from '../executor/ToolHandler.js';
  * This adapter bridges ToolHandler's JSON Schema tools to AI SDK's Zod-based tool definitions.
  */
 export class ToolAdapter {
-  constructor(private toolHandler: ToolHandler) {}
+  constructor(
+    private toolHandler: ToolHandler,
+    private additionalTools?: ToolSet,
+  ) {}
 
   /**
    * Get AI SDK v6 compatible tools from ToolHandler.
    * Converts JSON Schema tool definitions to Zod-based AI SDK tools.
    *
-   * @returns ToolSet with read_file, list_files, and search_content tools
+   * @returns ToolSet with read_file, list_files, search_content + any additional provider tools
    */
   getTools(): ToolSet {
     return {
+      ...this.additionalTools,
       read_file: tool({
         description: 'Read the contents of a file. Returns the full file content.',
         inputSchema: z.object({

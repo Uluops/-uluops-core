@@ -124,6 +124,12 @@ export interface ExecutionOptions {
 
   /** Project name for result tracking */
   project?: string;
+
+  /** Temperature for generation (0-1). Default: 0 */
+  temperature?: number;
+
+  /** Maximum tool loop steps. Default: 50 */
+  maxSteps?: number;
 }
 
 /**
@@ -151,6 +157,12 @@ export interface ResolvedExecutionContext {
 
   /** Project for tracking */
   project?: string;
+
+  /** Resolved temperature (from options > agent defaults > 0) */
+  temperature: number;
+
+  /** Resolved max tool loop steps (from options > 50) */
+  maxSteps: number;
 }
 
 /**

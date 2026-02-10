@@ -297,6 +297,7 @@ export class UluOpsClient {
       hashVerificationEnabled: config.hashVerificationEnabled ?? true,
       timeout: config.timeout ?? DEFAULT_TIMEOUT_MS,
       defaultProject: config.defaultProject ?? process.env['ULUOPS_PROJECT'],
+      defaultThinkingBudget: config.defaultThinkingBudget ?? 10_000,
     };
   }
 

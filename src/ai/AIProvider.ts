@@ -1,8 +1,11 @@
 import { generateText, stepCountIs, type LanguageModel, type ToolSet } from 'ai';
-import { createAnthropic } from '@ai-sdk/anthropic';
+import type { ProviderOptions } from '@ai-sdk/provider-utils';
+import { createAnthropic, type AnthropicProvider } from '@ai-sdk/anthropic';
+import { exec } from 'child_process';
+import { promisify } from 'util';
 import type { UsageMetrics } from '../types/ai.js';
 import type { ResolvedConfig, ResolvedAIConfig } from '../types/config.js';
-import type { ModelCatalog } from './ModelCatalog.js';
+import type { ModelCatalog, ResolvedModel } from './ModelCatalog.js';
 import {
   SdkApiError,
   RateLimitError,
@@ -13,6 +16,8 @@ import {
   ConfigurationError,
 } from '../errors/index.js';
 import type { ModelCapabilities } from '@uluops/registry-sdk';
+
+const execAsync = promisify(exec);
 
 /**
  * Result from AI provider generation
@@ -70,6 +75,9 @@ export interface AIGenerateOptions {
 
   /** Required capabilities (validated before execution) */
   requiredCapabilities?: Array<keyof ModelCapabilities>;
+
+  /** Provider-specific options (thinking, effort, etc.) passed through to generateText */
+  providerOptions?: ProviderOptions;
 }
 
 /**
@@ -80,12 +88,18 @@ export interface AIGenerateOptions {
  * - Multi-provider support (Anthropic bundled, others via peer dependencies)
  * - Capability pre-flight checks (tools, vision, streaming, extendedThinking)
  * - Unified generation with automatic tool loops
+ * - Automatic prompt caching for Anthropic system messages
+ * - Extended thinking auto-enabled for capable models
+ * - Provider-defined tool support (bash)
  * - Error mapping to UluOps error types
  * - Usage metrics in UluOps format
  */
 export class AIProvider {
   /** Initialized AI SDK provider factories, keyed by provider name */
   private providers = new Map<string, (modelId: string) => LanguageModel>();
+
+  /** Anthropic provider instance for accessing provider-defined tools */
+  private anthropicInstance?: AnthropicProvider;
 
   constructor(
     private config: ResolvedConfig,
@@ -101,7 +115,8 @@ export class AIProvider {
    * 1. Resolve model alias → provider:modelId via ModelCatalog
    * 2. Validate required capabilities (if specified)
    * 3. Get AI SDK LanguageModel from provider factory
-   * 4. Call generateText with maxSteps for automatic tool loop
+   * 4. Build provider options (cache control, thinking, etc.)
+   * 5. Call generateText with maxSteps for automatic tool loop
    */
   async generate(options: AIGenerateOptions): Promise<AIGenerateResult> {
     // Apply model override if configured
@@ -119,10 +134,16 @@ export class AIProvider {
     const factory = this.getProviderFactory(resolved.provider);
     const languageModel = factory(resolved.providerModelId);
 
+    // Build provider-specific options (thinking, caching, etc.)
+    const providerOptions = this.buildProviderOptions(resolved, options.providerOptions);
+
+    // Build system message with cache control for Anthropic
+    const system = this.buildSystemMessage(resolved.provider, options.system);
+
     try {
       const result = await generateText({
         model: languageModel,
-        system: options.system,
+        system,
         prompt: options.prompt,
         tools: options.tools,
         maxOutputTokens: options.maxTokens ?? 8192,
@@ -131,6 +152,7 @@ export class AIProvider {
         abortSignal: options.timeoutMs
           ? AbortSignal.timeout(options.timeoutMs)
           : undefined,
+        ...(providerOptions ? { providerOptions } : {}),
       });
 
       // Count tool calls across all steps
@@ -153,6 +175,109 @@ export class AIProvider {
     }
   }
 
+  /**
+   * Create Anthropic bash tool for execution in a target directory.
+   *
+   * Uses Anthropic's provider-defined bash_20250124 tool, which Claude has
+   * built-in knowledge of. Returns undefined if Anthropic provider is not available.
+   */
+  createBashTool(targetDir: string, timeoutMs = 30_000): ToolSet | undefined {
+    if (!this.anthropicInstance) return undefined;
+
+    return {
+      bash: this.anthropicInstance.tools.bash_20250124({
+        execute: async ({ command }) => {
+          try {
+            const { stdout, stderr } = await execAsync(command, {
+              cwd: targetDir,
+              timeout: timeoutMs,
+              maxBuffer: 1024 * 1024, // 1MB
+            });
+            return stdout || stderr || '(no output)';
+          } catch (error) {
+            const err = error as { killed?: boolean; signal?: string; stderr?: string };
+            if (err.killed || err.signal) {
+              return `Command timed out after ${timeoutMs}ms`;
+            }
+            return `Command failed: ${err.stderr || String(error)}`;
+          }
+        },
+      }),
+    };
+  }
+
+  // ─────────────────────────────────────────────────────────────────────────
+  // Provider Options
+  // ─────────────────────────────────────────────────────────────────────────
+
+  /**
+   * Build system message with provider-specific cache control.
+   *
+   * For Anthropic: wraps system text in a SystemModelMessage with
+   * ephemeral cache control. The API ignores cache hints if the
+   * prompt is below the minimum cacheable length (1024 tokens for Sonnet).
+   *
+   * For other providers: passes through as plain string.
+   */
+  private buildSystemMessage(
+    provider: string,
+    systemText: string,
+  ): string | { role: 'system'; content: string; providerOptions: { anthropic: { cacheControl: { type: 'ephemeral' } } } } {
+    if (provider !== 'anthropic') {
+      return systemText;
+    }
+
+    return {
+      role: 'system' as const,
+      content: systemText,
+      providerOptions: {
+        anthropic: {
+          cacheControl: { type: 'ephemeral' as const },
+        },
+      },
+    };
+  }
+
+  /**
+   * Build top-level providerOptions for generateText().
+   *
+   * For Anthropic:
+   * - Auto-enables extended thinking when model has extendedThinking capability
+   * - Merges user-supplied provider options
+   *
+   * For other providers: passes through user options unchanged.
+   */
+  private buildProviderOptions(
+    resolved: ResolvedModel,
+    userOptions?: ProviderOptions,
+  ): ProviderOptions | undefined {
+    if (resolved.provider !== 'anthropic') {
+      return userOptions;
+    }
+
+    const userAnthropicOpts = (userOptions?.anthropic ?? {}) as Record<string, unknown>;
+
+    // Auto-enable extended thinking if model supports it and user hasn't specified
+    if (resolved.capabilities.extendedThinking && !('thinking' in userAnthropicOpts)) {
+      const budgetTokens = this.config.defaultThinkingBudget;
+      return {
+        ...userOptions,
+        anthropic: {
+          ...userAnthropicOpts,
+          thinking: { type: 'enabled' as const, budgetTokens },
+        },
+      };
+    }
+
+    // Return user options if any Anthropic-specific options exist
+    if (Object.keys(userAnthropicOpts).length > 0) {
+      return userOptions;
+    }
+
+    // No special options needed
+    return userOptions;
+  }
+
   // ─────────────────────────────────────────────────────────────────────────
   // Provider Management
   // ─────────────────────────────────────────────────────────────────────────
@@ -165,6 +290,7 @@ export class AIProvider {
     for (const [providerName, creds] of Object.entries(aiConfig.providers)) {
       if (providerName === 'anthropic') {
         const anthropic = createAnthropic({ apiKey: creds.apiKey });
+        this.anthropicInstance = anthropic;
         this.providers.set('anthropic', (modelId) => anthropic(modelId));
       }
       // Non-anthropic providers are loaded lazily in ensureProvider()
