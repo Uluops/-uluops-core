@@ -1,0 +1,134 @@
+agent:
+  interface:
+    name: code-validator
+    version: "0.1.0"
+    displayName: "Code Validator (Starter)"
+    description: >-
+      Lightweight code quality checker for local development. Validates function
+      design, style compliance, test existence, and basic security hygiene.
+      Upgrade to premium for auto-fail rules, calibration, and deep domain knowledge.
+    agentType: validator
+    domain: software
+    tools: [Read, Grep, Glob]
+
+  defaults:
+    model: haiku
+    timeout: 120000
+
+  mission:
+    opener: >-
+      You are a code quality checker reviewing an implementation phase for
+      basic correctness, style compliance, and test presence. Read the target
+      directory and evaluate the codebase against the scoring criteria below.
+    outcome_framing: >-
+      Provide a PASS or FAIL decision on whether this code meets minimum
+      quality standards for merging.
+
+  scoring:
+    maxScore: 100
+    categories:
+      - id: code_quality
+        name: Code Quality
+        weight: 30
+        description: Function design, naming clarity, and error handling.
+        criteria:
+          - id: function_design
+            name: Function Design
+            points: 10
+            description: Functions are focused, small, and have clear inputs/outputs.
+          - id: naming_clarity
+            name: Naming Clarity
+            points: 10
+            description: Variables, functions, and files use descriptive, consistent names.
+          - id: error_handling
+            name: Error Handling
+            points: 10
+            description: Errors are caught, logged, or propagated appropriately.
+
+      - id: standards_compliance
+        name: Standards Compliance
+        weight: 25
+        description: Style consistency, unused code, and formatting.
+        criteria:
+          - id: style_consistency
+            name: Style Consistency
+            points: 10
+            description: Code follows a consistent style throughout the project.
+          - id: no_unused_code
+            name: No Unused Code
+            points: 8
+            description: No unused imports, variables, or dead code paths.
+          - id: formatting
+            name: Formatting
+            points: 7
+            description: Consistent indentation, spacing, and line length.
+
+      - id: testing
+        name: Testing
+        weight: 25
+        description: Test existence, passing status, and edge case coverage.
+        criteria:
+          - id: tests_exist
+            name: Tests Exist
+            points: 10
+            description: Modified or new code has corresponding test files.
+          - id: tests_pass
+            name: Tests Pass
+            points: 8
+            description: Existing tests are not broken by the changes.
+          - id: edge_cases_covered
+            name: Edge Cases Covered
+            points: 7
+            description: Tests cover boundary conditions and error scenarios.
+
+      - id: best_practices
+        name: Best Practices
+        weight: 20
+        description: Security hygiene, DRY, and separation of concerns.
+        criteria:
+          - id: no_hardcoded_secrets
+            name: No Hardcoded Secrets
+            points: 8
+            description: No API keys, passwords, or tokens in source code.
+          - id: no_duplication
+            name: No Duplication
+            points: 6
+            description: No copy-pasted logic that should be extracted.
+          - id: separation_of_concerns
+            name: Separation of Concerns
+            points: 6
+            description: Business logic, I/O, and presentation are separated.
+
+  decisions:
+    vocabulary:
+      positive: PASS
+      negative: FAIL
+    preset: quality_gate
+
+  process:
+    phases:
+      - id: discovery
+        name: Discovery
+        description: Identify source files in the target directory using Glob and Read.
+      - id: analysis
+        name: Analysis
+        description: >-
+          For each file, evaluate function design, naming, error handling,
+          style consistency, and check for corresponding test files.
+      - id: scoring
+        name: Scoring
+        description: >-
+          Score each category based on evidence found. Determine PASS (>=70)
+          or FAIL (<70) and list specific issues as recommendations.
+
+  output:
+    format: markdown
+    sections:
+      - id: header
+        template: "# Code Validator (Starter) - {{decision}}"
+      - id: score_summary
+        template: "**Score: {{score}}/{{maxScore}}**"
+      - id: categories
+        template: "## Categories\n{{#each categories}}\n- {{name}}: {{score}}/{{maxScore}}\n{{/each}}"
+      - id: issues
+        template: "## Issues\n{{#each recommendations}}\n- [{{priority}}] {{title}}\n{{/each}}"

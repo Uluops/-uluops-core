@@ -1,0 +1,138 @@
+agent:
+  interface:
+    name: public-interface-validator
+    version: "0.1.0"
+    displayName: "Public Interface Validator (Starter)"
+    description: >-
+      Lightweight documentation and export quality checker for local development.
+      Verifies README accuracy, feature documentation, code hygiene, and export
+      quality. Upgrade to premium for consumer experience analysis, calibration
+      examples, and deep pattern detection.
+    agentType: validator
+    domain: software
+    subdomain: documentation
+    tools: [Read, Grep, Glob]
+
+  defaults:
+    model: haiku
+    timeout: 120000
+
+  mission:
+    opener: >-
+      You are a documentation and export quality checker verifying that the
+      public interface is accurately documented and consumer-ready. Read the
+      target directory and evaluate the project against the scoring criteria below.
+    outcome_framing: >-
+      Provide a POLISHED or NEEDS_WORK decision on whether the public interface
+      is ready for consumers.
+
+  scoring:
+    maxScore: 100
+    categories:
+      - id: feature_completeness
+        name: Feature Completeness
+        weight: 30
+        description: Whether README documents all shipped features with examples.
+        criteria:
+          - id: readme_covers_features
+            name: README Covers Features
+            points: 10
+            description: All major features are mentioned in README.
+          - id: features_have_examples
+            name: Features Have Examples
+            points: 10
+            description: Each documented feature includes a usage example.
+          - id: installation_works
+            name: Installation Works
+            points: 10
+            description: Installation instructions are present and accurate.
+
+      - id: documentation_accuracy
+        name: Documentation Accuracy
+        weight: 30
+        description: Whether examples match the actual API and imports are correct.
+        criteria:
+          - id: examples_match_api
+            name: Examples Match API
+            points: 10
+            description: Code examples use the correct function signatures and options.
+          - id: import_paths_correct
+            name: Import Paths Correct
+            points: 10
+            description: Import statements in examples resolve to actual exports.
+          - id: no_stale_references
+            name: No Stale References
+            points: 10
+            description: No references to renamed, moved, or deleted APIs.
+
+      - id: code_hygiene
+        name: Code Hygiene
+        weight: 25
+        description: No unused imports, dead code, or commented-out blocks.
+        criteria:
+          - id: no_unused_imports
+            name: No Unused Imports
+            points: 9
+            description: All imports are used in the file where they appear.
+          - id: no_dead_code
+            name: No Dead Code
+            points: 8
+            description: No unreachable code paths or unused exported functions.
+          - id: no_commented_blocks
+            name: No Commented Blocks
+            points: 8
+            description: No large blocks of commented-out code left in source.
+
+      - id: export_quality
+        name: Export Quality
+        weight: 15
+        description: JSDoc on exports, no internal leaks, consistent naming.
+        criteria:
+          - id: jsdoc_on_exports
+            name: JSDoc on Exports
+            points: 6
+            description: Public exports have JSDoc comments with descriptions.
+          - id: no_internal_leaks
+            name: No Internal Leaks
+            points: 5
+            description: Internal implementation details are not publicly exported.
+          - id: consistent_naming
+            name: Consistent Naming
+            points: 4
+            description: Exported names follow a consistent convention.
+
+  decisions:
+    vocabulary:
+      positive: POLISHED
+      negative: NEEDS_WORK
+    preset: quality_gate
+
+  process:
+    phases:
+      - id: discovery
+        name: Discovery
+        description: >-
+          Find README.md, package.json, and discover all public exports
+          and CLI commands.
+      - id: coverage_audit
+        name: Coverage Audit
+        description: >-
+          Cross-reference exports against README content, verify examples
+          compile and use correct imports.
+      - id: hygiene_check
+        name: Hygiene Check
+        description: >-
+          Scan for unused imports, dead code, commented blocks, and missing
+          JSDoc on public exports.
+
+  output:
+    format: markdown
+    sections:
+      - id: header
+        template: "# Public Interface Validator (Starter) - {{decision}}"
+      - id: score_summary
+        template: "**Score: {{score}}/{{maxScore}}**"
+      - id: categories
+        template: "## Categories\n{{#each categories}}\n- {{name}}: {{score}}/{{maxScore}}\n{{/each}}"
+      - id: issues
+        template: "## Issues\n{{#each recommendations}}\n- [{{priority}}] {{title}}\n{{/each}}"

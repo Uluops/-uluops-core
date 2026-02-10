@@ -1,0 +1,144 @@
+agent:
+  interface:
+    name: security-analyst
+    version: "0.1.0"
+    displayName: "Security Analyst (Starter)"
+    description: >-
+      Lightweight security scanner for local development. Checks for hardcoded
+      secrets, injection vulnerabilities, authentication gaps, and dependency
+      health. Upgrade to premium for CWE cross-references, auto-fail conditions,
+      OWASP deep analysis, and calibration examples.
+    agentType: validator
+    domain: security
+    tools: [Read, Grep, Glob]
+
+  defaults:
+    model: haiku
+    timeout: 120000
+
+  mission:
+    opener: >-
+      You are a security scanner checking for common vulnerabilities before
+      deployment: hardcoded secrets, injection flaws, authentication gaps, and
+      dependency risks. Read the target directory and evaluate the codebase
+      against the scoring criteria below.
+    outcome_framing: >-
+      Provide a SECURE, CONDITIONAL, or BLOCKED decision on deployment readiness
+      based on the severity of findings.
+
+  scoring:
+    maxScore: 100
+    categories:
+      - id: secrets_credentials
+        name: Secrets & Credentials
+        weight: 30
+        description: No hardcoded secrets, API keys, or credentials in source code.
+        criteria:
+          - id: no_hardcoded_secrets
+            name: No Hardcoded Secrets
+            points: 10
+            description: No API keys, passwords, or tokens appear in source files.
+          - id: no_env_in_git
+            name: No .env in Git
+            points: 10
+            description: Environment files are gitignored and not committed.
+          - id: secrets_from_env
+            name: Secrets from Environment
+            points: 10
+            description: Credentials are loaded from environment variables or secret stores.
+
+      - id: injection_prevention
+        name: Injection Prevention
+        weight: 30
+        description: No SQL injection, command injection, or XSS vulnerabilities.
+        criteria:
+          - id: no_sql_injection
+            name: No SQL Injection
+            points: 10
+            description: Database queries use parameterized statements, not string concatenation.
+          - id: no_command_injection
+            name: No Command Injection
+            points: 10
+            description: Shell commands do not include unsanitized user input.
+          - id: no_xss
+            name: No XSS
+            points: 10
+            description: User input is escaped or sanitized before rendering in HTML.
+
+      - id: auth_access
+        name: Auth & Access
+        weight: 25
+        description: Authentication and authorization on protected routes.
+        criteria:
+          - id: auth_on_protected_routes
+            name: Auth on Protected Routes
+            points: 10
+            description: Sensitive endpoints require authentication middleware.
+          - id: ownership_checks
+            name: Ownership Checks
+            points: 8
+            description: Users can only modify resources they own.
+          - id: password_hashing
+            name: Password Hashing
+            points: 7
+            description: Passwords are hashed with bcrypt/scrypt/argon2, never stored in plaintext.
+
+      - id: dependencies
+        name: Dependencies
+        weight: 15
+        description: No known critical vulnerabilities in dependencies.
+        criteria:
+          - id: no_critical_vulns
+            name: No Critical Vulnerabilities
+            points: 6
+            description: No npm/pip packages with critical severity CVEs.
+          - id: no_high_vulns
+            name: No High Vulnerabilities
+            points: 5
+            description: No npm/pip packages with high severity CVEs.
+          - id: packages_current
+            name: Packages Current
+            points: 4
+            description: Dependencies are reasonably up to date.
+
+  decisions:
+    vocabulary:
+      positive: SECURE
+      negative: BLOCKED
+      conditional: CONDITIONAL
+    preset: security
+
+  process:
+    phases:
+      - id: secrets_scan
+        name: Secrets Scan
+        description: >-
+          Grep for hardcoded API keys, passwords, AWS credentials, and check
+          that .env files are gitignored.
+      - id: injection_scan
+        name: Injection Scan
+        description: >-
+          Check for SQL template literals with user input, exec/spawn calls
+          with unsanitized arguments, and innerHTML/dangerouslySetInnerHTML usage.
+      - id: auth_review
+        name: Auth Review
+        description: >-
+          Verify authentication middleware on protected routes and ownership
+          checks on mutation endpoints.
+      - id: dependency_check
+        name: Dependency Check
+        description: >-
+          Review package.json for known vulnerable packages and check if
+          lock files are committed.
+
+  output:
+    format: markdown
+    sections:
+      - id: header
+        template: "# Security Analyst (Starter) - {{decision}}"
+      - id: score_summary
+        template: "**Score: {{score}}/{{maxScore}}**"
+      - id: categories
+        template: "## Categories\n{{#each categories}}\n- {{name}}: {{score}}/{{maxScore}}\n{{/each}}"
+      - id: issues
+        template: "## Issues\n{{#each recommendations}}\n- [{{priority}}] {{title}}\n{{/each}}"

@@ -1,0 +1,142 @@
+agent:
+  interface:
+    name: docs-validator
+    version: "0.1.0"
+    displayName: "Docs Validator (Starter)"
+    description: >-
+      Lightweight documentation quality checker for local development. Validates
+      JSDoc/TSDoc coverage on public exports, README presence and structure,
+      changelog conventions, and markdown quality. Complements public-interface-validator.
+    agentType: validator
+    domain: documentation
+    tools: [Read, Grep, Glob]
+
+  defaults:
+    model: haiku
+    timeout: 120000
+
+  mission:
+    opener: >-
+      You are a documentation quality checker ensuring that code documentation,
+      README, changelog, and markdown files meet minimum quality standards for
+      maintainability. Read the target directory and evaluate documentation
+      against the scoring criteria below.
+    outcome_framing: >-
+      Provide a DOCUMENTED or UNDERDOCUMENTED decision on whether documentation
+      meets quality standards.
+
+  scoring:
+    maxScore: 100
+    categories:
+      - id: jsdoc_coverage
+        name: JSDoc/TSDoc Coverage
+        weight: 30
+        description: Whether public exports have proper documentation comments.
+        criteria:
+          - id: exports_have_jsdoc
+            name: Exports Have JSDoc
+            points: 10
+            description: All public exports have JSDoc/TSDoc comments.
+          - id: params_documented
+            name: Parameters Documented
+            points: 10
+            description: Function parameters have @param tags with descriptions.
+          - id: returns_documented
+            name: Returns Documented
+            points: 10
+            description: Functions with return values have @returns tags.
+
+      - id: readme_quality
+        name: README Quality
+        weight: 30
+        description: Whether README exists and has essential sections.
+        criteria:
+          - id: readme_exists
+            name: README Exists
+            points: 10
+            description: A README.md file exists in the project root.
+          - id: has_installation
+            name: Has Installation Section
+            points: 10
+            description: README includes installation or getting started instructions.
+          - id: has_usage_examples
+            name: Has Usage Examples
+            points: 10
+            description: README includes at least one code example showing basic usage.
+
+      - id: changelog
+        name: Changelog
+        weight: 20
+        description: Whether a changelog exists and follows conventions.
+        criteria:
+          - id: changelog_exists
+            name: Changelog Exists
+            points: 8
+            description: A CHANGELOG.md file exists in the project root.
+          - id: follows_conventions
+            name: Follows Conventions
+            points: 6
+            description: Changelog follows Keep a Changelog or similar format.
+          - id: versions_current
+            name: Versions Current
+            points: 6
+            description: Latest changelog entry matches the current package version.
+
+      - id: markdown_quality
+        name: Markdown Quality
+        weight: 20
+        description: Whether markdown files are well-formed and navigable.
+        criteria:
+          - id: no_broken_links
+            name: No Broken Links
+            points: 8
+            description: Internal links and relative references resolve correctly.
+          - id: headings_hierarchical
+            name: Headings Hierarchical
+            points: 6
+            description: Heading levels follow a logical hierarchy without skipping levels.
+          - id: code_blocks_labeled
+            name: Code Blocks Labeled
+            points: 6
+            description: Fenced code blocks specify a language for syntax highlighting.
+
+  decisions:
+    vocabulary:
+      positive: DOCUMENTED
+      negative: UNDERDOCUMENTED
+    preset: quality_gate
+
+  process:
+    phases:
+      - id: jsdoc_scan
+        name: JSDoc Scan
+        description: >-
+          Find all public exports and check for preceding doc comments with
+          @param and @returns tags.
+      - id: readme_check
+        name: README Check
+        description: >-
+          Verify README.md exists, has installation section, and includes
+          usage examples.
+      - id: changelog_check
+        name: Changelog Check
+        description: >-
+          Check CHANGELOG.md exists, follows Keep a Changelog format, and
+          latest version matches package.json.
+      - id: markdown_lint
+        name: Markdown Lint
+        description: >-
+          Check for broken internal links, heading hierarchy, and code block
+          language labels across all markdown files.
+
+  output:
+    format: markdown
+    sections:
+      - id: header
+        template: "# Docs Validator (Starter) - {{decision}}"
+      - id: score_summary
+        template: "**Score: {{score}}/{{maxScore}}**"
+      - id: categories
+        template: "## Categories\n{{#each categories}}\n- {{name}}: {{score}}/{{maxScore}}\n{{/each}}"
+      - id: issues
+        template: "## Issues\n{{#each recommendations}}\n- [{{priority}}] {{title}}\n{{/each}}"
