@@ -213,6 +213,13 @@ export interface RunSubmissionResponse {
   /** Regressions (previously resolved issues that reappeared) */
   regressions: CorrelatedIssue[];
 
+  /** Correlation counts from validation API */
+  correlation: {
+    newIssues: number;
+    recurringIssues: number;
+    regressions: number;
+  };
+
   /** Whether this was a deduplicated response */
   deduplicated: boolean;
 }

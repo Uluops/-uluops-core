@@ -178,8 +178,9 @@ export class ModelCatalog {
       const result = await this.sdk.models.resolveAlias(alias);
       this.aliasCache.set(alias, result);
       return result;
-    } catch {
-      return null;
+    } catch (error) {
+      if (this.isNotFoundError(error)) return null;
+      throw error;
     }
   }
 
@@ -194,9 +195,9 @@ export class ModelCatalog {
       ...(opts?.preferredProvider ? { provider: opts.preferredProvider } : {}),
     });
 
-    if (models.models.length === 0) return null;
+    const model = models.models[0];
+    if (!model) return null;
 
-    const model = models.models[0]!;
     const resolved: ResolvedModel = {
       provider: model.provider,
       modelId: model.modelId,
@@ -222,9 +223,18 @@ export class ModelCatalog {
       const model = await this.sdk.models.get(provider, modelId);
       this.modelCache.set(key, model);
       return model;
-    } catch {
-      return null;
+    } catch (error) {
+      if (this.isNotFoundError(error)) return null;
+      throw error;
     }
+  }
+
+  /** Check if an error is a 404/not-found from the registry API */
+  private isNotFoundError(error: unknown): boolean {
+    if (typeof error === 'object' && error !== null && 'status' in error) {
+      return (error as { status: number }).status === 404;
+    }
+    return false;
   }
 
   private toResolvedModel(alias: AliasResolution, input: string): ResolvedModel {

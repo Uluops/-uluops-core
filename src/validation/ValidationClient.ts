@@ -44,6 +44,11 @@ export class ValidationClient {
       newIssues: [],
       recurringIssues: [],
       regressions: [],
+      correlation: {
+        newIssues: response.correlation?.newIssues ?? 0,
+        recurringIssues: response.correlation?.recurringIssues ?? 0,
+        regressions: response.correlation?.regressions ?? 0,
+      },
       deduplicated: response.deduplicated,
     };
   }
@@ -112,6 +117,7 @@ export class ValidationClient {
       newIssues: [],
       recurringIssues: [],
       regressions: [],
+      correlation: { newIssues: 0, recurringIssues: 0, regressions: 0 },
       deduplicated: false,
     };
   }
@@ -189,6 +195,11 @@ export class ValidationClient {
       })),
       recurringIssues: [],
       regressions: [],
+      correlation: {
+        newIssues: submission.result.recommendations.length,
+        recurringIssues: 0,
+        regressions: 0,
+      },
       deduplicated: false,
     };
   }

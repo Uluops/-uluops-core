@@ -40,7 +40,8 @@ export class CommandExecutor {
 
     // 3. Single-agent: delegate to AgentExecutor
     if (agentRefs.length === 1) {
-      const ref = agentRefs[0]!;
+      const ref = agentRefs[0];
+      if (!ref) throw new Error('Agent refs array is empty despite length check');
       const [name, version] = parseRef(ref);
       const agentResolved = await this.registry.resolve(name, version, 'agent');
 

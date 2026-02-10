@@ -4,6 +4,13 @@ import { ModelNotFoundError, CapabilityError } from '../../src/errors/index.js';
 import type { RegistryClient as RegistrySdk } from '@uluops/registry-sdk';
 import type { Model, AliasResolution, ModelCapabilities } from '@uluops/registry-sdk';
 
+/** Simulate a 404 error from the registry SDK (has status property like ApiError) */
+function makeNotFoundError(message = 'Not found'): Error {
+  const err = new Error(message);
+  (err as Error & { status: number }).status = 404;
+  return err;
+}
+
 // ─── Test Data Factories ─────────────────────────────────────────────────────
 
 function makeModel(overrides?: Partial<Model>): Model {
@@ -97,7 +104,7 @@ describe('ModelCatalog', () => {
 
     it('falls through to tier when alias not found', async () => {
       const sdk = mockSdk({
-        resolveAlias: vi.fn().mockRejectedValue(new Error('Not found')),
+        resolveAlias: vi.fn().mockRejectedValue(makeNotFoundError()),
         listModels: vi.fn().mockResolvedValue({ models: [makeModel({ tier: 'budget' })] }),
       });
       const catalog = new ModelCatalog(sdk);
@@ -126,7 +133,7 @@ describe('ModelCatalog', () => {
 
     it('allows unregistered models with default capabilities', async () => {
       const sdk = mockSdk({
-        getModel: vi.fn().mockRejectedValue(new Error('Not found')),
+        getModel: vi.fn().mockRejectedValue(makeNotFoundError()),
       });
       const catalog = new ModelCatalog(sdk);
 
@@ -157,7 +164,7 @@ describe('ModelCatalog', () => {
     it('resolves a valid tier name to first matching model', async () => {
       const premiumModel = makeModel({ tier: 'premium' });
       const sdk = mockSdk({
-        resolveAlias: vi.fn().mockRejectedValue(new Error('Not an alias')),
+        resolveAlias: vi.fn().mockRejectedValue(makeNotFoundError('Not an alias')),
         listModels: vi.fn().mockResolvedValue({ models: [premiumModel] }),
       });
       const catalog = new ModelCatalog(sdk);
@@ -171,7 +178,7 @@ describe('ModelCatalog', () => {
     it('passes preferredProvider to tier list call', async () => {
       const listModels = vi.fn().mockResolvedValue({ models: [makeModel()] });
       const sdk = mockSdk({
-        resolveAlias: vi.fn().mockRejectedValue(new Error('Not an alias')),
+        resolveAlias: vi.fn().mockRejectedValue(makeNotFoundError('Not an alias')),
         listModels,
       });
       const catalog = new ModelCatalog(sdk);
@@ -186,7 +193,7 @@ describe('ModelCatalog', () => {
 
     it('rejects invalid tier names', async () => {
       const sdk = mockSdk({
-        resolveAlias: vi.fn().mockRejectedValue(new Error('Not an alias')),
+        resolveAlias: vi.fn().mockRejectedValue(makeNotFoundError('Not an alias')),
       });
       const catalog = new ModelCatalog(sdk);
 
@@ -195,7 +202,7 @@ describe('ModelCatalog', () => {
 
     it('throws ModelNotFoundError when tier has no models', async () => {
       const sdk = mockSdk({
-        resolveAlias: vi.fn().mockRejectedValue(new Error('Not an alias')),
+        resolveAlias: vi.fn().mockRejectedValue(makeNotFoundError('Not an alias')),
         listModels: vi.fn().mockResolvedValue({ models: [] }),
       });
       const catalog = new ModelCatalog(sdk);
@@ -207,7 +214,7 @@ describe('ModelCatalog', () => {
     it('accepts all valid tier names', async () => {
       for (const tier of ['budget', 'standard', 'premium', 'reasoning']) {
         const sdk = mockSdk({
-          resolveAlias: vi.fn().mockRejectedValue(new Error('Not an alias')),
+          resolveAlias: vi.fn().mockRejectedValue(makeNotFoundError('Not an alias')),
           listModels: vi.fn().mockResolvedValue({ models: [makeModel({ tier: tier as Model['tier'] })] }),
         });
         const catalog = new ModelCatalog(sdk);
@@ -289,7 +296,7 @@ describe('ModelCatalog', () => {
 
     it('validates capabilities for explicit provider:modelId (unregistered)', async () => {
       const sdk = mockSdk({
-        getModel: vi.fn().mockRejectedValue(new Error('Not found')),
+        getModel: vi.fn().mockRejectedValue(makeNotFoundError()),
       });
       const catalog = new ModelCatalog(sdk);
 
@@ -301,7 +308,7 @@ describe('ModelCatalog', () => {
 
     it('validates capabilities for tier resolution', async () => {
       const sdk = mockSdk({
-        resolveAlias: vi.fn().mockRejectedValue(new Error('Not an alias')),
+        resolveAlias: vi.fn().mockRejectedValue(makeNotFoundError('Not an alias')),
         listModels: vi.fn().mockResolvedValue({
           models: [makeModel({ capabilities: { vision: false, tools: true, streaming: true, extendedThinking: false } })],
         }),
@@ -337,7 +344,7 @@ describe('ModelCatalog', () => {
   describe('error cases', () => {
     it('throws ModelNotFoundError for unknown input', async () => {
       const sdk = mockSdk({
-        resolveAlias: vi.fn().mockRejectedValue(new Error('Not found')),
+        resolveAlias: vi.fn().mockRejectedValue(makeNotFoundError()),
       });
       const catalog = new ModelCatalog(sdk);
 
@@ -349,11 +356,31 @@ describe('ModelCatalog', () => {
 
     it('error message suggests listAliases()', async () => {
       const sdk = mockSdk({
-        resolveAlias: vi.fn().mockRejectedValue(new Error('Not found')),
+        resolveAlias: vi.fn().mockRejectedValue(makeNotFoundError()),
       });
       const catalog = new ModelCatalog(sdk);
 
       await expect(catalog.resolve('bad')).rejects.toThrow('listAliases()');
+    });
+
+    it('re-throws network/auth errors from resolveAlias instead of masking as null', async () => {
+      const networkError = new Error('Network timeout');
+      const sdk = mockSdk({
+        resolveAlias: vi.fn().mockRejectedValue(networkError),
+      });
+      const catalog = new ModelCatalog(sdk);
+
+      await expect(catalog.resolve('sonnet')).rejects.toThrow('Network timeout');
+    });
+
+    it('re-throws non-404 errors from getModel instead of masking as null', async () => {
+      const authError = Object.assign(new Error('Unauthorized'), { status: 401 });
+      const sdk = mockSdk({
+        getModel: vi.fn().mockRejectedValue(authError),
+      });
+      const catalog = new ModelCatalog(sdk);
+
+      await expect(catalog.resolve('anthropic:claude-sonnet-4-5')).rejects.toThrow('Unauthorized');
     });
   });
 

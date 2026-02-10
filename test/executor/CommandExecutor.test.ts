@@ -344,6 +344,44 @@ describe('CommandExecutor', () => {
       expect(result.score).toBe(49);
       expect(result.decision).toBe('FAIL');
     });
+
+    it('PASS at maximum score (score=100)', async () => {
+      const results = [
+        makeValidatorResult({ name: 'agent-a', score: 100 }),
+        makeValidatorResult({ name: 'agent-b', score: 100 }),
+      ];
+      const agentExec = makeAgentExecutor(results);
+      const registry = makeRegistry();
+      const executor = new CommandExecutor(agentExec, registry);
+
+      const cmdDef = makeCommandDef({
+        agents: ['agent-a@1.0.0', 'agent-b@1.0.0'],
+      });
+
+      const result = await executor.execute(cmdDef, { target: '/tmp/test' });
+
+      expect(result.score).toBe(100);
+      expect(result.decision).toBe('PASS');
+    });
+
+    it('FAIL at minimum score (score=0)', async () => {
+      const results = [
+        makeValidatorResult({ name: 'agent-a', score: 0 }),
+        makeValidatorResult({ name: 'agent-b', score: 0 }),
+      ];
+      const agentExec = makeAgentExecutor(results);
+      const registry = makeRegistry();
+      const executor = new CommandExecutor(agentExec, registry);
+
+      const cmdDef = makeCommandDef({
+        agents: ['agent-a@1.0.0', 'agent-b@1.0.0'],
+      });
+
+      const result = await executor.execute(cmdDef, { target: '/tmp/test' });
+
+      expect(result.score).toBe(0);
+      expect(result.decision).toBe('FAIL');
+    });
   });
 
   describe('preflight checks', () => {

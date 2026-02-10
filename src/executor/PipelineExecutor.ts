@@ -38,10 +38,16 @@ export class PipelineExecutor {
       startTime: Date.now(),
     };
 
-    // Start execution in background (fire-and-forget)
-    this.executeAsync(resolved, input, state);
+    // Start execution in background, capturing errors into state
+    const execution = this.executeAsync(resolved, input, state);
+    execution.catch((error) => {
+      if (state.status === 'running') {
+        state.status = 'failed';
+        state.error = error instanceof Error ? error.message : String(error);
+      }
+    });
 
-    return new PipelineHandle(pipelineId, state);
+    return new PipelineHandle(pipelineId, state, execution);
   }
 
   /**
@@ -192,10 +198,12 @@ export class PipelineExecutor {
 class PipelineHandle implements IPipelineHandle {
   readonly executionId: string;
   private state: PipelineState;
+  private execution: Promise<void>;
 
-  constructor(executionId: string, state: PipelineState) {
+  constructor(executionId: string, state: PipelineState, execution: Promise<void>) {
     this.executionId = executionId;
     this.state = state;
+    this.execution = execution;
   }
 
   async status(): Promise<PipelineResult> {
@@ -206,10 +214,9 @@ class PipelineHandle implements IPipelineHandle {
     return this.state.status !== 'running' && this.state.status !== 'pending';
   }
 
-  async wait(pollIntervalMs = 5000): Promise<PipelineResult> {
-    while (!this.isComplete()) {
-      await new Promise(resolve => setTimeout(resolve, pollIntervalMs));
-    }
+  async wait(_pollIntervalMs?: number): Promise<PipelineResult> {
+    // Await the actual execution promise instead of polling
+    await this.execution;
 
     const result = this.buildResult();
 

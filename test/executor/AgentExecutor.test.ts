@@ -335,5 +335,35 @@ describe('AgentExecutor', () => {
         expect(result.decision).toBeDefined();
       }
     });
+
+    it('handles non-JSON AI response gracefully', async () => {
+      const ai = mockAIProvider({
+        text: 'This is not JSON at all, just plain text analysis.',
+      });
+      const executor = new AgentExecutor(baseConfig, ai, noopLogger);
+
+      const result = await executor.execute(makeValidatorDef(), { target: tmpDir });
+
+      // Should still return a result with fallback defaults
+      expect(result.type).toBe('agent');
+      expect(result.name).toBe('test-validator');
+      if (result.agentType === 'validator') {
+        expect(result.score).toBe(0);
+      }
+    });
+
+    it('handles non-existent target directory gracefully', async () => {
+      const ai = mockAIProvider();
+      const executor = new AgentExecutor(baseConfig, ai, noopLogger);
+
+      // Non-existent target should still produce a result (tools handle missing dirs)
+      const result = await executor.execute(
+        makeValidatorDef(),
+        { target: '/tmp/nonexistent-dir-xyz-99999' },
+      );
+
+      expect(result.type).toBe('agent');
+      expect(result.name).toBe('test-validator');
+    });
   });
 });

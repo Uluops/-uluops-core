@@ -83,7 +83,7 @@ function checkEnvVar(check: PreflightCheck): void {
     throw new PreflightError('env_var check requires a var name', 'env_var');
   }
 
-  if (!process.env[check.var]) {
+  if (process.env[check.var] === undefined) {
     throw new PreflightError(
       check.message ?? `Required environment variable not set: ${check.var}`,
       'env_var',

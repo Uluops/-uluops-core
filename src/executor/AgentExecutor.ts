@@ -164,7 +164,7 @@ export class AgentExecutor {
       maxSteps: options?.maxSteps ?? 50,
       thresholds: this.resolveThresholds(
         options?.thresholds,
-        'thresholds' in defaults ? defaults.thresholds : undefined,
+        defaults && 'thresholds' in defaults ? defaults.thresholds : undefined,
       ),
       trackResults: options?.trackResults ?? this.config.trackingEnabled,
       project: options?.project ?? this.config.defaultProject,

@@ -47,9 +47,10 @@ export class RegistryClient {
   ): Promise<ResolvedDefinition> {
     const cacheKey = `${type ?? 'any'}:${name}@${version ?? 'latest'}`;
 
-    if (this.cache.has(cacheKey)) {
+    const cached = this.cache.get(cacheKey);
+    if (cached) {
       this.logger.debug(`Cache hit: ${cacheKey}`);
-      return this.cache.get(cacheKey)!;
+      return cached;
     }
 
     // Try local resolution if configured
@@ -143,7 +144,14 @@ export class RegistryClient {
         continue;
       }
 
-      const definition = yaml.parse(yamlContent) as Record<string, unknown>;
+      let definition: Record<string, unknown>;
+      try {
+        definition = yaml.parse(yamlContent) as Record<string, unknown>;
+      } catch (parseError) {
+        throw new Error(
+          `Failed to parse YAML at ${candidate.path}: ${parseError instanceof Error ? parseError.message : String(parseError)}`,
+        );
+      }
       const hash = this.computeHash(yamlContent);
       this.logger.debug(`Resolved locally: ${name} @ ${candidate.path}`);
 
@@ -196,7 +204,9 @@ export class RegistryClient {
         );
       }
 
-      resolvedType = matches[0]!.type as DefinitionType;
+      const match = matches[0];
+      if (!match) throw new Error(`Definition "${name}" not found in registry`);
+      resolvedType = match.type as DefinitionType;
     }
 
     // Fetch definition with YAML and runtime
@@ -219,7 +229,7 @@ export class RegistryClient {
       version: def.version,
       hash: def.hash,
       yaml: def.yaml ?? '',
-      definition: (def.yaml ? yaml.parse(def.yaml) : {}) as ResolvedDefinition['definition'],
+      definition: (def.yaml ? this.safeParseYaml(def.yaml, name) : {}) as unknown as ResolvedDefinition['definition'],
       runtime: { prompt: rendered.markdown } as ResolvedDefinition['runtime'],
       domain: (def.domain ?? 'general') as ResolvedDefinition['domain'],
       agentType: (def.agentType ?? undefined) as ResolvedDefinition['agentType'],
@@ -229,6 +239,16 @@ export class RegistryClient {
   // ─────────────────────────────────────────────────────────────────────────────
   // Private: Hashing
   // ─────────────────────────────────────────────────────────────────────────────
+
+  private safeParseYaml(yamlContent: string, context: string): Record<string, unknown> {
+    try {
+      return yaml.parse(yamlContent) as Record<string, unknown>;
+    } catch (error) {
+      throw new Error(
+        `Failed to parse YAML for "${context}": ${error instanceof Error ? error.message : String(error)}`,
+      );
+    }
+  }
 
   private computeHash(yamlContent: string): string {
     const normalized = this.normalizeYaml(yamlContent);
@@ -401,7 +421,7 @@ export class RegistryClient {
         for (const file of files) {
           if (file.endsWith(ext)) {
             const content = await fs.readFile(path.join(baseDir, file), 'utf-8');
-            const def = yaml.parse(content) as Record<string, unknown>;
+            const def = this.safeParseYaml(content, file);
             const summary = this.extractSummary(def, type as DefinitionType, file.replace(ext, ''));
 
             if (!filter?.domain || summary.domain === filter.domain) {
