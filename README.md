@@ -4,7 +4,7 @@
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](LICENSE)
 [![Node.js Version](https://img.shields.io/node/v/@uluops/core)](https://nodejs.org)
 [![TypeScript](https://img.shields.io/badge/TypeScript-5.7+-blue.svg)](https://www.typescriptlang.org/)
-[![Tests](https://img.shields.io/badge/tests-184%20passing-brightgreen)](test/)
+[![Tests](https://img.shields.io/badge/tests-290%20passing-brightgreen)](test/)
 
 The foundational execution engine for UluOps. Orchestrates AI-powered code analysis through a 4-layer execution hierarchy (Agent > Command > Workflow > Pipeline), manages LLM tool loops via Vercel AI SDK, and integrates with UluOps Registry and Validation services.
 
@@ -199,6 +199,13 @@ const info = await client.describe('code-validator');
 // Query validation history
 const history = await client.getHistory('my-project');
 
+// Get details for a specific run
+const run = await client.getRun('run-uuid');
+
+// Preview what a submission would do (dry run)
+const preview = await client.validateRun('my-project', 'post-implementation', result);
+console.log(preview.wouldCreate, preview.validationErrors);
+
 // Submit results manually
 await client.submitResults('my-project', 'custom', result);
 ```
@@ -365,7 +372,7 @@ npm install
 # Type check
 npm run typecheck
 
-# Run tests (184 tests)
+# Run tests (290 tests)
 npm test
 
 # Run tests in watch mode

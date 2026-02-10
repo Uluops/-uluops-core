@@ -269,6 +269,20 @@ export class UluOpsClient {
     return this.validation.getHistory(project, options);
   }
 
+  /** Get details for a specific validation run by ID. */
+  async getRun(runId: string): Promise<RunSubmissionResponse> {
+    return this.validation.getRun(runId);
+  }
+
+  /** Preview what a submission would do without saving (dry run). */
+  async validateRun(
+    project: string,
+    workflowType: string,
+    result: ExecutionResult,
+  ): Promise<{ wouldCreate: boolean; wouldUpdate: boolean; wouldRegress: boolean; validationErrors: string[] }> {
+    return this.validation.validateRun({ project, workflowType, result });
+  }
+
   /** Manually submit execution results to the validation service. */
   async submitResults(
     project: string,
