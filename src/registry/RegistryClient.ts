@@ -74,13 +74,23 @@ export class RegistryClient {
       results.push(...local);
     }
 
-    const remote = await this.listRemote(filter);
+    try {
+      const remote = await this.listRemote(filter);
 
-    // Merge, preferring local versions
-    const seen = new Set(results.map(r => r.name));
-    for (const r of remote) {
-      if (!seen.has(r.name)) {
-        results.push(r);
+      // Merge, preferring local versions
+      const seen = new Set(results.map(r => r.name));
+      for (const r of remote) {
+        if (!seen.has(r.name)) {
+          results.push(r);
+        }
+      }
+    } catch {
+      // Registry unavailable — return local results only (if any)
+      if (results.length === 0) {
+        throw new Error(
+          'No definitions found. Registry is unreachable and no local definitions are configured. ' +
+          'Use --local-definitions to specify a local directory.',
+        );
       }
     }
 
