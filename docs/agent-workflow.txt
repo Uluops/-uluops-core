@@ -1,0 +1,264 @@
+Complete Agent Execution Flow
+
+  1. Entry: AgentExecutor.execute()
+
+  When you run ulu exec agent code-validator ., the CLI resolves the agent definition and calls AgentExecutor.execute() with:
+  - resolved — the agent definition (prompt, defaults, config)
+  - input — { target: "/path/to/project" }
+  - options — CLI overrides (model, timeout, etc.)
+
+  2. Context Resolution (line 50)
+
+  Merges three layers of config, priority highest-first:
+
+  CLI options  >  agent definition defaults  >  SDK config defaults
+
+  Defaults if nothing is set:
+  ┌───────────────┬────────────────────────────┐
+  │    Setting    │          Default           │
+  ├───────────────┼────────────────────────────┤
+  │ model         │ "sonnet"                   │
+  ├───────────────┼────────────────────────────┤
+  │ maxTokens     │ 8192 (per-step output cap) │
+  ├───────────────┼────────────────────────────┤
+  │ maxSteps      │ 50 (max LLM round-trips)   │
+  ├───────────────┼────────────────────────────┤
+  │ temperature   │ 0                          │
+  ├───────────────┼────────────────────────────┤
+  │ timeoutMs     │ 300_000 (5 min)            │
+  ├───────────────┼────────────────────────────┤
+  │ contextBudget │ 200_000 tokens             │
+  └───────────────┴────────────────────────────┘
+  3. Tool Setup (lines 61-65)
+
+  Three objects are created:
+
+  1. ToolHandler — filesystem sandbox rooted at the target directory. All path operations are jail-checked via isPathSafe() (logical +
+  symlink resolution). This is the "backend" that actually reads files, globs, etc.
+  2. TokenBudgetTracker(200_000) — shared mutable counter that accumulates inputTokens + outputTokens after each step. Initialized to the
+   contextBudget from config.
+  3. ToolAdapter(toolHandler, additionalTools, budgetTracker) — wraps ToolHandler's raw fulfill methods into AI SDK v6 tool() definitions
+   with Zod schemas. Also conditionally adds:
+    - bash tool (if agent definition opts in)
+    - get_token_budget synthetic tool (always, since budgetTracker is always present)
+
+  The agent now has up to 8 tools available:
+  ┌────────────────────┬─────────────────────────┬────────────────────────────────────────────────────┐
+  │        Tool        │         Source          │                      Purpose                       │
+  ├────────────────────┼─────────────────────────┼────────────────────────────────────────────────────┤
+  │ read_file          │ ToolHandler             │ Read file content, optionally specific line ranges │
+  ├────────────────────┼─────────────────────────┼────────────────────────────────────────────────────┤
+  │ list_files         │ ToolHandler             │ Glob files with metadata (size, line count)        │
+  ├────────────────────┼─────────────────────────┼────────────────────────────────────────────────────┤
+  │ search_content     │ ToolHandler             │ Regex search with matches/files/count modes        │
+  ├────────────────────┼─────────────────────────┼────────────────────────────────────────────────────┤
+  │ get_file_info      │ ToolHandler             │ File metadata without reading content              │
+  ├────────────────────┼─────────────────────────┼────────────────────────────────────────────────────┤
+  │ get_directory_tree │ ToolHandler             │ Hierarchical directory view with sizes             │
+  ├────────────────────┼─────────────────────────┼────────────────────────────────────────────────────┤
+  │ get_symbols        │ ToolHandler             │ Extract exported functions/classes/types           │
+  ├────────────────────┼─────────────────────────┼────────────────────────────────────────────────────┤
+  │ get_token_budget   │ TokenBudgetTracker      │ Check how much context window remains              │
+  ├────────────────────┼─────────────────────────┼────────────────────────────────────────────────────┤
+  │ bash               │ Anthropic provider tool │ Shell commands (opt-in only)                       │
+  └────────────────────┴─────────────────────────┴────────────────────────────────────────────────────┘
+  4. Initial Message Construction (lines 70-71)
+
+  buildInitialMessage() calls scanProjectStructure() which does a bounded list_files(".", "**/*", max_results: 100). Previously this was
+  unbounded — a 500-file project would dump all 500 filenames into the initial prompt.
+
+  Now the initial message looks like:
+
+  Analyze the following project:
+
+  Target: /home/alexs/uluops/packages/cli
+
+  Project Structure:
+    src/cli.ts (3.8 KB, 120 lines)
+    src/commands/auth.ts (19.2 KB, 580 lines)
+    src/commands/runs.ts (12.1 KB, 420 lines)
+    ... (first 20 files shown)
+    ... and 80 more files
+
+  Statistics:
+  - Files: 247
+  - Languages: TypeScript, JavaScript
+
+  Options: {}
+
+  Use the provided tools to read files and analyze the codebase.
+  Produce your assessment in the required JSON output format.
+
+  Key changes:
+  - Files show size and line count metadata — the agent can prioritize which files to read
+  - Capped at 100 files returned (20 shown in tree preview)
+  - detectLanguages() strips the (3.8 KB, 120 lines) suffix before checking extensions
+  - Total file count is computed correctly even when the list is truncated
+
+  5. AIProvider.generate() — The Main Loop
+
+  This is where the actual LLM interaction happens. Here's what generate() sets up:
+
+  5a. Model Resolution
+
+  "sonnet" → resolves via ModelCatalog → anthropic:claude-sonnet-4-5-20250929
+
+  5b. System Message (Anthropic cache control)
+
+  The agent's system prompt (from its ADL definition, typically ~10-30KB) gets wrapped with cacheControl: { type: 'ephemeral' }. The
+  Anthropic API caches this across steps, so steps 2-50 don't re-tokenize the system prompt.
+
+  5c. Provider Options — Two Automatic Injections
+
+  Extended Thinking (if model supports it):
+  thinking: { type: 'enabled', budgetTokens: 10_000 }
+
+  Context Management (always, for Anthropic):
+  contextManagement: {
+    edits: [{
+      type: 'clear_tool_uses_20250919',
+      trigger: { type: 'input_tokens', value: 100_000 },  // 50% of 200K
+      keep: { type: 'tool_uses', value: 5 },
+      clearToolInputs: true,
+    }]
+  }
+
+  This is handled entirely by the Anthropic API. When the conversation's input tokens cross 100K, the API automatically removes old
+  tool_use/tool_result pairs from the conversation history, keeping only the 5 most recent. It also clears the input parameters from
+  removed tool uses. The LLM doesn't know this happened — it just sees a shorter conversation.
+
+  5d. prepareStep Callback (Budget Wrap-Up)
+
+  Before each step of the tool loop, the AI SDK calls prepareStep({ steps }). Our callback sums inputTokens across all completed steps:
+
+  Step 1:  30K input  → total: 30K   (15% of 200K) → {} (continue normally)
+  Step 5:  80K input  → total: 80K   (40% of 200K) → {} (continue normally)
+  Step 12: 155K input → total: 155K  (78% of 200K) → {} (continue normally)
+  Step 13: 165K input → total: 165K  (82% of 200K) → { toolChoice: 'none' } ← FORCED
+
+  When 80% is hit, prepareStep returns { toolChoice: 'none' }, which tells the AI SDK: "Claude cannot call any tools this step — it must
+  produce text output only." This forces Claude to write its final assessment with whatever information it has gathered so far, rather
+  than crashing at the token limit.
+
+  Once triggered, every subsequent step also gets toolChoice: 'none' (the wrapUpInjected flag stays true).
+
+  5e. onStepFinish Callback
+
+  After each step completes, two things happen:
+
+  1. Logging: Step number, finish reason, tool names used, token counts
+  2. Budget tracking: budgetTracker.update(inputTokens, outputTokens) — this updates the shared counter that get_token_budget reads from
+
+  6. The Tool Loop (AI SDK Manages This)
+
+  The AI SDK's generateText() with maxSteps: 50 runs an automatic loop:
+
+  Step 1: LLM reads prompt → calls read_file("src/cli.ts")
+          → ToolAdapter validates via Zod → ToolHandler reads file → returns content
+          → Content appended to conversation
+
+  Step 2: LLM sees file content → calls search_content("createCommand", mode: "files")
+          → Returns just file paths (not full content — massive token savings)
+
+  Step 3: LLM decides which files matter → calls get_file_info("src/commands/auth.ts")
+          → Gets size/lines without reading content → decides it's worth reading
+
+  Step 4: LLM reads auth.ts lines 1-50 → calls read_file("src/commands/auth.ts", start_line: 1, end_line: 50)
+          → Gets just the first 50 lines with line numbers
+
+  ...
+
+  Step 12: LLM calls get_token_budget()
+           → Returns { budget: 200000, usedTotal: 145000, remaining: 55000, percentUsed: 73 }
+           → LLM sees it's running low, decides to wrap up
+
+  Step 13: (prepareStep kicks in at 80%) → toolChoice: 'none'
+           → LLM produces final JSON assessment
+
+  The loop terminates when any of these happen:
+  - Claude produces a text response without calling tools (finishReason: 'stop')
+  - maxSteps (50) is reached (finishReason: 'length')
+  - prepareStep forces toolChoice: 'none' and Claude outputs text
+  - Timeout fires via AbortSignal.timeout()
+
+  7. Three Layers of Context Protection
+
+  These operate independently and layer on top of each other:
+  Layer: Context Management
+  Trigger: Input tokens > 100K
+  What Happens: Old tool_use/tool_result pairs silently cleared from conversation, keeping 5 most recent
+  Who Controls It: Anthropic API
+  ────────────────────────────────────────
+  Layer: Budget prepareStep
+  Trigger: Cumulative input > 160K (80%)
+  What Happens: toolChoice: 'none' — no more tool calls, must produce output
+  Who Controls It: AI SDK callback
+  ────────────────────────────────────────
+  Layer: maxSteps
+  Trigger: 50 steps reached
+  What Happens: Hard stop regardless of tokens
+  Who Controls It: AI SDK stopWhen
+  In the old flow (before these changes), a large project would go:
+  Step 1-15: reads files, accumulates ~200K tokens
+  Step 16: API returns "prompt is too long" → crash, no output
+
+  In the new flow:
+  Step 1-8: reads files, accumulates ~100K tokens
+            → Anthropic API clears oldest tool uses, freeing ~40K tokens
+  Step 9-12: reads more files, accumulates ~160K effective tokens
+            → prepareStep triggers: toolChoice: 'none'
+  Step 13: Claude writes final assessment (forced)
+            → Success, output parsed
+
+  8. Output Parsing (line 88)
+
+  OutputExtractor.extractWithMetadata() parses Claude's final text response. It tries:
+  1. Direct JSON parse
+  2. JSON embedded in markdown code blocks
+  3. Regex extraction of score/decision fields
+
+  Returns structured ParsedOutput with decision, score, categories, findings, issues.
+
+  9. Result Construction (lines 100-150)
+
+  The parsed output is transformed into either:
+  - ValidatorAgentResult — with score, decision (PASS/WARN/FAIL), categories, recommendations
+  - ExecutorAgentResult — with decision (COMPLETE/PARTIAL/FAILED), artifacts
+
+  Metrics are attached: token counts, duration, model used.
+
+  ---
+  Tool Defaults Summary
+  ┌────────────────────┬──────────────────────────────────────────────────────────────────────┐
+  │        Tool        │                             Key Defaults                             │
+  ├────────────────────┼──────────────────────────────────────────────────────────────────────┤
+  │ read_file          │ No start_line/end_line → full file. Max 1MB before truncation        │
+  ├────────────────────┼──────────────────────────────────────────────────────────────────────┤
+  │ list_files         │ max_results: 200, pattern: "*". Ignores node_modules/.git/dist/build │
+  ├────────────────────┼──────────────────────────────────────────────────────────────────────┤
+  │ search_content     │ mode: "matches", max_results: 50, context_lines: 0                   │
+  ├────────────────────┼──────────────────────────────────────────────────────────────────────┤
+  │ get_file_info      │ Line counting only for files < 100KB                                 │
+  ├────────────────────┼──────────────────────────────────────────────────────────────────────┤
+  │ get_directory_tree │ max_depth: 3, include_sizes: true. 50 files per directory cap        │
+  ├────────────────────┼──────────────────────────────────────────────────────────────────────┤
+  │ get_symbols        │ include_private: false. TS/JS + Python patterns. Max 1MB files       │
+  ├────────────────────┼──────────────────────────────────────────────────────────────────────┤
+  │ get_token_budget   │ Reads from shared TokenBudgetTracker — always current                │
+  └────────────────────┴──────────────────────────────────────────────────────────────────────┘
+  Config Defaults
+  ┌────────────────────────────┬─────────────────────────┬───────────────────────────────────────┐
+  │        Config Field        │         Default         │                Set In                 │
+  ├────────────────────────────┼─────────────────────────┼───────────────────────────────────────┤
+  │ contextBudget              │ 200,000                 │ UluOpsClient.resolveConfig()          │
+  ├────────────────────────────┼─────────────────────────┼───────────────────────────────────────┤
+  │ defaultThinkingBudget      │ 10,000                  │ UluOpsClient.resolveConfig()          │
+  ├────────────────────────────┼─────────────────────────┼───────────────────────────────────────┤
+  │ Context management trigger │ 100,000 input tokens    │ Hardcoded in buildProviderOptions()   │
+  ├────────────────────────────┼─────────────────────────┼───────────────────────────────────────┤
+  │ Context management keep    │ 5 most recent tool uses │ Hardcoded in buildProviderOptions()   │
+  ├────────────────────────────┼─────────────────────────┼───────────────────────────────────────┤
+  │ Budget wrap-up threshold   │ 80% of contextBudget    │ Hardcoded in buildBudgetPrepareStep() │
+  ├────────────────────────────┼─────────────────────────┼───────────────────────────────────────┤
+  │ Initial scan cap           │ 100 files               │ Hardcoded in scanProjectStructure()   │
+  └────────────────────────────┴─────────────────────────┴───────────────────────────────────────┘
