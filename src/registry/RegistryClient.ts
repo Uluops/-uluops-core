@@ -194,7 +194,10 @@ export class RegistryClient {
       const matches = searchResult.definitions.filter(d => d.name === name);
 
       if (matches.length === 0) {
-        throw new Error(`Definition "${name}" not found in registry`);
+        throw new Error(
+          `Definition "${name}" not found in registry. ` +
+          `Verify the name is correct and the definition is published.`,
+        );
       }
 
       if (matches.length > 1) {

@@ -170,9 +170,8 @@ export class ModelCatalog {
   }
 
   private async resolveAlias(alias: string): Promise<AliasResolution | null> {
-    if (this.aliasCache.has(alias)) {
-      return this.aliasCache.get(alias)!;
-    }
+    const cached = this.aliasCache.get(alias);
+    if (cached !== undefined) return cached;
 
     try {
       const result = await this.sdk.models.resolveAlias(alias);
