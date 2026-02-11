@@ -12,6 +12,9 @@ import { formatErrorMessage } from '../utils/formatError.js';
 /** No-op logger for when none is provided */
 const noopLogger: Logger = { debug() {}, info() {}, warn() {}, error() {} };
 
+/** Max file size to read (1 MB). Files larger than this are truncated. */
+const MAX_FILE_SIZE = 1_048_576;
+
 export class ToolHandler {
   private basePath: string;
   private logger: Logger;
@@ -146,8 +149,20 @@ export class ToolHandler {
   }
 
   private async readFile(id: string, filePath: string): Promise<ToolResult> {
-    const content = await fs.readFile(filePath, 'utf-8');
-    this.logger.debug(`read_file: ${path.relative(this.basePath, filePath)} (${content.length} chars)`);
+    const stat = await fs.stat(filePath);
+    const truncated = stat.size > MAX_FILE_SIZE;
+    const buffer = Buffer.alloc(Math.min(stat.size, MAX_FILE_SIZE));
+    const fh = await fs.open(filePath, 'r');
+    try {
+      await fh.read(buffer, 0, buffer.length, 0);
+    } finally {
+      await fh.close();
+    }
+    let content = buffer.toString('utf-8');
+    if (truncated) {
+      content += `\n\n[Truncated: file is ${stat.size} bytes, showing first ${MAX_FILE_SIZE} bytes]`;
+    }
+    this.logger.debug(`read_file: ${path.relative(this.basePath, filePath)} (${stat.size} bytes${truncated ? ', truncated' : ''})`);
     return { tool_use_id: id, content };
   }
 
@@ -178,7 +193,13 @@ export class ToolHandler {
       if (results.length >= opts.maxResults) break;
 
       try {
-        const content = await fs.readFile(path.join(this.basePath, file), 'utf-8');
+        const filePath = path.join(this.basePath, file);
+        const stat = await fs.stat(filePath);
+        if (stat.size > MAX_FILE_SIZE) {
+          this.logger.debug(`Skipped oversized file: ${file} (${stat.size} bytes)`);
+          continue;
+        }
+        const content = await fs.readFile(filePath, 'utf-8');
         const lines = content.split('\n');
 
         for (let i = 0; i < lines.length; i++) {

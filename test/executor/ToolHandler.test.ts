@@ -65,6 +65,17 @@ describe('ToolHandler', () => {
       expect(result.is_error).toBe(true);
       expect(result.content).toContain('outside the target directory');
     });
+
+    it('truncates files larger than 1 MB', async () => {
+      const largeContent = 'x'.repeat(1_048_576 + 100);
+      await fs.writeFile(path.join(tmpDir, 'large.bin'), largeContent);
+
+      const result = await handler.fulfill(makeToolUse('read_file', { path: 'large.bin' }));
+      expect(result.is_error).toBeUndefined();
+      expect(result.content).toContain('[Truncated:');
+      // Content should be capped at ~1MB + truncation message, not the full file
+      expect(result.content.length).toBeLessThan(largeContent.length);
+    });
   });
 
   describe('list_files', () => {

@@ -37,7 +37,8 @@ console.log(`Score: ${result.score} | Decision: ${result.decision}`);
   - [Workflow Execution](#workflow-execution)
   - [Pipeline Execution](#pipeline-execution)
   - [Convenience Methods](#convenience-methods)
-  - [Discovery and Tracking](#discovery-and-tracking)
+  - [Discovery](#discovery)
+  - [Validation Tracking](#validation-tracking)
 - [Architecture](#architecture)
 - [Execution Hierarchy](#execution-hierarchy)
 - [Configuration](#configuration)
@@ -187,7 +188,7 @@ const shipResult = await client.ship('./src');
 const postResult = await client.postImplementation('./src');
 ```
 
-### Discovery and Tracking
+### Discovery
 
 ```typescript
 // List available definitions
@@ -195,19 +196,39 @@ const definitions = await client.list({ type: 'agent', domain: 'software' });
 
 // Inspect a definition
 const info = await client.describe('code-validator');
+console.log(info.name, info.version, info.interface);
+```
 
-// Query validation history
-const history = await client.getHistory('my-project');
+### Validation Tracking
 
-// Get details for a specific run
-const run = await client.getRun('run-uuid');
+Submit execution results, preview submissions, and query run history:
 
-// Preview what a submission would do (dry run)
+```typescript
+// Automatic tracking: results are submitted automatically when trackingEnabled is true
+const result = await client.runAgent('code-validator', './src', {
+  trackResults: true,
+  project: 'my-project',
+});
+
+// Manual submission: submit results from a custom execution
+const response = await client.submitResults('my-project', 'post-implementation', result);
+console.log(`Run #${response.runNumber}: ${response.dashboardUrl}`);
+console.log(`New issues: ${response.correlation.newIssues}, Regressions: ${response.correlation.regressions}`);
+
+// Dry run: preview what a submission would do without saving
 const preview = await client.validateRun('my-project', 'post-implementation', result);
-console.log(preview.wouldCreate, preview.validationErrors);
+if (preview.validationErrors.length > 0) {
+  console.error('Validation errors:', preview.validationErrors);
+}
 
-// Submit results manually
-await client.submitResults('my-project', 'custom', result);
+// Query history: list past runs for a project
+const history = await client.getHistory('my-project');
+for (const entry of history) {
+  console.log(`Run #${entry.runNumber} — ${entry.workflowType} — Score: ${entry.averageScore}`);
+}
+
+// Run details: fetch full details for a specific run
+const run = await client.getRun('run-uuid');
 ```
 
 ## Architecture
