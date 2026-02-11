@@ -102,7 +102,7 @@ export class ToolHandler {
       const relativePath = String(toolUse.input['path'] || '.');
       const fullPath = path.resolve(this.basePath, relativePath);
 
-      if (!this.isPathSafe(fullPath)) {
+      if (!(await this.isPathSafe(fullPath))) {
         return {
           tool_use_id: toolUse.id,
           content: `Error: Path "${relativePath}" is outside the target directory`,
@@ -141,11 +141,22 @@ export class ToolHandler {
   }
 
   /**
-   * Check if resolved path is within base path (security)
+   * Check if resolved path is within base path (security).
+   * Uses fs.realpath() to follow symlinks and detect escape attempts.
    */
-  private isPathSafe(fullPath: string): boolean {
-    const resolved = path.resolve(fullPath);
-    return resolved.startsWith(this.basePath);
+  private async isPathSafe(fullPath: string): Promise<boolean> {
+    // First check: logical path must be within base (catches ../.. traversal)
+    const logicalPath = path.resolve(fullPath);
+    if (!logicalPath.startsWith(this.basePath)) return false;
+
+    // Second check: resolve symlinks to detect escape via symlink
+    try {
+      const realPath = await fs.realpath(fullPath);
+      return realPath.startsWith(this.basePath);
+    } catch {
+      // Path doesn't exist — logical check above is sufficient
+      return true;
+    }
   }
 
   private async readFile(id: string, filePath: string): Promise<ToolResult> {

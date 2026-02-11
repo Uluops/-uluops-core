@@ -71,7 +71,8 @@ export class PipelineExecutor {
       for (let i = 0; i < def.pipeline.stages.length; i++) {
         if (state.status === 'cancelled') break;
 
-        const stage = def.pipeline.stages[i]!;
+        const stage = def.pipeline.stages[i];
+        if (!stage) break;
         state.currentStageIndex = i;
 
         // Check dependencies

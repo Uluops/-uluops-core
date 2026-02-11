@@ -137,31 +137,35 @@ describe('ToolHandler', () => {
   });
 
   describe('symlink handling', () => {
-    it('symlink within base directory pointing outside is not blocked (known limitation)', async () => {
-      // isPathSafe uses path.resolve() which does NOT follow symlinks.
-      // A symlink inside the base dir pointing outside passes the prefix check.
+    it('blocks symlink within base directory pointing outside', async () => {
+      // isPathSafe uses fs.realpath() to follow symlinks and detect escape
       const outsideDir = await fs.mkdtemp(path.join(os.tmpdir(), 'outside-'));
       await fs.writeFile(path.join(outsideDir, 'secret.txt'), 'sensitive data');
 
       try {
         await fs.symlink(outsideDir, path.join(tmpDir, 'escape-link'));
 
-        // The path resolves to <tmpDir>/escape-link/secret.txt which passes startsWith(tmpDir)
         const result = await handler.fulfill(makeToolUse('read_file', { path: 'escape-link/secret.txt' }));
 
-        // Known limitation: this reads the file through the symlink
-        expect(result.is_error).toBeUndefined();
-        expect(result.content).toBe('sensitive data');
+        expect(result.is_error).toBe(true);
+        expect(result.content).toContain('outside the target directory');
       } finally {
         await fs.rm(outsideDir, { recursive: true, force: true });
       }
     });
 
-    it('symlink-based path traversal via .. is still blocked', async () => {
-      // Even with symlinks, explicit ../.. traversal is caught by path.resolve
+    it('symlink-based path traversal via .. is blocked', async () => {
       const result = await handler.fulfill(makeToolUse('read_file', { path: 'src/../../etc/passwd' }));
       expect(result.is_error).toBe(true);
       expect(result.content).toContain('outside the target directory');
+    });
+
+    it('allows symlink that stays within base directory', async () => {
+      await fs.symlink(path.join(tmpDir, 'src'), path.join(tmpDir, 'link-to-src'));
+
+      const result = await handler.fulfill(makeToolUse('read_file', { path: 'link-to-src/index.ts' }));
+      expect(result.is_error).toBeUndefined();
+      expect(result.content).toBe('export const foo = 42;\n');
     });
   });
 

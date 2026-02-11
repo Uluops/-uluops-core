@@ -21,7 +21,12 @@ export type Domain =
   | 'general';
 
 /**
- * Agent type discriminator
+ * Agent type discriminator.
+ *
+ * - `validator` — Scores code against criteria, produces pass/warn/fail decisions
+ * - `executor` — Performs actions (refactoring, generation), produces complete/partial/failed decisions
+ * - `analyst` — Analyzes patterns and trends, produces analytical reports
+ * - `generator` — Creates new artifacts (scaffolding, templates, documentation)
  */
 export type AgentType = 'validator' | 'executor' | 'analyst' | 'generator';
 
