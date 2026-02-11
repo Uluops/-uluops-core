@@ -221,8 +221,7 @@ describe('ValidationClient', () => {
       expect(response.dashboardUrl).toBe('');
       expect(response.allGatesPassed).toBe(true);
       expect(response.averageScore).toBe(85);
-      expect(response.newIssues).toHaveLength(1);
-      expect(response.newIssues[0]!.title).toBe('Add missing type annotation');
+      expect(response.correlation.newIssues).toBe(1);
     });
 
     it('calculates allGatesPassed from decision', async () => {
@@ -255,7 +254,8 @@ describe('ValidationClient', () => {
       });
 
       const client = new ValidationClient(baseConfig);
-      const result = await client.validateRun(makeSubmission());
+      const sub = makeSubmission();
+      const result = await client.validateRun(sub.project, sub.workflowType, sub.result);
 
       expect(result.wouldCreate).toBe(true);
       expect(result.wouldUpdate).toBe(false);
@@ -274,7 +274,8 @@ describe('ValidationClient', () => {
       });
 
       const client = new ValidationClient(baseConfig);
-      const result = await client.validateRun(makeSubmission());
+      const sub = makeSubmission();
+      const result = await client.validateRun(sub.project, sub.workflowType, sub.result);
 
       expect(result.validationErrors).toEqual(['Project not found', 'Invalid workflow type']);
     });

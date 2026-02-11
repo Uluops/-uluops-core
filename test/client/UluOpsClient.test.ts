@@ -186,9 +186,7 @@ function makeSubmissionResponse(overrides?: Record<string, unknown>) {
     dashboardUrl: 'https://app.uluops.ai/runs/run-123',
     allGatesPassed: true,
     averageScore: 85,
-    newIssues: [],
-    recurringIssues: [],
-    regressions: [],
+    correlation: { newIssues: 0, recurringIssues: 0, regressions: 0 },
     deduplicated: false,
     ...overrides,
   };

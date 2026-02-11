@@ -1,5 +1,7 @@
 import { OpsClient } from '@uluops/ops-sdk';
 import type { ResolvedConfig } from '../types/config.js';
+import type { ExecutionResult } from '../types/execution.js';
+import type { AgentResult } from '../types/agent.js';
 import type { RunSubmission, RunSubmissionResponse, RunHistoryEntry, ValidationQueryOptions } from '../types/validation.js';
 
 /**
@@ -41,9 +43,6 @@ export class ValidationClient {
       dashboardUrl: `${this.config.dashboardUrl}/runs/${response.run.id}`,
       allGatesPassed: response.run.allGatesPassed,
       averageScore: response.run.averageScore ?? 0,
-      newIssues: [],
-      recurringIssues: [],
-      regressions: [],
       correlation: {
         newIssues: response.correlation?.newIssues ?? 0,
         recurringIssues: response.correlation?.recurringIssues ?? 0,
@@ -54,22 +53,28 @@ export class ValidationClient {
   }
 
   /**
-   * Preview what a submission would do without saving
+   * Preview what a submission would do without saving (dry run).
+   *
+   * Accepts individual parameters matching the public UluOpsClient API.
    */
-  async validateRun(submission: RunSubmission): Promise<{
+  async validateRun(
+    project: string,
+    workflowType: string,
+    result: ExecutionResult | AgentResult,
+  ): Promise<{
     wouldCreate: boolean;
     wouldUpdate: boolean;
     wouldRegress: boolean;
     validationErrors: string[];
   }> {
-    const input = this.transformToOpsInput(submission);
-    const result = await this.ops.runs.validate(input);
+    const input = this.transformToOpsInput({ project, workflowType, result });
+    const response = await this.ops.runs.validate(input);
 
     return {
-      wouldCreate: result.wouldCreate,
-      wouldUpdate: result.wouldUpdate,
-      wouldRegress: result.wouldRegress,
-      validationErrors: result.validationErrors,
+      wouldCreate: response.wouldCreate,
+      wouldUpdate: response.wouldUpdate,
+      wouldRegress: response.wouldRegress,
+      validationErrors: response.validationErrors,
     };
   }
 
@@ -114,9 +119,6 @@ export class ValidationClient {
       dashboardUrl: `${this.config.dashboardUrl}/runs/${run.id}`,
       allGatesPassed: run.allGatesPassed,
       averageScore: run.averageScore ?? 0,
-      newIssues: [],
-      recurringIssues: [],
-      regressions: [],
       correlation: { newIssues: 0, recurringIssues: 0, regressions: 0 },
       deduplicated: false,
     };
@@ -188,13 +190,6 @@ export class ValidationClient {
       dashboardUrl: '',
       allGatesPassed: submission.result.decision === 'PASS' || submission.result.decision === 'SHIP',
       averageScore: submission.result.score ?? 0,
-      newIssues: submission.result.recommendations.map((r, i) => ({
-        id: `local-${i}`,
-        title: r.title,
-        fingerprint: 'local',
-      })),
-      recurringIssues: [],
-      regressions: [],
       correlation: {
         newIssues: submission.result.recommendations.length,
         recurringIssues: 0,

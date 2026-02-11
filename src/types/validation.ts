@@ -183,7 +183,10 @@ export interface RunSubmission {
 }
 
 /**
- * SDK's high-level response after submission
+ * SDK's high-level response after submission.
+ *
+ * Correlation contains issue counts from the Validation API.
+ * For full issue details (CorrelatedIssue arrays), use `@uluops/ops-sdk` directly.
  */
 export interface RunSubmissionResponse {
   /** Unique run identifier */
@@ -204,16 +207,7 @@ export interface RunSubmissionResponse {
   /** Average score across validators */
   averageScore: number;
 
-  /** New issues found in this run */
-  newIssues: CorrelatedIssue[];
-
-  /** Recurring issues seen again */
-  recurringIssues: CorrelatedIssue[];
-
-  /** Regressions (previously resolved issues that reappeared) */
-  regressions: CorrelatedIssue[];
-
-  /** Correlation counts from validation API */
+  /** Issue correlation counts from validation API */
   correlation: {
     newIssues: number;
     recurringIssues: number;

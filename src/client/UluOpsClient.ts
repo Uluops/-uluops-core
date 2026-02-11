@@ -280,7 +280,7 @@ export class UluOpsClient {
     workflowType: string,
     result: ExecutionResult,
   ): Promise<{ wouldCreate: boolean; wouldUpdate: boolean; wouldRegress: boolean; validationErrors: string[] }> {
-    return this.validation.validateRun({ project, workflowType, result });
+    return this.validation.validateRun(project, workflowType, result);
   }
 
   /** Manually submit execution results to the validation service. */
