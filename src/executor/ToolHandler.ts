@@ -199,40 +199,45 @@ export class ToolHandler {
         };
       }
 
+      const input = toolUse.input;
+
       switch (toolUse.name) {
         case 'read_file':
           return await this.readFile(toolUse.id, fullPath, {
-            startLine: toolUse.input['start_line'] as number | undefined,
-            endLine: toolUse.input['end_line'] as number | undefined,
+            startLine: toNumber(input['start_line']),
+            endLine: toNumber(input['end_line']),
           });
 
         case 'list_files':
           return await this.listFiles(toolUse.id, fullPath, {
-            pattern: toolUse.input['pattern'] as string | undefined,
-            maxResults: (toolUse.input['max_results'] as number | undefined) ?? DEFAULT_LIST_MAX_RESULTS,
+            pattern: toString(input['pattern']),
+            maxResults: toNumber(input['max_results']) ?? DEFAULT_LIST_MAX_RESULTS,
           });
 
-        case 'search_content':
+        case 'search_content': {
+          const modeRaw = toString(input['mode']);
+          const mode = modeRaw === 'files' || modeRaw === 'count' ? modeRaw : 'matches';
           return await this.searchContent(toolUse.id, {
-            pattern: toolUse.input['pattern'] as string,
-            filePattern: toolUse.input['file_pattern'] as string | undefined,
-            maxResults: (toolUse.input['max_results'] as number | undefined) ?? 50,
-            mode: (toolUse.input['mode'] as 'matches' | 'files' | 'count' | undefined) ?? 'matches',
-            contextLines: Math.min((toolUse.input['context_lines'] as number | undefined) ?? 0, 5),
+            pattern: toString(input['pattern']) ?? '',
+            filePattern: toString(input['file_pattern']),
+            maxResults: toNumber(input['max_results']) ?? 50,
+            mode,
+            contextLines: Math.min(toNumber(input['context_lines']) ?? 0, 5),
           });
+        }
 
         case 'get_file_info':
           return await this.getFileInfo(toolUse.id, fullPath, relativePath);
 
         case 'get_directory_tree':
           return await this.getDirectoryTree(toolUse.id, fullPath, {
-            maxDepth: (toolUse.input['max_depth'] as number | undefined) ?? 3,
-            includeSizes: (toolUse.input['include_sizes'] as boolean | undefined) ?? true,
+            maxDepth: toNumber(input['max_depth']) ?? 3,
+            includeSizes: input['include_sizes'] !== false,
           });
 
         case 'get_symbols':
           return await this.getSymbols(toolUse.id, fullPath, {
-            includePrivate: (toolUse.input['include_private'] as boolean | undefined) ?? false,
+            includePrivate: input['include_private'] === true,
           });
 
         default:
@@ -369,54 +374,77 @@ export class ToolHandler {
 
     const regex = new RegExp(opts.pattern, 'gi');
 
-    if (opts.mode === 'files') {
-      const matchingFiles: string[] = [];
-      for (const file of files) {
-        if (matchingFiles.length >= opts.maxResults) break;
-        try {
-          const filePath = path.join(this.basePath, file);
-          const stat = await fs.stat(filePath);
-          if (stat.size > MAX_FILE_SIZE) continue;
-          const content = await fs.readFile(filePath, 'utf-8');
-          if (regex.test(content)) {
-            matchingFiles.push(file);
-          }
-          regex.lastIndex = 0;
-        } catch {
-          // skip unreadable
-        }
+    switch (opts.mode) {
+      case 'files': {
+        const matching = await this.searchFileMode(files, regex, opts.maxResults);
+        this.logger.debug(`search_content(files): ${matching.length} files match "${opts.pattern}"`);
+        return { tool_use_id: id, content: matching.join('\n') };
       }
-      this.logger.debug(`search_content(files): ${matchingFiles.length} files match "${opts.pattern}"`);
-      return { tool_use_id: id, content: matchingFiles.join('\n') };
-    }
-
-    if (opts.mode === 'count') {
-      const counts: Array<{ file: string; count: number }> = [];
-      for (const file of files) {
-        if (counts.length >= opts.maxResults) break;
-        try {
-          const filePath = path.join(this.basePath, file);
-          const stat = await fs.stat(filePath);
-          if (stat.size > MAX_FILE_SIZE) continue;
-          const content = await fs.readFile(filePath, 'utf-8');
-          const matches = content.match(new RegExp(opts.pattern, 'gi'));
-          if (matches && matches.length > 0) {
-            counts.push({ file, count: matches.length });
-          }
-        } catch {
-          // skip unreadable
-        }
+      case 'count': {
+        const counts = await this.searchCountMode(files, opts.pattern, opts.maxResults);
+        this.logger.debug(`search_content(count): ${counts.length} files match "${opts.pattern}"`);
+        return { tool_use_id: id, content: JSON.stringify(counts, null, 2) };
       }
-      this.logger.debug(`search_content(count): ${counts.length} files match "${opts.pattern}"`);
-      return { tool_use_id: id, content: JSON.stringify(counts, null, 2) };
+      default: {
+        const results = await this.searchMatchesMode(files, regex, opts.maxResults, opts.contextLines);
+        this.logger.debug(`search_content: ${results.length} matches for "${opts.pattern}"`);
+        return { tool_use_id: id, content: JSON.stringify(results, null, 2) };
+      }
     }
+  }
 
-    // Default: "matches" mode
+  private async searchFileMode(files: string[], regex: RegExp, maxResults: number): Promise<string[]> {
+    const matching: string[] = [];
+    for (const file of files) {
+      if (matching.length >= maxResults) break;
+      try {
+        const filePath = path.join(this.basePath, file);
+        const stat = await fs.stat(filePath);
+        if (stat.size > MAX_FILE_SIZE) continue;
+        const content = await fs.readFile(filePath, 'utf-8');
+        if (regex.test(content)) matching.push(file);
+        regex.lastIndex = 0;
+      } catch {
+        // skip unreadable
+      }
+    }
+    return matching;
+  }
+
+  private async searchCountMode(
+    files: string[],
+    pattern: string,
+    maxResults: number,
+  ): Promise<Array<{ file: string; count: number }>> {
+    const counts: Array<{ file: string; count: number }> = [];
+    for (const file of files) {
+      if (counts.length >= maxResults) break;
+      try {
+        const filePath = path.join(this.basePath, file);
+        const stat = await fs.stat(filePath);
+        if (stat.size > MAX_FILE_SIZE) continue;
+        const content = await fs.readFile(filePath, 'utf-8');
+        const matches = content.match(new RegExp(pattern, 'gi'));
+        if (matches && matches.length > 0) {
+          counts.push({ file, count: matches.length });
+        }
+      } catch {
+        // skip unreadable
+      }
+    }
+    return counts;
+  }
+
+  private async searchMatchesMode(
+    files: string[],
+    regex: RegExp,
+    maxResults: number,
+    contextLines: number,
+  ): Promise<Array<{ file: string; line: number; content: string }>> {
     const results: Array<{ file: string; line: number; content: string }> = [];
 
     for (const file of files) {
-      if (results.length >= opts.maxResults) break;
-
+      if (results.length >= maxResults) break;
       try {
         const filePath = path.join(this.basePath, file);
         const stat = await fs.stat(filePath);
@@ -431,16 +459,16 @@ export class ToolHandler {
           const lineContent = lines[i];
           if (lineContent !== undefined && regex.test(lineContent)) {
             let matchContent = lineContent.trim();
-            if (opts.contextLines > 0) {
-              const ctxStart = Math.max(0, i - opts.contextLines);
-              const ctxEnd = Math.min(lines.length - 1, i + opts.contextLines);
+            if (contextLines > 0) {
+              const ctxStart = Math.max(0, i - contextLines);
+              const ctxEnd = Math.min(lines.length - 1, i + contextLines);
               const ctxLines = lines.slice(ctxStart, ctxEnd + 1).map(
                 (l, idx) => `${ctxStart + idx + 1}\t${l}`,
               );
               matchContent = ctxLines.join('\n');
             }
             results.push({ file, line: i + 1, content: matchContent });
-            if (results.length >= opts.maxResults) break;
+            if (results.length >= maxResults) break;
           }
           regex.lastIndex = 0;
         }
@@ -449,11 +477,7 @@ export class ToolHandler {
       }
     }
 
-    this.logger.debug(`search_content: ${results.length} matches for "${opts.pattern}"`);
-    return {
-      tool_use_id: id,
-      content: JSON.stringify(results, null, 2),
-    };
+    return results;
   }
 
   // ─────────────────────────────────────────────────────────────────────────
@@ -524,28 +548,7 @@ export class ToolHandler {
       const fullDirPath = path.join(dirPath, dirName);
 
       if (depth < maxDepth) {
-        // Count files in subdir for summary
-        const subFiles = await glob('**/*', {
-          cwd: fullDirPath,
-          nodir: true,
-          ignore: ['**/node_modules/**', '**/.git/**', '**/dist/**', '**/build/**'],
-        });
-
-        let dirSuffix = `${subFiles.length} files`;
-        if (includeSizes) {
-          let totalSize = 0;
-          for (const sf of subFiles) {
-            try {
-              const s = await fs.stat(path.join(fullDirPath, sf));
-              totalSize += s.size;
-            } catch {
-              // skip
-            }
-          }
-          dirSuffix += `, ${formatFileSize(totalSize)}`;
-        }
-
-        lines.push(`${indent}${dirName}/ (${dirSuffix})`);
+        lines.push(await this.formatDirEntry(fullDirPath, dirName, indent, includeSizes));
         const subLines = await this.buildTree(fullDirPath, indent + '  ', depth + 1, maxDepth, includeSizes);
         lines.push(...subLines);
       } else {
@@ -556,25 +559,7 @@ export class ToolHandler {
     // Files (capped)
     const shownFiles = files.slice(0, MAX_DIR_ENTRIES);
     for (const file of shownFiles) {
-      const fileName = String(file.name);
-      const fullFilePath = path.join(dirPath, fileName);
-      if (includeSizes) {
-        try {
-          const stat = await fs.stat(fullFilePath);
-          const sizeStr = formatFileSize(stat.size);
-          if (stat.size <= MAX_LINE_COUNT_SIZE) {
-            const content = await fs.readFile(fullFilePath, 'utf-8');
-            const lineCount = content.split('\n').length;
-            lines.push(`${indent}${fileName} (${lineCount} lines, ${sizeStr})`);
-          } else {
-            lines.push(`${indent}${fileName} (${sizeStr})`);
-          }
-        } catch {
-          lines.push(`${indent}${fileName}`);
-        }
-      } else {
-        lines.push(`${indent}${fileName}`);
-      }
+      lines.push(await this.formatFileEntry(dirPath, String(file.name), indent, includeSizes));
     }
 
     if (files.length > MAX_DIR_ENTRIES) {
@@ -582,6 +567,57 @@ export class ToolHandler {
     }
 
     return lines;
+  }
+
+  private async formatDirEntry(
+    fullDirPath: string,
+    dirName: string,
+    indent: string,
+    includeSizes: boolean,
+  ): Promise<string> {
+    const subFiles = await glob('**/*', {
+      cwd: fullDirPath,
+      nodir: true,
+      ignore: ['**/node_modules/**', '**/.git/**', '**/dist/**', '**/build/**'],
+    });
+
+    let suffix = `${subFiles.length} files`;
+    if (includeSizes) {
+      let totalSize = 0;
+      for (const sf of subFiles) {
+        try {
+          const s = await fs.stat(path.join(fullDirPath, sf));
+          totalSize += s.size;
+        } catch {
+          // skip
+        }
+      }
+      suffix += `, ${formatFileSize(totalSize)}`;
+    }
+
+    return `${indent}${dirName}/ (${suffix})`;
+  }
+
+  private async formatFileEntry(
+    dirPath: string,
+    fileName: string,
+    indent: string,
+    includeSizes: boolean,
+  ): Promise<string> {
+    if (!includeSizes) return `${indent}${fileName}`;
+
+    try {
+      const stat = await fs.stat(path.join(dirPath, fileName));
+      const sizeStr = formatFileSize(stat.size);
+      if (stat.size <= MAX_LINE_COUNT_SIZE) {
+        const content = await fs.readFile(path.join(dirPath, fileName), 'utf-8');
+        const lineCount = content.split('\n').length;
+        return `${indent}${fileName} (${lineCount} lines, ${sizeStr})`;
+      }
+      return `${indent}${fileName} (${sizeStr})`;
+    } catch {
+      return `${indent}${fileName}`;
+    }
   }
 
   // ─────────────────────────────────────────────────────────────────────────
@@ -648,6 +684,16 @@ const LANG_MAP: Record<string, string> = {
   '.sh': 'Shell',
   '.bash': 'Shell',
 };
+
+/** Narrow unknown to number (runtime typeof check instead of `as` cast). */
+function toNumber(v: unknown): number | undefined {
+  return typeof v === 'number' ? v : undefined;
+}
+
+/** Narrow unknown to string (runtime typeof check instead of `as` cast). */
+function toString(v: unknown): string | undefined {
+  return typeof v === 'string' ? v : undefined;
+}
 
 function extToLanguage(ext: string): string {
   return LANG_MAP[ext.toLowerCase()] ?? 'Unknown';
