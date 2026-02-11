@@ -256,13 +256,7 @@ export class RegistryClient {
   }
 
   private computeHash(yamlContent: string): string {
-    const normalized = this.normalizeYaml(yamlContent);
-    return 'sha256:' + crypto.createHash('sha256').update(normalized).digest('hex');
-  }
-
-  private normalizeYaml(yamlContent: string): string {
-    const parsed = yaml.parse(yamlContent) as unknown;
-    return yaml.stringify(parsed, { sortMapEntries: true });
+    return 'sha256:' + crypto.createHash('sha256').update(yamlContent, 'utf8').digest('hex');
   }
 
   private verifyHash(yamlContent: string, expectedHash: string): void {
