@@ -18,7 +18,7 @@ import type { DefinitionType } from '../types/execution.js';
 import { parseRef } from '../utils/parseRef.js';
 import type { RunSubmissionResponse, RunHistoryEntry, ValidationQueryOptions } from '../types/validation.js';
 
-/** Default request timeout: 5 minutes */
+/** Default request timeout: 5 minutes. Allows for model cold-start + multi-step tool loops in agent execution. */
 const DEFAULT_TIMEOUT_MS = 300_000;
 
 /**
@@ -78,24 +78,14 @@ export class UluOpsClient {
     target: string,
     options?: ExecutionOptions,
   ): Promise<AgentResult> {
-    const [refName, refVersion] = parseRef(name);
-    const resolved = await this.registry.resolve(refName, refVersion, 'agent');
+    const resolved = await this.resolveByRef(name, 'agent');
 
     if (resolved.type !== 'agent') {
       throw new Error(`${name} is not an agent (type: ${resolved.type}). Use runCommand() instead.`);
     }
 
     const result = await this.agentExecutor.execute(resolved, { target }, options);
-
-    if (options?.trackResults ?? this.config.trackingEnabled) {
-      const response = await this.validation.submit({
-        project: options?.project ?? this.config.defaultProject ?? resolved.name,
-        workflowType: 'agent',
-        result,
-      });
-      result.dashboardUrl = response.dashboardUrl;
-    }
-
+    await this.trackIfEnabled(result, resolved.name, 'agent', options);
     return result;
   }
 
@@ -106,24 +96,14 @@ export class UluOpsClient {
    * Ideal for CI/CD pipelines and team-standardized validation.
    */
   async runCommand(name: string, input: ExecutionInput): Promise<CommandResult> {
-    const [refName, refVersion] = parseRef(name);
-    const resolved = await this.registry.resolve(refName, refVersion, 'command');
+    const resolved = await this.resolveByRef(name, 'command');
 
     if (resolved.type !== 'command') {
       throw new Error(`${name} is not a command (type: ${resolved.type}). Use runAgent() for agents or runWorkflow() for workflows.`);
     }
 
     const result = await this.commandExecutor.execute(resolved, input);
-
-    if (this.config.trackingEnabled) {
-      const response = await this.validation.submit({
-        project: this.config.defaultProject ?? resolved.name,
-        workflowType: 'command',
-        result,
-      });
-      result.dashboardUrl = response.dashboardUrl;
-    }
-
+    await this.trackIfEnabled(result, resolved.name, 'command');
     return result;
   }
 
@@ -131,24 +111,14 @@ export class UluOpsClient {
    * Execute a workflow with multi-phase orchestration.
    */
   async runWorkflow(name: string, input: ExecutionInput): Promise<WorkflowResult> {
-    const [refName, refVersion] = parseRef(name);
-    const resolved = await this.registry.resolve(refName, refVersion, 'workflow');
+    const resolved = await this.resolveByRef(name, 'workflow');
 
     if (resolved.type !== 'workflow') {
       throw new Error(`${name} is not a workflow (type: ${resolved.type}). Use runAgent() for agents or runCommand() for commands.`);
     }
 
     const result = await this.workflowExecutor.execute(resolved, input);
-
-    if (this.config.trackingEnabled) {
-      const response = await this.validation.submit({
-        project: this.config.defaultProject ?? resolved.name,
-        workflowType: 'workflow',
-        result,
-      });
-      result.dashboardUrl = response.dashboardUrl;
-    }
-
+    await this.trackIfEnabled(result, resolved.name, 'workflow');
     return result;
   }
 
@@ -159,8 +129,7 @@ export class UluOpsClient {
    * Agents are directly executable (wrapped as ExecutionResult).
    */
   async run(name: string, input: ExecutionInput): Promise<ExecutionResult | AgentResult> {
-    const [refName, refVersion] = parseRef(name);
-    const resolved = await this.registry.resolve(refName, refVersion);
+    const resolved = await this.resolveByRef(name);
     let result: ExecutionResult | AgentResult;
 
     switch (resolved.type) {
@@ -180,15 +149,7 @@ export class UluOpsClient {
         throw new Error(`Unknown definition type: ${resolved.type}`);
     }
 
-    if (this.config.trackingEnabled) {
-      const response = await this.validation.submit({
-        project: this.config.defaultProject ?? resolved.name,
-        workflowType: resolved.type,
-        result,
-      });
-      result.dashboardUrl = response.dashboardUrl;
-    }
-
+    await this.trackIfEnabled(result, resolved.name, resolved.type);
     return result;
   }
 
@@ -197,8 +158,7 @@ export class UluOpsClient {
    * Returns a PipelineHandle for monitoring and control.
    */
   async startPipeline(name: string, input: ExecutionInput): Promise<PipelineHandle> {
-    const [refName, refVersion] = parseRef(name);
-    const resolved = await this.registry.resolve(refName, refVersion, 'pipeline');
+    const resolved = await this.resolveByRef(name, 'pipeline');
 
     if (resolved.type !== 'pipeline') {
       throw new Error(`${name} is not a pipeline (type: ${resolved.type}). Use runWorkflow() for workflows or runCommand() for commands.`);
@@ -351,6 +311,30 @@ export class UluOpsClient {
       defaultProvider: ai?.defaultProvider ?? 'anthropic',
       modelOverride: ai?.modelOverride,
     };
+  }
+
+  private async resolveByRef(name: string, type?: DefinitionType) {
+    const [refName, refVersion] = parseRef(name);
+    return type
+      ? this.registry.resolve(refName, refVersion, type)
+      : this.registry.resolve(refName, refVersion);
+  }
+
+  private async trackIfEnabled(
+    result: { dashboardUrl?: string },
+    resolvedName: string,
+    workflowType: string,
+    options?: { trackResults?: boolean; project?: string },
+  ): Promise<void> {
+    const shouldTrack = options?.trackResults ?? this.config.trackingEnabled;
+    if (!shouldTrack) return;
+
+    const response = await this.validation.submit({
+      project: options?.project ?? this.config.defaultProject ?? resolvedName,
+      workflowType,
+      result: result as ExecutionResult,
+    });
+    result.dashboardUrl = response.dashboardUrl;
   }
 
   private extractInterface(definition: unknown): unknown {

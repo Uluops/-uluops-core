@@ -4,7 +4,7 @@
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](LICENSE)
 [![Node.js Version](https://img.shields.io/node/v/@uluops/core)](https://nodejs.org)
 [![TypeScript](https://img.shields.io/badge/TypeScript-5.7+-blue.svg)](https://www.typescriptlang.org/)
-[![Tests](https://img.shields.io/badge/tests-290%20passing-brightgreen)](test/)
+[![Tests](https://img.shields.io/badge/tests-316%20passing-brightgreen)](test/)
 
 The foundational execution engine for UluOps. Orchestrates AI-powered code analysis through a 4-layer execution hierarchy (Agent > Command > Workflow > Pipeline), manages LLM tool loops via Vercel AI SDK, and integrates with UluOps Registry and Validation services.
 
@@ -338,6 +338,18 @@ import {
 } from '@uluops/core';
 ```
 
+### Subpath Exports
+
+For tree-shaking or importing just types/errors without pulling in the full client:
+
+```typescript
+// Import only types (zero runtime cost)
+import type { AgentResult, ExecutionInput } from '@uluops/core/types';
+
+// Import only error classes
+import { ExecutionError, ConfigurationError } from '@uluops/core/errors';
+```
+
 ## Error Handling
 
 The SDK provides a structured error hierarchy:
@@ -393,7 +405,7 @@ npm install
 # Type check
 npm run typecheck
 
-# Run tests (290 tests)
+# Run tests (316 tests)
 npm test
 
 # Run tests in watch mode

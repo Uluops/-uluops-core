@@ -58,6 +58,26 @@ describe('TokenBudgetTracker', () => {
     expect(tracker.isOverThreshold(0.90)).toBe(false);
   });
 
+  it('isOverThreshold returns true at exact boundary (>=, not >)', () => {
+    const tracker = new TokenBudgetTracker(100_000);
+    // Exactly 80,000 == 80% of 100,000 — should trigger (>=)
+    tracker.update(80_000, 500);
+    expect(tracker.isOverThreshold(0.80)).toBe(true);
+  });
+
+  it('isOverThreshold returns false just below boundary', () => {
+    const tracker = new TokenBudgetTracker(100_000);
+    // 79,999 < 80% of 100,000 — should NOT trigger
+    tracker.update(79_999, 500);
+    expect(tracker.isOverThreshold(0.80)).toBe(false);
+  });
+
+  it('isOverThreshold returns false when budget is 0', () => {
+    const tracker = new TokenBudgetTracker(0);
+    tracker.update(1000, 500);
+    expect(tracker.isOverThreshold(0.80)).toBe(false);
+  });
+
   it('initializes at zero usage', () => {
     const tracker = new TokenBudgetTracker(200_000);
     const status = tracker.getStatus();

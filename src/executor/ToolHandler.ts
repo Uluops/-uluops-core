@@ -5,25 +5,25 @@ import type { Tool, ToolUseBlock, ToolResult } from '../types/index.js';
 import type { Logger } from '@uluops/sdk-core';
 import { formatErrorMessage } from '../utils/formatError.js';
 
+/** No-op logger for when none is provided */
+const noopLogger: Logger = { debug() {}, info() {}, warn() {}, error() {} };
+
+/** Max file size to read (1 MB). Matches Claude Code's file read limit; keeps tool results within token budget. */
+const MAX_FILE_SIZE = 1_048_576;
+
+/** Max file size for line counting (100 KB). Lower than MAX_FILE_SIZE because line splitting is memory-intensive. */
+const MAX_LINE_COUNT_SIZE = 102_400;
+
+/** Default max results for list_files. Balances completeness vs token cost in a single tool response. */
+const DEFAULT_LIST_MAX_RESULTS = 200;
+
+/** Max directory entries per level in get_directory_tree. Prevents enormous trees from flooding the context window. */
+const MAX_DIR_ENTRIES = 50;
+
 /**
  * Handles filesystem tool calls, fulfilling them against the local target directory.
  * All paths are sandboxed to the base path to prevent directory traversal.
  */
-/** No-op logger for when none is provided */
-const noopLogger: Logger = { debug() {}, info() {}, warn() {}, error() {} };
-
-/** Max file size to read (1 MB). Files larger than this are truncated. */
-const MAX_FILE_SIZE = 1_048_576;
-
-/** Max file size for line counting (100 KB) */
-const MAX_LINE_COUNT_SIZE = 102_400;
-
-/** Default max results for list_files */
-const DEFAULT_LIST_MAX_RESULTS = 200;
-
-/** Default max directory entries before truncation in get_directory_tree */
-const MAX_DIR_ENTRIES = 50;
-
 export class ToolHandler {
   private basePath: string;
   private logger: Logger;

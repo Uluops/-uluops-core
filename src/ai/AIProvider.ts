@@ -321,7 +321,9 @@ export class AIProvider {
       };
     }
 
-    // Auto-inject context management to clear old tool uses when context grows large
+    // Auto-inject context management to clear old tool uses when context grows large.
+    // Trigger at 100K tokens (~50% of Claude's 200K context) to leave room for the final
+    // response. Keep the 5 most recent tool uses so the model retains working context.
     if (!('contextManagement' in anthropicOpts)) {
       anthropicOpts = {
         ...anthropicOpts,

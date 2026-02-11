@@ -283,6 +283,35 @@ After further analysis:
       expect(issues[2]!.priority).toBe('backlog');
     });
   });
+
+  describe('warnings population', () => {
+    it('returns empty warnings for json code fence extraction', () => {
+      const content = '```json\n{"decision": "PASS", "score": 90}\n```';
+      const result = extractor.extractWithMetadata(content, 'validator');
+      expect(result.warnings).toEqual([]);
+      expect(result.warnings.length).toBe(0);
+    });
+
+    it('returns non-empty warnings for inline JSON extraction', () => {
+      const content = 'The result is {"decision": "PASS", "score": 90}';
+      const result = extractor.extractWithMetadata(content, 'validator');
+      expect(result.warnings.length).toBeGreaterThan(0);
+      expect(result.warnings[0]).toContain('inline JSON');
+    });
+
+    it('returns non-empty warnings for structured text fallback', () => {
+      const content = 'Decision: PASS\nScore: 75\nMax Score: 100';
+      const result = extractor.extractWithMetadata(content, 'validator');
+      expect(result.warnings.length).toBeGreaterThan(0);
+      expect(result.warnings[0]).toContain('structured text');
+    });
+
+    it('returns warning when extraction fails completely', () => {
+      const content = 'This has no structured data at all.';
+      const result = extractor.extractWithMetadata(content, 'validator');
+      expect(result.warnings).toEqual(['Could not extract structured output from response']);
+    });
+  });
 });
 
 function extractDecision(decision: string, agentType: 'validator' | 'executor'): string {
