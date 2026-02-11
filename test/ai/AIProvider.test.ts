@@ -33,6 +33,8 @@ const mockConfig: ResolvedConfig = {
   hashVerificationEnabled: true,
   timeout: 300_000,
   debug: false,
+  defaultThinkingBudget: 10_000,
+  contextBudget: 200_000,
 };
 
 function makeResolvedModel(overrides?: Partial<ResolvedModel>): ResolvedModel {

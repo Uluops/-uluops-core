@@ -125,6 +125,14 @@ export interface UluOpsConfig {
    * @default false
    */
   debug?: boolean;
+
+  /**
+   * Context window budget in tokens for agent execution.
+   * When usage exceeds 80%, the agent is forced to produce output instead of calling more tools.
+   * Also enables Anthropic context management (auto-clearing old tool uses at 50%).
+   * @default 200000
+   */
+  contextBudget?: number;
 }
 
 /**
@@ -143,4 +151,5 @@ export interface ResolvedConfig {
   defaultProject?: string;
   defaultThinkingBudget: number;
   debug: boolean;
+  contextBudget: number;
 }

@@ -316,6 +316,7 @@ export class UluOpsClient {
       defaultProject: config.defaultProject ?? process.env['ULUOPS_PROJECT'],
       defaultThinkingBudget: config.defaultThinkingBudget ?? 10_000,
       debug: config.debug ?? (process.env['ULUOPS_DEBUG'] === 'true'),
+      contextBudget: config.contextBudget ?? 200_000,
     };
   }
 

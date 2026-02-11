@@ -46,6 +46,8 @@ const baseConfig: ResolvedConfig = {
   hashVerificationEnabled: false,
   timeout: 30000,
   debug: false,
+  defaultThinkingBudget: 10_000,
+  contextBudget: 200_000,
 };
 
 describe('RegistryClient', () => {

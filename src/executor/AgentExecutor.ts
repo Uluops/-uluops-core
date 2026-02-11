@@ -2,6 +2,7 @@ import type { ToolSet } from 'ai';
 import type { AIProvider } from '../ai/AIProvider.js';
 import { ToolHandler } from './ToolHandler.js';
 import { ToolAdapter } from '../ai/ToolAdapter.js';
+import { TokenBudgetTracker } from '../ai/TokenBudgetTracker.js';
 import { OutputExtractor } from '../parser/OutputExtractor.js';
 import type { ResolvedConfig } from '../types/config.js';
 import type { ResolvedDefinition, ValidatorRuntime, ExecutorRuntime } from '../types/registry.js';
@@ -57,9 +58,11 @@ export class AgentExecutor {
       additionalTools = this.aiProvider.createBashTool(input.target, context.timeoutMs);
     }
 
-    // 3. Setup tool handler and AI SDK tool adapter
+    // 3. Setup tool handler, budget tracker, and AI SDK tool adapter
     const toolHandler = new ToolHandler(input.target, this.logger);
-    const toolAdapter = new ToolAdapter(toolHandler, additionalTools);
+    const contextBudget = this.config.contextBudget;
+    const budgetTracker = new TokenBudgetTracker(contextBudget);
+    const toolAdapter = new ToolAdapter(toolHandler, additionalTools, budgetTracker);
 
     // 4. Get the system prompt
     const systemPrompt = runtime.prompt;
@@ -77,6 +80,8 @@ export class AgentExecutor {
       maxSteps: context.maxSteps,
       timeoutMs: context.timeoutMs,
       temperature: context.temperature,
+      contextBudget,
+      budgetTracker,
     });
 
     // 6. Parse structured output with metadata
@@ -214,14 +219,24 @@ export class AgentExecutor {
     const files = await toolHandler.fulfill({
       id: 'init',
       name: 'list_files',
-      input: { path: '.', pattern: '**/*' },
+      input: { path: '.', pattern: '**/*', max_results: 100 },
     });
 
     const fileList = files.content.split('\n').filter(Boolean);
     const languages = this.detectLanguages(fileList);
     const tree = this.buildTreePreview(fileList, 20);
 
-    return { tree, fileCount: fileList.length, languages };
+    // Count may include "... and N more files" line
+    const countLine = fileList.find(l => l.startsWith('... and '));
+    let fileCount = fileList.length;
+    if (countLine) {
+      const match = /\.\.\. and (\d+) more files/.exec(countLine);
+      if (match) {
+        fileCount = fileList.length - 1 + parseInt(match[1]!, 10);
+      }
+    }
+
+    return { tree, fileCount, languages };
   }
 
   private detectLanguages(files: string[]): string[] {
@@ -238,7 +253,11 @@ export class AgentExecutor {
 
     const detected = new Set<string>();
     for (const file of files) {
-      const ext = file.substring(file.lastIndexOf('.'));
+      // Strip metadata suffix: "file.ts (3.8 KB, 120 lines)" → "file.ts"
+      const fileName = file.replace(/\s+\(.*\)$/, '');
+      const dotIdx = fileName.lastIndexOf('.');
+      if (dotIdx === -1) continue;
+      const ext = fileName.substring(dotIdx);
       const lang = langMap[ext];
       if (lang) detected.add(lang);
     }

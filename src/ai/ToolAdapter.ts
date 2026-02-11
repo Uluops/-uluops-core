@@ -1,6 +1,7 @@
 import { tool, type ToolSet } from 'ai';
 import { z } from 'zod';
 import type { ToolHandler } from '../executor/ToolHandler.js';
+import type { TokenBudgetTracker } from './TokenBudgetTracker.js';
 
 /**
  * Converts UluOps ToolHandler to AI SDK v6 tool format.
@@ -12,62 +13,81 @@ export class ToolAdapter {
   constructor(
     private toolHandler: ToolHandler,
     private additionalTools?: ToolSet,
+    private budgetTracker?: TokenBudgetTracker,
   ) {}
 
   /**
    * Get AI SDK v6 compatible tools from ToolHandler.
    * Converts JSON Schema tool definitions to Zod-based AI SDK tools.
-   *
-   * @returns ToolSet with read_file, list_files, search_content + any additional provider tools
    */
   getTools(): ToolSet {
-    return {
+    const tools: ToolSet = {
       ...this.additionalTools,
+
       read_file: tool({
-        description: 'Read the contents of a file. Returns the full file content.',
+        description:
+          'Read the contents of a file. Use start_line/end_line for large files to avoid reading the entire file.',
         inputSchema: z.object({
           path: z.string().describe('File path relative to target directory'),
+          start_line: z.number().int().optional().describe('First line to read (1-based). Default: 1'),
+          end_line: z.number().int().optional().describe('Last line to read (1-based). Default: end of file'),
         }),
-        execute: async ({ path }: { path: string }) => {
+        execute: async ({ path, start_line, end_line }) => {
           const result = await this.toolHandler.fulfill({
             id: crypto.randomUUID(),
             name: 'read_file',
-            input: { path },
+            input: {
+              path,
+              ...(start_line !== undefined ? { start_line } : {}),
+              ...(end_line !== undefined ? { end_line } : {}),
+            },
           });
-          if (result.is_error) {
-            throw new Error(result.content);
-          }
+          if (result.is_error) throw new Error(result.content);
           return result.content;
         },
       }),
 
       list_files: tool({
-        description: 'List files in a directory. Supports glob patterns.',
+        description:
+          'List files in a directory with size/line metadata. Supports glob patterns. Results are capped at max_results.',
         inputSchema: z.object({
           path: z.string().describe('Directory path relative to target'),
           pattern: z.string().optional().describe('Glob pattern (e.g., "**/*.ts")'),
+          max_results: z.number().int().optional().describe('Maximum files to return. Default: 200'),
         }),
-        execute: async ({ path, pattern }: { path: string; pattern?: string }) => {
+        execute: async ({ path, pattern, max_results }) => {
           const result = await this.toolHandler.fulfill({
             id: crypto.randomUUID(),
             name: 'list_files',
-            input: { path, ...(pattern !== undefined ? { pattern } : {}) },
+            input: {
+              path,
+              ...(pattern !== undefined ? { pattern } : {}),
+              ...(max_results !== undefined ? { max_results } : {}),
+            },
           });
-          if (result.is_error) {
-            throw new Error(result.content);
-          }
+          if (result.is_error) throw new Error(result.content);
           return result.content;
         },
       }),
 
       search_content: tool({
-        description: 'Search for a pattern across files. Returns matching lines.',
+        description:
+          'Search for a pattern across files. Supports regex. Use mode to control output verbosity.',
         inputSchema: z.object({
           pattern: z.string().describe('Search pattern (supports regex)'),
           file_pattern: z.string().optional().describe('Glob pattern for files'),
           max_results: z.number().optional().describe('Max matches (default: 50)'),
+          mode: z
+            .enum(['matches', 'files', 'count'])
+            .optional()
+            .describe('"matches" (default), "files" (paths only), "count" (per-file counts)'),
+          context_lines: z
+            .number()
+            .int()
+            .optional()
+            .describe('Lines of context before/after each match (0-5). Default: 0'),
         }),
-        execute: async ({ pattern, file_pattern, max_results }: { pattern: string; file_pattern?: string; max_results?: number }) => {
+        execute: async ({ pattern, file_pattern, max_results, mode, context_lines }) => {
           const result = await this.toolHandler.fulfill({
             id: crypto.randomUUID(),
             name: 'search_content',
@@ -75,14 +95,91 @@ export class ToolAdapter {
               pattern,
               ...(file_pattern !== undefined ? { file_pattern } : {}),
               ...(max_results !== undefined ? { max_results } : {}),
+              ...(mode !== undefined ? { mode } : {}),
+              ...(context_lines !== undefined ? { context_lines } : {}),
             },
           });
-          if (result.is_error) {
-            throw new Error(result.content);
-          }
+          if (result.is_error) throw new Error(result.content);
+          return result.content;
+        },
+      }),
+
+      get_file_info: tool({
+        description:
+          'Get file metadata (size, line count, language) without reading content. Use before read_file to decide what to read.',
+        inputSchema: z.object({
+          path: z.string().describe('File path relative to target directory'),
+        }),
+        execute: async ({ path }) => {
+          const result = await this.toolHandler.fulfill({
+            id: crypto.randomUUID(),
+            name: 'get_file_info',
+            input: { path },
+          });
+          if (result.is_error) throw new Error(result.content);
+          return result.content;
+        },
+      }),
+
+      get_directory_tree: tool({
+        description:
+          'Get a hierarchical view of a directory with file counts and sizes. More structured than list_files.',
+        inputSchema: z.object({
+          path: z.string().describe('Directory path relative to target'),
+          max_depth: z.number().int().optional().describe('Maximum depth to traverse. Default: 3'),
+          include_sizes: z.boolean().optional().describe('Include file sizes. Default: true'),
+        }),
+        execute: async ({ path, max_depth, include_sizes }) => {
+          const result = await this.toolHandler.fulfill({
+            id: crypto.randomUUID(),
+            name: 'get_directory_tree',
+            input: {
+              path,
+              ...(max_depth !== undefined ? { max_depth } : {}),
+              ...(include_sizes !== undefined ? { include_sizes } : {}),
+            },
+          });
+          if (result.is_error) throw new Error(result.content);
+          return result.content;
+        },
+      }),
+
+      get_symbols: tool({
+        description:
+          'Extract exported symbols (functions, classes, interfaces, types, constants) from a source file with line numbers.',
+        inputSchema: z.object({
+          path: z.string().describe('File path relative to target directory'),
+          include_private: z.boolean().optional().describe('Include non-exported symbols. Default: false'),
+        }),
+        execute: async ({ path, include_private }) => {
+          const result = await this.toolHandler.fulfill({
+            id: crypto.randomUUID(),
+            name: 'get_symbols',
+            input: {
+              path,
+              ...(include_private !== undefined ? { include_private } : {}),
+            },
+          });
+          if (result.is_error) throw new Error(result.content);
           return result.content;
         },
       }),
     };
+
+    // Synthetic tool: get_token_budget (needs runtime state, not ToolHandler)
+    if (this.budgetTracker) {
+      const tracker = this.budgetTracker;
+      tools['get_token_budget'] = tool({
+        description:
+          'Get current token budget status showing how much context window has been used. Use to decide whether to read more files or wrap up.',
+        inputSchema: z.object({}),
+        execute: async () => {
+          const status = tracker.getStatus();
+          return JSON.stringify(status, null, 2);
+        },
+      });
+    }
+
+    return tools;
   }
 }

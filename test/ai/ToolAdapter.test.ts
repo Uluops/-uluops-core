@@ -22,9 +22,17 @@ describe('ToolAdapter', () => {
   });
 
   describe('getTools', () => {
-    it('returns three tools', () => {
+    it('returns all tools', () => {
       const tools = adapter.getTools();
-      expect(Object.keys(tools)).toEqual(['read_file', 'list_files', 'search_content']);
+      const toolNames = Object.keys(tools);
+      expect(toolNames).toContain('read_file');
+      expect(toolNames).toContain('list_files');
+      expect(toolNames).toContain('search_content');
+      expect(toolNames).toContain('get_file_info');
+      expect(toolNames).toContain('get_directory_tree');
+      expect(toolNames).toContain('get_symbols');
+      // get_token_budget not present without budgetTracker
+      expect(toolNames).not.toContain('get_token_budget');
     });
 
     it('each tool has description and inputSchema', () => {
@@ -58,6 +66,7 @@ describe('ToolAdapter', () => {
       const listFiles = tools['list_files']!;
       const exec = (listFiles as { execute: (args: { path: string; pattern?: string }) => Promise<string> }).execute;
       const result = await exec({ path: '.' });
+      // Now includes metadata: "test.ts (20 B, 2 lines)"
       expect(result).toContain('test.ts');
     });
 

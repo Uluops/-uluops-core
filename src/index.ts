@@ -17,6 +17,7 @@ export type { AIGenerateResult, AIGenerateOptions } from './ai/AIProvider.js';
 export { ModelCatalog } from './ai/ModelCatalog.js';
 export type { ResolvedModel, ResolveOptions } from './ai/ModelCatalog.js';
 export { ToolAdapter } from './ai/ToolAdapter.js';
+export { TokenBudgetTracker } from './ai/TokenBudgetTracker.js';
 
 // ─── Utilities ────────────────────────────────────────────────────────────────
 export { OutputExtractor } from './parser/OutputExtractor.js';

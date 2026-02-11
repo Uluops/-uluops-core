@@ -30,6 +30,8 @@ const baseConfig: ResolvedConfig = {
   hashVerificationEnabled: true,
   timeout: 30000,
   debug: false,
+  defaultThinkingBudget: 10_000,
+  contextBudget: 200_000,
 };
 
 function mockAIProvider(overrides?: Partial<AIGenerateResult>): AIProvider {

@@ -7,6 +7,7 @@ import type { UsageMetrics } from '../types/ai.js';
 import { formatErrorMessage } from '../utils/formatError.js';
 import type { ResolvedConfig, ResolvedAIConfig } from '../types/config.js';
 import type { ModelCatalog, ResolvedModel } from './ModelCatalog.js';
+import { TokenBudgetTracker } from './TokenBudgetTracker.js';
 import {
   SdkApiError,
   RateLimitError,
@@ -80,6 +81,12 @@ export interface AIGenerateOptions {
 
   /** Provider-specific options (thinking, effort, etc.) passed through to generateText */
   providerOptions?: ProviderOptions;
+
+  /** Token budget for context window management. When set, forces wrap-up at 80% usage. */
+  contextBudget?: number;
+
+  /** Optional budget tracker for sharing state with tools (e.g., get_token_budget) */
+  budgetTracker?: TokenBudgetTracker;
 }
 
 /**
@@ -154,6 +161,12 @@ export class AIProvider {
 
     try {
       let stepCount = 0;
+      const budgetTracker = options.budgetTracker;
+
+      // Build prepareStep for budget-based wrap-up
+      const prepareStep = options.contextBudget
+        ? this.buildBudgetPrepareStep(options.contextBudget)
+        : undefined;
 
       const result = await generateText({
         model: languageModel,
@@ -167,6 +180,7 @@ export class AIProvider {
           ? AbortSignal.timeout(options.timeoutMs)
           : undefined,
         ...(providerOptions ? { providerOptions } : {}),
+        ...(prepareStep ? { prepareStep } : {}),
         onStepFinish: (step) => {
           stepCount++;
           const toolNames = step.toolCalls?.map(tc => tc.toolName) ?? [];
@@ -176,6 +190,11 @@ export class AIProvider {
             (toolNames.length > 0 ? ` | tools: [${toolNames.join(', ')}]` : '') +
             ` | usage: ${usage.inputTokens ?? 0}in/${usage.outputTokens ?? 0}out`,
           );
+
+          // Update budget tracker for get_token_budget tool
+          if (budgetTracker) {
+            budgetTracker.update(usage.inputTokens ?? 0, usage.outputTokens ?? 0);
+          }
         },
       });
 
@@ -291,26 +310,66 @@ export class AIProvider {
     }
 
     const userAnthropicOpts = (userOptions?.anthropic ?? {}) as Record<string, unknown>;
+    let anthropicOpts = { ...userAnthropicOpts };
 
     // Auto-enable extended thinking if model supports it and user hasn't specified
-    if (resolved.capabilities.extendedThinking && !('thinking' in userAnthropicOpts)) {
+    if (resolved.capabilities.extendedThinking && !('thinking' in anthropicOpts)) {
       const budgetTokens = this.config.defaultThinkingBudget;
-      return {
-        ...userOptions,
-        anthropic: {
-          ...userAnthropicOpts,
-          thinking: { type: 'enabled' as const, budgetTokens },
+      anthropicOpts = {
+        ...anthropicOpts,
+        thinking: { type: 'enabled' as const, budgetTokens },
+      };
+    }
+
+    // Auto-inject context management to clear old tool uses when context grows large
+    if (!('contextManagement' in anthropicOpts)) {
+      anthropicOpts = {
+        ...anthropicOpts,
+        contextManagement: {
+          edits: [
+            {
+              type: 'clear_tool_uses_20250919',
+              trigger: { type: 'input_tokens', value: 100_000 },
+              keep: { type: 'tool_uses', value: 5 },
+              clearToolInputs: true,
+            },
+          ],
         },
       };
     }
 
-    // Return user options if any Anthropic-specific options exist
-    if (Object.keys(userAnthropicOpts).length > 0) {
-      return userOptions;
-    }
+    return {
+      ...(userOptions ?? {}),
+      anthropic: anthropicOpts as Record<string, unknown>,
+    } as ProviderOptions;
+  }
 
-    // No special options needed
-    return userOptions;
+  /**
+   * Build a prepareStep callback that forces wrap-up when budget is 80% consumed.
+   */
+  private buildBudgetPrepareStep(budget: number) {
+    let wrapUpInjected = false;
+    return ({ steps }: { steps: Array<{ usage: { inputTokens?: number; outputTokens?: number } }> }) => {
+      if (wrapUpInjected) {
+        // Already forced wrap-up, keep forcing no tools
+        return { toolChoice: 'none' as const };
+      }
+
+      const usedTokens = steps.reduce(
+        (sum, s) => sum + (s.usage.inputTokens ?? 0),
+        0,
+      );
+
+      if (usedTokens >= budget * 0.80) {
+        wrapUpInjected = true;
+        this.logger.warn(
+          `Context budget 80% used (${usedTokens}/${budget}). Forcing output — no more tool calls.`,
+        );
+        return { toolChoice: 'none' as const };
+      }
+
+      return {};
+    };
   }
 
   // ─────────────────────────────────────────────────────────────────────────
