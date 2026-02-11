@@ -346,6 +346,10 @@ export class AIProvider {
 
   /**
    * Build a prepareStep callback that forces wrap-up when budget is 80% consumed.
+   *
+   * Each step's `inputTokens` is the TOTAL input for that API call (the full
+   * conversation including cached tokens). The last step's value represents the
+   * current context window size. We check that against the budget.
    */
   private buildBudgetPrepareStep(budget: number) {
     let wrapUpInjected = false;
@@ -355,15 +359,16 @@ export class AIProvider {
         return { toolChoice: 'none' as const };
       }
 
-      const usedTokens = steps.reduce(
-        (sum, s) => sum + (s.usage.inputTokens ?? 0),
-        0,
-      );
+      if (steps.length === 0) return {};
 
-      if (usedTokens >= budget * 0.80) {
+      // Last step's inputTokens = current context window size
+      const lastStep = steps[steps.length - 1]!;
+      const contextSize = lastStep.usage.inputTokens ?? 0;
+
+      if (contextSize >= budget * 0.80) {
         wrapUpInjected = true;
         this.logger.warn(
-          `Context budget 80% used (${usedTokens}/${budget}). Forcing output — no more tool calls.`,
+          `Context budget 80% used (${contextSize}/${budget}). Forcing output — no more tool calls.`,
         );
         return { toolChoice: 'none' as const };
       }
