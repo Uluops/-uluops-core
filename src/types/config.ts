@@ -71,13 +71,13 @@ export interface UluOpsConfig {
 
   /**
    * Base URL for uluops-registry-api
-   * @default "https://registry.uluops.ai/api"
+   * @default "https://api.uluops.ai/api/v1/registry"
    */
   registryUrl?: string;
 
   /**
    * Base URL for uluops-validation-api
-   * @default "https://ops.uluops.ai/api"
+   * @default "https://api.uluops.ai/api/v1/ops"
    */
   validationUrl?: string;
 

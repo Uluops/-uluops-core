@@ -299,8 +299,8 @@ describe('UluOpsClient', () => {
       new UluOpsClient({ apiKey: 'test-key' });
 
       const config = constructorArgs(RegistryClient as unknown as ReturnType<typeof vi.fn>)[0] as Record<string, unknown>;
-      expect(config.registryUrl).toBe('https://registry.uluops.ai/api');
-      expect(config.validationUrl).toBe('https://ops.uluops.ai/api');
+      expect(config.registryUrl).toBe('https://api.uluops.ai/api/v1/registry');
+      expect(config.validationUrl).toBe('https://api.uluops.ai/api/v1/ops');
       expect(config.dashboardUrl).toBe('https://app.uluops.ai');
     });
 

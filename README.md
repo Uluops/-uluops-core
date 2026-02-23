@@ -304,8 +304,8 @@ const client = new UluOpsClient({
 |----------|-------------|---------|
 | `ULUOPS_API_KEY` | Platform API key | (required) |
 | `ANTHROPIC_API_KEY` | Anthropic provider key | - |
-| `ULUOPS_REGISTRY_URL` | Registry API URL | `https://registry.uluops.ai/api` |
-| `ULUOPS_VALIDATION_URL` | Validation API URL | `https://ops.uluops.ai/api` |
+| `ULUOPS_REGISTRY_URL` | Registry API URL | `https://api.uluops.ai/api/v1/registry` |
+| `ULUOPS_VALIDATION_URL` | Validation API URL | `https://api.uluops.ai/api/v1/ops` |
 | `ULUOPS_TRACKING_ENABLED` | Auto-submit results | `true` |
 | `ULUOPS_PROJECT` | Default project name | - |
 | `ULUOPS_LOCAL_DEFINITIONS` | Local definitions path | - |
