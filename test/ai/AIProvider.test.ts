@@ -24,7 +24,20 @@ vi.mock('ai', () => ({
 
 vi.mock('@ai-sdk/anthropic', () => ({
   createAnthropic: vi.fn(() => {
-    const provider = vi.fn((modelId: string) => ({ modelId, type: 'mock-model' }));
+    const provider = vi.fn((modelId: string) => ({ modelId, type: 'mock-model' })) as any;
+    provider.tools = {
+      bash_20250124: vi.fn((opts: any) => ({ type: 'provider-defined-tool', name: 'bash', execute: opts.execute })),
+    };
+    return provider;
+  }),
+}));
+
+vi.mock('@ai-sdk/openai', () => ({
+  createOpenAI: vi.fn(() => {
+    const provider = vi.fn((modelId: string) => ({ modelId, type: 'mock-openai-model' })) as any;
+    provider.tools = {
+      shell: vi.fn((opts: any) => ({ type: 'provider-defined-tool', name: 'shell', execute: opts.execute })),
+    };
     return provider;
   }),
 }));
@@ -334,7 +347,183 @@ describe('AIProvider', () => {
 
     it('throws ConfigurationError for unconfigured provider', async () => {
       const provider = new AIProvider(mockConfig, mockCatalog(), noopLogger);
-      await expect(provider.ensureProvider('openai')).rejects.toThrow(ConfigurationError);
+      await expect(provider.ensureProvider('google')).rejects.toThrow(ConfigurationError);
+    });
+  });
+
+  describe('OpenAI provider', () => {
+    const dualConfig: ResolvedConfig = {
+      ...mockConfig,
+      ai: {
+        providers: {
+          anthropic: { apiKey: 'test-anthropic-key' },
+          openai: { apiKey: 'test-openai-key' },
+        },
+        defaultProvider: 'anthropic',
+      },
+    };
+
+    function makeOpenAIModel(overrides?: Partial<ResolvedModel>): ResolvedModel {
+      return {
+        provider: 'openai',
+        modelId: 'gpt-4o',
+        providerModelId: 'gpt-4o',
+        tier: 'premium',
+        capabilities: { tools: true, vision: true, streaming: true, extendedThinking: false },
+        resolvedFrom: 'alias',
+        ...overrides,
+      };
+    }
+
+    it('initializes OpenAI provider when configured', async () => {
+      const provider = new AIProvider(dualConfig, mockCatalog(), noopLogger);
+      await expect(provider.ensureProvider('openai')).resolves.toBeUndefined();
+    });
+
+    it('generates with OpenAI model', async () => {
+      const { generateText } = await import('ai');
+      const mockGenerateText = vi.mocked(generateText);
+
+      mockGenerateText.mockResolvedValueOnce({
+        text: 'OpenAI response',
+        usage: { inputTokens: 80, outputTokens: 40 },
+        steps: [{ toolCalls: [] }],
+        finishReason: 'stop',
+        providerMetadata: {},
+      } as never);
+
+      const catalog = mockCatalog({
+        resolve: vi.fn().mockResolvedValue(makeOpenAIModel()),
+      });
+      const provider = new AIProvider(dualConfig, catalog, noopLogger);
+      const result = await provider.generate({
+        model: 'gpt-4o',
+        system: 'You are a reviewer.',
+        prompt: 'Review this.',
+      });
+
+      expect(result.text).toBe('OpenAI response');
+      expect(result.provider).toBe('openai');
+      expect(result.model).toBe('openai:gpt-4o');
+    });
+
+    it('maps OpenAI cache and reasoning metrics from provider metadata', async () => {
+      const { generateText } = await import('ai');
+      const mockGenerateText = vi.mocked(generateText);
+
+      mockGenerateText.mockResolvedValueOnce({
+        text: 'done',
+        usage: { inputTokens: 300, outputTokens: 150 },
+        steps: [],
+        finishReason: 'stop',
+        providerMetadata: {
+          openai: {
+            cachedPromptTokens: 100,
+            reasoningTokens: 75,
+          },
+        },
+      } as never);
+
+      const catalog = mockCatalog({
+        resolve: vi.fn().mockResolvedValue(makeOpenAIModel()),
+      });
+      const provider = new AIProvider(dualConfig, catalog, noopLogger);
+      const result = await provider.generate({
+        model: 'gpt-4o',
+        system: 'test',
+        prompt: 'test',
+      });
+
+      expect(result.usage.cache_read_input_tokens).toBe(100);
+      expect(result.usage.reasoning_tokens).toBe(75);
+    });
+
+    it('auto-sets reasoningEffort for reasoning-capable OpenAI models', async () => {
+      const { generateText } = await import('ai');
+      const mockGenerateText = vi.mocked(generateText);
+
+      mockGenerateText.mockResolvedValueOnce({
+        text: 'done',
+        usage: { inputTokens: 50, outputTokens: 25 },
+        steps: [],
+        finishReason: 'stop',
+        providerMetadata: {},
+      } as never);
+
+      const catalog = mockCatalog({
+        resolve: vi.fn().mockResolvedValue(makeOpenAIModel({
+          modelId: 'o3',
+          providerModelId: 'o3',
+          capabilities: { tools: true, vision: true, streaming: true, extendedThinking: true },
+        })),
+      });
+      const provider = new AIProvider(dualConfig, catalog, noopLogger);
+      await provider.generate({
+        model: 'o3',
+        system: 'test',
+        prompt: 'test',
+      });
+
+      const call = mockGenerateText.mock.calls[0]?.[0] as any;
+      expect(call.providerOptions.openai.reasoningEffort).toBe('medium');
+    });
+
+    it('creates OpenAI shell tool via createProviderShellTool', () => {
+      const provider = new AIProvider(dualConfig, mockCatalog(), noopLogger);
+      const tools = provider.createProviderShellTool('openai', '/tmp/target', 30_000);
+      expect(tools).toBeDefined();
+      expect(tools).toHaveProperty('shell');
+    });
+
+    it('creates Anthropic bash tool via createProviderShellTool', () => {
+      const provider = new AIProvider(dualConfig, mockCatalog(), noopLogger);
+      const tools = provider.createProviderShellTool('anthropic', '/tmp/target', 30_000);
+      expect(tools).toBeDefined();
+      expect(tools).toHaveProperty('bash');
+    });
+
+    it('returns undefined for unknown provider shell tool', () => {
+      const provider = new AIProvider(dualConfig, mockCatalog(), noopLogger);
+      const tools = provider.createProviderShellTool('google', '/tmp/target', 30_000);
+      expect(tools).toBeUndefined();
+    });
+
+    it('resolveModel returns resolved model with provider', async () => {
+      const resolved = makeOpenAIModel();
+      const catalog = mockCatalog({
+        resolve: vi.fn().mockResolvedValue(resolved),
+      });
+      const provider = new AIProvider(dualConfig, catalog, noopLogger);
+      const result = await provider.resolveModel('gpt-4o');
+      expect(result.provider).toBe('openai');
+      expect(result.modelId).toBe('gpt-4o');
+    });
+
+    it('uses plain string system message for OpenAI (no cache markup)', async () => {
+      const { generateText } = await import('ai');
+      const mockGenerateText = vi.mocked(generateText);
+
+      mockGenerateText.mockResolvedValueOnce({
+        text: 'done',
+        usage: { inputTokens: 50, outputTokens: 25 },
+        steps: [],
+        finishReason: 'stop',
+        providerMetadata: {},
+      } as never);
+
+      const catalog = mockCatalog({
+        resolve: vi.fn().mockResolvedValue(makeOpenAIModel()),
+      });
+      const provider = new AIProvider(dualConfig, catalog, noopLogger);
+      await provider.generate({
+        model: 'gpt-4o',
+        system: 'You are helpful.',
+        prompt: 'test',
+      });
+
+      const call = mockGenerateText.mock.calls[0]?.[0] as any;
+      // OpenAI gets plain string, not Anthropic's cache control object
+      expect(call.system).toBe('You are helpful.');
     });
   });
 });

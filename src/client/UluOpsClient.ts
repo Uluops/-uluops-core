@@ -301,10 +301,14 @@ export class UluOpsClient {
         }
       }
     } else {
-      // Default: Anthropic only, from env var
-      const anthropicKey = process.env['ANTHROPIC_API_KEY'];
-      if (anthropicKey) {
-        providers.anthropic = { apiKey: anthropicKey };
+      // Auto-detect: scan env vars for known provider API keys
+      const KNOWN_PROVIDERS = ['anthropic', 'openai', 'google', 'mistral', 'cohere'] as const;
+      for (const name of KNOWN_PROVIDERS) {
+        const envKey = `${name.toUpperCase()}_API_KEY`;
+        const apiKey = process.env[envKey];
+        if (apiKey) {
+          providers[name] = { apiKey };
+        }
       }
     }
 

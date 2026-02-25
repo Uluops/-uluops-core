@@ -4,6 +4,26 @@ All notable changes to `@uluops/core` will be documented in this file.
 
 This project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.2.0] - 2026-02-25
+
+### Added
+- **OpenAI provider support** — `@ai-sdk/openai` bundled as second provider alongside Anthropic
+- **Auto-detection of AI providers** — `resolveAIConfig()` scans `OPENAI_API_KEY`, `GOOGLE_API_KEY`, etc. when no explicit `ai.providers` config is given
+- **OpenAI shell tool** — `createProviderShellTool()` dispatches to Anthropic `bash_20250124` or OpenAI `shell()` based on resolved model provider
+- **OpenAI reasoning support** — auto-sets `reasoningEffort: 'medium'` for reasoning-capable models (o1, o3, o4-mini)
+- **OpenAI usage metrics** — maps `cachedPromptTokens` and `reasoningTokens` from OpenAI provider metadata
+- **`reasoning_tokens`** field on `UsageMetrics` type for OpenAI reasoning model token tracking
+- **`resolveModel()`** on AIProvider (`@internal`) for early provider detection in AgentExecutor
+
+### Changed
+- **AIProvider** — refactored from Anthropic-only to multi-provider dispatcher; `buildProviderOptions()` dispatches to `buildAnthropicOptions()` / `buildOpenAIOptions()`
+- **AIProvider** — `buildSystemMessage()` returns plain string for non-Anthropic providers (OpenAI caching is automatic for prompts ≥1024 tokens)
+- **AgentExecutor** — shell tool setup uses early model resolution to select correct provider tool
+- **UluOpsClient** — `resolveAIConfig()` auto-detects providers via `KNOWN_PROVIDERS` env var scan instead of defaulting to Anthropic-only
+
+### Removed
+- **`createBashTool()`** — replaced by `createProviderShellTool(provider, targetDir, timeoutMs)`
+
 ## [0.1.0] - 2026-02-09
 
 ### Added

@@ -50,12 +50,15 @@ export class AgentExecutor {
     const context = this.resolveContext(resolved, options);
     this.logger.debug(`Context: model=${context.model}, maxSteps=${context.maxSteps}, temp=${context.temperature}, timeout=${context.timeoutMs}ms`);
 
-    // 2. Determine if bash tool should be enabled (opt-in via agent tools list)
+    // 2. Determine if shell tool should be enabled (opt-in via agent tools list)
     const runtime = resolved.runtime as ValidatorRuntime | ExecutorRuntime;
     const agentTools = (runtime as { interface?: { tools?: string[] } }).interface?.tools;
     let additionalTools: ToolSet | undefined;
     if (agentTools?.includes('bash')) {
-      additionalTools = this.aiProvider.createBashTool(input.target, context.timeoutMs);
+      // Resolve model early to determine the provider for shell tool selection
+      const modelInput = options?.model ?? (runtime as { defaults?: { model?: string } }).defaults?.model ?? this.config.ai.modelOverride ?? 'sonnet';
+      const resolvedModel = await this.aiProvider.resolveModel(modelInput);
+      additionalTools = this.aiProvider.createProviderShellTool(resolvedModel.provider, input.target, context.timeoutMs);
     }
 
     // 3. Setup tool handler, budget tracker, and AI SDK tool adapter

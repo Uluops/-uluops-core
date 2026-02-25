@@ -1,6 +1,7 @@
 import { generateText, stepCountIs, type LanguageModel, type ToolSet } from 'ai';
 import type { ProviderOptions } from '@ai-sdk/provider-utils';
 import { createAnthropic, type AnthropicProvider } from '@ai-sdk/anthropic';
+import { createOpenAI, type OpenAIProvider } from '@ai-sdk/openai';
 import { exec } from 'child_process';
 import { promisify } from 'util';
 import type { UsageMetrics } from '../types/ai.js';
@@ -94,14 +95,15 @@ export interface AIGenerateOptions {
  *
  * Wraps Vercel AI SDK v6 to provide:
  * - Registry-backed model alias resolution (sonnet → anthropic:claude-sonnet-4-5-20250929)
- * - Multi-provider support (Anthropic bundled, others via peer dependencies)
+ * - Multi-provider support (Anthropic + OpenAI bundled, others via dynamic import)
  * - Capability pre-flight checks (tools, vision, streaming, extendedThinking)
  * - Unified generation with automatic tool loops
  * - Automatic prompt caching for Anthropic system messages
- * - Extended thinking auto-enabled for capable models
- * - Provider-defined tool support (bash)
+ * - Extended thinking auto-enabled for capable Anthropic models
+ * - Reasoning effort auto-set for capable OpenAI models
+ * - Provider-defined tool support (Anthropic bash, OpenAI shell)
  * - Error mapping to UluOps error types
- * - Usage metrics in UluOps format
+ * - Usage metrics in UluOps format (including OpenAI reasoning tokens)
  */
 export class AIProvider {
   /** Initialized AI SDK provider factories, keyed by provider name */
@@ -109,6 +111,9 @@ export class AIProvider {
 
   /** Anthropic provider instance for accessing provider-defined tools */
   private anthropicInstance?: AnthropicProvider;
+
+  /** OpenAI provider instance for accessing provider-defined tools */
+  private openaiInstance?: OpenAIProvider;
 
   constructor(
     private config: ResolvedConfig,
@@ -230,34 +235,52 @@ export class AIProvider {
   }
 
   /**
-   * Create Anthropic bash tool for execution in a target directory.
-   *
-   * Uses Anthropic's provider-defined bash_20250124 tool, which Claude has
-   * built-in knowledge of. Returns undefined if Anthropic provider is not available.
+   * Resolve model alias and ensure provider is loaded.
+   * @internal Used by AgentExecutor for early provider detection.
    */
-  createBashTool(targetDir: string, timeoutMs = 30_000): ToolSet | undefined {
-    if (!this.anthropicInstance) return undefined;
+  async resolveModel(
+    input: string,
+    opts?: { requiredCapabilities?: Array<keyof ModelCapabilities> },
+  ): Promise<ResolvedModel> {
+    const resolved = await this.catalog.resolve(input, opts);
+    await this.ensureProvider(resolved.provider);
+    return resolved;
+  }
 
-    return {
-      bash: this.anthropicInstance.tools.bash_20250124({
-        execute: async ({ command }) => {
-          try {
-            const { stdout, stderr } = await execAsync(command, {
-              cwd: targetDir,
-              timeout: timeoutMs,
-              maxBuffer: 1024 * 1024, // 1MB
-            });
-            return stdout || stderr || '(no output)';
-          } catch (error) {
-            const err = error as { killed?: boolean; signal?: string; stderr?: string };
-            if (err.killed || err.signal) {
-              return `Command timed out after ${timeoutMs}ms`;
-            }
-            return `Command failed: ${err.stderr || String(error)}`;
-          }
-        },
-      }),
-    };
+  /**
+   * Create provider-defined shell tool for the resolved model's provider.
+   *
+   * - Anthropic: bash_20250124 (Claude's built-in bash knowledge) — returns string
+   * - OpenAI: openai.tools.shell() with local execution — returns structured output
+   *
+   * Returns undefined if the model's provider has no shell tool support or
+   * the provider instance is not available.
+   */
+  createProviderShellTool(
+    provider: string,
+    targetDir: string,
+    timeoutMs = 30_000,
+  ): ToolSet | undefined {
+    if (provider === 'anthropic' && this.anthropicInstance) {
+      return {
+        bash: this.anthropicInstance.tools.bash_20250124({
+          execute: async ({ command }) => this.executeShellAsString(command, targetDir, timeoutMs),
+        }),
+      };
+    }
+
+    if (provider === 'openai' && this.openaiInstance) {
+      // Type assertion needed: OpenAI provider-defined tool uses a specific
+      // FlexibleSchema<{action: ...}> that doesn't widen to ToolSet's generic
+      // Tool<any, any> due to schema symbol variance. Safe at runtime.
+      return {
+        shell: this.openaiInstance.tools.shell({
+          execute: async ({ action }) => this.executeShellAsOpenAIResult(action, targetDir, timeoutMs),
+        }),
+      } as unknown as ToolSet;
+    }
+
+    return undefined;
   }
 
   // ─────────────────────────────────────────────────────────────────────────
@@ -272,6 +295,7 @@ export class AIProvider {
    * prompt is below the minimum cacheable length (1024 tokens for Sonnet).
    *
    * For other providers: passes through as plain string.
+   * OpenAI caching is automatic for prompts ≥1024 tokens — no markup needed.
    */
   private buildSystemMessage(
     provider: string,
@@ -294,21 +318,32 @@ export class AIProvider {
 
   /**
    * Build top-level providerOptions for generateText().
-   *
-   * For Anthropic:
-   * - Auto-enables extended thinking when model has extendedThinking capability
-   * - Merges user-supplied provider options
-   *
-   * For other providers: passes through user options unchanged.
+   * Dispatches to provider-specific builders.
    */
   private buildProviderOptions(
     resolved: ResolvedModel,
     userOptions?: ProviderOptions,
   ): ProviderOptions | undefined {
-    if (resolved.provider !== 'anthropic') {
-      return userOptions;
+    if (resolved.provider === 'anthropic') {
+      return this.buildAnthropicOptions(resolved, userOptions);
     }
 
+    if (resolved.provider === 'openai') {
+      return this.buildOpenAIOptions(resolved, userOptions);
+    }
+
+    return userOptions;
+  }
+
+  /**
+   * Anthropic-specific provider options.
+   * - Auto-enables extended thinking when model has extendedThinking capability
+   * - Auto-injects context management (clear old tool uses at 100K tokens)
+   */
+  private buildAnthropicOptions(
+    resolved: ResolvedModel,
+    userOptions?: ProviderOptions,
+  ): ProviderOptions {
     const userAnthropicOpts = (userOptions?.anthropic ?? {}) as Record<string, unknown>;
     let anthropicOpts = { ...userAnthropicOpts };
 
@@ -347,6 +382,38 @@ export class AIProvider {
   }
 
   /**
+   * OpenAI-specific provider options.
+   * - Auto-sets reasoningEffort for reasoning-capable models (o1, o3, o4-mini)
+   * - No context management equivalent — budget wrap-up via prepareStep is the only guard
+   * - systemMessageMode auto-handled by @ai-sdk/openai (system → developer for reasoning)
+   */
+  private buildOpenAIOptions(
+    resolved: ResolvedModel,
+    userOptions?: ProviderOptions,
+  ): ProviderOptions | undefined {
+    const userOpenAIOpts = (userOptions?.openai ?? {}) as Record<string, unknown>;
+    let openaiOpts = { ...userOpenAIOpts };
+
+    // Auto-set reasoningEffort for reasoning models if user hasn't specified
+    if (resolved.capabilities.extendedThinking && !('reasoningEffort' in openaiOpts)) {
+      openaiOpts = {
+        ...openaiOpts,
+        reasoningEffort: 'medium',
+      };
+    }
+
+    // No options to inject — return user options unchanged
+    if (Object.keys(openaiOpts).length === 0) {
+      return userOptions;
+    }
+
+    return {
+      ...(userOptions ?? {}),
+      openai: openaiOpts as Record<string, unknown>,
+    } as ProviderOptions;
+  }
+
+  /**
    * Build a prepareStep callback that forces wrap-up when budget is 80% consumed.
    *
    * Each step's `inputTokens` is the TOTAL input for that API call (the full
@@ -380,12 +447,84 @@ export class AIProvider {
   }
 
   // ─────────────────────────────────────────────────────────────────────────
+  // Shell Command Execution
+  // ─────────────────────────────────────────────────────────────────────────
+
+  /**
+   * Low-level command runner. Returns raw stdout/stderr/exit info.
+   * Shared by both Anthropic and OpenAI shell tool adapters.
+   */
+  private async runCommand(
+    command: string,
+    cwd: string,
+    timeoutMs: number,
+  ): Promise<{ stdout: string; stderr: string; timedOut: boolean; exitCode: number }> {
+    try {
+      const { stdout, stderr } = await execAsync(command, {
+        cwd,
+        timeout: timeoutMs,
+        maxBuffer: 1024 * 1024, // 1MB
+      });
+      return { stdout: stdout || '', stderr: stderr || '', timedOut: false, exitCode: 0 };
+    } catch (error) {
+      const err = error as { killed?: boolean; signal?: string; stderr?: string; code?: number; stdout?: string };
+      if (err.killed || err.signal) {
+        return { stdout: err.stdout || '', stderr: err.stderr || '', timedOut: true, exitCode: 1 };
+      }
+      return {
+        stdout: err.stdout || '',
+        stderr: err.stderr || String(error),
+        timedOut: false,
+        exitCode: typeof err.code === 'number' ? err.code : 1,
+      };
+    }
+  }
+
+  /** Anthropic bash tool adapter — returns plain string */
+  private async executeShellAsString(
+    command: string,
+    cwd: string,
+    timeoutMs: number,
+  ): Promise<string> {
+    const result = await this.runCommand(command, cwd, timeoutMs);
+    if (result.timedOut) return `Command timed out after ${timeoutMs}ms`;
+    return result.stdout || result.stderr || '(no output)';
+  }
+
+  /**
+   * OpenAI shell tool adapter — returns structured output.
+   * Shell tool action shape (verified from @ai-sdk/openai index.d.ts:718-722):
+   *   { commands: string[], timeoutMs?: number, maxOutputLength?: number }
+   */
+  private async executeShellAsOpenAIResult(
+    action: { commands: string[]; timeoutMs?: number; maxOutputLength?: number },
+    cwd: string,
+    defaultTimeoutMs: number,
+  ): Promise<{ output: Array<{ stdout: string; stderr: string; outcome: { type: 'timeout' } | { type: 'exit'; exitCode: number } }> }> {
+    const timeoutMs = action.timeoutMs ?? defaultTimeoutMs;
+    const results = [];
+
+    for (const command of action.commands) {
+      const result = await this.runCommand(command, cwd, timeoutMs);
+      results.push({
+        stdout: result.stdout,
+        stderr: result.stderr,
+        outcome: result.timedOut
+          ? { type: 'timeout' as const }
+          : { type: 'exit' as const, exitCode: result.exitCode },
+      });
+    }
+
+    return { output: results };
+  }
+
+  // ─────────────────────────────────────────────────────────────────────────
   // Provider Management
   // ─────────────────────────────────────────────────────────────────────────
 
   /**
    * Initialize AI SDK provider factories from config.
-   * @ai-sdk/anthropic is bundled and always available.
+   * @ai-sdk/anthropic and @ai-sdk/openai are bundled and eagerly initialized.
    */
   private initializeProviders(aiConfig: ResolvedAIConfig): void {
     for (const [providerName, creds] of Object.entries(aiConfig.providers)) {
@@ -393,8 +532,12 @@ export class AIProvider {
         const anthropic = createAnthropic({ apiKey: creds.apiKey });
         this.anthropicInstance = anthropic;
         this.providers.set('anthropic', (modelId) => anthropic(modelId));
+      } else if (providerName === 'openai') {
+        const openai = createOpenAI({ apiKey: creds.apiKey });
+        this.openaiInstance = openai;
+        this.providers.set('openai', (modelId) => openai(modelId));
       }
-      // Non-anthropic providers are loaded lazily in ensureProvider()
+      // Other providers are loaded lazily in ensureProvider()
     }
   }
 
@@ -481,30 +624,46 @@ export class AIProvider {
       output_tokens: usage.outputTokens ?? 0,
     };
 
-    // Extract cache metrics from inputTokenDetails (AI SDK v6 format)
+    // 1. AI SDK standard path (works for both providers)
     if (usage.inputTokenDetails) {
       base.cache_read_input_tokens = usage.inputTokenDetails.cacheReadTokens ?? undefined;
       base.cache_creation_input_tokens = usage.inputTokenDetails.cacheWriteTokens ?? undefined;
     }
 
-    // Fallback: Extract from Anthropic provider metadata
-    const meta = providerMetadata as {
+    // 2. Anthropic provider metadata fallback
+    const anthropicMeta = providerMetadata as {
       anthropic?: {
         cacheCreationInputTokens?: number;
         cacheReadInputTokens?: number;
       };
     } | undefined;
 
-    if (meta?.anthropic) {
-      base.cache_creation_input_tokens ??= meta.anthropic.cacheCreationInputTokens;
-      base.cache_read_input_tokens ??= meta.anthropic.cacheReadInputTokens;
+    if (anthropicMeta?.anthropic) {
+      base.cache_creation_input_tokens ??= anthropicMeta.anthropic.cacheCreationInputTokens;
+      base.cache_read_input_tokens ??= anthropicMeta.anthropic.cacheReadInputTokens;
+    }
+
+    // 3. OpenAI provider metadata fallback
+    const openaiMeta = providerMetadata as {
+      openai?: {
+        cachedPromptTokens?: number;
+        reasoningTokens?: number;
+      };
+    } | undefined;
+
+    if (openaiMeta?.openai) {
+      base.cache_read_input_tokens ??= openaiMeta.openai.cachedPromptTokens;
+      if (openaiMeta.openai.reasoningTokens) {
+        base.reasoning_tokens = openaiMeta.openai.reasoningTokens;
+      }
     }
 
     return base;
   }
 
   /**
-   * Map AI SDK errors to sdk-core error types
+   * Map AI SDK errors to sdk-core error types.
+   * AI SDK normalizes all provider errors to APICallError with statusCode.
    */
   private mapError(error: unknown): Error {
     this.logger.error(`AI SDK error: ${formatErrorMessage(error)}`);
