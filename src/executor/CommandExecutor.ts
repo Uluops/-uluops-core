@@ -56,19 +56,18 @@ export class CommandExecutor {
     }
 
     // 4. Multi-agent: execute each and aggregate
-    const agentResults: AgentResult[] = [];
-
-    for (const ref of agentRefs) {
+    const executeAgent = async (ref: string): Promise<AgentResult> => {
       const [name, version] = parseRef(ref);
       const agentResolved = await this.registry.resolve(name, version, 'agent');
-
-      const result = await this.agentExecutor.execute(agentResolved, input, {
+      return this.agentExecutor.execute(agentResolved, input, {
         model: def.command.execution.model.default,
         timeoutMs: def.command.execution.timeout,
       });
+    };
 
-      agentResults.push(result);
-    }
+    const agentResults: AgentResult[] = def.command.execution.sequential === false
+      ? await Promise.all(agentRefs.map(executeAgent))
+      : await this.executeSequentially(agentRefs, executeAgent);
 
     return this.aggregateResults(
       agentResults,
@@ -77,6 +76,17 @@ export class CommandExecutor {
       startTime,
       def.command.aggregation ?? { method: 'average' },
     );
+  }
+
+  private async executeSequentially(
+    refs: string[],
+    fn: (ref: string) => Promise<AgentResult>,
+  ): Promise<AgentResult[]> {
+    const results: AgentResult[] = [];
+    for (const ref of refs) {
+      results.push(await fn(ref));
+    }
+    return results;
   }
 
   /**

@@ -266,7 +266,7 @@ class PipelineHandle implements IPipelineHandle {
       decision,
       score,
       durationMs,
-      status: this.state.status === 'completed' ? 'complete' : this.state.status as PipelineResult['status'],
+      status: mapPipelineStatus(this.state.status),
       stages: this.state.stageResults,
       recommendations,
       metrics: {
@@ -308,5 +308,16 @@ class PipelineHandle implements IPipelineHandle {
     if (hasWarnings) return 'WARN';
 
     return 'PASS';
+  }
+}
+
+/** Map internal PipelineState status to PipelineResult status (completed → complete). */
+function mapPipelineStatus(status: PipelineState['status']): PipelineResult['status'] {
+  switch (status) {
+    case 'completed': return 'complete';
+    case 'pending': return 'pending';
+    case 'running': return 'running';
+    case 'failed': return 'failed';
+    case 'cancelled': return 'cancelled';
   }
 }

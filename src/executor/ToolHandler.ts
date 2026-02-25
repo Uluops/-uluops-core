@@ -511,26 +511,33 @@ export class ToolHandler {
     dirPath: string,
     opts: { maxDepth: number; includeSizes: boolean },
   ): Promise<ToolResult> {
-    const lines = await this.buildTree(dirPath, '', 0, opts.maxDepth, opts.includeSizes);
+    const { lines } = await this.buildTree(dirPath, '', 0, opts.maxDepth, opts.includeSizes);
     const relativePath = path.relative(this.basePath, dirPath) || '.';
     this.logger.debug(`get_directory_tree: ${relativePath} (${lines.length} entries)`);
     return { tool_use_id: id, content: lines.join('\n') };
   }
 
+  /**
+   * Recursively build directory tree, returning lines and accumulated stats.
+   * Stats bubble up so parent directories can display file count + total size
+   * without a redundant recursive glob + stat pass.
+   */
   private async buildTree(
     dirPath: string,
     indent: string,
     depth: number,
     maxDepth: number,
     includeSizes: boolean,
-  ): Promise<string[]> {
+  ): Promise<{ lines: string[]; fileCount: number; totalSize: number }> {
     const lines: string[] = [];
+    let fileCount = 0;
+    let totalSize = 0;
 
     let entries: Array<{ name: string; isDirectory(): boolean; isFile(): boolean }>;
     try {
       entries = await fs.readdir(dirPath, { withFileTypes: true });
     } catch {
-      return lines;
+      return { lines, fileCount, totalSize };
     }
 
     // Filter out hidden/ignored directories
@@ -548,9 +555,18 @@ export class ToolHandler {
       const fullDirPath = path.join(dirPath, dirName);
 
       if (depth < maxDepth) {
-        lines.push(await this.formatDirEntry(fullDirPath, dirName, indent, includeSizes));
-        const subLines = await this.buildTree(fullDirPath, indent + '  ', depth + 1, maxDepth, includeSizes);
-        lines.push(...subLines);
+        // Recurse first to get accumulated stats
+        const sub = await this.buildTree(fullDirPath, indent + '  ', depth + 1, maxDepth, includeSizes);
+
+        // Build directory header from accumulated stats (no redundant glob)
+        let suffix = `${sub.fileCount} files`;
+        if (includeSizes) suffix += `, ${formatFileSize(sub.totalSize)}`;
+        lines.push(`${indent}${dirName}/ (${suffix})`);
+        lines.push(...sub.lines);
+
+        // Bubble up stats
+        fileCount += sub.fileCount;
+        totalSize += sub.totalSize;
       } else {
         lines.push(`${indent}${dirName}/`);
       }
@@ -559,43 +575,30 @@ export class ToolHandler {
     // Files (capped)
     const shownFiles = files.slice(0, MAX_DIR_ENTRIES);
     for (const file of shownFiles) {
-      lines.push(await this.formatFileEntry(dirPath, String(file.name), indent, includeSizes));
+      const { line, size } = await this.formatFileEntry(dirPath, String(file.name), indent, includeSizes);
+      lines.push(line);
+      fileCount++;
+      totalSize += size;
     }
 
+    // Count files beyond the display cap (still accumulate stats)
     if (files.length > MAX_DIR_ENTRIES) {
       lines.push(`${indent}... and ${files.length - MAX_DIR_ENTRIES} more files`);
-    }
-
-    return lines;
-  }
-
-  private async formatDirEntry(
-    fullDirPath: string,
-    dirName: string,
-    indent: string,
-    includeSizes: boolean,
-  ): Promise<string> {
-    const subFiles = await glob('**/*', {
-      cwd: fullDirPath,
-      nodir: true,
-      ignore: ['**/node_modules/**', '**/.git/**', '**/dist/**', '**/build/**'],
-    });
-
-    let suffix = `${subFiles.length} files`;
-    if (includeSizes) {
-      let totalSize = 0;
-      for (const sf of subFiles) {
-        try {
-          const s = await fs.stat(path.join(fullDirPath, sf));
-          totalSize += s.size;
-        } catch {
-          // skip
+      // Stat the remaining files for accurate parent totals
+      for (const file of files.slice(MAX_DIR_ENTRIES)) {
+        fileCount++;
+        if (includeSizes) {
+          try {
+            const stat = await fs.stat(path.join(dirPath, String(file.name)));
+            totalSize += stat.size;
+          } catch {
+            // skip
+          }
         }
       }
-      suffix += `, ${formatFileSize(totalSize)}`;
     }
 
-    return `${indent}${dirName}/ (${suffix})`;
+    return { lines, fileCount, totalSize };
   }
 
   private async formatFileEntry(
@@ -603,8 +606,8 @@ export class ToolHandler {
     fileName: string,
     indent: string,
     includeSizes: boolean,
-  ): Promise<string> {
-    if (!includeSizes) return `${indent}${fileName}`;
+  ): Promise<{ line: string; size: number }> {
+    if (!includeSizes) return { line: `${indent}${fileName}`, size: 0 };
 
     try {
       const stat = await fs.stat(path.join(dirPath, fileName));
@@ -612,11 +615,11 @@ export class ToolHandler {
       if (stat.size <= MAX_LINE_COUNT_SIZE) {
         const content = await fs.readFile(path.join(dirPath, fileName), 'utf-8');
         const lineCount = content.split('\n').length;
-        return `${indent}${fileName} (${lineCount} lines, ${sizeStr})`;
+        return { line: `${indent}${fileName} (${lineCount} lines, ${sizeStr})`, size: stat.size };
       }
-      return `${indent}${fileName} (${sizeStr})`;
+      return { line: `${indent}${fileName} (${sizeStr})`, size: stat.size };
     } catch {
-      return `${indent}${fileName}`;
+      return { line: `${indent}${fileName}`, size: 0 };
     }
   }
 
