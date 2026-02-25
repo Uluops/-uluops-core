@@ -42,11 +42,13 @@ export class UluOpsClient {
   private workflowExecutor: WorkflowExecutor;
   private pipelineExecutor: PipelineExecutor;
   private config: ResolvedConfig;
+  private logger: ReturnType<typeof createLogger>;
 
   constructor(config: UluOpsConfig) {
     this.config = this.resolveConfig(config);
 
-    const logger = createLogger('[core]', this.config.debug);
+    this.logger = createLogger('[core]', this.config.debug);
+    const logger = this.logger;
 
     this.registry = new RegistryClient(this.config, logger);
     this.validation = new ValidationClient(this.config);
@@ -329,12 +331,18 @@ export class UluOpsClient {
     const shouldTrack = options?.trackResults ?? this.config.trackingEnabled;
     if (!shouldTrack) return;
 
-    const response = await this.validation.submit({
-      project: options?.project ?? this.config.defaultProject ?? resolvedName,
-      workflowType,
-      result: result as ExecutionResult,
-    });
-    result.dashboardUrl = response.dashboardUrl;
+    try {
+      const response = await this.validation.submit({
+        project: options?.project ?? this.config.defaultProject ?? resolvedName,
+        workflowType,
+        result: result as ExecutionResult,
+      });
+      result.dashboardUrl = response.dashboardUrl;
+    } catch (error) {
+      this.logger.warn(
+        `Tracking submission failed (non-fatal): ${error instanceof Error ? error.message : String(error)}`,
+      );
+    }
   }
 
   private extractInterface(definition: unknown): unknown {

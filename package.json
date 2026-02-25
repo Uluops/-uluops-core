@@ -48,9 +48,9 @@
     "url": "git+https://github.com/Uluops/uluops-core.git"
   },
   "dependencies": {
-    "@uluops/sdk-core": "file:../sdk-core",
-    "@uluops/ops-sdk": "file:../ops-sdk",
-    "@uluops/registry-sdk": "file:../registry-sdk",
+    "@uluops/sdk-core": "^0.1.2",
+    "@uluops/ops-sdk": "^0.1.6",
+    "@uluops/registry-sdk": "^0.1.2",
     "ai": "^6.0.0",
     "@ai-sdk/anthropic": "^3.0.0",
     "glob": "^11.0.0",

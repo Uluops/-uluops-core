@@ -304,6 +304,8 @@ export class RegistryClient {
         defaults: {
           model: agent.defaults?.model ?? 'sonnet',
           timeout: agent.defaults?.timeout ?? 300_000,
+          maxTokens: agent.defaults?.max_tokens,
+          temperature: agent.defaults?.temperature,
         },
         config: this.buildAgentConfig(agent),
       } as ResolvedDefinition['runtime'];
@@ -404,32 +406,41 @@ export class RegistryClient {
   private async listLocal(filter?: { type?: DefinitionType; domain?: string }): Promise<DefinitionSummary[]> {
     const results: DefinitionSummary[] = [];
     const baseDir = this.config.localDefinitions!;
+    const seen = new Set<string>();
 
-    const extensions: Record<DefinitionType, string> = {
-      agent: '.agent.yaml',
-      command: '.command.yaml',
-      workflow: '.workflow.yaml',
-      pipeline: '.pipeline.yaml',
+    const typeConfig: Record<DefinitionType, { ext: string; subdir: string }> = {
+      agent: { ext: '.agent.yaml', subdir: 'agents' },
+      command: { ext: '.command.yaml', subdir: 'commands' },
+      workflow: { ext: '.workflow.yaml', subdir: 'workflows' },
+      pipeline: { ext: '.pipeline.yaml', subdir: 'pipelines' },
     };
 
-    for (const [type, ext] of Object.entries(extensions)) {
+    for (const [type, { ext, subdir }] of Object.entries(typeConfig)) {
       if (filter?.type && filter.type !== type) continue;
 
-      try {
-        const files = await fs.readdir(baseDir);
-        for (const file of files) {
-          if (file.endsWith(ext)) {
-            const content = await fs.readFile(path.join(baseDir, file), 'utf-8');
+      // Scan both baseDir and baseDir/<subdir> (matching resolveLocal candidates)
+      const dirsToScan = [baseDir, path.join(baseDir, subdir)];
+
+      for (const dir of dirsToScan) {
+        try {
+          const files = await fs.readdir(dir);
+          for (const file of files) {
+            if (!file.endsWith(ext)) continue;
+            const name = file.replace(ext, '');
+            if (seen.has(`${type}:${name}`)) continue;
+            seen.add(`${type}:${name}`);
+
+            const content = await fs.readFile(path.join(dir, file), 'utf-8');
             const def = this.safeParseYaml(content, file);
-            const summary = this.extractSummary(def, type as DefinitionType, file.replace(ext, ''));
+            const summary = this.extractSummary(def, type as DefinitionType, name);
 
             if (!filter?.domain || summary.domain === filter.domain) {
               results.push(summary);
             }
           }
+        } catch {
+          // Directory doesn't exist or isn't readable — skip silently
         }
-      } catch (error) {
-        this.logger.debug(`Local dir scan failed for ${type}: ${formatErrorMessage(error)}`);
       }
     }
 
