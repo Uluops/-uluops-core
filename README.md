@@ -4,7 +4,7 @@
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](LICENSE)
 [![Node.js Version](https://img.shields.io/node/v/@uluops/core)](https://nodejs.org)
 [![TypeScript](https://img.shields.io/badge/TypeScript-5.7+-blue.svg)](https://www.typescriptlang.org/)
-[![Tests](https://img.shields.io/badge/tests-344%20passing-brightgreen)](test/)
+[![Tests](https://img.shields.io/badge/tests-350%20passing-brightgreen)](test/)
 
 The foundational execution engine for UluOps. Orchestrates AI-powered code analysis through a 4-layer execution hierarchy (Agent > Command > Workflow > Pipeline), manages LLM tool loops via Vercel AI SDK, and integrates with UluOps Registry and Validation services.
 
@@ -60,12 +60,28 @@ The `@uluops/core` SDK provides:
 - **Structured Output Extraction** - 3-strategy fallback: JSON code fence > inline JSON > regex text parsing
 - **Validation Tracking** - Automatic result submission with issue correlation, regression detection, and analytics
 - **Local Development Support** - Load definitions from local YAML files with registry fallback
+- **Bundled Starter Agents** - 5 built-in agents for immediate use without registry access
 
 ## Installation
 
 ```bash
 npm install @uluops/core
 ```
+
+### Bundled Starter Agents
+
+Get started without registry access using the bundled agent definitions:
+
+```typescript
+import { UluOpsClient, STARTER_DEFINITIONS_DIR } from '@uluops/core';
+
+const client = new UluOpsClient({
+  apiKey: process.env.ULUOPS_API_KEY,
+  localDefinitions: STARTER_DEFINITIONS_DIR,
+});
+```
+
+Includes: `code-validator`, `docs-validator`, `public-interface-validator`, `security-analyst`, `test-architect`.
 
 ## Authentication
 
@@ -146,6 +162,16 @@ const result = await client.runWorkflow('ship', { target: './src' });
 
 console.log(`Phases completed: ${result.phases.length}`);
 console.log(`Overall decision: ${result.decision}`);
+```
+
+### Auto-Routing
+
+Universal execution — auto-detects definition type and routes to the correct executor:
+
+```typescript
+// Routes automatically based on whether name resolves to agent, command, workflow, or pipeline
+const result = await client.run('code-validator', { target: './src' });
+console.log(`Decision: ${result.decision}`);
 ```
 
 ### Pipeline Execution
@@ -294,6 +320,10 @@ const client = new UluOpsClient({
   hashVerificationEnabled: true,      // Verify definition integrity via SHA-256
   timeout: 300000,                    // Request timeout in ms
   defaultProject: 'my-project',       // Default project for result submission
+  debug: false,                       // Detailed execution logging (or ULUOPS_DEBUG)
+  defaultThinkingBudget: 10000,       // Extended thinking budget (Anthropic models)
+  contextBudget: 200000,              // Context window budget — forces wrap-up at 80%
+  dashboardUrl: 'https://app.uluops.ai', // Dashboard link prefix for run URLs
 
   // Local Development
   localDefinitions: './definitions',  // Load YAML definitions from local dir
@@ -312,6 +342,7 @@ const client = new UluOpsClient({
 | `ULUOPS_TRACKING_ENABLED` | Auto-submit results | `true` |
 | `ULUOPS_PROJECT` | Default project name | - |
 | `ULUOPS_LOCAL_DEFINITIONS` | Local definitions path | - |
+| `ULUOPS_DEBUG` | Enable detailed execution logging | `false` |
 
 ## TypeScript Support
 
@@ -409,7 +440,7 @@ npm install
 # Type check
 npm run typecheck
 
-# Run tests (344 tests)
+# Run tests (350 tests)
 npm test
 
 # Run tests in watch mode

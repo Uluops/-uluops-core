@@ -336,13 +336,11 @@ export class ToolHandler {
       try {
         const stat = await fs.stat(filePath);
         const sizeStr = formatFileSize(stat.size);
-        if (stat.size <= MAX_LINE_COUNT_SIZE) {
-          const content = await fs.readFile(filePath, 'utf-8');
-          const lineCount = content.split('\n').length;
-          lines.push(`${file} (${sizeStr}, ${lineCount} lines)`);
-        } else {
-          lines.push(`${file} (${sizeStr})`);
-        }
+        const lineCount = await countLines(filePath, stat.size);
+        lines.push(lineCount
+          ? `${file} (${sizeStr}, ${lineCount} lines)`
+          : `${file} (${sizeStr})`
+        );
       } catch {
         lines.push(file);
       }
@@ -381,7 +379,7 @@ export class ToolHandler {
         return { tool_use_id: id, content: matching.join('\n') };
       }
       case 'count': {
-        const counts = await this.searchCountMode(files, opts.pattern, opts.maxResults);
+        const counts = await this.searchCountMode(files, regex, opts.maxResults);
         this.logger.debug(`search_content(count): ${counts.length} files match "${opts.pattern}"`);
         return { tool_use_id: id, content: JSON.stringify(counts, null, 2) };
       }
@@ -413,7 +411,7 @@ export class ToolHandler {
 
   private async searchCountMode(
     files: string[],
-    pattern: string,
+    regex: RegExp,
     maxResults: number,
   ): Promise<Array<{ file: string; count: number }>> {
     const counts: Array<{ file: string; count: number }> = [];
@@ -424,7 +422,8 @@ export class ToolHandler {
         const stat = await fs.stat(filePath);
         if (stat.size > MAX_FILE_SIZE) continue;
         const content = await fs.readFile(filePath, 'utf-8');
-        const matches = content.match(new RegExp(pattern, 'gi'));
+        regex.lastIndex = 0; // Reset stateful 'g' flag
+        const matches = content.match(regex);
         if (matches && matches.length > 0) {
           counts.push({ file, count: matches.length });
         }
@@ -497,10 +496,8 @@ export class ToolHandler {
       modified: stat.mtime.toISOString(),
     };
 
-    if (stat.size <= MAX_LINE_COUNT_SIZE) {
-      const content = await fs.readFile(filePath, 'utf-8');
-      info.lines = content.split('\n').length;
-    }
+    const lineCount = await countLines(filePath, stat.size);
+    if (lineCount !== undefined) info.lines = lineCount;
 
     this.logger.debug(`get_file_info: ${relativePath} (${info.sizeFormatted})`);
     return { tool_use_id: id, content: JSON.stringify(info, null, 2) };
@@ -610,14 +607,13 @@ export class ToolHandler {
     if (!includeSizes) return { line: `${indent}${fileName}`, size: 0 };
 
     try {
-      const stat = await fs.stat(path.join(dirPath, fileName));
+      const filePath = path.join(dirPath, fileName);
+      const stat = await fs.stat(filePath);
       const sizeStr = formatFileSize(stat.size);
-      if (stat.size <= MAX_LINE_COUNT_SIZE) {
-        const content = await fs.readFile(path.join(dirPath, fileName), 'utf-8');
-        const lineCount = content.split('\n').length;
-        return { line: `${indent}${fileName} (${lineCount} lines, ${sizeStr})`, size: stat.size };
-      }
-      return { line: `${indent}${fileName} (${sizeStr})`, size: stat.size };
+      const lc = await countLines(filePath, stat.size);
+      return lc
+        ? { line: `${indent}${fileName} (${lc} lines, ${sizeStr})`, size: stat.size }
+        : { line: `${indent}${fileName} (${sizeStr})`, size: stat.size };
     } catch {
       return { line: `${indent}${fileName}`, size: 0 };
     }
@@ -698,8 +694,15 @@ function toString(v: unknown): string | undefined {
   return typeof v === 'string' ? v : undefined;
 }
 
-function extToLanguage(ext: string): string {
+export function extToLanguage(ext: string): string {
   return LANG_MAP[ext.toLowerCase()] ?? 'Unknown';
+}
+
+/** Count lines in a file if under MAX_LINE_COUNT_SIZE, otherwise return undefined. */
+async function countLines(filePath: string, size: number): Promise<number | undefined> {
+  if (size > MAX_LINE_COUNT_SIZE) return undefined;
+  const content = await fs.readFile(filePath, 'utf-8');
+  return content.split('\n').length;
 }
 
 interface SymbolInfo {

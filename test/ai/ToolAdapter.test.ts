@@ -4,6 +4,7 @@ import * as path from 'node:path';
 import * as os from 'node:os';
 import { ToolAdapter } from '../../src/ai/ToolAdapter.js';
 import { ToolHandler } from '../../src/executor/ToolHandler.js';
+import { TokenBudgetTracker } from '../../src/ai/TokenBudgetTracker.js';
 
 describe('ToolAdapter', () => {
   let tmpDir: string;
@@ -78,6 +79,30 @@ describe('ToolAdapter', () => {
       const parsed = JSON.parse(result) as Array<{ file: string; line: number; content: string }>;
       expect(parsed.length).toBeGreaterThan(0);
       expect(parsed[0]!.content).toContain('export');
+    });
+  });
+
+  describe('get_token_budget', () => {
+    it('includes get_token_budget tool when budgetTracker is provided', () => {
+      const tracker = new TokenBudgetTracker(200_000);
+      const adapterWithBudget = new ToolAdapter(toolHandler, undefined, tracker);
+      const tools = adapterWithBudget.getTools();
+      expect(Object.keys(tools)).toContain('get_token_budget');
+    });
+
+    it('get_token_budget returns tracker status as JSON', async () => {
+      const tracker = new TokenBudgetTracker(100_000);
+      tracker.update(30_000, 2_000);
+      const adapterWithBudget = new ToolAdapter(toolHandler, undefined, tracker);
+      const tools = adapterWithBudget.getTools();
+      const budgetTool = tools['get_token_budget']!;
+      const exec = (budgetTool as { execute: (args: Record<string, never>) => Promise<string> }).execute;
+      const result = await exec({});
+      const parsed = JSON.parse(result);
+      expect(parsed.budget).toBe(100_000);
+      expect(parsed.usedInput).toBe(30_000);
+      expect(parsed.usedOutput).toBe(2_000);
+      expect(parsed.remaining).toBe(70_000);
     });
   });
 });

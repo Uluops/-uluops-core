@@ -1,6 +1,6 @@
 import type { ToolSet } from 'ai';
 import type { AIProvider } from '../ai/AIProvider.js';
-import { ToolHandler } from './ToolHandler.js';
+import { ToolHandler, extToLanguage } from './ToolHandler.js';
 import { ToolAdapter } from '../ai/ToolAdapter.js';
 import { TokenBudgetTracker } from '../ai/TokenBudgetTracker.js';
 import { OutputExtractor } from '../parser/OutputExtractor.js';
@@ -243,17 +243,6 @@ export class AgentExecutor {
   }
 
   private detectLanguages(files: string[]): string[] {
-    const langMap: Record<string, string> = {
-      '.ts': 'TypeScript',
-      '.tsx': 'TypeScript/React',
-      '.js': 'JavaScript',
-      '.jsx': 'JavaScript/React',
-      '.py': 'Python',
-      '.go': 'Go',
-      '.rs': 'Rust',
-      '.java': 'Java',
-    };
-
     const detected = new Set<string>();
     for (const file of files) {
       // Strip metadata suffix: "file.ts (3.8 KB, 120 lines)" → "file.ts"
@@ -261,8 +250,8 @@ export class AgentExecutor {
       const dotIdx = fileName.lastIndexOf('.');
       if (dotIdx === -1) continue;
       const ext = fileName.substring(dotIdx);
-      const lang = langMap[ext];
-      if (lang) detected.add(lang);
+      const lang = extToLanguage(ext);
+      if (lang !== 'Unknown') detected.add(lang);
     }
 
     return Array.from(detected);

@@ -107,13 +107,8 @@ export type {
   Reference,
 } from './registry.js';
 
-// Validation
+// Validation (public contract types only; internal wire types kept in validation.ts)
 export type {
-  ValidatorSnapshot,
-  RecommendationPayload,
-  ValidationRunRequest,
-  ValidationAPIRunResponse,
-  CorrelatedIssue,
   RunSubmission,
   RunSubmissionResponse,
   FingerprintedRecommendation,

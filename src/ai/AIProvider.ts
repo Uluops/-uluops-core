@@ -549,10 +549,7 @@ export class AIProvider {
 
     const creds = this.config.ai.providers[providerName];
     if (!creds) {
-      throw new ConfigurationError(
-        `AI provider "${providerName}" is not configured. ` +
-        `Add it to config.ai.providers: { ${providerName}: { apiKey: '...' } }`,
-      );
+      throw this.missingProviderError(providerName);
     }
 
     try {
@@ -593,12 +590,16 @@ export class AIProvider {
   private getProviderFactory(providerName: string): (modelId: string) => LanguageModel {
     const factory = this.providers.get(providerName);
     if (!factory) {
-      throw new ConfigurationError(
-        `AI provider "${providerName}" is not configured. ` +
-        `Add it to config.ai.providers: { ${providerName}: { apiKey: '...' } }`,
-      );
+      throw this.missingProviderError(providerName);
     }
     return factory;
+  }
+
+  private missingProviderError(providerName: string): ConfigurationError {
+    return new ConfigurationError(
+      `AI provider "${providerName}" is not configured. ` +
+      `Add it to config.ai.providers: { ${providerName}: { apiKey: '...' } }`,
+    );
   }
 
   // ─────────────────────────────────────────────────────────────────────────

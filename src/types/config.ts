@@ -16,7 +16,8 @@ export interface AIConfig {
   /**
    * Provider credentials keyed by provider name.
    * Only configured providers can be used for execution.
-   * `@ai-sdk/anthropic` is bundled; other providers are peer dependencies.
+   * `@ai-sdk/anthropic` and `@ai-sdk/openai` are bundled. Other providers
+   * require installing `@ai-sdk/<provider>` as a peer dependency.
    *
    * @example
    * ```typescript

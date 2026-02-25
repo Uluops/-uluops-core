@@ -338,6 +338,99 @@ describe('AIProvider', () => {
     });
   });
 
+  describe('buildBudgetPrepareStep (via generate)', () => {
+    it('forces toolChoice none when context budget exceeds 80%', async () => {
+      const { generateText } = await import('ai');
+      const mockGenerateText = vi.mocked(generateText);
+
+      mockGenerateText.mockResolvedValueOnce({
+        text: 'done',
+        usage: { inputTokens: 85000, outputTokens: 2000 },
+        steps: [{ toolCalls: [] }],
+        finishReason: 'stop',
+        providerMetadata: {},
+      } as never);
+
+      const catalog = mockCatalog();
+      const provider = new AIProvider(mockConfig, catalog, noopLogger);
+      await provider.generate({
+        model: 'sonnet',
+        system: 'test',
+        prompt: 'test',
+        contextBudget: 100_000,
+      });
+
+      const call = mockGenerateText.mock.calls[0]?.[0] as any;
+      expect(call.prepareStep).toBeDefined();
+
+      // Simulate being under budget
+      const resultUnder = call.prepareStep({
+        steps: [{ usage: { inputTokens: 50_000, outputTokens: 1000 } }],
+      });
+      expect(resultUnder.toolChoice).toBeUndefined();
+
+      // Simulate being over 80% budget
+      const resultOver = call.prepareStep({
+        steps: [{ usage: { inputTokens: 85_000, outputTokens: 1000 } }],
+      });
+      expect(resultOver.toolChoice).toBe('none');
+    });
+
+    it('does not inject prepareStep when no contextBudget', async () => {
+      const { generateText } = await import('ai');
+      const mockGenerateText = vi.mocked(generateText);
+
+      mockGenerateText.mockResolvedValueOnce({
+        text: 'done',
+        usage: { inputTokens: 100, outputTokens: 50 },
+        steps: [],
+        finishReason: 'stop',
+        providerMetadata: {},
+      } as never);
+
+      const catalog = mockCatalog();
+      const provider = new AIProvider(mockConfig, catalog, noopLogger);
+      await provider.generate({
+        model: 'sonnet',
+        system: 'test',
+        prompt: 'test',
+      });
+
+      const call = mockGenerateText.mock.calls[0]?.[0] as any;
+      expect(call.prepareStep).toBeUndefined();
+    });
+  });
+
+  describe('Anthropic context management', () => {
+    it('auto-injects contextManagement with clear_tool_uses_20250919', async () => {
+      const { generateText } = await import('ai');
+      const mockGenerateText = vi.mocked(generateText);
+
+      mockGenerateText.mockResolvedValueOnce({
+        text: 'done',
+        usage: { inputTokens: 100, outputTokens: 50 },
+        steps: [],
+        finishReason: 'stop',
+        providerMetadata: {},
+      } as never);
+
+      const catalog = mockCatalog();
+      const provider = new AIProvider(mockConfig, catalog, noopLogger);
+      await provider.generate({
+        model: 'sonnet',
+        system: 'test',
+        prompt: 'test',
+      });
+
+      const call = mockGenerateText.mock.calls[0]?.[0] as any;
+      const anthropicOpts = call.providerOptions?.anthropic;
+      expect(anthropicOpts?.contextManagement).toBeDefined();
+      expect(anthropicOpts.contextManagement.edits[0].type).toBe('clear_tool_uses_20250919');
+      expect(anthropicOpts.contextManagement.edits[0].trigger.value).toBe(100_000);
+      expect(anthropicOpts.contextManagement.edits[0].keep.value).toBe(5);
+    });
+  });
+
   describe('ensureProvider', () => {
     it('does not throw for already-loaded providers', async () => {
       const provider = new AIProvider(mockConfig, mockCatalog(), noopLogger);
@@ -497,6 +590,37 @@ describe('AIProvider', () => {
       const result = await provider.resolveModel('gpt-4o');
       expect(result.provider).toBe('openai');
       expect(result.modelId).toBe('gpt-4o');
+    });
+
+    it('preserves user-supplied reasoningEffort (does not override)', async () => {
+      const { generateText } = await import('ai');
+      const mockGenerateText = vi.mocked(generateText);
+
+      mockGenerateText.mockResolvedValueOnce({
+        text: 'done',
+        usage: { inputTokens: 50, outputTokens: 25 },
+        steps: [],
+        finishReason: 'stop',
+        providerMetadata: {},
+      } as never);
+
+      const catalog = mockCatalog({
+        resolve: vi.fn().mockResolvedValue(makeOpenAIModel({
+          modelId: 'o3',
+          providerModelId: 'o3',
+          capabilities: { tools: true, vision: true, streaming: true, extendedThinking: true },
+        })),
+      });
+      const provider = new AIProvider(dualConfig, catalog, noopLogger);
+      await provider.generate({
+        model: 'o3',
+        system: 'test',
+        prompt: 'test',
+        providerOptions: { openai: { reasoningEffort: 'high' } },
+      });
+
+      const call = mockGenerateText.mock.calls[0]?.[0] as any;
+      expect(call.providerOptions.openai.reasoningEffort).toBe('high');
     });
 
     it('uses plain string system message for OpenAI (no cache markup)', async () => {
