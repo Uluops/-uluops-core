@@ -1,71 +1,8 @@
 import { describe, it, expect, vi } from 'vitest';
 import { CommandExecutor } from '../../src/executor/CommandExecutor.js';
-import type { AgentExecutor } from '../../src/executor/AgentExecutor.js';
-import type { RegistryClient } from '../../src/registry/RegistryClient.js';
-import type { ResolvedDefinition, ValidatorRuntime } from '../../src/types/registry.js';
-import type { ValidatorAgentResult, ExecutorAgentResult } from '../../src/types/agent.js';
-
-function makeAgentExecutor(results?: Array<ValidatorAgentResult | ExecutorAgentResult>): AgentExecutor {
-  const resultQueue = results ? [...results] : [];
-  return {
-    execute: vi.fn().mockImplementation(() => {
-      if (resultQueue.length > 0) return Promise.resolve(resultQueue.shift());
-      return Promise.resolve(makeValidatorResult());
-    }),
-  } as unknown as AgentExecutor;
-}
-
-function makeRegistry(agentDefs?: Record<string, ResolvedDefinition>): RegistryClient {
-  return {
-    resolve: vi.fn().mockImplementation((name: string) => {
-      if (agentDefs?.[name]) return Promise.resolve(agentDefs[name]);
-      return Promise.resolve(makeAgentDef(name));
-    }),
-  } as unknown as RegistryClient;
-}
-
-function makeAgentDef(name = 'test-agent'): ResolvedDefinition {
-  return {
-    type: 'agent',
-    name,
-    version: '1.0.0',
-    hash: 'sha256:agent',
-    yaml: '',
-    definition: {} as ResolvedDefinition['definition'],
-    runtime: {
-      prompt: 'test',
-      defaults: { model: 'sonnet', timeout: 30000 },
-      config: { maxScore: 100, threshold: 75, categories: [], outputSchema: 'json' },
-    } as ValidatorRuntime,
-    domain: 'software',
-    agentType: 'validator',
-  };
-}
-
-function makeValidatorResult(overrides?: Partial<ValidatorAgentResult>): ValidatorAgentResult {
-  return {
-    type: 'agent',
-    agentType: 'validator',
-    name: 'test-agent',
-    version: '1.0.0',
-    definitionHash: 'sha256:agent',
-    decision: 'PASS',
-    score: 85,
-    maxScore: 100,
-    recommendations: [
-      { validator: 'test-agent', title: 'Issue 1', priority: 'suggested' },
-    ],
-    durationMs: 1000,
-    metrics: {
-      inputTokens: 500,
-      outputTokens: 200,
-      totalEffectiveTokens: 750,
-      durationMs: 1000,
-      model: 'claude-sonnet-4-5-20250929',
-    },
-    ...overrides,
-  };
-}
+import type { ResolvedDefinition } from '../../src/types/registry.js';
+import type { ExecutorAgentResult } from '../../src/types/agent.js';
+import { makeAgentExecutor, makeRegistry, makeValidatorResult } from './fixtures.js';
 
 function makeCommandDef(overrides?: Record<string, unknown>): ResolvedDefinition {
   return {

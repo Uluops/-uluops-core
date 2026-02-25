@@ -1,103 +1,15 @@
 import { describe, it, expect, vi } from 'vitest';
 import { PipelineExecutor } from '../../src/executor/PipelineExecutor.js';
-import type { WorkflowExecutor } from '../../src/executor/WorkflowExecutor.js';
-import type { CommandExecutor } from '../../src/executor/CommandExecutor.js';
-import type { RegistryClient } from '../../src/registry/RegistryClient.js';
 import type { ResolvedDefinition } from '../../src/types/registry.js';
-import type { CommandResult } from '../../src/types/command.js';
-import type { WorkflowResult } from '../../src/types/workflow.js';
 import type { PipelineDefinition } from '../../src/types/pipeline.js';
 import { PipelineError } from '../../src/errors/index.js';
-
-function makeCommandResult(overrides?: Partial<CommandResult>): CommandResult {
-  return {
-    type: 'command',
-    name: 'test-command',
-    version: '1.0.0',
-    definitionHash: 'sha256:cmd',
-    agentType: 'validator',
-    decision: 'PASS',
-    score: 85,
-    recommendations: [],
-    durationMs: 1000,
-    metrics: {
-      inputTokens: 500,
-      outputTokens: 200,
-      totalEffectiveTokens: 700,
-      durationMs: 1000,
-      model: 'sonnet',
-      toolCalls: 2,
-    },
-    ...overrides,
-  };
-}
-
-function makeWorkflowResult(overrides?: Partial<WorkflowResult>): WorkflowResult {
-  return {
-    type: 'workflow',
-    name: 'test-workflow',
-    version: '1.0.0',
-    definitionHash: 'sha256:wf',
-    decision: 'SHIP',
-    score: 90,
-    phases: [],
-    recommendations: [],
-    durationMs: 2000,
-    metrics: {
-      inputTokens: 1000,
-      outputTokens: 400,
-      totalEffectiveTokens: 1400,
-      durationMs: 2000,
-      model: 'mixed',
-      phasesExecuted: 2,
-      phasesPassed: 2,
-      phasesWarned: 0,
-      phasesBlocked: 0,
-      phasesSkipped: 0,
-      commands: [],
-    },
-    ...overrides,
-  };
-}
-
-function makeWorkflowExecutor(results?: WorkflowResult[]): WorkflowExecutor {
-  const queue = results ? [...results] : [];
-  return {
-    execute: vi.fn().mockImplementation(() => {
-      if (queue.length > 0) return Promise.resolve(queue.shift());
-      return Promise.resolve(makeWorkflowResult());
-    }),
-  } as unknown as WorkflowExecutor;
-}
-
-function makeCommandExecutor(results?: CommandResult[]): CommandExecutor {
-  const queue = results ? [...results] : [];
-  return {
-    execute: vi.fn().mockImplementation(() => {
-      if (queue.length > 0) return Promise.resolve(queue.shift());
-      return Promise.resolve(makeCommandResult());
-    }),
-  } as unknown as CommandExecutor;
-}
-
-function makeRegistry(resolutions?: Record<string, ResolvedDefinition>): RegistryClient {
-  return {
-    resolve: vi.fn().mockImplementation((name: string, version?: string, type?: string) => {
-      const key = version ? `${name}@${version}` : name;
-      if (resolutions?.[key]) return Promise.resolve(resolutions[key]);
-      return Promise.resolve({
-        type: type ?? 'command',
-        name,
-        version: version ?? '1.0.0',
-        hash: 'sha256:resolved',
-        yaml: '',
-        definition: {} as ResolvedDefinition['definition'],
-        runtime: {} as ResolvedDefinition['runtime'],
-        domain: 'software',
-      } satisfies ResolvedDefinition);
-    }),
-  } as unknown as RegistryClient;
-}
+import {
+  makeCommandResult,
+  makeWorkflowResult,
+  makeWorkflowExecutor,
+  makeCommandExecutor,
+  makeRegistry,
+} from './fixtures.js';
 
 function makePipelineDef(overrides?: Partial<PipelineDefinition['pipeline']>): ResolvedDefinition {
   return {

@@ -52,11 +52,11 @@ export class AgentExecutor {
 
     // 2. Determine if shell tool should be enabled (opt-in via agent tools list)
     const runtime = resolved.runtime as ValidatorRuntime | ExecutorRuntime;
-    const agentTools = (runtime as { interface?: { tools?: string[] } }).interface?.tools;
+    const agentTools = runtime.interface?.tools;
     let additionalTools: ToolSet | undefined;
     if (agentTools?.includes('bash')) {
       // Resolve model early to determine the provider for shell tool selection
-      const modelInput = options?.model ?? (runtime as { defaults?: { model?: string } }).defaults?.model ?? this.config.ai.modelOverride ?? 'sonnet';
+      const modelInput = options?.model ?? runtime.defaults?.model ?? this.config.ai.modelOverride ?? 'sonnet';
       const resolvedModel = await this.aiProvider.resolveModel(modelInput);
       additionalTools = this.aiProvider.createProviderShellTool(resolvedModel.provider, input.target, context.timeoutMs);
     }
@@ -113,6 +113,7 @@ export class AgentExecutor {
       totalEffectiveTokens: this.calculateEffectiveTokens(result.usage),
       durationMs,
       model: result.model,
+      toolCallCount: result.toolCallCount,
     };
 
     // 9. Return discriminated result

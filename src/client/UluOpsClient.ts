@@ -209,7 +209,7 @@ export class UluOpsClient {
     name: string;
     version: string;
     hash: string;
-    interface: unknown;
+    interface: Record<string, unknown>;
   }> {
     const resolved = await this.registry.resolve(name);
     return {
@@ -327,7 +327,7 @@ export class UluOpsClient {
   }
 
   private async trackIfEnabled(
-    result: { dashboardUrl?: string },
+    result: ExecutionResult | AgentResult,
     resolvedName: string,
     workflowType: string,
     options?: { trackResults?: boolean; project?: string },
@@ -341,7 +341,8 @@ export class UluOpsClient {
         workflowType,
         result: result as ExecutionResult,
       });
-      result.dashboardUrl = response.dashboardUrl;
+      // Attach dashboard URL to result for caller convenience
+      (result as unknown as Record<string, unknown>).dashboardUrl = response.dashboardUrl;
     } catch (error) {
       this.logger.warn(
         `Tracking submission failed (non-fatal): ${error instanceof Error ? error.message : String(error)}`,
@@ -349,12 +350,15 @@ export class UluOpsClient {
     }
   }
 
-  private extractInterface(definition: unknown): unknown {
+  private extractInterface(definition: unknown): Record<string, unknown> {
     const def = definition as Record<string, unknown>;
     for (const key of ['agent', 'command', 'workflow', 'pipeline']) {
       const section = def[key];
       if (section && typeof section === 'object') {
-        return (section as Record<string, unknown>)['interface'];
+        const iface = (section as Record<string, unknown>)['interface'];
+        if (iface && typeof iface === 'object') {
+          return iface as Record<string, unknown>;
+        }
       }
     }
     return {};

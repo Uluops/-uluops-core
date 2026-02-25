@@ -235,8 +235,7 @@ export class RegistryClient {
       version: def.version,
       hash: def.hash,
       yaml: def.yaml ?? '',
-      // SAFETY: YAML structure validated by registry API before storage; full schema validation is registry-side
-      definition: (def.yaml ? this.safeParseYaml(def.yaml, name) : {}) as unknown as ResolvedDefinition['definition'],
+      definition: def.yaml ? this.castDefinition(this.safeParseYaml(def.yaml, name)) : {} as unknown as ResolvedDefinition['definition'],
       runtime: { prompt: rendered.markdown } as ResolvedDefinition['runtime'],
       domain: (def.domain ?? 'general') as ResolvedDefinition['domain'],
       agentType: (def.agentType ?? undefined) as ResolvedDefinition['agentType'],
@@ -275,11 +274,25 @@ export class RegistryClient {
   // ─────────────────────────────────────────────────────────────────────────────
 
   /**
-   * Cast parsed YAML to typed definition.
-   * Content is validated by file extension; full schema validation is registry-side.
+   * Cast parsed YAML to typed definition with structural validation.
+   * Verifies the top-level key matches a known definition type before casting.
+   * Full schema validation is registry-side.
    */
   private castDefinition(parsed: Record<string, unknown>): ResolvedDefinition['definition'] {
-    // SAFETY: YAML structure validated by file extension matching; full schema validation is registry-side
+    const knownTopKeys = ['agent', 'command', 'workflow', 'pipeline'] as const;
+    const topKey = knownTopKeys.find(k => k in parsed);
+    if (!topKey) {
+      throw new Error(
+        `Invalid definition: expected a top-level key of ${knownTopKeys.join(', ')}, ` +
+        `found: ${Object.keys(parsed).join(', ')}`,
+      );
+    }
+    const section = parsed[topKey];
+    if (typeof section !== 'object' || section === null) {
+      throw new Error(`Invalid definition: "${topKey}" must be an object`);
+    }
+    // After structural guard, we know parsed has the right top-level shape.
+    // Full schema validation is registry-side; this prevents totally wrong YAML.
     return parsed as unknown as ResolvedDefinition['definition'];
   }
 

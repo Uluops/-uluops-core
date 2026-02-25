@@ -43,6 +43,12 @@ export interface ValidatorRuntime {
   /** Complete system prompt */
   prompt: string;
 
+  /** Agent interface metadata (tools, name, etc.) */
+  interface?: {
+    tools?: string[];
+    [key: string]: unknown;
+  };
+
   /** Default execution settings */
   defaults: {
     model: string;
@@ -67,6 +73,12 @@ export interface ValidatorRuntime {
 export interface ExecutorRuntime {
   /** Complete system prompt */
   prompt: string;
+
+  /** Agent interface metadata (tools, name, etc.) */
+  interface?: {
+    tools?: string[];
+    [key: string]: unknown;
+  };
 
   /** Default execution settings */
   defaults: {

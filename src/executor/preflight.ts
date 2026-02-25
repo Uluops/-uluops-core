@@ -62,9 +62,27 @@ async function checkFileExists(
   }
 }
 
+/**
+ * Run a shell command from a CDL preflight definition.
+ *
+ * SECURITY: The command string comes from the definition YAML file, which is
+ * authored by the SDK user (not end-user input). It's passed to `sh -c` via
+ * execFile's argv array (not shell-expanded), but the inner command IS
+ * interpreted by sh. We reject commands that contain obvious injection
+ * patterns from untrusted YAML.
+ */
 async function checkCommand(check: PreflightCheck): Promise<void> {
   if (!check.command) {
     throw new PreflightError('command check requires a command', 'command');
+  }
+
+  // Reject commands with backtick substitution or process substitution
+  if (/`|\$\(/.test(check.command)) {
+    throw new PreflightError(
+      `Preflight command contains disallowed shell substitution: ${check.command}`,
+      'command',
+      { command: check.command },
+    );
   }
 
   try {

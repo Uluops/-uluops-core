@@ -101,6 +101,9 @@ export interface ExecutionMetrics {
   /** Model used (or primary model for workflows) */
   model: string;
 
+  /** Number of LLM tool calls made during execution (agent-level) */
+  toolCallCount?: number;
+
   /** Estimated cost in USD */
   costUsd?: number;
 }

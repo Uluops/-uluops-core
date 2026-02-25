@@ -1,64 +1,9 @@
 import { describe, it, expect, vi } from 'vitest';
 import { WorkflowExecutor } from '../../src/executor/WorkflowExecutor.js';
-import type { CommandExecutor } from '../../src/executor/CommandExecutor.js';
-import type { RegistryClient } from '../../src/registry/RegistryClient.js';
 import type { ResolvedDefinition } from '../../src/types/registry.js';
-import type { CommandResult } from '../../src/types/command.js';
 import type { WorkflowDefinition } from '../../src/types/workflow.js';
 import { WorkflowError } from '../../src/errors/index.js';
-
-function makeCommandResult(overrides?: Partial<CommandResult>): CommandResult {
-  return {
-    type: 'command',
-    name: 'test-command',
-    version: '1.0.0',
-    definitionHash: 'sha256:cmd',
-    agentType: 'validator',
-    decision: 'PASS',
-    score: 85,
-    maxScore: 100,
-    recommendations: [
-      { validator: 'test', title: 'Issue 1', priority: 'suggested' },
-    ],
-    durationMs: 1000,
-    metrics: {
-      inputTokens: 500,
-      outputTokens: 200,
-      totalEffectiveTokens: 750,
-      durationMs: 1000,
-      model: 'claude-sonnet-4-5-20250929',
-      toolCalls: 3,
-    },
-    ...overrides,
-  };
-}
-
-function makeCommandExecutor(results?: CommandResult[]): CommandExecutor {
-  const queue = results ? [...results] : [];
-  return {
-    execute: vi.fn().mockImplementation(() => {
-      if (queue.length > 0) return Promise.resolve(queue.shift());
-      return Promise.resolve(makeCommandResult());
-    }),
-  } as unknown as CommandExecutor;
-}
-
-function makeRegistry(): RegistryClient {
-  return {
-    resolve: vi.fn().mockImplementation((name: string) => {
-      return Promise.resolve({
-        type: 'command',
-        name,
-        version: '1.0.0',
-        hash: 'sha256:cmd',
-        yaml: '',
-        definition: {} as ResolvedDefinition['definition'],
-        runtime: {} as ResolvedDefinition['runtime'],
-        domain: 'software',
-      } satisfies ResolvedDefinition);
-    }),
-  } as unknown as RegistryClient;
-}
+import { makeCommandResult, makeCommandExecutor, makeRegistry } from './fixtures.js';
 
 function makeWorkflowDef(overrides?: Partial<WorkflowDefinition['workflow']>): ResolvedDefinition {
   return {

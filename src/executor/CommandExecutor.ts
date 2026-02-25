@@ -103,7 +103,7 @@ export class CommandExecutor {
     const metrics: CommandMetrics = {
       ...agentResult.metrics,
       durationMs,
-      toolCalls: 0, // Not tracked at command level for single-agent
+      toolCalls: agentResult.metrics.toolCallCount ?? 0,
     };
 
     const base = {
@@ -205,11 +205,12 @@ export class CommandExecutor {
     }
 
     // Aggregate metrics
+    const totalToolCalls = results.reduce((sum, r) => sum + (r.metrics.toolCallCount ?? 0), 0);
     const metrics: CommandMetrics = {
       ...sumTokenMetrics(results.map(r => r.metrics)),
       durationMs,
       model: 'mixed',
-      toolCalls: 0,
+      toolCalls: totalToolCalls,
     };
 
     return {
