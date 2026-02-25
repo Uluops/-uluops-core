@@ -140,9 +140,11 @@ export class RegistryClient {
       let yamlContent: string;
       try {
         yamlContent = await fs.readFile(candidate.path, 'utf-8');
-      } catch {
-        // File doesn't exist, try next candidate
-        continue;
+      } catch (error) {
+        const code = (error as NodeJS.ErrnoException).code;
+        if (code === 'ENOENT') continue; // File doesn't exist, try next candidate
+        if (code === 'ENOTDIR') continue; // Path component isn't a directory
+        throw new Error(`Cannot read ${candidate.path}: ${formatErrorMessage(error)}`);
       }
 
       let definition: Record<string, unknown>;

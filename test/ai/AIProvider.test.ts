@@ -3,6 +3,15 @@ import { AIProvider } from '../../src/ai/AIProvider.js';
 import type { ModelCatalog, ResolvedModel } from '../../src/ai/ModelCatalog.js';
 import type { ResolvedConfig } from '../../src/types/config.js';
 import type { Logger } from '@uluops/sdk-core';
+import {
+  RateLimitError,
+  UnauthorizedError,
+  ForbiddenError,
+  ServiceUnavailableError,
+  TimeoutError,
+  SdkApiError,
+  ConfigurationError,
+} from '../../src/errors/index.js';
 
 const noopLogger: Logger = { debug() {}, info() {}, warn() {}, error() {} };
 
@@ -219,7 +228,7 @@ describe('AIProvider', () => {
       expect(result.usage.cache_read_input_tokens).toBe(60);
     });
 
-    it('maps API errors to sdk-core error types', async () => {
+    it('maps 429 to RateLimitError', async () => {
       const { generateText } = await import('ai');
       const mockGenerateText = vi.mocked(generateText);
 
@@ -232,10 +241,10 @@ describe('AIProvider', () => {
         model: 'sonnet',
         system: 'test',
         prompt: 'test',
-      })).rejects.toThrow('Rate limit exceeded');
+      })).rejects.toThrow(RateLimitError);
     });
 
-    it('maps auth errors to UnauthorizedError', async () => {
+    it('maps 401 to UnauthorizedError', async () => {
       const { generateText } = await import('ai');
       const mockGenerateText = vi.mocked(generateText);
 
@@ -248,7 +257,7 @@ describe('AIProvider', () => {
         model: 'sonnet',
         system: 'test',
         prompt: 'test',
-      })).rejects.toThrow('Authentication failed');
+      })).rejects.toThrow(UnauthorizedError);
     });
 
     it('maps 403 to ForbiddenError', async () => {
@@ -264,7 +273,7 @@ describe('AIProvider', () => {
         model: 'sonnet',
         system: 'test',
         prompt: 'test',
-      })).rejects.toThrow('Forbidden');
+      })).rejects.toThrow(ForbiddenError);
     });
 
     it('maps 5xx to ServiceUnavailableError', async () => {
@@ -280,10 +289,10 @@ describe('AIProvider', () => {
         model: 'sonnet',
         system: 'test',
         prompt: 'test',
-      })).rejects.toThrow('Server error');
+      })).rejects.toThrow(ServiceUnavailableError);
     });
 
-    it('maps timeout to TimeoutError', async () => {
+    it('maps AbortError to TimeoutError', async () => {
       const { generateText } = await import('ai');
       const mockGenerateText = vi.mocked(generateText);
 
@@ -296,10 +305,10 @@ describe('AIProvider', () => {
         model: 'sonnet',
         system: 'test',
         prompt: 'test',
-      })).rejects.toThrow('timed out');
+      })).rejects.toThrow(TimeoutError);
     });
 
-    it('maps RetryError', async () => {
+    it('maps RetryError to SdkApiError', async () => {
       const { generateText } = await import('ai');
       const mockGenerateText = vi.mocked(generateText);
 
@@ -312,7 +321,7 @@ describe('AIProvider', () => {
         model: 'sonnet',
         system: 'test',
         prompt: 'test',
-      })).rejects.toThrow('Retries exhausted');
+      })).rejects.toThrow(SdkApiError);
     });
   });
 
@@ -325,9 +334,7 @@ describe('AIProvider', () => {
 
     it('throws ConfigurationError for unconfigured provider', async () => {
       const provider = new AIProvider(mockConfig, mockCatalog(), noopLogger);
-      await expect(provider.ensureProvider('openai')).rejects.toThrow(
-        'AI provider "openai" is not configured',
-      );
+      await expect(provider.ensureProvider('openai')).rejects.toThrow(ConfigurationError);
     });
   });
 });
