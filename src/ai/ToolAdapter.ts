@@ -17,6 +17,19 @@ export class ToolAdapter {
   ) {}
 
   /**
+   * Execute a tool call via ToolHandler and return content or throw on error.
+   */
+  private async executeTool(name: string, input: Record<string, unknown>): Promise<string> {
+    const result = await this.toolHandler.fulfill({
+      id: crypto.randomUUID(),
+      name,
+      input,
+    });
+    if (result.is_error) throw new Error(result.content);
+    return result.content;
+  }
+
+  /**
    * Get AI SDK v6 compatible tools from ToolHandler.
    * Converts JSON Schema tool definitions to Zod-based AI SDK tools.
    */
@@ -32,19 +45,12 @@ export class ToolAdapter {
           start_line: z.number().int().optional().describe('First line to read (1-based). Default: 1'),
           end_line: z.number().int().optional().describe('Last line to read (1-based). Default: end of file'),
         }),
-        execute: async ({ path, start_line, end_line }) => {
-          const result = await this.toolHandler.fulfill({
-            id: crypto.randomUUID(),
-            name: 'read_file',
-            input: {
-              path,
-              ...(start_line !== undefined ? { start_line } : {}),
-              ...(end_line !== undefined ? { end_line } : {}),
-            },
-          });
-          if (result.is_error) throw new Error(result.content);
-          return result.content;
-        },
+        execute: async ({ path, start_line, end_line }) =>
+          this.executeTool('read_file', {
+            path,
+            ...(start_line !== undefined ? { start_line } : {}),
+            ...(end_line !== undefined ? { end_line } : {}),
+          }),
       }),
 
       list_files: tool({
@@ -55,19 +61,12 @@ export class ToolAdapter {
           pattern: z.string().optional().describe('Glob pattern (e.g., "**/*.ts")'),
           max_results: z.number().int().optional().describe('Maximum files to return. Default: 200'),
         }),
-        execute: async ({ path, pattern, max_results }) => {
-          const result = await this.toolHandler.fulfill({
-            id: crypto.randomUUID(),
-            name: 'list_files',
-            input: {
-              path,
-              ...(pattern !== undefined ? { pattern } : {}),
-              ...(max_results !== undefined ? { max_results } : {}),
-            },
-          });
-          if (result.is_error) throw new Error(result.content);
-          return result.content;
-        },
+        execute: async ({ path, pattern, max_results }) =>
+          this.executeTool('list_files', {
+            path,
+            ...(pattern !== undefined ? { pattern } : {}),
+            ...(max_results !== undefined ? { max_results } : {}),
+          }),
       }),
 
       search_content: tool({
@@ -87,21 +86,14 @@ export class ToolAdapter {
             .optional()
             .describe('Lines of context before/after each match (0-5). Default: 0'),
         }),
-        execute: async ({ pattern, file_pattern, max_results, mode, context_lines }) => {
-          const result = await this.toolHandler.fulfill({
-            id: crypto.randomUUID(),
-            name: 'search_content',
-            input: {
-              pattern,
-              ...(file_pattern !== undefined ? { file_pattern } : {}),
-              ...(max_results !== undefined ? { max_results } : {}),
-              ...(mode !== undefined ? { mode } : {}),
-              ...(context_lines !== undefined ? { context_lines } : {}),
-            },
-          });
-          if (result.is_error) throw new Error(result.content);
-          return result.content;
-        },
+        execute: async ({ pattern, file_pattern, max_results, mode, context_lines }) =>
+          this.executeTool('search_content', {
+            pattern,
+            ...(file_pattern !== undefined ? { file_pattern } : {}),
+            ...(max_results !== undefined ? { max_results } : {}),
+            ...(mode !== undefined ? { mode } : {}),
+            ...(context_lines !== undefined ? { context_lines } : {}),
+          }),
       }),
 
       get_file_info: tool({
@@ -110,15 +102,7 @@ export class ToolAdapter {
         inputSchema: z.object({
           path: z.string().describe('File path relative to target directory'),
         }),
-        execute: async ({ path }) => {
-          const result = await this.toolHandler.fulfill({
-            id: crypto.randomUUID(),
-            name: 'get_file_info',
-            input: { path },
-          });
-          if (result.is_error) throw new Error(result.content);
-          return result.content;
-        },
+        execute: async ({ path }) => this.executeTool('get_file_info', { path }),
       }),
 
       get_directory_tree: tool({
@@ -129,19 +113,12 @@ export class ToolAdapter {
           max_depth: z.number().int().optional().describe('Maximum depth to traverse. Default: 3'),
           include_sizes: z.boolean().optional().describe('Include file sizes. Default: true'),
         }),
-        execute: async ({ path, max_depth, include_sizes }) => {
-          const result = await this.toolHandler.fulfill({
-            id: crypto.randomUUID(),
-            name: 'get_directory_tree',
-            input: {
-              path,
-              ...(max_depth !== undefined ? { max_depth } : {}),
-              ...(include_sizes !== undefined ? { include_sizes } : {}),
-            },
-          });
-          if (result.is_error) throw new Error(result.content);
-          return result.content;
-        },
+        execute: async ({ path, max_depth, include_sizes }) =>
+          this.executeTool('get_directory_tree', {
+            path,
+            ...(max_depth !== undefined ? { max_depth } : {}),
+            ...(include_sizes !== undefined ? { include_sizes } : {}),
+          }),
       }),
 
       get_symbols: tool({
@@ -151,18 +128,11 @@ export class ToolAdapter {
           path: z.string().describe('File path relative to target directory'),
           include_private: z.boolean().optional().describe('Include non-exported symbols. Default: false'),
         }),
-        execute: async ({ path, include_private }) => {
-          const result = await this.toolHandler.fulfill({
-            id: crypto.randomUUID(),
-            name: 'get_symbols',
-            input: {
-              path,
-              ...(include_private !== undefined ? { include_private } : {}),
-            },
-          });
-          if (result.is_error) throw new Error(result.content);
-          return result.content;
-        },
+        execute: async ({ path, include_private }) =>
+          this.executeTool('get_symbols', {
+            path,
+            ...(include_private !== undefined ? { include_private } : {}),
+          }),
       }),
     };
 

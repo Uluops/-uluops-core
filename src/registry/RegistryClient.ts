@@ -235,6 +235,8 @@ export class RegistryClient {
       version: def.version,
       hash: def.hash,
       yaml: def.yaml ?? '',
+      // SAFETY: Empty object used as placeholder when no YAML available (e.g., render-only resolution).
+      // Downstream code (AgentExecutor, CommandExecutor) reads definition fields via optional chaining.
       definition: def.yaml ? this.castDefinition(this.safeParseYaml(def.yaml, name)) : {} as unknown as ResolvedDefinition['definition'],
       runtime: { prompt: rendered.markdown } as ResolvedDefinition['runtime'],
       domain: (def.domain ?? 'general') as ResolvedDefinition['domain'],
@@ -291,7 +293,8 @@ export class RegistryClient {
     if (typeof section !== 'object' || section === null) {
       throw new Error(`Invalid definition: "${topKey}" must be an object`);
     }
-    // After structural guard, we know parsed has the right top-level shape.
+    // SAFETY: Cast after structural guard confirms top-level key is a known definition type
+    // (agent|command|workflow|pipeline) and its value is a non-null object.
     // Full schema validation is registry-side; this prevents totally wrong YAML.
     return parsed as unknown as ResolvedDefinition['definition'];
   }

@@ -388,6 +388,43 @@ describe('AIProvider', () => {
       expect(resultOver.toolChoice).toBe('none');
     });
 
+    it('does not trigger at exactly 79.9% budget but triggers at exactly 80%', async () => {
+      const { generateText } = await import('ai');
+      const mockGenerateText = vi.mocked(generateText);
+
+      mockGenerateText.mockResolvedValueOnce({
+        text: 'done',
+        usage: { inputTokens: 80000, outputTokens: 2000 },
+        steps: [{ toolCalls: [] }],
+        finishReason: 'stop',
+        providerMetadata: {},
+      } as never);
+
+      const catalog = mockCatalog();
+      const provider = new AIProvider(mockConfig, catalog, noopLogger);
+      await provider.generate({
+        model: 'sonnet',
+        system: 'test',
+        prompt: 'test',
+        contextBudget: 100_000,
+      });
+
+      const call = mockGenerateText.mock.calls[0]?.[0] as any;
+      expect(call.prepareStep).toBeDefined();
+
+      // At 79,999 input tokens (79.999%) — just under boundary, no wrap-up
+      const resultJustUnder = call.prepareStep({
+        steps: [{ usage: { inputTokens: 79_999, outputTokens: 1 } }],
+      });
+      expect(resultJustUnder.toolChoice).toBeUndefined();
+
+      // At 80,000 input tokens (80%) — exactly at boundary, forces wrap-up
+      const resultExact = call.prepareStep({
+        steps: [{ usage: { inputTokens: 80_000, outputTokens: 0 } }],
+      });
+      expect(resultExact.toolChoice).toBe('none');
+    });
+
     it('does not inject prepareStep when no contextBudget', async () => {
       const { generateText } = await import('ai');
       const mockGenerateText = vi.mocked(generateText);

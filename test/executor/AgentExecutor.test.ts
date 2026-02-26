@@ -184,6 +184,27 @@ describe('AgentExecutor', () => {
       expect(result.metrics.durationMs).toBeGreaterThan(0);
     });
 
+    it('includes thinking_tokens in totalEffectiveTokens for Google models', async () => {
+      const THINKING_TOKENS = 100;
+      const ai = mockAIProvider({
+        usage: {
+          input_tokens: MOCK_INPUT_TOKENS,
+          output_tokens: MOCK_OUTPUT_TOKENS,
+          cache_creation_input_tokens: MOCK_CACHE_CREATION_TOKENS,
+          cache_read_input_tokens: MOCK_CACHE_READ_TOKENS,
+          thinking_tokens: THINKING_TOKENS,
+        },
+      });
+      const executor = new AgentExecutor(baseConfig, ai, noopLogger);
+
+      const result = await executor.execute(makeValidatorDef(), { target: tmpDir });
+
+      // thinking_tokens are charged separately by Google, so they are added to effective total
+      expect(result.metrics.totalEffectiveTokens).toBe(
+        MOCK_INPUT_TOKENS + MOCK_OUTPUT_TOKENS + MOCK_CACHE_CREATION_TOKENS + THINKING_TOKENS,
+      );
+    });
+
     it('passes threshold from options', async () => {
       const ai = mockAIProvider();
       const executor = new AgentExecutor(baseConfig, ai, noopLogger);

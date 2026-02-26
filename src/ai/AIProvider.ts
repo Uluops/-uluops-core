@@ -682,70 +682,53 @@ export class AIProvider {
       base.cache_creation_input_tokens = usage.inputTokenDetails.cacheWriteTokens ?? undefined;
     }
 
-    // 2. Anthropic provider metadata fallback
-    const anthropicMeta = providerMetadata as {
-      anthropic?: {
-        cacheCreationInputTokens?: number;
-        cacheReadInputTokens?: number;
-      };
-    } | undefined;
-
-    if (anthropicMeta?.anthropic) {
-      base.cache_creation_input_tokens ??= anthropicMeta.anthropic.cacheCreationInputTokens;
-      base.cache_read_input_tokens ??= anthropicMeta.anthropic.cacheReadInputTokens;
-    }
-
-    // 3. OpenAI provider metadata fallback
-    const openaiMeta = providerMetadata as {
-      openai?: {
-        cachedPromptTokens?: number;
-        reasoningTokens?: number;
-      };
-    } | undefined;
-
-    if (openaiMeta?.openai) {
-      base.cache_read_input_tokens ??= openaiMeta.openai.cachedPromptTokens;
-      if (openaiMeta.openai.reasoningTokens) {
-        base.reasoning_tokens = openaiMeta.openai.reasoningTokens;
-      }
-    }
-
-    // 4. Google provider metadata
-    const googleMeta = providerMetadata as {
-      google?: {
-        usageMetadata?: {
-          cachedContentTokenCount?: number;
-          thoughtsTokenCount?: number;
-        };
-      };
-    } | undefined;
-
-    if (googleMeta?.google?.usageMetadata) {
-      const gUsage = googleMeta.google.usageMetadata;
-      base.cache_read_input_tokens ??= gUsage.cachedContentTokenCount;
-      if (gUsage.thoughtsTokenCount) {
-        base.thinking_tokens = gUsage.thoughtsTokenCount;
-      }
-    }
+    // 2-4. Extract provider-specific metadata
+    this.extractAnthropicUsage(base, providerMetadata);
+    this.extractOpenAIUsage(base, providerMetadata);
+    this.extractGoogleUsage(base, providerMetadata);
 
     // 5. Generic provider metadata scan for non-bundled providers.
     // Best-effort extraction of cache tokens from unknown provider metadata.
     // Uses ??= to never override values set by provider-specific tiers above.
     if (providerMetadata && base.cache_read_input_tokens == null) {
-      const KNOWN_PROVIDERS = new Set(['anthropic', 'openai', 'google']);
-      for (const [key, value] of Object.entries(providerMetadata)) {
-        if (KNOWN_PROVIDERS.has(key) || typeof value !== 'object' || !value) continue;
-        const meta = value as Record<string, unknown>;
-        // Check common field names used by various providers
-        const cached = meta['cachedTokens'] ?? meta['cachedContentTokenCount'] ?? meta['cachedPromptTokens'];
-        if (typeof cached === 'number' && cached > 0) {
-          base.cache_read_input_tokens = cached;
-          break;
-        }
-      }
+      this.extractGenericUsage(base, providerMetadata);
     }
 
     return base;
+  }
+
+  private extractAnthropicUsage(base: UsageMetrics, providerMetadata?: Record<string, unknown>): void {
+    const meta = (providerMetadata as { anthropic?: { cacheCreationInputTokens?: number; cacheReadInputTokens?: number } } | undefined)?.anthropic;
+    if (!meta) return;
+    base.cache_creation_input_tokens ??= meta.cacheCreationInputTokens;
+    base.cache_read_input_tokens ??= meta.cacheReadInputTokens;
+  }
+
+  private extractOpenAIUsage(base: UsageMetrics, providerMetadata?: Record<string, unknown>): void {
+    const meta = (providerMetadata as { openai?: { cachedPromptTokens?: number; reasoningTokens?: number } } | undefined)?.openai;
+    if (!meta) return;
+    base.cache_read_input_tokens ??= meta.cachedPromptTokens;
+    if (meta.reasoningTokens) base.reasoning_tokens = meta.reasoningTokens;
+  }
+
+  private extractGoogleUsage(base: UsageMetrics, providerMetadata?: Record<string, unknown>): void {
+    const gUsage = (providerMetadata as { google?: { usageMetadata?: { cachedContentTokenCount?: number; thoughtsTokenCount?: number } } } | undefined)?.google?.usageMetadata;
+    if (!gUsage) return;
+    base.cache_read_input_tokens ??= gUsage.cachedContentTokenCount;
+    if (gUsage.thoughtsTokenCount) base.thinking_tokens = gUsage.thoughtsTokenCount;
+  }
+
+  private extractGenericUsage(base: UsageMetrics, providerMetadata: Record<string, unknown>): void {
+    const KNOWN_PROVIDERS = new Set(['anthropic', 'openai', 'google']);
+    for (const [key, value] of Object.entries(providerMetadata)) {
+      if (KNOWN_PROVIDERS.has(key) || typeof value !== 'object' || !value) continue;
+      const meta = value as Record<string, unknown>;
+      const cached = meta['cachedTokens'] ?? meta['cachedContentTokenCount'] ?? meta['cachedPromptTokens'];
+      if (typeof cached === 'number' && cached > 0) {
+        base.cache_read_input_tokens = cached;
+        break;
+      }
+    }
   }
 
   /**

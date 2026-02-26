@@ -16,14 +16,15 @@ export interface AIConfig {
   /**
    * Provider credentials keyed by provider name.
    * Only configured providers can be used for execution.
-   * `@ai-sdk/anthropic` and `@ai-sdk/openai` are bundled. Other providers
-   * require installing `@ai-sdk/<provider>` as a peer dependency.
+   * `@ai-sdk/anthropic`, `@ai-sdk/openai`, and `@ai-sdk/google` are bundled.
+   * Other providers require installing `@ai-sdk/<provider>` as a peer dependency.
    *
    * @example
    * ```typescript
    * providers: {
    *   anthropic: { apiKey: process.env.ANTHROPIC_API_KEY },
    *   openai: { apiKey: process.env.OPENAI_API_KEY },
+   *   google: { apiKey: process.env.GOOGLE_API_KEY },
    * }
    * ```
    */

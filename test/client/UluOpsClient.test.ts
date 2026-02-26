@@ -440,6 +440,38 @@ describe('UluOpsClient', () => {
       expect(providers.openai).toEqual({ apiKey: 'openai-key-from-env' });
     });
 
+    it('detects google via GOOGLE_GENERATIVE_AI_API_KEY fallback in auto-detect', () => {
+      delete process.env['GOOGLE_API_KEY'];
+      process.env['GOOGLE_GENERATIVE_AI_API_KEY'] = 'google-alt-key';
+
+      new UluOpsClient({ apiKey: 'test-key' });
+
+      const config = constructorArgs(RegistryClient as unknown as ReturnType<typeof vi.fn>)[0] as Record<string, unknown>;
+      const ai = config.ai as Record<string, unknown>;
+      const providers = ai.providers as Record<string, unknown>;
+      expect(providers.google).toEqual({ apiKey: 'google-alt-key' });
+    });
+
+    it('detects google via GOOGLE_GENERATIVE_AI_API_KEY fallback in explicit config', () => {
+      delete process.env['GOOGLE_API_KEY'];
+      process.env['GOOGLE_GENERATIVE_AI_API_KEY'] = 'google-alt-key';
+
+      new UluOpsClient({
+        apiKey: 'test-key',
+        ai: {
+          providers: {
+            google: {}, // No apiKey — falls back to GOOGLE_GENERATIVE_AI_API_KEY
+          },
+          defaultProvider: 'anthropic',
+        },
+      });
+
+      const config = constructorArgs(RegistryClient as unknown as ReturnType<typeof vi.fn>)[0] as Record<string, unknown>;
+      const ai = config.ai as Record<string, unknown>;
+      const providers = ai.providers as Record<string, unknown>;
+      expect(providers.google).toEqual({ apiKey: 'google-alt-key' });
+    });
+
     it('passes through modelOverride', () => {
       new UluOpsClient({
         apiKey: 'test-key',

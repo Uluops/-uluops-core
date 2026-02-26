@@ -344,6 +344,9 @@ export class UluOpsClient {
     if (!shouldTrack) return;
 
     try {
+      // SAFETY: AgentResult is structurally compatible with ExecutionResult — both share
+      // type, name, version, definitionHash, decision, score, durationMs, recommendations, metrics.
+      // AgentResult adds agentType, maxScore, categories which the validation API ignores.
       const response = await this.validation.submit({
         project: options?.project ?? this.config.defaultProject ?? resolvedName,
         workflowType,

@@ -4,7 +4,7 @@
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](LICENSE)
 [![Node.js Version](https://img.shields.io/node/v/@uluops/core)](https://nodejs.org)
 [![TypeScript](https://img.shields.io/badge/TypeScript-5.7+-blue.svg)](https://www.typescriptlang.org/)
-[![Tests](https://img.shields.io/badge/tests-362%20passing-brightgreen)](test/)
+[![Tests](https://img.shields.io/badge/tests-366%20passing-brightgreen)](test/)
 
 The foundational execution engine for UluOps. Orchestrates AI-powered code analysis through a 4-layer execution hierarchy (Agent > Command > Workflow > Pipeline), manages LLM tool loops via Vercel AI SDK, and integrates with UluOps Registry and Validation services.
 
@@ -261,6 +261,27 @@ for (const entry of history) {
 const run = await client.getRun('run-uuid');
 ```
 
+### Usage Metrics
+
+All execution results include token usage metrics. Provider-specific token fields are mapped to a unified format:
+
+```typescript
+const result = await client.runAgent('code-validator', './src');
+const { metrics } = result;
+
+console.log(`Input: ${metrics.inputTokens}, Output: ${metrics.outputTokens}`);
+console.log(`Cache: ${metrics.cacheCreationTokens ?? 0} created, ${metrics.cacheReadTokens ?? 0} read`);
+
+// Google Gemini 2.5+ models report thinking tokens separately from output tokens.
+// thinking_tokens are included in totalEffectiveTokens (unlike OpenAI reasoning_tokens
+// which are already counted within outputTokens).
+if (metrics.thinkingTokens) {
+  console.log(`Thinking: ${metrics.thinkingTokens}`);
+}
+
+console.log(`Effective total: ${metrics.totalEffectiveTokens}`);
+```
+
 ## Architecture
 
 ```
@@ -346,6 +367,7 @@ const client = new UluOpsClient({
 | `ULUOPS_TRACKING_ENABLED` | Auto-submit results | `true` |
 | `ULUOPS_PROJECT` | Default project name | - |
 | `ULUOPS_LOCAL_DEFINITIONS` | Local definitions path | - |
+| `ULUOPS_DASHBOARD_URL` | Dashboard base URL for run links | `https://app.uluops.ai` |
 | `ULUOPS_DEBUG` | Enable detailed execution logging | `false` |
 
 ## TypeScript Support
@@ -369,10 +391,14 @@ import {
   type UluOpsConfig,
   type ExecutionInput,
   type ExecutionOptions,
+  // Usage metrics
+  type UsageMetrics,
   // Error classes
   ExecutionError,
   ConfigurationError,
   ModelNotFoundError,
+  // Error code narrowing
+  ValidationErrorCodes,
 } from '@uluops/core';
 ```
 
@@ -402,7 +428,7 @@ The SDK provides a structured error hierarchy:
 | `ConfigurationError` | Invalid configuration |
 | `ModelNotFoundError` | Model alias not found in registry |
 | `CapabilityError` | Model lacks required capabilities |
-| `ValidationError` | Output validation failures |
+| `ValidationError` | Output validation failures. Use `ValidationErrorCodes` to narrow by code. |
 | `WorkflowError` | Workflow phase gate failures |
 | `PipelineError` | Pipeline stage failures |
 | `ParseError` | Output extraction failures |
@@ -445,7 +471,7 @@ npm install
 # Type check
 npm run typecheck
 
-# Run tests (362 tests)
+# Run tests (366 tests)
 npm test
 
 # Run tests in watch mode
