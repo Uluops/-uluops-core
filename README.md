@@ -10,6 +10,8 @@ The foundational execution engine for UluOps. Orchestrates AI-powered code analy
 
 ## Quick Start
 
+Requires `ULUOPS_API_KEY` and at least one AI provider key (e.g. `ANTHROPIC_API_KEY`):
+
 ```typescript
 import { UluOpsClient } from '@uluops/core';
 
@@ -63,6 +65,8 @@ The `@uluops/core` SDK provides:
 - **Bundled Starter Agents** - 5 built-in agents for immediate use without registry access
 
 ## Installation
+
+Requires Node.js 18+.
 
 ```bash
 npm install @uluops/core
@@ -142,8 +146,7 @@ const result = await client.runAgent('code-validator', './src', {
   project: 'my-project',
 });
 
-console.log(`Score: ${result.score}/${result.maxScore}`);
-console.log(`Decision: ${result.decision}`);
+console.log(`Score: ${result.score} | Decision: ${result.decision}`);
 console.log(`Recommendations: ${result.recommendations.length}`);
 ```
 
@@ -436,6 +439,23 @@ The SDK provides a structured error hierarchy:
 | `PipelineError` | Pipeline stage failures |
 | `ParseError` | Output extraction failures |
 | `HashVerificationError` | Definition integrity failures |
+
+```typescript
+import { ConfigurationError, ModelNotFoundError, ExecutionError } from '@uluops/core';
+
+try {
+  const result = await client.runAgent('code-validator', './src');
+} catch (error) {
+  if (error instanceof ConfigurationError) {
+    console.error('Check your config:', error.message);
+  } else if (error instanceof ModelNotFoundError) {
+    console.error('Unknown model alias:', error.message);
+  } else if (error instanceof ExecutionError) {
+    console.error('Execution failed:', error.message);
+    console.log('Partial result:', error.partialResult);
+  }
+}
+```
 
 ### Re-exported from @uluops/sdk-core
 

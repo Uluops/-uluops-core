@@ -238,7 +238,7 @@ export class AIProvider {
         finishReason: result.finishReason,
       };
     } catch (error) {
-      throw this.mapError(error);
+      throw this.mapError(error, options.timeoutMs);
     }
   }
 
@@ -576,9 +576,10 @@ export class AIProvider {
   }
 
   private missingProviderError(providerName: string): ConfigurationError {
+    const envVar = `${providerName.toUpperCase()}_API_KEY`;
     return new ConfigurationError(
       `AI provider "${providerName}" is not configured. ` +
-      `Add it to config.ai.providers: { ${providerName}: { apiKey: '...' } }`,
+      `Set the ${envVar} environment variable or add it to config.ai.providers: { ${providerName}: { apiKey: '...' } }`,
     );
   }
 
@@ -664,7 +665,7 @@ export class AIProvider {
    * Map AI SDK errors to sdk-core error types.
    * AI SDK normalizes all provider errors to APICallError with statusCode.
    */
-  private mapError(error: unknown): Error {
+  private mapError(error: unknown, timeoutMs?: number): Error {
     this.logger.error(`AI SDK error: ${formatErrorMessage(error)}`);
 
     if (isAPICallError(error)) {
@@ -691,7 +692,7 @@ export class AIProvider {
 
     // Timeout (AbortError)
     if (error instanceof Error && error.name === 'AbortError') {
-      return new TimeoutError(0);
+      return new TimeoutError(timeoutMs ?? this.config.timeout);
     }
 
     return new SdkApiError(

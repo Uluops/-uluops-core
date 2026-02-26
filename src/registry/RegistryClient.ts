@@ -7,7 +7,7 @@ import type { ResolvedConfig } from '../types/config.js';
 import type { DefinitionType } from '../types/execution.js';
 import type { AgentDefinition } from '../types/agent.js';
 import type { ResolvedDefinition, DefinitionSummary } from '../types/registry.js';
-import { HashVerificationError } from '../errors/index.js';
+import { HashVerificationError, ConfigurationError } from '../errors/index.js';
 import { formatErrorMessage } from '../utils/formatError.js';
 import type { Logger } from '@uluops/sdk-core';
 
@@ -94,7 +94,7 @@ export class RegistryClient {
       this.logger.warn(`Registry unavailable for listing: ${formatErrorMessage(error)}`);
       // Return local results only (if any)
       if (results.length === 0) {
-        throw new Error(
+        throw new ConfigurationError(
           'No definitions found. Registry is unreachable and no local definitions are configured. ' +
           'Set localDefinitions in UluOpsClient config or ULUOPS_LOCAL_DEFINITIONS env var.',
         );
@@ -144,14 +144,14 @@ export class RegistryClient {
         const code = (error as NodeJS.ErrnoException).code;
         if (code === 'ENOENT') continue; // File doesn't exist, try next candidate
         if (code === 'ENOTDIR') continue; // Path component isn't a directory
-        throw new Error(`Cannot read ${candidate.path}: ${formatErrorMessage(error)}`);
+        throw new ConfigurationError(`Cannot read ${candidate.path}: ${formatErrorMessage(error)}`);
       }
 
       let definition: Record<string, unknown>;
       try {
         definition = yaml.parse(yamlContent) as Record<string, unknown>;
       } catch (parseError) {
-        throw new Error(
+        throw new ConfigurationError(
           `Failed to parse YAML at ${candidate.path}: ${parseError instanceof Error ? parseError.message : String(parseError)}`,
         );
       }
@@ -196,7 +196,7 @@ export class RegistryClient {
       const matches = searchResult.definitions.filter(d => d.name === name);
 
       if (matches.length === 0) {
-        throw new Error(
+        throw new ConfigurationError(
           `Definition "${name}" not found in registry. ` +
           `Verify the name is correct and the definition is published.`,
         );
@@ -204,14 +204,14 @@ export class RegistryClient {
 
       if (matches.length > 1) {
         const types = matches.map(d => d.type).join(', ');
-        throw new Error(
+        throw new ConfigurationError(
           `Multiple definitions named "${name}" found (${types}). ` +
           `Specify type explicitly: resolve("${name}", version, "command")`,
         );
       }
 
       const match = matches[0];
-      if (!match) throw new Error(`Definition "${name}" not found in registry`);
+      if (!match) throw new ConfigurationError(`Definition "${name}" not found in registry`);
       resolvedType = match.type as DefinitionType;
     }
 
@@ -252,7 +252,7 @@ export class RegistryClient {
     try {
       return yaml.parse(yamlContent) as Record<string, unknown>;
     } catch (error) {
-      throw new Error(
+      throw new ConfigurationError(
         `Failed to parse YAML for "${context}": ${formatErrorMessage(error)}`,
       );
     }
@@ -284,14 +284,14 @@ export class RegistryClient {
     const knownTopKeys = ['agent', 'command', 'workflow', 'pipeline'] as const;
     const topKey = knownTopKeys.find(k => k in parsed);
     if (!topKey) {
-      throw new Error(
+      throw new ConfigurationError(
         `Invalid definition: expected a top-level key of ${knownTopKeys.join(', ')}, ` +
         `found: ${Object.keys(parsed).join(', ')}`,
       );
     }
     const section = parsed[topKey];
     if (typeof section !== 'object' || section === null) {
-      throw new Error(`Invalid definition: "${topKey}" must be an object`);
+      throw new ConfigurationError(`Invalid definition: "${topKey}" must be an object`);
     }
     // Structural guard confirms top-level key is a known definition type
     // with a non-null object value. The intermediate `unknown` cast is
