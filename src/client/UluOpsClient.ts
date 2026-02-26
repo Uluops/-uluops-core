@@ -344,16 +344,27 @@ export class UluOpsClient {
     if (!shouldTrack) return;
 
     try {
-      // SAFETY: AgentResult is structurally compatible with ExecutionResult — both share
+      // SAFETY: AgentResult extends ExecutionResult structurally — both share
       // type, name, version, definitionHash, decision, score, durationMs, recommendations, metrics.
       // AgentResult adds agentType, maxScore, categories which the validation API ignores.
+      const execResult: ExecutionResult = {
+        type: result.type as ExecutionResult['type'],
+        name: result.name,
+        version: result.version,
+        definitionHash: result.definitionHash,
+        decision: result.decision,
+        score: result.score,
+        durationMs: result.durationMs,
+        recommendations: result.recommendations,
+        metrics: result.metrics,
+      };
       const response = await this.validation.submit({
         project: options?.project ?? this.config.defaultProject ?? resolvedName,
         workflowType,
-        result: result as ExecutionResult,
+        result: execResult,
       });
-      // Attach dashboard URL to result for caller convenience
-      (result as unknown as Record<string, unknown>).dashboardUrl = response.dashboardUrl;
+      // Attach dashboard URL to original result for caller convenience
+      result.dashboardUrl = response.dashboardUrl;
     } catch (error) {
       this.logger.warn(
         `Tracking submission failed (non-fatal): ${error instanceof Error ? error.message : String(error)}`,

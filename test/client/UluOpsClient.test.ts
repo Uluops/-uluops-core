@@ -640,10 +640,16 @@ describe('UluOpsClient', () => {
 
       const result = await client.runAgent('code-validator', '/tmp/test');
 
+      // trackIfEnabled builds a slim ExecutionResult from AgentResult (no agentType, maxScore)
       expect(mockValidationSubmit).toHaveBeenCalledWith({
         project: 'code-validator',
         workflowType: 'agent',
-        result: agentResult,
+        result: expect.objectContaining({
+          name: agentResult.name,
+          decision: agentResult.decision,
+          score: agentResult.score,
+          metrics: agentResult.metrics,
+        }),
       });
       expect(result.dashboardUrl).toBe('https://app.uluops.ai/runs/run-123');
     });

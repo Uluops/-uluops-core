@@ -14,6 +14,9 @@ const MAX_FILE_SIZE = 1_048_576;
 /** Max file size for line counting (100 KB). Lower than MAX_FILE_SIZE because line splitting is memory-intensive. */
 const MAX_LINE_COUNT_SIZE = 102_400;
 
+/** Timeout for glob operations (30s). Prevents hangs on large or network-mounted filesystems. */
+const GLOB_TIMEOUT_MS = 30_000;
+
 /** Default max results for list_files. Balances completeness vs token cost in a single tool response. */
 const DEFAULT_LIST_MAX_RESULTS = 200;
 
@@ -325,6 +328,7 @@ export class ToolHandler {
       cwd: dirPath,
       nodir: true,
       ignore: ['**/node_modules/**', '**/.git/**', '**/dist/**', '**/build/**'],
+      signal: AbortSignal.timeout(GLOB_TIMEOUT_MS),
     });
 
     const totalFiles = files.length;
@@ -368,6 +372,7 @@ export class ToolHandler {
       cwd: this.basePath,
       nodir: true,
       ignore: ['**/node_modules/**', '**/.git/**'],
+      signal: AbortSignal.timeout(GLOB_TIMEOUT_MS),
     });
 
     const regex = new RegExp(opts.pattern, 'gi');
@@ -402,8 +407,8 @@ export class ToolHandler {
         const content = await fs.readFile(filePath, 'utf-8');
         if (regex.test(content)) matching.push(file);
         regex.lastIndex = 0;
-      } catch {
-        // skip unreadable
+      } catch (error) {
+        this.logger.debug(`Skipped unreadable file: ${file} (${error instanceof Error ? error.message : 'unknown'})`);
       }
     }
     return matching;
@@ -427,8 +432,8 @@ export class ToolHandler {
         if (matches && matches.length > 0) {
           counts.push({ file, count: matches.length });
         }
-      } catch {
-        // skip unreadable
+      } catch (error) {
+        this.logger.debug(`Skipped unreadable file: ${file} (${error instanceof Error ? error.message : 'unknown'})`);
       }
     }
     return counts;

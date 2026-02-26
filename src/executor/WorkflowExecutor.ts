@@ -111,10 +111,20 @@ export class WorkflowExecutor {
     const commandResults: CommandResult[] = [];
 
     if (phase.parallel) {
-      const results = await Promise.all(
+      const settled = await Promise.allSettled(
         phase.commands.map(cmdName => this.executeCommand(cmdName, input)),
       );
-      commandResults.push(...results);
+      const errors: string[] = [];
+      for (const outcome of settled) {
+        if (outcome.status === 'fulfilled') {
+          commandResults.push(outcome.value);
+        } else {
+          errors.push(outcome.reason instanceof Error ? outcome.reason.message : String(outcome.reason));
+        }
+      }
+      if (errors.length > 0 && commandResults.length === 0) {
+        throw new Error(`All parallel commands in phase "${phase.name}" failed: ${errors.join('; ')}`);
+      }
     } else {
       for (const cmdName of phase.commands) {
         const result = await this.executeCommand(cmdName, input);

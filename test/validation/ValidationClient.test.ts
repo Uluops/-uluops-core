@@ -234,6 +234,16 @@ describe('ValidationClient', () => {
       }));
       expect(fail.allGatesPassed).toBe(false);
 
+      const warn = await client.submit(makeSubmission({
+        result: makeResult({ decision: 'WARN' }),
+      }));
+      expect(warn.allGatesPassed).toBe(false);
+
+      const pass = await client.submit(makeSubmission({
+        result: makeResult({ decision: 'PASS' }),
+      }));
+      expect(pass.allGatesPassed).toBe(true);
+
       const ship = await client.submit(makeSubmission({
         result: makeResult({ decision: 'SHIP' }),
       }));

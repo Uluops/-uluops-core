@@ -1,0 +1,10 @@
+.env*
+*.test.ts
+test/
+docs/
+scripts/
+src/
+tsconfig.json
+vitest.config.ts
+eslint.config.js
+CLAUDE.md

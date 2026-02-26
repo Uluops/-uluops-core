@@ -68,7 +68,7 @@ fallback safety.
 | D6 | Add `FACTORY_NAME_OVERRIDES` map in `ensureProvider()` | Fixes the dynamic path for providers with non-standard factory names. Fallback safety for Google. |
 | D7 | No Google shell tool wiring | Google has `codeExecution` (remote Python on Google servers), not local bash. Our agent `tools: ['bash']` opt-in doesn't apply. Future: add `tools: ['code_execution']` support. |
 | D8 | No system message wrapping for Google | Caching is implicit for Gemini 2.5+ (like OpenAI). Plain string passthrough. No action needed. |
-| D9 | Generic provider metadata scan for non-bundled providers | Best-effort cache token extraction from `providerMetadata[providerName]` for unknown providers. Uses `??=` to never override provider-specific values. |
+| D9 | Generic provider metadata scan for non-bundled providers | Best-effort cache token extraction from `providerMetadata[providerName]` for unknown providers. Checks fields: `cachedTokens` (number), `cachedContentTokenCount` (number). Maps to `cache_read_input_tokens`. Uses `??=` to never override provider-specific values already set by bundled extractors. |
 
 ---
 

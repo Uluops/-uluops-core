@@ -143,6 +143,7 @@ export {
   CapabilityError,
   ValidationError,
   ValidationErrorCodes,
+  type ValidationErrorCode,
   WorkflowError,
   PipelineError,
   ParseError,

@@ -456,8 +456,12 @@ export class RegistryClient {
               results.push(summary);
             }
           }
-        } catch {
-          // Directory doesn't exist or isn't readable — skip silently
+        } catch (error) {
+          // ENOENT = directory doesn't exist — skip silently (expected for optional subdirs)
+          // Other errors (permissions, YAML parse) are logged to aid debugging
+          if ((error as NodeJS.ErrnoException).code !== 'ENOENT') {
+            this.logger.debug(`listLocal: skipping ${dir}: ${error instanceof Error ? error.message : String(error)}`);
+          }
         }
       }
     }
