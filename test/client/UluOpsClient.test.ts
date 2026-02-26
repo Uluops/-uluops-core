@@ -240,42 +240,49 @@ describe('UluOpsClient', () => {
       expect(() => new UluOpsClient({})).toThrow('API key is required');
     });
 
+    it('throws ConfigurationError when API key lacks ulr_ prefix', () => {
+      delete process.env['ULUOPS_API_KEY'];
+      delete process.env['ULU_API_KEY'];
+
+      expect(() => new UluOpsClient({ apiKey: 'bad-prefix-key' })).toThrow('keys must begin with "ulr_"');
+    });
+
     it('accepts API key from config', () => {
       delete process.env['ULUOPS_API_KEY'];
       delete process.env['ULU_API_KEY'];
 
-      expect(() => new UluOpsClient({ apiKey: 'from-config' })).not.toThrow();
+      expect(() => new UluOpsClient({ apiKey: 'ulr_from-config' })).not.toThrow();
     });
 
     it('reads API key from ULUOPS_API_KEY env var', () => {
       delete process.env['ULU_API_KEY'];
-      process.env['ULUOPS_API_KEY'] = 'from-env';
+      process.env['ULUOPS_API_KEY'] = 'ulr_from-env';
 
       new UluOpsClient({});
 
       // Verify resolved config passed to RegistryClient has the env var key
       const config = constructorArgs(RegistryClient as unknown as ReturnType<typeof vi.fn>)[0] as Record<string, unknown>;
-      expect(config.apiKey).toBe('from-env');
+      expect(config.apiKey).toBe('ulr_from-env');
     });
 
     it('falls back to ULU_API_KEY env var', () => {
       delete process.env['ULUOPS_API_KEY'];
-      process.env['ULU_API_KEY'] = 'from-ulu-env';
+      process.env['ULU_API_KEY'] = 'ulr_from-ulu-env';
 
       new UluOpsClient({});
 
       const config = constructorArgs(RegistryClient as unknown as ReturnType<typeof vi.fn>)[0] as Record<string, unknown>;
-      expect(config.apiKey).toBe('from-ulu-env');
+      expect(config.apiKey).toBe('ulr_from-ulu-env');
     });
 
     it('config apiKey takes precedence over env vars', () => {
-      process.env['ULUOPS_API_KEY'] = 'from-env';
-      process.env['ULU_API_KEY'] = 'from-ulu-env';
+      process.env['ULUOPS_API_KEY'] = 'ulr_from-env';
+      process.env['ULU_API_KEY'] = 'ulr_from-ulu-env';
 
-      new UluOpsClient({ apiKey: 'from-config' });
+      new UluOpsClient({ apiKey: 'ulr_from-config' });
 
       const config = constructorArgs(RegistryClient as unknown as ReturnType<typeof vi.fn>)[0] as Record<string, unknown>;
-      expect(config.apiKey).toBe('from-config');
+      expect(config.apiKey).toBe('ulr_from-config');
     });
 
     it('reads URL overrides from env vars', () => {
@@ -283,7 +290,7 @@ describe('UluOpsClient', () => {
       process.env['ULUOPS_VALIDATION_URL'] = 'https://custom-ops/api';
       process.env['ULUOPS_DASHBOARD_URL'] = 'https://custom-dash';
 
-      new UluOpsClient({ apiKey: 'test-key' });
+      new UluOpsClient({ apiKey: 'ulr_test-key' });
 
       const config = constructorArgs(RegistryClient as unknown as ReturnType<typeof vi.fn>)[0] as Record<string, unknown>;
       expect(config.registryUrl).toBe('https://custom-registry/api');
@@ -296,7 +303,7 @@ describe('UluOpsClient', () => {
       delete process.env['ULUOPS_VALIDATION_URL'];
       delete process.env['ULUOPS_DASHBOARD_URL'];
 
-      new UluOpsClient({ apiKey: 'test-key' });
+      new UluOpsClient({ apiKey: 'ulr_test-key' });
 
       const config = constructorArgs(RegistryClient as unknown as ReturnType<typeof vi.fn>)[0] as Record<string, unknown>;
       expect(config.registryUrl).toBe('https://api.uluops.ai/api/v1/registry');
@@ -307,7 +314,7 @@ describe('UluOpsClient', () => {
     it('defaults trackingEnabled to true', () => {
       delete process.env['ULUOPS_TRACKING_ENABLED'];
 
-      new UluOpsClient({ apiKey: 'test-key' });
+      new UluOpsClient({ apiKey: 'ulr_test-key' });
 
       const config = constructorArgs(RegistryClient as unknown as ReturnType<typeof vi.fn>)[0] as Record<string, unknown>;
       expect(config.trackingEnabled).toBe(true);
@@ -316,7 +323,7 @@ describe('UluOpsClient', () => {
     it('disables tracking via ULUOPS_TRACKING_ENABLED=false', () => {
       process.env['ULUOPS_TRACKING_ENABLED'] = 'false';
 
-      new UluOpsClient({ apiKey: 'test-key' });
+      new UluOpsClient({ apiKey: 'ulr_test-key' });
 
       const config = constructorArgs(RegistryClient as unknown as ReturnType<typeof vi.fn>)[0] as Record<string, unknown>;
       expect(config.trackingEnabled).toBe(false);
@@ -325,35 +332,35 @@ describe('UluOpsClient', () => {
     it('config trackingEnabled overrides env var', () => {
       process.env['ULUOPS_TRACKING_ENABLED'] = 'false';
 
-      new UluOpsClient({ apiKey: 'test-key', trackingEnabled: true });
+      new UluOpsClient({ apiKey: 'ulr_test-key', trackingEnabled: true });
 
       const config = constructorArgs(RegistryClient as unknown as ReturnType<typeof vi.fn>)[0] as Record<string, unknown>;
       expect(config.trackingEnabled).toBe(true);
     });
 
     it('defaults timeout to 300000ms', () => {
-      new UluOpsClient({ apiKey: 'test-key' });
+      new UluOpsClient({ apiKey: 'ulr_test-key' });
 
       const config = constructorArgs(RegistryClient as unknown as ReturnType<typeof vi.fn>)[0] as Record<string, unknown>;
       expect(config.timeout).toBe(300_000);
     });
 
     it('defaults hashVerificationEnabled to true', () => {
-      new UluOpsClient({ apiKey: 'test-key' });
+      new UluOpsClient({ apiKey: 'ulr_test-key' });
 
       const config = constructorArgs(RegistryClient as unknown as ReturnType<typeof vi.fn>)[0] as Record<string, unknown>;
       expect(config.hashVerificationEnabled).toBe(true);
     });
 
     it('defaults defaultThinkingBudget to 10000', () => {
-      new UluOpsClient({ apiKey: 'test-key' });
+      new UluOpsClient({ apiKey: 'ulr_test-key' });
 
       const config = constructorArgs(RegistryClient as unknown as ReturnType<typeof vi.fn>)[0] as Record<string, unknown>;
       expect(config.defaultThinkingBudget).toBe(10_000);
     });
 
     it('reads debug from config', () => {
-      new UluOpsClient({ apiKey: 'test-key', debug: true });
+      new UluOpsClient({ apiKey: 'ulr_test-key', debug: true });
 
       const config = constructorArgs(RegistryClient as unknown as ReturnType<typeof vi.fn>)[0] as Record<string, unknown>;
       expect(config.debug).toBe(true);
@@ -362,7 +369,7 @@ describe('UluOpsClient', () => {
     it('reads debug from ULUOPS_DEBUG env var', () => {
       process.env['ULUOPS_DEBUG'] = 'true';
 
-      new UluOpsClient({ apiKey: 'test-key' });
+      new UluOpsClient({ apiKey: 'ulr_test-key' });
 
       const config = constructorArgs(RegistryClient as unknown as ReturnType<typeof vi.fn>)[0] as Record<string, unknown>;
       expect(config.debug).toBe(true);
@@ -371,7 +378,7 @@ describe('UluOpsClient', () => {
     it('reads defaultProject from ULUOPS_PROJECT env var', () => {
       process.env['ULUOPS_PROJECT'] = 'env-project';
 
-      new UluOpsClient({ apiKey: 'test-key' });
+      new UluOpsClient({ apiKey: 'ulr_test-key' });
 
       const config = constructorArgs(RegistryClient as unknown as ReturnType<typeof vi.fn>)[0] as Record<string, unknown>;
       expect(config.defaultProject).toBe('env-project');
@@ -381,14 +388,14 @@ describe('UluOpsClient', () => {
       process.env['ULUOPS_LOCAL_DEFINITIONS'] = '/from/env';
 
       // Env var
-      new UluOpsClient({ apiKey: 'test-key' });
+      new UluOpsClient({ apiKey: 'ulr_test-key' });
       let config = constructorArgs(RegistryClient as unknown as ReturnType<typeof vi.fn>)[0] as Record<string, unknown>;
       expect(config.localDefinitions).toBe('/from/env');
 
       vi.clearAllMocks();
 
       // Config overrides
-      new UluOpsClient({ apiKey: 'test-key', localDefinitions: '/from/config' });
+      new UluOpsClient({ apiKey: 'ulr_test-key', localDefinitions: '/from/config' });
       config = constructorArgs(RegistryClient as unknown as ReturnType<typeof vi.fn>)[0] as Record<string, unknown>;
       expect(config.localDefinitions).toBe('/from/config');
     });
@@ -400,7 +407,7 @@ describe('UluOpsClient', () => {
     it('defaults to anthropic provider when no ai config', () => {
       process.env['ANTHROPIC_API_KEY'] = 'test-anthropic-key';
 
-      new UluOpsClient({ apiKey: 'test-key' });
+      new UluOpsClient({ apiKey: 'ulr_test-key' });
 
       const config = constructorArgs(RegistryClient as unknown as ReturnType<typeof vi.fn>)[0] as Record<string, unknown>;
       const ai = config.ai as Record<string, unknown>;
@@ -411,7 +418,7 @@ describe('UluOpsClient', () => {
     it('excludes providers without API keys', () => {
       delete process.env['ANTHROPIC_API_KEY'];
 
-      new UluOpsClient({ apiKey: 'test-key' });
+      new UluOpsClient({ apiKey: 'ulr_test-key' });
 
       const config = constructorArgs(RegistryClient as unknown as ReturnType<typeof vi.fn>)[0] as Record<string, unknown>;
       const ai = config.ai as Record<string, unknown>;
@@ -423,7 +430,7 @@ describe('UluOpsClient', () => {
       process.env['OPENAI_API_KEY'] = 'openai-key-from-env';
 
       new UluOpsClient({
-        apiKey: 'test-key',
+        apiKey: 'ulr_test-key',
         ai: {
           providers: {
             anthropic: { apiKey: 'explicit-anthropic' },
@@ -444,7 +451,7 @@ describe('UluOpsClient', () => {
       delete process.env['GOOGLE_API_KEY'];
       process.env['GOOGLE_GENERATIVE_AI_API_KEY'] = 'google-alt-key';
 
-      new UluOpsClient({ apiKey: 'test-key' });
+      new UluOpsClient({ apiKey: 'ulr_test-key' });
 
       const config = constructorArgs(RegistryClient as unknown as ReturnType<typeof vi.fn>)[0] as Record<string, unknown>;
       const ai = config.ai as Record<string, unknown>;
@@ -457,7 +464,7 @@ describe('UluOpsClient', () => {
       process.env['GOOGLE_GENERATIVE_AI_API_KEY'] = 'google-alt-key';
 
       new UluOpsClient({
-        apiKey: 'test-key',
+        apiKey: 'ulr_test-key',
         ai: {
           providers: {
             google: {}, // No apiKey — falls back to GOOGLE_GENERATIVE_AI_API_KEY
@@ -474,7 +481,7 @@ describe('UluOpsClient', () => {
 
     it('passes through modelOverride', () => {
       new UluOpsClient({
-        apiKey: 'test-key',
+        apiKey: 'ulr_test-key',
         ai: {
           providers: { anthropic: { apiKey: 'key' } },
           modelOverride: 'haiku',
@@ -491,54 +498,54 @@ describe('UluOpsClient', () => {
 
   describe('constructor wiring', () => {
     it('creates logger with debug flag from config', () => {
-      new UluOpsClient({ apiKey: 'test-key', debug: true });
+      new UluOpsClient({ apiKey: 'ulr_test-key', debug: true });
 
       expect(createLogger).toHaveBeenCalledWith('[core]', true);
     });
 
     it('passes resolved config and logger to RegistryClient', () => {
-      new UluOpsClient({ apiKey: 'test-key' });
+      new UluOpsClient({ apiKey: 'ulr_test-key' });
 
       const args = constructorArgs(RegistryClient as unknown as ReturnType<typeof vi.fn>);
-      expect(args[0]).toHaveProperty('apiKey', 'test-key');
+      expect(args[0]).toHaveProperty('apiKey', 'ulr_test-key');
       expect(args[1]).toBe(mockLogger);
     });
 
     it('passes resolved config to ValidationClient', () => {
-      new UluOpsClient({ apiKey: 'test-key' });
+      new UluOpsClient({ apiKey: 'ulr_test-key' });
 
       const args = constructorArgs(ValidationClient as unknown as ReturnType<typeof vi.fn>);
-      expect(args[0]).toHaveProperty('apiKey', 'test-key');
+      expect(args[0]).toHaveProperty('apiKey', 'ulr_test-key');
     });
 
     it('passes registrySdk from RegistryClient to ModelCatalog', () => {
-      new UluOpsClient({ apiKey: 'test-key' });
+      new UluOpsClient({ apiKey: 'ulr_test-key' });
 
       const args = constructorArgs(ModelCatalog as unknown as ReturnType<typeof vi.fn>);
       expect(args[0]).toBe(mockRegistrySdk);
     });
 
     it('passes config, modelCatalog, and logger to AIProvider', () => {
-      new UluOpsClient({ apiKey: 'test-key' });
+      new UluOpsClient({ apiKey: 'ulr_test-key' });
 
       const args = constructorArgs(AIProvider as unknown as ReturnType<typeof vi.fn>);
       expect(args).toHaveLength(3);
-      expect(args[0]).toHaveProperty('apiKey', 'test-key'); // config
+      expect(args[0]).toHaveProperty('apiKey', 'ulr_test-key'); // config
       // args[1] is the ModelCatalog instance (mocked)
       expect(args[2]).toBe(mockLogger); // logger
     });
 
     it('passes config, aiProvider, and logger to AgentExecutor', () => {
-      new UluOpsClient({ apiKey: 'test-key' });
+      new UluOpsClient({ apiKey: 'ulr_test-key' });
 
       const args = constructorArgs(AgentExecutor as unknown as ReturnType<typeof vi.fn>);
       expect(args).toHaveLength(3);
-      expect(args[0]).toHaveProperty('apiKey', 'test-key'); // config
+      expect(args[0]).toHaveProperty('apiKey', 'ulr_test-key'); // config
       expect(args[2]).toBe(mockLogger); // logger
     });
 
     it('passes agentExecutor and registry to CommandExecutor', () => {
-      new UluOpsClient({ apiKey: 'test-key' });
+      new UluOpsClient({ apiKey: 'ulr_test-key' });
 
       const args = constructorArgs(CommandExecutor as unknown as ReturnType<typeof vi.fn>);
       expect(args).toHaveLength(2);
@@ -548,7 +555,7 @@ describe('UluOpsClient', () => {
     });
 
     it('passes commandExecutor and registry to WorkflowExecutor', () => {
-      new UluOpsClient({ apiKey: 'test-key' });
+      new UluOpsClient({ apiKey: 'ulr_test-key' });
 
       const args = constructorArgs(WorkflowExecutor as unknown as ReturnType<typeof vi.fn>);
       expect(args).toHaveLength(2);
@@ -557,7 +564,7 @@ describe('UluOpsClient', () => {
     });
 
     it('passes workflowExecutor, commandExecutor, and registry to PipelineExecutor', () => {
-      new UluOpsClient({ apiKey: 'test-key' });
+      new UluOpsClient({ apiKey: 'ulr_test-key' });
 
       const args = constructorArgs(PipelineExecutor as unknown as ReturnType<typeof vi.fn>);
       expect(args).toHaveLength(3);
@@ -571,7 +578,7 @@ describe('UluOpsClient', () => {
 
   describe('runAgent', () => {
     it('resolves via registry with parsed ref and type hint', async () => {
-      const client = new UluOpsClient({ apiKey: 'test-key', trackingEnabled: false });
+      const client = new UluOpsClient({ apiKey: 'ulr_test-key', trackingEnabled: false });
       mockRegistryResolve.mockResolvedValue(makeResolvedDef('agent', 'code-validator'));
       mockAgentExecutorExecute.mockResolvedValue(makeAgentResult());
 
@@ -581,7 +588,7 @@ describe('UluOpsClient', () => {
     });
 
     it('parses versioned ref (name@version)', async () => {
-      const client = new UluOpsClient({ apiKey: 'test-key', trackingEnabled: false });
+      const client = new UluOpsClient({ apiKey: 'ulr_test-key', trackingEnabled: false });
       mockRegistryResolve.mockResolvedValue(makeResolvedDef('agent'));
       mockAgentExecutorExecute.mockResolvedValue(makeAgentResult());
 
@@ -591,7 +598,7 @@ describe('UluOpsClient', () => {
     });
 
     it('passes resolved def, input, and options to AgentExecutor.execute', async () => {
-      const client = new UluOpsClient({ apiKey: 'test-key', trackingEnabled: false });
+      const client = new UluOpsClient({ apiKey: 'ulr_test-key', trackingEnabled: false });
       const resolved = makeResolvedDef('agent');
       mockRegistryResolve.mockResolvedValue(resolved);
       mockAgentExecutorExecute.mockResolvedValue(makeAgentResult());
@@ -609,14 +616,14 @@ describe('UluOpsClient', () => {
     });
 
     it('throws when resolved type is not agent', async () => {
-      const client = new UluOpsClient({ apiKey: 'test-key' });
+      const client = new UluOpsClient({ apiKey: 'ulr_test-key' });
       mockRegistryResolve.mockResolvedValue(makeResolvedDef('command'));
 
       await expect(client.runAgent('validate', '/tmp/test')).rejects.toThrow('not an agent');
     });
 
     it('returns the AgentResult from executor', async () => {
-      const client = new UluOpsClient({ apiKey: 'test-key', trackingEnabled: false });
+      const client = new UluOpsClient({ apiKey: 'ulr_test-key', trackingEnabled: false });
       mockRegistryResolve.mockResolvedValue(makeResolvedDef('agent'));
       const agentResult = makeAgentResult();
       mockAgentExecutorExecute.mockResolvedValue(agentResult);
@@ -633,7 +640,7 @@ describe('UluOpsClient', () => {
 
   describe('runAgent tracking', () => {
     it('submits to validation when trackingEnabled=true', async () => {
-      const client = new UluOpsClient({ apiKey: 'test-key', trackingEnabled: true });
+      const client = new UluOpsClient({ apiKey: 'ulr_test-key', trackingEnabled: true });
       mockRegistryResolve.mockResolvedValue(makeResolvedDef('agent', 'code-validator'));
       const agentResult = makeAgentResult();
       mockAgentExecutorExecute.mockResolvedValue(agentResult);
@@ -655,7 +662,7 @@ describe('UluOpsClient', () => {
     });
 
     it('skips submission when trackingEnabled=false', async () => {
-      const client = new UluOpsClient({ apiKey: 'test-key', trackingEnabled: false });
+      const client = new UluOpsClient({ apiKey: 'ulr_test-key', trackingEnabled: false });
       mockRegistryResolve.mockResolvedValue(makeResolvedDef('agent'));
       mockAgentExecutorExecute.mockResolvedValue(makeAgentResult());
 
@@ -665,7 +672,7 @@ describe('UluOpsClient', () => {
     });
 
     it('options.trackResults=true overrides config trackingEnabled=false', async () => {
-      const client = new UluOpsClient({ apiKey: 'test-key', trackingEnabled: false });
+      const client = new UluOpsClient({ apiKey: 'ulr_test-key', trackingEnabled: false });
       mockRegistryResolve.mockResolvedValue(makeResolvedDef('agent', 'code-validator'));
       mockAgentExecutorExecute.mockResolvedValue(makeAgentResult());
 
@@ -675,7 +682,7 @@ describe('UluOpsClient', () => {
     });
 
     it('options.trackResults=false overrides config trackingEnabled=true', async () => {
-      const client = new UluOpsClient({ apiKey: 'test-key', trackingEnabled: true });
+      const client = new UluOpsClient({ apiKey: 'ulr_test-key', trackingEnabled: true });
       mockRegistryResolve.mockResolvedValue(makeResolvedDef('agent'));
       mockAgentExecutorExecute.mockResolvedValue(makeAgentResult());
 
@@ -685,7 +692,7 @@ describe('UluOpsClient', () => {
     });
 
     it('uses options.project when provided', async () => {
-      const client = new UluOpsClient({ apiKey: 'test-key', trackingEnabled: true, defaultProject: 'default-proj' });
+      const client = new UluOpsClient({ apiKey: 'ulr_test-key', trackingEnabled: true, defaultProject: 'default-proj' });
       mockRegistryResolve.mockResolvedValue(makeResolvedDef('agent', 'code-validator'));
       mockAgentExecutorExecute.mockResolvedValue(makeAgentResult());
 
@@ -696,7 +703,7 @@ describe('UluOpsClient', () => {
     });
 
     it('falls back to defaultProject from config', async () => {
-      const client = new UluOpsClient({ apiKey: 'test-key', trackingEnabled: true, defaultProject: 'default-proj' });
+      const client = new UluOpsClient({ apiKey: 'ulr_test-key', trackingEnabled: true, defaultProject: 'default-proj' });
       mockRegistryResolve.mockResolvedValue(makeResolvedDef('agent', 'code-validator'));
       mockAgentExecutorExecute.mockResolvedValue(makeAgentResult());
 
@@ -707,7 +714,7 @@ describe('UluOpsClient', () => {
     });
 
     it('falls back to resolved.name when no project specified', async () => {
-      const client = new UluOpsClient({ apiKey: 'test-key', trackingEnabled: true });
+      const client = new UluOpsClient({ apiKey: 'ulr_test-key', trackingEnabled: true });
       mockRegistryResolve.mockResolvedValue(makeResolvedDef('agent', 'my-agent'));
       mockAgentExecutorExecute.mockResolvedValue(makeAgentResult());
 
@@ -722,7 +729,7 @@ describe('UluOpsClient', () => {
 
   describe('runCommand', () => {
     it('resolves command and delegates to CommandExecutor', async () => {
-      const client = new UluOpsClient({ apiKey: 'test-key', trackingEnabled: false });
+      const client = new UluOpsClient({ apiKey: 'ulr_test-key', trackingEnabled: false });
       const resolved = makeResolvedDef('command', 'validate');
       mockRegistryResolve.mockResolvedValue(resolved);
       mockCommandExecutorExecute.mockResolvedValue(makeCommandResult());
@@ -735,7 +742,7 @@ describe('UluOpsClient', () => {
     });
 
     it('parses versioned ref', async () => {
-      const client = new UluOpsClient({ apiKey: 'test-key', trackingEnabled: false });
+      const client = new UluOpsClient({ apiKey: 'ulr_test-key', trackingEnabled: false });
       mockRegistryResolve.mockResolvedValue(makeResolvedDef('command'));
       mockCommandExecutorExecute.mockResolvedValue(makeCommandResult());
 
@@ -745,14 +752,14 @@ describe('UluOpsClient', () => {
     });
 
     it('throws when resolved type is not command', async () => {
-      const client = new UluOpsClient({ apiKey: 'test-key' });
+      const client = new UluOpsClient({ apiKey: 'ulr_test-key' });
       mockRegistryResolve.mockResolvedValue(makeResolvedDef('agent'));
 
       await expect(client.runCommand('code-validator', { target: '/tmp' })).rejects.toThrow('not a command');
     });
 
     it('submits to validation when tracking enabled', async () => {
-      const client = new UluOpsClient({ apiKey: 'test-key', trackingEnabled: true });
+      const client = new UluOpsClient({ apiKey: 'ulr_test-key', trackingEnabled: true });
       mockRegistryResolve.mockResolvedValue(makeResolvedDef('command', 'validate'));
       mockCommandExecutorExecute.mockResolvedValue(makeCommandResult());
 
@@ -771,7 +778,7 @@ describe('UluOpsClient', () => {
 
   describe('runWorkflow', () => {
     it('resolves workflow and delegates to WorkflowExecutor', async () => {
-      const client = new UluOpsClient({ apiKey: 'test-key', trackingEnabled: false });
+      const client = new UluOpsClient({ apiKey: 'ulr_test-key', trackingEnabled: false });
       const resolved = makeResolvedDef('workflow', 'ship');
       mockRegistryResolve.mockResolvedValue(resolved);
       mockWorkflowExecutorExecute.mockResolvedValue(makeWorkflowResult());
@@ -784,7 +791,7 @@ describe('UluOpsClient', () => {
     });
 
     it('throws when resolved type is not workflow', async () => {
-      const client = new UluOpsClient({ apiKey: 'test-key' });
+      const client = new UluOpsClient({ apiKey: 'ulr_test-key' });
       mockRegistryResolve.mockResolvedValue(makeResolvedDef('command'));
 
       await expect(client.runWorkflow('validate', { target: '/tmp' })).rejects.toThrow('not a workflow');
@@ -795,7 +802,7 @@ describe('UluOpsClient', () => {
 
   describe('run (auto-routing)', () => {
     it('routes to AgentExecutor for agents', async () => {
-      const client = new UluOpsClient({ apiKey: 'test-key', trackingEnabled: false });
+      const client = new UluOpsClient({ apiKey: 'ulr_test-key', trackingEnabled: false });
       const resolved = makeResolvedDef('agent');
       mockRegistryResolve.mockResolvedValue(resolved);
       mockAgentExecutorExecute.mockResolvedValue(makeAgentResult());
@@ -810,7 +817,7 @@ describe('UluOpsClient', () => {
     });
 
     it('routes to CommandExecutor for commands', async () => {
-      const client = new UluOpsClient({ apiKey: 'test-key', trackingEnabled: false });
+      const client = new UluOpsClient({ apiKey: 'ulr_test-key', trackingEnabled: false });
       mockRegistryResolve.mockResolvedValue(makeResolvedDef('command'));
       mockCommandExecutorExecute.mockResolvedValue(makeCommandResult());
 
@@ -822,7 +829,7 @@ describe('UluOpsClient', () => {
     });
 
     it('routes to WorkflowExecutor for workflows', async () => {
-      const client = new UluOpsClient({ apiKey: 'test-key', trackingEnabled: false });
+      const client = new UluOpsClient({ apiKey: 'ulr_test-key', trackingEnabled: false });
       mockRegistryResolve.mockResolvedValue(makeResolvedDef('workflow'));
       mockWorkflowExecutorExecute.mockResolvedValue(makeWorkflowResult());
 
@@ -834,7 +841,7 @@ describe('UluOpsClient', () => {
     });
 
     it('routes to PipelineExecutor for pipelines', async () => {
-      const client = new UluOpsClient({ apiKey: 'test-key', trackingEnabled: false });
+      const client = new UluOpsClient({ apiKey: 'ulr_test-key', trackingEnabled: false });
       mockRegistryResolve.mockResolvedValue(makeResolvedDef('pipeline'));
       mockPipelineExecutorExecute.mockResolvedValue(makePipelineResult());
 
@@ -845,14 +852,14 @@ describe('UluOpsClient', () => {
     });
 
     it('throws for unknown definition type', async () => {
-      const client = new UluOpsClient({ apiKey: 'test-key' });
+      const client = new UluOpsClient({ apiKey: 'ulr_test-key' });
       mockRegistryResolve.mockResolvedValue(makeResolvedDef('unknown'));
 
       await expect(client.run('mystery', { target: '/tmp' })).rejects.toThrow('Unknown definition type');
     });
 
     it('resolves without type hint (auto-detect)', async () => {
-      const client = new UluOpsClient({ apiKey: 'test-key', trackingEnabled: false });
+      const client = new UluOpsClient({ apiKey: 'ulr_test-key', trackingEnabled: false });
       mockRegistryResolve.mockResolvedValue(makeResolvedDef('command'));
       mockCommandExecutorExecute.mockResolvedValue(makeCommandResult());
 
@@ -863,7 +870,7 @@ describe('UluOpsClient', () => {
     });
 
     it('submits to validation when tracking enabled', async () => {
-      const client = new UluOpsClient({ apiKey: 'test-key', trackingEnabled: true });
+      const client = new UluOpsClient({ apiKey: 'ulr_test-key', trackingEnabled: true });
       mockRegistryResolve.mockResolvedValue(makeResolvedDef('command', 'validate'));
       mockCommandExecutorExecute.mockResolvedValue(makeCommandResult());
 
@@ -882,7 +889,7 @@ describe('UluOpsClient', () => {
 
   describe('startPipeline', () => {
     it('resolves pipeline and delegates to PipelineExecutor.start', async () => {
-      const client = new UluOpsClient({ apiKey: 'test-key' });
+      const client = new UluOpsClient({ apiKey: 'ulr_test-key' });
       const resolved = makeResolvedDef('pipeline');
       mockRegistryResolve.mockResolvedValue(resolved);
       const mockHandle = { executionId: 'pipe_123', wait: vi.fn(), cancel: vi.fn(), status: vi.fn() };
@@ -895,7 +902,7 @@ describe('UluOpsClient', () => {
     });
 
     it('throws when resolved type is not pipeline', async () => {
-      const client = new UluOpsClient({ apiKey: 'test-key' });
+      const client = new UluOpsClient({ apiKey: 'ulr_test-key' });
       mockRegistryResolve.mockResolvedValue(makeResolvedDef('command'));
 
       await expect(client.startPipeline('validate', { target: '/tmp/test' })).rejects.toThrow('not a pipeline');
@@ -906,7 +913,7 @@ describe('UluOpsClient', () => {
 
   describe('convenience methods', () => {
     it('validate() resolves "validate" as command', async () => {
-      const client = new UluOpsClient({ apiKey: 'test-key', trackingEnabled: false });
+      const client = new UluOpsClient({ apiKey: 'ulr_test-key', trackingEnabled: false });
       mockRegistryResolve.mockResolvedValue(makeResolvedDef('command', 'validate'));
       mockCommandExecutorExecute.mockResolvedValue(makeCommandResult());
 
@@ -916,7 +923,7 @@ describe('UluOpsClient', () => {
     });
 
     it('validate() passes options to input', async () => {
-      const client = new UluOpsClient({ apiKey: 'test-key', trackingEnabled: false });
+      const client = new UluOpsClient({ apiKey: 'ulr_test-key', trackingEnabled: false });
       mockRegistryResolve.mockResolvedValue(makeResolvedDef('command', 'validate'));
       mockCommandExecutorExecute.mockResolvedValue(makeCommandResult());
 
@@ -929,7 +936,7 @@ describe('UluOpsClient', () => {
     });
 
     it('ship() resolves "ship" as workflow', async () => {
-      const client = new UluOpsClient({ apiKey: 'test-key', trackingEnabled: false });
+      const client = new UluOpsClient({ apiKey: 'ulr_test-key', trackingEnabled: false });
       mockRegistryResolve.mockResolvedValue(makeResolvedDef('workflow', 'ship'));
       mockWorkflowExecutorExecute.mockResolvedValue(makeWorkflowResult());
 
@@ -943,7 +950,7 @@ describe('UluOpsClient', () => {
     });
 
     it('security() resolves "security" as command', async () => {
-      const client = new UluOpsClient({ apiKey: 'test-key', trackingEnabled: false });
+      const client = new UluOpsClient({ apiKey: 'ulr_test-key', trackingEnabled: false });
       mockRegistryResolve.mockResolvedValue(makeResolvedDef('command', 'security'));
       mockCommandExecutorExecute.mockResolvedValue(makeCommandResult());
 
@@ -953,7 +960,7 @@ describe('UluOpsClient', () => {
     });
 
     it('optimize() resolves "optimize" as command', async () => {
-      const client = new UluOpsClient({ apiKey: 'test-key', trackingEnabled: false });
+      const client = new UluOpsClient({ apiKey: 'ulr_test-key', trackingEnabled: false });
       mockRegistryResolve.mockResolvedValue(makeResolvedDef('command', 'optimize'));
       mockCommandExecutorExecute.mockResolvedValue(makeCommandResult());
 
@@ -963,7 +970,7 @@ describe('UluOpsClient', () => {
     });
 
     it('postImplementation() resolves "post-implementation" as workflow', async () => {
-      const client = new UluOpsClient({ apiKey: 'test-key', trackingEnabled: false });
+      const client = new UluOpsClient({ apiKey: 'ulr_test-key', trackingEnabled: false });
       mockRegistryResolve.mockResolvedValue(makeResolvedDef('workflow', 'post-implementation'));
       mockWorkflowExecutorExecute.mockResolvedValue(makeWorkflowResult());
 
@@ -977,7 +984,7 @@ describe('UluOpsClient', () => {
 
   describe('discovery', () => {
     it('list() passes filter to registry.list', async () => {
-      const client = new UluOpsClient({ apiKey: 'test-key' });
+      const client = new UluOpsClient({ apiKey: 'ulr_test-key' });
       mockRegistryList.mockResolvedValue([
         { type: 'command', name: 'validate', version: '1.0.0' },
       ]);
@@ -989,7 +996,7 @@ describe('UluOpsClient', () => {
     });
 
     it('describe() resolves and returns interface metadata', async () => {
-      const client = new UluOpsClient({ apiKey: 'test-key' });
+      const client = new UluOpsClient({ apiKey: 'ulr_test-key' });
       mockRegistryResolve.mockResolvedValue(makeResolvedDef('command', 'validate'));
 
       const info = await client.describe('validate');
@@ -1008,7 +1015,7 @@ describe('UluOpsClient', () => {
     });
 
     it('describe() extracts agent interface', async () => {
-      const client = new UluOpsClient({ apiKey: 'test-key' });
+      const client = new UluOpsClient({ apiKey: 'ulr_test-key' });
       const def = makeResolvedDef('agent', 'code-validator');
       mockRegistryResolve.mockResolvedValue(def);
 
@@ -1019,7 +1026,7 @@ describe('UluOpsClient', () => {
     });
 
     it('describe() returns {} for malformed definition', async () => {
-      const client = new UluOpsClient({ apiKey: 'test-key' });
+      const client = new UluOpsClient({ apiKey: 'ulr_test-key' });
       mockRegistryResolve.mockResolvedValue({
         ...makeResolvedDef('command'),
         definition: {} as ResolvedDefinition['definition'], // No known keys
@@ -1034,7 +1041,7 @@ describe('UluOpsClient', () => {
 
   describe('validation delegation', () => {
     it('getHistory() passes project and options to ValidationClient', async () => {
-      const client = new UluOpsClient({ apiKey: 'test-key' });
+      const client = new UluOpsClient({ apiKey: 'ulr_test-key' });
       mockValidationGetHistory.mockResolvedValue([]);
 
       const result = await client.getHistory('my-project', { workflowType: 'ship', limit: 5 });
@@ -1044,7 +1051,7 @@ describe('UluOpsClient', () => {
     });
 
     it('getHistory() passes undefined options when not provided', async () => {
-      const client = new UluOpsClient({ apiKey: 'test-key' });
+      const client = new UluOpsClient({ apiKey: 'ulr_test-key' });
       mockValidationGetHistory.mockResolvedValue([]);
 
       await client.getHistory('my-project');
@@ -1053,7 +1060,7 @@ describe('UluOpsClient', () => {
     });
 
     it('submitResults() delegates to validation.submit', async () => {
-      const client = new UluOpsClient({ apiKey: 'test-key' });
+      const client = new UluOpsClient({ apiKey: 'ulr_test-key' });
       mockValidationSubmit.mockResolvedValue(makeSubmissionResponse());
       const cmdResult = makeCommandResult();
 

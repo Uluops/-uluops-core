@@ -7,6 +7,7 @@ import { CommandExecutor } from '../executor/CommandExecutor.js';
 import { WorkflowExecutor } from '../executor/WorkflowExecutor.js';
 import { PipelineExecutor } from '../executor/PipelineExecutor.js';
 import { createLogger } from '@uluops/sdk-core';
+import { ConfigurationError } from '../errors/index.js';
 import type { UluOpsConfig, AIConfig, ResolvedConfig, ResolvedAIConfig } from '../types/config.js';
 import type { ExecutionInput, ExecutionResult, ExecutionOptions } from '../types/execution.js';
 import type { AgentResult } from '../types/agent.js';
@@ -83,7 +84,7 @@ export class UluOpsClient {
     const resolved = await this.resolveByRef(name, 'agent');
 
     if (resolved.type !== 'agent') {
-      throw new Error(`${name} is not an agent (type: ${resolved.type}). Use runCommand() instead.`);
+      throw new ConfigurationError(`${name} is not an agent (type: ${resolved.type}). Use runCommand() instead.`);
     }
 
     const result = await this.agentExecutor.execute(resolved, { target }, options);
@@ -101,7 +102,7 @@ export class UluOpsClient {
     const resolved = await this.resolveByRef(name, 'command');
 
     if (resolved.type !== 'command') {
-      throw new Error(`${name} is not a command (type: ${resolved.type}). Use runAgent() for agents or runWorkflow() for workflows.`);
+      throw new ConfigurationError(`${name} is not a command (type: ${resolved.type}). Use runAgent() for agents or runWorkflow() for workflows.`);
     }
 
     const result = await this.commandExecutor.execute(resolved, input);
@@ -116,7 +117,7 @@ export class UluOpsClient {
     const resolved = await this.resolveByRef(name, 'workflow');
 
     if (resolved.type !== 'workflow') {
-      throw new Error(`${name} is not a workflow (type: ${resolved.type}). Use runAgent() for agents or runCommand() for commands.`);
+      throw new ConfigurationError(`${name} is not a workflow (type: ${resolved.type}). Use runAgent() for agents or runCommand() for commands.`);
     }
 
     const result = await this.workflowExecutor.execute(resolved, input);
@@ -148,7 +149,7 @@ export class UluOpsClient {
         result = await this.pipelineExecutor.execute(resolved, input);
         break;
       default:
-        throw new Error(`Unknown definition type: ${resolved.type}`);
+        throw new ConfigurationError(`Unknown definition type: ${resolved.type}`);
     }
 
     await this.trackIfEnabled(result, resolved.name, resolved.type);
@@ -163,7 +164,7 @@ export class UluOpsClient {
     const resolved = await this.resolveByRef(name, 'pipeline');
 
     if (resolved.type !== 'pipeline') {
-      throw new Error(`${name} is not a pipeline (type: ${resolved.type}). Use runWorkflow() for workflows or runCommand() for commands.`);
+      throw new ConfigurationError(`${name} is not a pipeline (type: ${resolved.type}). Use runWorkflow() for workflows or runCommand() for commands.`);
     }
 
     return this.pipelineExecutor.start(resolved, input);
@@ -260,8 +261,17 @@ export class UluOpsClient {
     const apiKey = config.apiKey ?? process.env['ULUOPS_API_KEY'] ?? process.env['ULU_API_KEY'];
 
     if (!apiKey) {
-      throw new Error(
-        'UluOps API key is required. Provide via config.apiKey, ULUOPS_API_KEY, or ULU_API_KEY environment variable.',
+      throw new ConfigurationError(
+        'UluOps API key is required. Provide via config.apiKey, ULUOPS_API_KEY, or ULU_API_KEY environment variable. ' +
+        'Generate a key at https://app.uluops.ai.',
+      );
+    }
+
+    if (!apiKey.startsWith('ulr_')) {
+      throw new ConfigurationError(
+        `Invalid API key format: keys must begin with "ulr_". ` +
+        `Got: "${apiKey.substring(0, 4)}...". ` +
+        `Generate a valid key at https://app.uluops.ai.`,
       );
     }
 

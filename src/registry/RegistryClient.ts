@@ -96,7 +96,7 @@ export class RegistryClient {
       if (results.length === 0) {
         throw new Error(
           'No definitions found. Registry is unreachable and no local definitions are configured. ' +
-          'Use --local-definitions to specify a local directory.',
+          'Set localDefinitions in UluOpsClient config or ULUOPS_LOCAL_DEFINITIONS env var.',
         );
       }
     }

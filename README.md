@@ -54,7 +54,7 @@ The `@uluops/core` SDK provides:
 - **4-Layer Execution Hierarchy** - Agent > Command > Workflow > Pipeline orchestration
 - **AI SDK v6 Integration** - Vercel AI SDK for LLM communication with automatic tool loops (`maxSteps`) and built-in retry
 - **Registry-Backed Model Resolution** - Model aliases resolved via UluOps Registry with provider metadata
-- **Multi-Provider AI** - Anthropic + OpenAI + Google bundled, additional providers via dynamic import
+- **Multi-Provider AI** - Anthropic + OpenAI + Google bundled; Mistral, Cohere, and others supported via dynamic `@ai-sdk/*` import
 - **Filesystem Sandboxing** - ToolHandler restricts LLM file access to the target directory
 - **Content-Addressed Integrity** - SHA-256 hash verification on all definitions
 - **Structured Output Extraction** - 3-strategy fallback: JSON code fence > inline JSON > regex text parsing
@@ -91,13 +91,16 @@ Required for registry and validation service access:
 
 ```bash
 # Environment variable (recommended)
-export ULUOPS_API_KEY=your_api_key_here
-
-# Or pass directly in config
-const client = new UluOpsClient({ apiKey: 'your-key' });
+export ULUOPS_API_KEY=ulr_your_api_key_here
 ```
 
-The SDK checks for `ULUOPS_API_KEY` then `ULU_API_KEY` environment variables.
+Or pass directly in config:
+
+```typescript
+const client = new UluOpsClient({ apiKey: 'ulr_your-key' });
+```
+
+The SDK checks for `ULUOPS_API_KEY` then `ULU_API_KEY` environment variables. Keys use a `ulr_` prefix. Generate one at [app.uluops.ai](https://app.uluops.ai).
 
 ### AI Provider Keys
 
@@ -471,7 +474,7 @@ npm install
 # Type check
 npm run typecheck
 
-# Run tests (366 tests)
+# Run tests
 npm test
 
 # Run tests in watch mode
