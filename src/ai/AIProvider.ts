@@ -3,13 +3,12 @@ import type { ProviderOptions } from '@ai-sdk/provider-utils';
 import { createAnthropic, type AnthropicProvider } from '@ai-sdk/anthropic';
 import { createOpenAI, type OpenAIProvider } from '@ai-sdk/openai';
 import { createGoogleGenerativeAI, type GoogleGenerativeAIProvider } from '@ai-sdk/google';
-import { exec } from 'child_process';
-import { promisify } from 'util';
 import type { UsageMetrics } from '../types/ai.js';
 import { formatErrorMessage } from '../utils/formatError.js';
 import type { ResolvedConfig, ResolvedAIConfig } from '../types/config.js';
 import type { ModelCatalog, ResolvedModel } from './ModelCatalog.js';
 import { TokenBudgetTracker } from './TokenBudgetTracker.js';
+import { executeShellAsString, executeShellAsOpenAIResult } from './ShellExecutor.js';
 import {
   SdkApiError,
   RateLimitError,
@@ -21,8 +20,6 @@ import {
 } from '../errors/index.js';
 import type { ModelCapabilities } from '@uluops/registry-sdk';
 import type { Logger } from '@uluops/sdk-core';
-
-const execAsync = promisify(exec);
 
 /**
  * Result from AI provider generation
@@ -275,7 +272,7 @@ export class AIProvider {
     if (provider === 'anthropic' && this.anthropicInstance) {
       return {
         bash: this.anthropicInstance.tools.bash_20250124({
-          execute: async ({ command }) => this.executeShellAsString(command, targetDir, timeoutMs),
+          execute: async ({ command }) => executeShellAsString(command, targetDir, timeoutMs),
         }),
       };
     }
@@ -286,7 +283,7 @@ export class AIProvider {
       // Tool<any, any> due to schema symbol variance. Safe at runtime.
       return {
         shell: this.openaiInstance.tools.shell({
-          execute: async ({ action }) => this.executeShellAsOpenAIResult(action, targetDir, timeoutMs),
+          execute: async ({ action }) => executeShellAsOpenAIResult(action, targetDir, timeoutMs),
         }),
       } as unknown as ToolSet;
     }
@@ -493,85 +490,8 @@ export class AIProvider {
   }
 
   // ─────────────────────────────────────────────────────────────────────────
-  // Shell Command Execution
+  // Shell Command Execution (delegated to ShellExecutor)
   // ─────────────────────────────────────────────────────────────────────────
-
-  /**
-   * Low-level command runner. Returns raw stdout/stderr/exit info.
-   * Shared by both Anthropic and OpenAI shell tool adapters.
-   */
-  /**
-   * Execute a shell command string via `exec()`.
-   *
-   * SECURITY NOTE: The bash tool is an opt-in feature gated by `agentTools: ['bash']` in the
-   * agent YAML definition. When enabled, the LLM-generated command string is passed directly
-   * to `exec()` (i.e., `sh -c <command>`), which grants the LLM full host OS access scoped
-   * to `cwd`. There is no allowlist or OS-level sandbox. Only enable the bash tool in
-   * isolated environments (containers, CI sandboxes). Never enable it for untrusted targets.
-   */
-  private async runCommand(
-    command: string,
-    cwd: string,
-    timeoutMs: number,
-  ): Promise<{ stdout: string; stderr: string; timedOut: boolean; exitCode: number }> {
-    try {
-      const { stdout, stderr } = await execAsync(command, {
-        cwd,
-        timeout: timeoutMs,
-        maxBuffer: 1024 * 1024, // 1MB
-      });
-      return { stdout: stdout || '', stderr: stderr || '', timedOut: false, exitCode: 0 };
-    } catch (error) {
-      const err = error as { killed?: boolean; signal?: string; stderr?: string; code?: number; stdout?: string };
-      if (err.killed || err.signal) {
-        return { stdout: err.stdout || '', stderr: err.stderr || '', timedOut: true, exitCode: 1 };
-      }
-      return {
-        stdout: err.stdout || '',
-        stderr: err.stderr || String(error),
-        timedOut: false,
-        exitCode: typeof err.code === 'number' ? err.code : 1,
-      };
-    }
-  }
-
-  /** Anthropic bash tool adapter — returns plain string */
-  private async executeShellAsString(
-    command: string,
-    cwd: string,
-    timeoutMs: number,
-  ): Promise<string> {
-    const result = await this.runCommand(command, cwd, timeoutMs);
-    if (result.timedOut) return `Command timed out after ${timeoutMs}ms`;
-    return result.stdout || result.stderr || '(no output)';
-  }
-
-  /**
-   * OpenAI shell tool adapter — returns structured output.
-   * Shell tool action shape (verified from @ai-sdk/openai index.d.ts:718-722):
-   *   { commands: string[], timeoutMs?: number, maxOutputLength?: number }
-   */
-  private async executeShellAsOpenAIResult(
-    action: { commands: string[]; timeoutMs?: number; maxOutputLength?: number },
-    cwd: string,
-    defaultTimeoutMs: number,
-  ): Promise<{ output: Array<{ stdout: string; stderr: string; outcome: { type: 'timeout' } | { type: 'exit'; exitCode: number } }> }> {
-    const timeoutMs = action.timeoutMs ?? defaultTimeoutMs;
-    const results = [];
-
-    for (const command of action.commands) {
-      const result = await this.runCommand(command, cwd, timeoutMs);
-      results.push({
-        stdout: result.stdout,
-        stderr: result.stderr,
-        outcome: result.timedOut
-          ? { type: 'timeout' as const }
-          : { type: 'exit' as const, exitCode: result.exitCode },
-      });
-    }
-
-    return { output: results };
-  }
 
   // ─────────────────────────────────────────────────────────────────────────
   // Provider Management

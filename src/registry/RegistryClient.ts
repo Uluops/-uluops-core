@@ -235,9 +235,9 @@ export class RegistryClient {
       version: def.version,
       hash: def.hash,
       yaml: def.yaml ?? '',
-      // SAFETY: Empty object used as placeholder when no YAML available (e.g., render-only resolution).
-      // Downstream code (AgentExecutor, CommandExecutor) reads definition fields via optional chaining.
-      definition: def.yaml ? this.castDefinition(this.safeParseYaml(def.yaml, name)) : {} as unknown as ResolvedDefinition['definition'],
+      definition: def.yaml
+        ? this.castDefinition(this.safeParseYaml(def.yaml, name))
+        : this.emptyDefinition(),
       runtime: { prompt: rendered.markdown } as ResolvedDefinition['runtime'],
       domain: (def.domain ?? 'general') as ResolvedDefinition['domain'],
       agentType: (def.agentType ?? undefined) as ResolvedDefinition['agentType'],
@@ -277,8 +277,8 @@ export class RegistryClient {
 
   /**
    * Cast parsed YAML to typed definition with structural validation.
-   * Verifies the top-level key matches a known definition type before casting.
-   * Full schema validation is registry-side.
+   * Verifies a known top-level key exists and its value is a non-null object.
+   * Full schema validation is registry-side; this prevents totally wrong YAML.
    */
   private castDefinition(parsed: Record<string, unknown>): ResolvedDefinition['definition'] {
     const knownTopKeys = ['agent', 'command', 'workflow', 'pipeline'] as const;
@@ -293,10 +293,19 @@ export class RegistryClient {
     if (typeof section !== 'object' || section === null) {
       throw new Error(`Invalid definition: "${topKey}" must be an object`);
     }
-    // SAFETY: Cast after structural guard confirms top-level key is a known definition type
-    // (agent|command|workflow|pipeline) and its value is a non-null object.
-    // Full schema validation is registry-side; this prevents totally wrong YAML.
+    // Structural guard confirms top-level key is a known definition type
+    // with a non-null object value. The intermediate `unknown` cast is
+    // unavoidable: Record<string, unknown> lacks the index signature
+    // required for direct assignment to the typed definition union.
     return parsed as unknown as ResolvedDefinition['definition'];
+  }
+
+  /**
+   * Placeholder definition for render-only resolution (no YAML available).
+   * Downstream code reads definition fields via optional chaining.
+   */
+  private emptyDefinition(): ResolvedDefinition['definition'] {
+    return { agent: {} } as AgentDefinition;
   }
 
   /**
@@ -335,7 +344,8 @@ export class RegistryClient {
       } as ResolvedDefinition['runtime'];
     }
 
-    // SAFETY: Workflow/pipeline definitions ARE the runtime — the parsed YAML structure is used directly
+    // Workflow/pipeline definitions ARE the runtime — the parsed YAML structure
+    // is used directly. Already validated by castDefinition() in resolveLocal().
     return definition as unknown as ResolvedDefinition['runtime'];
   }
 

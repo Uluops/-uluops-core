@@ -6,9 +6,10 @@ export { UluOpsError } from './UluOpsError.js';
 export class ExecutionError extends UluOpsError {
   constructor(
     message: string,
-    public readonly partialResult?: unknown
+    public readonly partialResult?: unknown,
+    options?: ErrorOptions,
   ) {
-    super(message);
+    super(message, options);
     this.name = 'ExecutionError';
   }
 }
@@ -33,6 +34,7 @@ export class HashVerificationError extends UluOpsError {
   }
 }
 
+/** Thrown when the SDK is misconfigured (missing API key, invalid provider, etc.). */
 export class ConfigurationError extends UluOpsError {
   constructor(message: string) {
     super(message);
@@ -40,6 +42,7 @@ export class ConfigurationError extends UluOpsError {
   }
 }
 
+/** Thrown when a model alias cannot be resolved via the registry model catalog. */
 export class ModelNotFoundError extends UluOpsError {
   constructor(message: string) {
     super(message);
@@ -47,6 +50,7 @@ export class ModelNotFoundError extends UluOpsError {
   }
 }
 
+/** Thrown when a resolved model lacks a required capability (e.g. tools, vision, extendedThinking). */
 export class CapabilityError extends UluOpsError {
   constructor(message: string) {
     super(message);
@@ -70,6 +74,7 @@ export const ValidationErrorCodes = {
 
 export type ValidationErrorCode = typeof ValidationErrorCodes[keyof typeof ValidationErrorCodes];
 
+/** Thrown when the validation service rejects a submission or returns an error. */
 export class ValidationError extends UluOpsError {
   public readonly code?: ValidationErrorCode;
 
@@ -80,16 +85,18 @@ export class ValidationError extends UluOpsError {
   }
 }
 
+/** Thrown when a workflow phase gate fails. Includes partial results for completed phases. */
 export class WorkflowError extends UluOpsError {
   constructor(
     message: string,
-    public readonly context: { partialResult: unknown }
+    public readonly context: { partialResult: unknown },
   ) {
     super(message);
     this.name = 'WorkflowError';
   }
 }
 
+/** Thrown when a pipeline stage fails or a pipeline-level error occurs. */
 export class PipelineError extends UluOpsError {
   constructor(message: string) {
     super(message);
@@ -97,9 +104,7 @@ export class PipelineError extends UluOpsError {
   }
 }
 
-/**
- * Parse error - failed to extract structured output from response
- */
+/** Thrown when structured output cannot be extracted from an LLM response. */
 export class ParseError extends UluOpsError {
   readonly contentPreview: string;
 

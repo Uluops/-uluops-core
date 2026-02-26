@@ -294,12 +294,7 @@ export class UluOpsClient {
     if (ai?.providers) {
       // Use explicitly configured providers with env var fallback
       for (const [name, creds] of Object.entries(ai.providers)) {
-        const envKey = `${name.toUpperCase()}_API_KEY`;
-        let apiKey = creds.apiKey ?? process.env[envKey];
-        // Google SDK uses GOOGLE_GENERATIVE_AI_API_KEY by default
-        if (!apiKey && name === 'google') {
-          apiKey = process.env['GOOGLE_GENERATIVE_AI_API_KEY'];
-        }
+        const apiKey = creds.apiKey ?? resolveProviderApiKey(name);
         if (apiKey) {
           providers[name] = { apiKey };
         }
@@ -308,12 +303,7 @@ export class UluOpsClient {
       // Auto-detect: scan env vars for known provider API keys
       const KNOWN_PROVIDERS = ['anthropic', 'openai', 'google', 'mistral', 'cohere'] as const;
       for (const name of KNOWN_PROVIDERS) {
-        const envKey = `${name.toUpperCase()}_API_KEY`;
-        let apiKey = process.env[envKey];
-        // Google SDK uses GOOGLE_GENERATIVE_AI_API_KEY by default
-        if (!apiKey && name === 'google') {
-          apiKey = process.env['GOOGLE_GENERATIVE_AI_API_KEY'];
-        }
+        const apiKey = resolveProviderApiKey(name);
         if (apiKey) {
           providers[name] = { apiKey };
         }
@@ -385,4 +375,22 @@ export class UluOpsClient {
     }
     return {};
   }
+}
+
+/**
+ * Resolve an API key for a provider from environment variables.
+ * Checks `<PROVIDER>_API_KEY` first, then provider-specific fallbacks
+ * (e.g., `GOOGLE_GENERATIVE_AI_API_KEY` for Google's SDK default).
+ */
+function resolveProviderApiKey(name: string): string | undefined {
+  const envKey = `${name.toUpperCase()}_API_KEY`;
+  const apiKey = process.env[envKey];
+  if (apiKey) return apiKey;
+
+  // Google SDK uses GOOGLE_GENERATIVE_AI_API_KEY by default
+  if (name === 'google') {
+    return process.env['GOOGLE_GENERATIVE_AI_API_KEY'];
+  }
+
+  return undefined;
 }
