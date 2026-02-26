@@ -298,6 +298,10 @@ export class AgentExecutor {
   }
 
   private calculateEffectiveTokens(usage: UsageMetrics): number {
-    return usage.input_tokens + usage.output_tokens + (usage.cache_creation_input_tokens ?? 0);
+    // reasoning_tokens (OpenAI) excluded: already counted within output_tokens by OpenAI's billing.
+    // thinking_tokens (Google) included: charged separately from output_tokens by Google.
+    return usage.input_tokens + usage.output_tokens
+      + (usage.cache_creation_input_tokens ?? 0)
+      + (usage.thinking_tokens ?? 0);
   }
 }

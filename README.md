@@ -4,7 +4,7 @@
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](LICENSE)
 [![Node.js Version](https://img.shields.io/node/v/@uluops/core)](https://nodejs.org)
 [![TypeScript](https://img.shields.io/badge/TypeScript-5.7+-blue.svg)](https://www.typescriptlang.org/)
-[![Tests](https://img.shields.io/badge/tests-350%20passing-brightgreen)](test/)
+[![Tests](https://img.shields.io/badge/tests-362%20passing-brightgreen)](test/)
 
 The foundational execution engine for UluOps. Orchestrates AI-powered code analysis through a 4-layer execution hierarchy (Agent > Command > Workflow > Pipeline), manages LLM tool loops via Vercel AI SDK, and integrates with UluOps Registry and Validation services.
 
@@ -54,7 +54,7 @@ The `@uluops/core` SDK provides:
 - **4-Layer Execution Hierarchy** - Agent > Command > Workflow > Pipeline orchestration
 - **AI SDK v6 Integration** - Vercel AI SDK for LLM communication with automatic tool loops (`maxSteps`) and built-in retry
 - **Registry-Backed Model Resolution** - Model aliases resolved via UluOps Registry with provider metadata
-- **Multi-Provider AI** - Anthropic + OpenAI bundled, additional providers via dynamic import
+- **Multi-Provider AI** - Anthropic + OpenAI + Google bundled, additional providers via dynamic import
 - **Filesystem Sandboxing** - ToolHandler restricts LLM file access to the target directory
 - **Content-Addressed Integrity** - SHA-256 hash verification on all definitions
 - **Structured Output Extraction** - 3-strategy fallback: JSON code fence > inline JSON > regex text parsing
@@ -106,6 +106,7 @@ Set environment variables for the providers you want to use. The SDK auto-detect
 ```bash
 export ANTHROPIC_API_KEY=your_anthropic_key
 export OPENAI_API_KEY=your_openai_key        # optional
+export GOOGLE_API_KEY=your_google_key        # optional (also accepts GOOGLE_GENERATIVE_AI_API_KEY)
 ```
 
 Or configure explicitly:
@@ -117,6 +118,7 @@ const client = new UluOpsClient({
     providers: {
       anthropic: { apiKey: process.env.ANTHROPIC_API_KEY },
       openai: { apiKey: process.env.OPENAI_API_KEY },
+      google: { apiKey: process.env.GOOGLE_API_KEY },
     },
     defaultProvider: 'anthropic',
   },
@@ -321,7 +323,7 @@ const client = new UluOpsClient({
   timeout: 300000,                    // Request timeout in ms
   defaultProject: 'my-project',       // Default project for result submission
   debug: false,                       // Detailed execution logging (or ULUOPS_DEBUG)
-  defaultThinkingBudget: 10000,       // Extended thinking budget (Anthropic models)
+  defaultThinkingBudget: 10000,       // Extended thinking budget (Anthropic + Google models)
   contextBudget: 200000,              // Context window budget — forces wrap-up at 80%
   dashboardUrl: 'https://app.uluops.ai', // Dashboard link prefix for run URLs
 
@@ -337,6 +339,8 @@ const client = new UluOpsClient({
 | `ULUOPS_API_KEY` | Platform API key | (required) |
 | `ANTHROPIC_API_KEY` | Anthropic provider key | - |
 | `OPENAI_API_KEY` | OpenAI provider key | - |
+| `GOOGLE_API_KEY` | Google/Gemini provider key | - |
+| `GOOGLE_GENERATIVE_AI_API_KEY` | Google provider key (alternative) | - |
 | `ULUOPS_REGISTRY_URL` | Registry API URL | `https://api.uluops.ai/api/v1/registry` |
 | `ULUOPS_VALIDATION_URL` | Validation API URL | `https://api.uluops.ai/api/v1/ops` |
 | `ULUOPS_TRACKING_ENABLED` | Auto-submit results | `true` |
@@ -427,6 +431,7 @@ The SDK provides a structured error hierarchy:
 | `ai` | Vercel AI SDK v6 - LLM communication and tool loops |
 | `@ai-sdk/anthropic` | Anthropic provider for AI SDK |
 | `@ai-sdk/openai` | OpenAI provider for AI SDK |
+| `@ai-sdk/google` | Google/Gemini provider for AI SDK |
 | `yaml` | YAML parsing for local definitions |
 | `glob` | File globbing for ToolHandler |
 | `zod` | Schema validation for AI SDK tools |
@@ -440,7 +445,7 @@ npm install
 # Type check
 npm run typecheck
 
-# Run tests (350 tests)
+# Run tests (362 tests)
 npm test
 
 # Run tests in watch mode

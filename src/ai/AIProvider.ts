@@ -2,6 +2,7 @@ import { generateText, stepCountIs, type LanguageModel, type ToolSet } from 'ai'
 import type { ProviderOptions } from '@ai-sdk/provider-utils';
 import { createAnthropic, type AnthropicProvider } from '@ai-sdk/anthropic';
 import { createOpenAI, type OpenAIProvider } from '@ai-sdk/openai';
+import { createGoogleGenerativeAI, type GoogleGenerativeAIProvider } from '@ai-sdk/google';
 import { exec } from 'child_process';
 import { promisify } from 'util';
 import type { UsageMetrics } from '../types/ai.js';
@@ -95,7 +96,7 @@ export interface AIGenerateOptions {
  *
  * Wraps Vercel AI SDK v6 to provide:
  * - Registry-backed model alias resolution (sonnet → anthropic:claude-sonnet-4-5-20250929)
- * - Multi-provider support (Anthropic + OpenAI bundled, others via dynamic import)
+ * - Multi-provider support (Anthropic + OpenAI + Google bundled, others via dynamic import)
  * - Capability pre-flight checks (tools, vision, streaming, extendedThinking)
  * - Unified generation with automatic tool loops
  * - Automatic prompt caching for Anthropic system messages
@@ -103,9 +104,14 @@ export interface AIGenerateOptions {
  * - Reasoning effort auto-set for capable OpenAI models
  * - Provider-defined tool support (Anthropic bash, OpenAI shell)
  * - Error mapping to UluOps error types
- * - Usage metrics in UluOps format (including OpenAI reasoning tokens)
+ * - Usage metrics in UluOps format (including OpenAI reasoning + Google thinking tokens)
  */
 export class AIProvider {
+  /** Factory name overrides for providers that don't follow the `create<Name>` convention */
+  private static readonly FACTORY_NAME_OVERRIDES: Record<string, string> = {
+    google: 'createGoogleGenerativeAI',
+  };
+
   /** Initialized AI SDK provider factories, keyed by provider name */
   private providers = new Map<string, (modelId: string) => LanguageModel>();
 
@@ -114,6 +120,10 @@ export class AIProvider {
 
   /** OpenAI provider instance for accessing provider-defined tools */
   private openaiInstance?: OpenAIProvider;
+
+  /** Google provider instance for future provider-defined tools (googleSearch, codeExecution) */
+  // @ts-expect-error Reserved for future Google tool integration (googleSearch, codeExecution, urlContext)
+  private googleInstance?: GoogleGenerativeAIProvider;
 
   constructor(
     private config: ResolvedConfig,
@@ -217,7 +227,8 @@ export class AIProvider {
       this.logger.info(
         `Usage: ${usage.input_tokens}in / ${usage.output_tokens}out` +
         (usage.cache_creation_input_tokens ? ` / cache_write=${usage.cache_creation_input_tokens}` : '') +
-        (usage.cache_read_input_tokens ? ` / cache_read=${usage.cache_read_input_tokens}` : ''),
+        (usage.cache_read_input_tokens ? ` / cache_read=${usage.cache_read_input_tokens}` : '') +
+        (usage.thinking_tokens ? ` / thinking=${usage.thinking_tokens}` : ''),
       );
 
       return {
@@ -332,6 +343,10 @@ export class AIProvider {
       return this.buildOpenAIOptions(resolved, userOptions);
     }
 
+    if (resolved.provider === 'google') {
+      return this.buildGoogleOptions(resolved, userOptions);
+    }
+
     return userOptions;
   }
 
@@ -410,6 +425,37 @@ export class AIProvider {
     return {
       ...(userOptions ?? {}),
       openai: openaiOpts as Record<string, unknown>,
+    } as ProviderOptions;
+  }
+
+  /**
+   * Google-specific provider options.
+   * - Auto-enables thinkingConfig with thinkingBudget for thinking-capable models (Gemini 2.5+)
+   * - No context management equivalent — budget wrap-up via prepareStep is the only guard
+   * - No system message wrapping — Gemini caching is implicit for 2.5+ models
+   */
+  private buildGoogleOptions(
+    resolved: ResolvedModel,
+    userOptions?: ProviderOptions,
+  ): ProviderOptions | undefined {
+    const userGoogleOpts = (userOptions?.google ?? {}) as Record<string, unknown>;
+    let googleOpts = { ...userGoogleOpts };
+
+    // Auto-enable thinking for models with extendedThinking capability (Gemini 2.5+)
+    if (resolved.capabilities.extendedThinking && !('thinkingConfig' in googleOpts)) {
+      googleOpts = {
+        ...googleOpts,
+        thinkingConfig: { thinkingBudget: this.config.defaultThinkingBudget },
+      };
+    }
+
+    if (Object.keys(googleOpts).length === 0) {
+      return userOptions;
+    }
+
+    return {
+      ...(userOptions ?? {}),
+      google: googleOpts as Record<string, unknown>,
     } as ProviderOptions;
   }
 
@@ -524,7 +570,7 @@ export class AIProvider {
 
   /**
    * Initialize AI SDK provider factories from config.
-   * @ai-sdk/anthropic and @ai-sdk/openai are bundled and eagerly initialized.
+   * @ai-sdk/anthropic, @ai-sdk/openai, and @ai-sdk/google are bundled and eagerly initialized.
    */
   private initializeProviders(aiConfig: ResolvedAIConfig): void {
     for (const [providerName, creds] of Object.entries(aiConfig.providers)) {
@@ -536,6 +582,10 @@ export class AIProvider {
         const openai = createOpenAI({ apiKey: creds.apiKey });
         this.openaiInstance = openai;
         this.providers.set('openai', (modelId) => openai(modelId));
+      } else if (providerName === 'google') {
+        const google = createGoogleGenerativeAI({ apiKey: creds.apiKey });
+        this.googleInstance = google;
+        this.providers.set('google', (modelId) => google(modelId));
       }
       // Other providers are loaded lazily in ensureProvider()
     }
@@ -556,8 +606,9 @@ export class AIProvider {
       // Dynamic import of @ai-sdk/<provider>
       const mod = await import(`@ai-sdk/${providerName}`) as Record<string, unknown>;
 
-      // Try standard naming: createOpenAI, createGoogle, etc.
-      const factoryName = `create${providerName.charAt(0).toUpperCase() + providerName.slice(1)}`;
+      // Check override map first, then try standard naming convention (createMistral, createCohere, etc.)
+      const factoryName = AIProvider.FACTORY_NAME_OVERRIDES[providerName]
+        ?? `create${providerName.charAt(0).toUpperCase() + providerName.slice(1)}`;
       const createProvider = (mod[factoryName] ?? mod['default']) as
         ((opts: { apiKey: string }) => (modelId: string) => LanguageModel) | undefined;
 
@@ -656,6 +707,41 @@ export class AIProvider {
       base.cache_read_input_tokens ??= openaiMeta.openai.cachedPromptTokens;
       if (openaiMeta.openai.reasoningTokens) {
         base.reasoning_tokens = openaiMeta.openai.reasoningTokens;
+      }
+    }
+
+    // 4. Google provider metadata
+    const googleMeta = providerMetadata as {
+      google?: {
+        usageMetadata?: {
+          cachedContentTokenCount?: number;
+          thoughtsTokenCount?: number;
+        };
+      };
+    } | undefined;
+
+    if (googleMeta?.google?.usageMetadata) {
+      const gUsage = googleMeta.google.usageMetadata;
+      base.cache_read_input_tokens ??= gUsage.cachedContentTokenCount;
+      if (gUsage.thoughtsTokenCount) {
+        base.thinking_tokens = gUsage.thoughtsTokenCount;
+      }
+    }
+
+    // 5. Generic provider metadata scan for non-bundled providers.
+    // Best-effort extraction of cache tokens from unknown provider metadata.
+    // Uses ??= to never override values set by provider-specific tiers above.
+    if (providerMetadata && base.cache_read_input_tokens == null) {
+      const KNOWN_PROVIDERS = new Set(['anthropic', 'openai', 'google']);
+      for (const [key, value] of Object.entries(providerMetadata)) {
+        if (KNOWN_PROVIDERS.has(key) || typeof value !== 'object' || !value) continue;
+        const meta = value as Record<string, unknown>;
+        // Check common field names used by various providers
+        const cached = meta['cachedTokens'] ?? meta['cachedContentTokenCount'] ?? meta['cachedPromptTokens'];
+        if (typeof cached === 'number' && cached > 0) {
+          base.cache_read_input_tokens = cached;
+          break;
+        }
       }
     }
 

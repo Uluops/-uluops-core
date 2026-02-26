@@ -42,6 +42,18 @@ vi.mock('@ai-sdk/openai', () => ({
   }),
 }));
 
+vi.mock('@ai-sdk/google', () => ({
+  createGoogleGenerativeAI: vi.fn(() => {
+    const provider = vi.fn((modelId: string) => ({ modelId, type: 'mock-google-model' })) as any;
+    provider.tools = {
+      googleSearch: vi.fn(() => ({ type: 'provider-defined-tool', name: 'google_search' })),
+      codeExecution: vi.fn(() => ({ type: 'provider-defined-tool', name: 'code_execution' })),
+      urlContext: vi.fn(() => ({ type: 'provider-defined-tool', name: 'url_context' })),
+    };
+    return provider;
+  }),
+}));
+
 const mockConfig: ResolvedConfig = {
   apiKey: 'test-api-key',
   ai: {
@@ -440,7 +452,7 @@ describe('AIProvider', () => {
 
     it('throws ConfigurationError for unconfigured provider', async () => {
       const provider = new AIProvider(mockConfig, mockCatalog(), noopLogger);
-      await expect(provider.ensureProvider('google')).rejects.toThrow(ConfigurationError);
+      await expect(provider.ensureProvider('mistral')).rejects.toThrow(ConfigurationError);
     });
   });
 
@@ -648,6 +660,328 @@ describe('AIProvider', () => {
       const call = mockGenerateText.mock.calls[0]?.[0] as any;
       // OpenAI gets plain string, not Anthropic's cache control object
       expect(call.system).toBe('You are helpful.');
+    });
+  });
+
+  describe('Google provider', () => {
+    const googleConfig: ResolvedConfig = {
+      ...mockConfig,
+      ai: {
+        providers: {
+          anthropic: { apiKey: 'test-anthropic-key' },
+          google: { apiKey: 'test-google-key' },
+        },
+        defaultProvider: 'anthropic',
+      },
+    };
+
+    function makeGoogleModel(overrides?: Partial<ResolvedModel>): ResolvedModel {
+      return {
+        provider: 'google',
+        modelId: 'gemini-2.5-flash',
+        providerModelId: 'gemini-2.5-flash',
+        tier: 'standard',
+        capabilities: { tools: true, vision: true, streaming: true, extendedThinking: false },
+        resolvedFrom: 'alias',
+        ...overrides,
+      };
+    }
+
+    it('initializes when Google credentials configured', async () => {
+      const provider = new AIProvider(googleConfig, mockCatalog(), noopLogger);
+      await expect(provider.ensureProvider('google')).resolves.toBeUndefined();
+    });
+
+    it('generates with Google model', async () => {
+      const { generateText } = await import('ai');
+      const mockGenerateText = vi.mocked(generateText);
+
+      mockGenerateText.mockResolvedValueOnce({
+        text: 'Gemini response',
+        usage: { inputTokens: 120, outputTokens: 60 },
+        steps: [{ toolCalls: [{ id: '1' }] }],
+        finishReason: 'stop',
+        providerMetadata: {},
+      } as never);
+
+      const catalog = mockCatalog({
+        resolve: vi.fn().mockResolvedValue(makeGoogleModel()),
+      });
+      const provider = new AIProvider(googleConfig, catalog, noopLogger);
+      const result = await provider.generate({
+        model: 'gemini',
+        system: 'You are a reviewer.',
+        prompt: 'Review this.',
+      });
+
+      expect(result.text).toBe('Gemini response');
+      expect(result.provider).toBe('google');
+      expect(result.model).toBe('google:gemini-2.5-flash');
+      expect(result.toolCallCount).toBe(1);
+    });
+
+    it('auto-enables thinkingConfig for extendedThinking models', async () => {
+      const { generateText } = await import('ai');
+      const mockGenerateText = vi.mocked(generateText);
+
+      mockGenerateText.mockResolvedValueOnce({
+        text: 'done',
+        usage: { inputTokens: 50, outputTokens: 25 },
+        steps: [],
+        finishReason: 'stop',
+        providerMetadata: {},
+      } as never);
+
+      const catalog = mockCatalog({
+        resolve: vi.fn().mockResolvedValue(makeGoogleModel({
+          capabilities: { tools: true, vision: true, streaming: true, extendedThinking: true },
+        })),
+      });
+      const provider = new AIProvider(googleConfig, catalog, noopLogger);
+      await provider.generate({
+        model: 'gemini-2.5-flash',
+        system: 'test',
+        prompt: 'test',
+      });
+
+      const call = mockGenerateText.mock.calls[0]?.[0] as any;
+      expect(call.providerOptions.google.thinkingConfig).toEqual({
+        thinkingBudget: 10_000,
+      });
+    });
+
+    it('preserves user-supplied thinkingConfig (does not override)', async () => {
+      const { generateText } = await import('ai');
+      const mockGenerateText = vi.mocked(generateText);
+
+      mockGenerateText.mockResolvedValueOnce({
+        text: 'done',
+        usage: { inputTokens: 50, outputTokens: 25 },
+        steps: [],
+        finishReason: 'stop',
+        providerMetadata: {},
+      } as never);
+
+      const catalog = mockCatalog({
+        resolve: vi.fn().mockResolvedValue(makeGoogleModel({
+          capabilities: { tools: true, vision: true, streaming: true, extendedThinking: true },
+        })),
+      });
+      const provider = new AIProvider(googleConfig, catalog, noopLogger);
+      await provider.generate({
+        model: 'gemini-2.5-flash',
+        system: 'test',
+        prompt: 'test',
+        providerOptions: { google: { thinkingConfig: { thinkingBudget: 5000 } } },
+      });
+
+      const call = mockGenerateText.mock.calls[0]?.[0] as any;
+      expect(call.providerOptions.google.thinkingConfig).toEqual({
+        thinkingBudget: 5000,
+      });
+    });
+
+    it('does not inject thinkingConfig for non-thinking models', async () => {
+      const { generateText } = await import('ai');
+      const mockGenerateText = vi.mocked(generateText);
+
+      mockGenerateText.mockResolvedValueOnce({
+        text: 'done',
+        usage: { inputTokens: 50, outputTokens: 25 },
+        steps: [],
+        finishReason: 'stop',
+        providerMetadata: {},
+      } as never);
+
+      const catalog = mockCatalog({
+        resolve: vi.fn().mockResolvedValue(makeGoogleModel()),
+      });
+      const provider = new AIProvider(googleConfig, catalog, noopLogger);
+      await provider.generate({
+        model: 'gemini-2.5-flash',
+        system: 'test',
+        prompt: 'test',
+      });
+
+      const call = mockGenerateText.mock.calls[0]?.[0] as any;
+      // No providerOptions injected when no thinking capability
+      expect(call.providerOptions?.google?.thinkingConfig).toBeUndefined();
+    });
+
+    it('maps cachedContentTokenCount to cache_read_input_tokens', async () => {
+      const { generateText } = await import('ai');
+      const mockGenerateText = vi.mocked(generateText);
+
+      mockGenerateText.mockResolvedValueOnce({
+        text: 'done',
+        usage: { inputTokens: 500, outputTokens: 200 },
+        steps: [],
+        finishReason: 'stop',
+        providerMetadata: {
+          google: {
+            usageMetadata: {
+              cachedContentTokenCount: 300,
+            },
+          },
+        },
+      } as never);
+
+      const catalog = mockCatalog({
+        resolve: vi.fn().mockResolvedValue(makeGoogleModel()),
+      });
+      const provider = new AIProvider(googleConfig, catalog, noopLogger);
+      const result = await provider.generate({
+        model: 'gemini',
+        system: 'test',
+        prompt: 'test',
+      });
+
+      expect(result.usage.cache_read_input_tokens).toBe(300);
+    });
+
+    it('maps thoughtsTokenCount to thinking_tokens', async () => {
+      const { generateText } = await import('ai');
+      const mockGenerateText = vi.mocked(generateText);
+
+      mockGenerateText.mockResolvedValueOnce({
+        text: 'done',
+        usage: { inputTokens: 500, outputTokens: 200 },
+        steps: [],
+        finishReason: 'stop',
+        providerMetadata: {
+          google: {
+            usageMetadata: {
+              thoughtsTokenCount: 1500,
+            },
+          },
+        },
+      } as never);
+
+      const catalog = mockCatalog({
+        resolve: vi.fn().mockResolvedValue(makeGoogleModel()),
+      });
+      const provider = new AIProvider(googleConfig, catalog, noopLogger);
+      const result = await provider.generate({
+        model: 'gemini',
+        system: 'test',
+        prompt: 'test',
+      });
+
+      expect(result.usage.thinking_tokens).toBe(1500);
+    });
+
+    it('uses plain string system message (no cache markup)', async () => {
+      const { generateText } = await import('ai');
+      const mockGenerateText = vi.mocked(generateText);
+
+      mockGenerateText.mockResolvedValueOnce({
+        text: 'done',
+        usage: { inputTokens: 50, outputTokens: 25 },
+        steps: [],
+        finishReason: 'stop',
+        providerMetadata: {},
+      } as never);
+
+      const catalog = mockCatalog({
+        resolve: vi.fn().mockResolvedValue(makeGoogleModel()),
+      });
+      const provider = new AIProvider(googleConfig, catalog, noopLogger);
+      await provider.generate({
+        model: 'gemini',
+        system: 'You are helpful.',
+        prompt: 'test',
+      });
+
+      const call = mockGenerateText.mock.calls[0]?.[0] as any;
+      expect(call.system).toBe('You are helpful.');
+    });
+
+    it('returns undefined for shell tool (no Google bash equivalent)', () => {
+      const provider = new AIProvider(googleConfig, mockCatalog(), noopLogger);
+      const tools = provider.createProviderShellTool('google', '/tmp/target', 30_000);
+      expect(tools).toBeUndefined();
+    });
+  });
+
+  describe('generic provider metadata scan', () => {
+    it('extracts cache tokens from unknown provider metadata', async () => {
+      const { generateText } = await import('ai');
+      const mockGenerateText = vi.mocked(generateText);
+
+      mockGenerateText.mockResolvedValueOnce({
+        text: 'done',
+        usage: { inputTokens: 400, outputTokens: 100 },
+        steps: [],
+        finishReason: 'stop',
+        providerMetadata: {
+          deepseek: {
+            cachedTokens: 250,
+          },
+        },
+      } as never);
+
+      const provider = new AIProvider(mockConfig, mockCatalog(), noopLogger);
+      const result = await provider.generate({
+        model: 'sonnet',
+        system: 'test',
+        prompt: 'test',
+      });
+
+      expect(result.usage.cache_read_input_tokens).toBe(250);
+    });
+
+    it('does not override known provider cache values with generic scan', async () => {
+      const { generateText } = await import('ai');
+      const mockGenerateText = vi.mocked(generateText);
+
+      mockGenerateText.mockResolvedValueOnce({
+        text: 'done',
+        usage: {
+          inputTokens: 400,
+          outputTokens: 100,
+          inputTokenDetails: { cacheReadTokens: 150 },
+        },
+        steps: [],
+        finishReason: 'stop',
+        providerMetadata: {
+          someProvider: {
+            cachedTokens: 999,
+          },
+        },
+      } as never);
+
+      const provider = new AIProvider(mockConfig, mockCatalog(), noopLogger);
+      const result = await provider.generate({
+        model: 'sonnet',
+        system: 'test',
+        prompt: 'test',
+      });
+
+      // AI SDK standard path value (150) should not be overridden by generic scan (999)
+      expect(result.usage.cache_read_input_tokens).toBe(150);
+    });
+  });
+
+  describe('FACTORY_NAME_OVERRIDES (behavioral)', () => {
+    it('ensureProvider succeeds for google when dynamically loaded as fallback', async () => {
+      // Google is normally eager-loaded, but if a provider with a non-standard
+      // factory name falls through to ensureProvider, the override map resolves it.
+      // We test this by creating an AIProvider without google in config,
+      // then manually adding creds and calling ensureProvider.
+      const configNoGoogle: ResolvedConfig = {
+        ...mockConfig,
+        ai: {
+          providers: { anthropic: { apiKey: 'test-key' } },
+          defaultProvider: 'anthropic',
+        },
+      };
+      const provider = new AIProvider(configNoGoogle, mockCatalog(), noopLogger);
+
+      // Manually inject google creds to simulate dynamic path
+      (provider as any).config.ai.providers['google'] = { apiKey: 'test-google-key' };
+
+      // ensureProvider should use FACTORY_NAME_OVERRIDES to find createGoogleGenerativeAI
+      await expect(provider.ensureProvider('google')).resolves.toBeUndefined();
     });
   });
 });

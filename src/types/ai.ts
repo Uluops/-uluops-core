@@ -8,4 +8,6 @@ export interface UsageMetrics {
   cache_read_input_tokens?: number;
   /** OpenAI reasoning model internal reasoning tokens (o1, o3, o4-mini) */
   reasoning_tokens?: number;
+  /** Google Gemini thinking tokens (Gemini 2.5+ with thinkingConfig enabled) */
+  thinking_tokens?: number;
 }
