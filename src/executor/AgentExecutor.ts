@@ -110,6 +110,7 @@ export class AgentExecutor {
       outputTokens: result.usage.output_tokens,
       cacheCreationTokens: result.usage.cache_creation_input_tokens,
       cacheReadTokens: result.usage.cache_read_input_tokens,
+      thinkingTokens: result.usage.thinking_tokens,
       totalEffectiveTokens: this.calculateEffectiveTokens(result.usage),
       durationMs,
       model: result.model,

@@ -500,6 +500,15 @@ export class AIProvider {
    * Low-level command runner. Returns raw stdout/stderr/exit info.
    * Shared by both Anthropic and OpenAI shell tool adapters.
    */
+  /**
+   * Execute a shell command string via `exec()`.
+   *
+   * SECURITY NOTE: The bash tool is an opt-in feature gated by `agentTools: ['bash']` in the
+   * agent YAML definition. When enabled, the LLM-generated command string is passed directly
+   * to `exec()` (i.e., `sh -c <command>`), which grants the LLM full host OS access scoped
+   * to `cwd`. There is no allowlist or OS-level sandbox. Only enable the bash tool in
+   * isolated environments (containers, CI sandboxes). Never enable it for untrusted targets.
+   */
   private async runCommand(
     command: string,
     cwd: string,

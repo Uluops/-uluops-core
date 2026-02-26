@@ -92,6 +92,12 @@ export interface ExecutionMetrics {
   /** Cache read tokens */
   cacheReadTokens?: number;
 
+  /**
+   * Google Gemini thinking tokens (Gemini 2.5+ with extendedThinking).
+   * Charged separately from outputTokens by Google; already included in totalEffectiveTokens.
+   */
+  thinkingTokens?: number;
+
   /** Total effective tokens (for cost) */
   totalEffectiveTokens: number;
 

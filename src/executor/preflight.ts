@@ -76,10 +76,12 @@ async function checkCommand(check: PreflightCheck): Promise<void> {
     throw new PreflightError('command check requires a command', 'command');
   }
 
-  // Reject commands with backtick substitution or process substitution
-  if (/`|\$\(/.test(check.command)) {
+  // Reject commands with shell metacharacters that could be used for injection:
+  // backtick/process substitution (`cmd`, $(cmd)), chaining (;), pipes (|),
+  // and redirections (>, <) which could exfiltrate data or chain arbitrary commands.
+  if (/`|\$\(|;|&&|\|[^|]|(?<![|])>|</.test(check.command)) {
     throw new PreflightError(
-      `Preflight command contains disallowed shell substitution: ${check.command}`,
+      `Preflight command contains disallowed shell metacharacter: ${check.command}`,
       'command',
       { command: check.command },
     );
