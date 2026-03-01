@@ -176,6 +176,10 @@ export class ValidationClient {
         allGatesPassed: result.decision === 'PASS' || result.decision === 'SHIP',
         averageScore: result.score ?? 0,
       },
+      definitionType: result.type,
+      definitionName: result.name,
+      definitionVersion: result.version !== 'unknown' ? result.version : undefined,
+      definitionHash: result.definitionHash,
     };
   }
 
