@@ -6,7 +6,11 @@ import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
 
 const mockRegistryResolve = vi.fn();
 const mockRegistryList = vi.fn();
-const mockRegistrySdk = { models: { resolveAlias: vi.fn(), get: vi.fn(), list: vi.fn() } };
+const mockExecutionsRecord = vi.fn();
+const mockRegistrySdk = {
+  models: { resolveAlias: vi.fn(), get: vi.fn(), list: vi.fn() },
+  executions: { record: mockExecutionsRecord },
+};
 const mockValidationSubmit = vi.fn();
 const mockValidationGetHistory = vi.fn();
 const mockAgentExecutorExecute = vi.fn();
@@ -722,6 +726,60 @@ describe('UluOpsClient', () => {
 
       const submitCall = mockValidationSubmit.mock.calls[0]![0] as Record<string, unknown>;
       expect(submitCall.project).toBe('my-agent');
+    });
+
+    it('records execution in registry after validation submit', async () => {
+      const client = new UluOpsClient({ apiKey: 'ulr_test-key', trackingEnabled: true });
+      mockRegistryResolve.mockResolvedValue(makeResolvedDef('agent', 'code-validator'));
+      mockAgentExecutorExecute.mockResolvedValue(makeAgentResult());
+
+      await client.runAgent('code-validator', '/tmp/test');
+
+      expect(mockExecutionsRecord).toHaveBeenCalledWith(
+        'agent',
+        'code-validator',
+        '1.0.0',
+        { source: 'core-sdk', runId: 'run-123' },
+      );
+    });
+
+    it('skips execution recording when tracking disabled', async () => {
+      const client = new UluOpsClient({ apiKey: 'ulr_test-key', trackingEnabled: false });
+      mockRegistryResolve.mockResolvedValue(makeResolvedDef('agent'));
+      mockAgentExecutorExecute.mockResolvedValue(makeAgentResult());
+
+      await client.runAgent('code-validator', '/tmp/test');
+
+      expect(mockExecutionsRecord).not.toHaveBeenCalled();
+    });
+
+    it('execution recording failure does not propagate', async () => {
+      const client = new UluOpsClient({ apiKey: 'ulr_test-key', trackingEnabled: true });
+      mockRegistryResolve.mockResolvedValue(makeResolvedDef('agent', 'code-validator'));
+      mockAgentExecutorExecute.mockResolvedValue(makeAgentResult());
+      mockExecutionsRecord.mockRejectedValue(new Error('registry down'));
+
+      const result = await client.runAgent('code-validator', '/tmp/test');
+
+      expect(result).toBeDefined();
+      expect(mockLogger.warn).toHaveBeenCalledWith(
+        expect.stringContaining('Execution recording failed'),
+      );
+    });
+
+    it('skips execution recording for unknown version', async () => {
+      const client = new UluOpsClient({ apiKey: 'ulr_test-key', trackingEnabled: true });
+      const resolved = makeResolvedDef('agent', 'local-agent');
+      resolved.version = 'unknown';
+      mockRegistryResolve.mockResolvedValue(resolved);
+      mockAgentExecutorExecute.mockResolvedValue(makeAgentResult());
+
+      await client.runAgent('local-agent', '/tmp/test');
+
+      expect(mockExecutionsRecord).not.toHaveBeenCalled();
+      expect(mockLogger.debug).toHaveBeenCalledWith(
+        'Skipping execution recording for unversioned local definition',
+      );
     });
   });
 

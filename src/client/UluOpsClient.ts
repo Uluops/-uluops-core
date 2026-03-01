@@ -88,7 +88,7 @@ export class UluOpsClient {
     }
 
     const result = await this.agentExecutor.execute(resolved, { target }, options);
-    await this.trackIfEnabled(result, resolved.name, 'agent', options);
+    await this.trackIfEnabled(result, resolved, 'agent', options);
     return result;
   }
 
@@ -106,7 +106,7 @@ export class UluOpsClient {
     }
 
     const result = await this.commandExecutor.execute(resolved, input);
-    await this.trackIfEnabled(result, resolved.name, 'command');
+    await this.trackIfEnabled(result, resolved, 'command');
     return result;
   }
 
@@ -121,7 +121,7 @@ export class UluOpsClient {
     }
 
     const result = await this.workflowExecutor.execute(resolved, input);
-    await this.trackIfEnabled(result, resolved.name, 'workflow');
+    await this.trackIfEnabled(result, resolved, 'workflow');
     return result;
   }
 
@@ -152,7 +152,7 @@ export class UluOpsClient {
         throw new ConfigurationError(`Unknown definition type: ${resolved.type}`);
     }
 
-    await this.trackIfEnabled(result, resolved.name, resolved.type);
+    await this.trackIfEnabled(result, resolved, resolved.type);
     return result;
   }
 
@@ -336,7 +336,7 @@ export class UluOpsClient {
 
   private async trackIfEnabled(
     result: ExecutionResult | AgentResult,
-    resolvedName: string,
+    resolved: { type: string; name: string; version: string },
     workflowType: string,
     options?: { trackResults?: boolean; project?: string },
   ): Promise<void> {
@@ -359,12 +359,31 @@ export class UluOpsClient {
         metrics: result.metrics,
       };
       const response = await this.validation.submit({
-        project: options?.project ?? this.config.defaultProject ?? resolvedName,
+        project: options?.project ?? this.config.defaultProject ?? resolved.name,
         workflowType,
         result: execResult,
       });
       // Attach dashboard URL to original result for caller convenience
       result.dashboardUrl = response.dashboardUrl;
+
+      // Record execution in registry for definition-level analytics (non-fatal)
+      if (resolved.version !== 'unknown') {
+        try {
+          await this.registry.registrySdk.executions.record(
+            resolved.type as Parameters<typeof this.registry.registrySdk.executions.record>[0],
+            resolved.name,
+            resolved.version,
+            { source: 'core-sdk', runId: response.runId },
+          );
+          this.logger.debug(`Execution recorded for ${resolved.type}/${resolved.name}@${resolved.version}`);
+        } catch (execError) {
+          this.logger.warn(
+            `Execution recording failed (non-fatal): ${execError instanceof Error ? execError.message : String(execError)}`,
+          );
+        }
+      } else {
+        this.logger.debug('Skipping execution recording for unversioned local definition');
+      }
     } catch (error) {
       this.logger.warn(
         `Tracking submission failed (non-fatal): ${error instanceof Error ? error.message : String(error)}`,
