@@ -28,7 +28,7 @@ export type Domain =
  * - `analyst` — Analyzes patterns and trends, produces analytical reports
  * - `generator` — Creates new artifacts (scaffolding, templates, documentation)
  */
-export type AgentType = 'validator' | 'executor' | 'analyst' | 'generator' | 'explorer';
+export type AgentType = 'validator' | 'executor' | 'analyst' | 'generator' | 'explorer' | 'forecaster';
 
 /**
  * Base input for all execution types
