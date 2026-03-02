@@ -53,7 +53,7 @@
     "@ai-sdk/google": "^3.0.31",
     "@ai-sdk/openai": "^3.0.33",
     "@uluops/ops-sdk": "^0.1.6",
-    "@uluops/registry-sdk": "^0.1.2",
+    "@uluops/registry-sdk": "^0.2.0",
     "@uluops/sdk-core": "^0.1.2",
     "ai": "^6.0.0",
     "glob": "^11.0.0",
