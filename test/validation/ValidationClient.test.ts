@@ -31,7 +31,6 @@ const baseConfig: ResolvedConfig = {
   validationUrl: 'https://ops.example.com/api',
   dashboardUrl: 'https://app.example.com',
   trackingEnabled: true,
-  hashVerificationEnabled: true,
   timeout: 30000,
   debug: false,
   defaultThinkingBudget: 10_000,

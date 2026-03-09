@@ -116,7 +116,6 @@ async function main() {
     validationUrl: 'https://api.uluops.ai/api/v1/ops',
     dashboardUrl: 'https://app.uluops.ai',
     trackingEnabled: false,
-    hashVerificationEnabled: false,
     timeout: 30_000,
     debug: false,
     defaultThinkingBudget: 10_000,

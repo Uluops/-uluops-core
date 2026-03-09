@@ -1,22 +1,22 @@
 import * as fs from 'node:fs/promises';
 import * as path from 'node:path';
-import * as crypto from 'node:crypto';
 import * as yaml from 'yaml';
 import { RegistryClient as RegistrySdk } from '@uluops/registry-sdk';
 import type { ResolvedConfig } from '../types/config.js';
 import type { DefinitionType } from '../types/execution.js';
 import type { AgentDefinition } from '../types/agent.js';
 import type { ResolvedDefinition, DefinitionSummary } from '../types/registry.js';
-import { HashVerificationError, ConfigurationError } from '../errors/index.js';
+import { ConfigurationError } from '../errors/index.js';
 import { formatErrorMessage } from '../utils/formatError.js';
 import type { Logger } from '@uluops/sdk-core';
 
 /**
- * Definition resolver with local development fallback and hash verification.
+ * Definition resolver with local development fallback.
  *
  * Delegates remote API calls to @uluops/registry-sdk (which handles retry,
- * rate limiting, error mapping, auth). Local file resolution and hash
- * verification are handled in this class directly.
+ * rate limiting, error mapping, auth). Local file resolution is handled
+ * in this class directly. Hash computation and verification are the
+ * responsibility of the registry API server.
  */
 export class RegistryClient {
   private cache = new Map<string, ResolvedDefinition>();
@@ -155,14 +155,13 @@ export class RegistryClient {
           `Failed to parse YAML at ${candidate.path}: ${parseError instanceof Error ? parseError.message : String(parseError)}`,
         );
       }
-      const hash = this.computeHash(yamlContent);
       this.logger.debug(`Resolved locally: ${name} @ ${candidate.path}`);
 
       return {
         type: candidate.type,
         name,
         version: this.extractVersion(definition, candidate.type),
-        hash,
+        hash: '',
         yaml: yamlContent,
         definition: this.castDefinition(definition),
         runtime: await this.renderLocally(yamlContent, definition, candidate.type),
@@ -224,11 +223,6 @@ export class RegistryClient {
     // Get rendered markdown
     const rendered = await this.sdk.render.get(resolvedType, name, def.version);
 
-    // Verify hash if enabled
-    if (this.config.hashVerificationEnabled && def.yaml && def.hash) {
-      this.verifyHash(def.yaml, def.hash);
-    }
-
     return {
       type: resolvedType,
       name: def.name,
@@ -245,7 +239,7 @@ export class RegistryClient {
   }
 
   // ─────────────────────────────────────────────────────────────────────────────
-  // Private: Hashing
+  // Private: YAML Parsing
   // ─────────────────────────────────────────────────────────────────────────────
 
   private safeParseYaml(yamlContent: string, context: string): Record<string, unknown> {
@@ -254,19 +248,6 @@ export class RegistryClient {
     } catch (error) {
       throw new ConfigurationError(
         `Failed to parse YAML for "${context}": ${formatErrorMessage(error)}`,
-      );
-    }
-  }
-
-  private computeHash(yamlContent: string): string {
-    return 'sha256:' + crypto.createHash('sha256').update(yamlContent, 'utf8').digest('hex');
-  }
-
-  private verifyHash(yamlContent: string, expectedHash: string): void {
-    const actualHash = this.computeHash(yamlContent);
-    if (actualHash !== expectedHash) {
-      throw new HashVerificationError(
-        `Hash mismatch: expected ${expectedHash}, got ${actualHash}`,
       );
     }
   }

@@ -43,7 +43,6 @@ const baseConfig: ResolvedConfig = {
   validationUrl: 'https://ops.example.com/api',
   dashboardUrl: 'https://app.example.com',
   trackingEnabled: true,
-  hashVerificationEnabled: false,
   timeout: 30000,
   debug: false,
   defaultThinkingBudget: 10_000,
@@ -94,7 +93,7 @@ describe('RegistryClient', () => {
       expect(result.type).toBe('agent');
       expect(result.name).toBe('test-validator');
       expect(result.version).toBe('1.0.0');
-      expect(result.hash).toMatch(/^sha256:[0-9a-f]{64}$/);
+      expect(result.hash).toBe('');
       expect(result.yaml).toBe(agentYaml);
       expect(result.domain).toBe('software');
       expect(result.agentType).toBe('validator');
@@ -321,70 +320,6 @@ describe('RegistryClient', () => {
 
       const client = new RegistryClient(baseConfig, noopLogger);
       await expect(client.resolve('ambiguous')).rejects.toThrow('Multiple definitions');
-    });
-  });
-
-  // ─────────────────────────────────────────────────────────────────────────────
-  // Hash Verification
-  // ─────────────────────────────────────────────────────────────────────────────
-
-  describe('hash verification', () => {
-    it('verifies hash when enabled and hash matches', async () => {
-      const mocks = getMocks();
-      const yamlContent = yaml.stringify({ agent: { interface: { name: 'hashed' } } });
-      // Compute the expected hash the same way the client does
-      const normalized = yaml.stringify(yaml.parse(yamlContent), { sortMapEntries: true });
-      const crypto = await import('node:crypto');
-      const expectedHash = 'sha256:' + crypto.createHash('sha256').update(normalized).digest('hex');
-
-      mocks.definitions.get.mockResolvedValueOnce({
-        name: 'hashed',
-        type: 'agent',
-        version: '1.0.0',
-        hash: expectedHash,
-        yaml: yamlContent,
-        domain: 'general',
-      });
-      mocks.render.get.mockResolvedValueOnce({ markdown: 'prompt' });
-
-      const client = new RegistryClient({ ...baseConfig, hashVerificationEnabled: true }, noopLogger);
-      // Should not throw
-      const result = await client.resolve('hashed', undefined, 'agent');
-      expect(result.hash).toBe(expectedHash);
-    });
-
-    it('throws HashVerificationError when hash mismatch', async () => {
-      const mocks = getMocks();
-      mocks.definitions.get.mockResolvedValueOnce({
-        name: 'tampered',
-        type: 'agent',
-        version: '1.0.0',
-        hash: 'sha256:0000000000000000000000000000000000000000000000000000000000000000',
-        yaml: yaml.stringify({ agent: { tampered: true } }),
-        domain: 'general',
-      });
-      mocks.render.get.mockResolvedValueOnce({ markdown: 'prompt' });
-
-      const client = new RegistryClient({ ...baseConfig, hashVerificationEnabled: true }, noopLogger);
-      await expect(client.resolve('tampered', undefined, 'agent')).rejects.toThrow('Hash mismatch');
-    });
-
-    it('skips hash verification when disabled', async () => {
-      const mocks = getMocks();
-      mocks.definitions.get.mockResolvedValueOnce({
-        name: 'no-check',
-        type: 'agent',
-        version: '1.0.0',
-        hash: 'sha256:wrong',
-        yaml: yaml.stringify({ agent: {} }),
-        domain: 'general',
-      });
-      mocks.render.get.mockResolvedValueOnce({ markdown: 'prompt' });
-
-      const client = new RegistryClient({ ...baseConfig, hashVerificationEnabled: false }, noopLogger);
-      // Should not throw despite wrong hash
-      const result = await client.resolve('no-check', undefined, 'agent');
-      expect(result.name).toBe('no-check');
     });
   });
 

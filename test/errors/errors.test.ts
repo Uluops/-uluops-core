@@ -3,7 +3,6 @@ import {
   UluOpsError,
   ExecutionError,
   PreflightError,
-  HashVerificationError,
   ConfigurationError,
   ModelNotFoundError,
   CapabilityError,
@@ -32,7 +31,6 @@ describe('Error hierarchy', () => {
     const classes = [
       new ExecutionError('e'),
       new PreflightError('p', 'check'),
-      new HashVerificationError('h'),
       new ConfigurationError('c'),
       new ModelNotFoundError('m'),
       new CapabilityError('cap'),
@@ -51,7 +49,6 @@ describe('Error hierarchy', () => {
   it('each subclass has its own .name', () => {
     expect(new ExecutionError('e').name).toBe('ExecutionError');
     expect(new PreflightError('p', 'c').name).toBe('PreflightError');
-    expect(new HashVerificationError('h').name).toBe('HashVerificationError');
     expect(new ConfigurationError('c').name).toBe('ConfigurationError');
     expect(new ModelNotFoundError('m').name).toBe('ModelNotFoundError');
     expect(new CapabilityError('cap').name).toBe('CapabilityError');

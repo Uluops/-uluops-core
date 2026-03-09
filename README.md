@@ -346,7 +346,6 @@ const client = new UluOpsClient({
 
   // Behavior
   trackingEnabled: true,              // Auto-submit results to validation service
-  hashVerificationEnabled: true,      // Verify definition integrity via SHA-256
   timeout: 300000,                    // Request timeout in ms
   defaultProject: 'my-project',       // Default project for result submission
   debug: false,                       // Detailed execution logging (or ULUOPS_DEBUG)
@@ -438,7 +437,6 @@ The SDK provides a structured error hierarchy:
 | `WorkflowError` | Workflow phase gate failures |
 | `PipelineError` | Pipeline stage failures |
 | `ParseError` | Output extraction failures |
-| `HashVerificationError` | Definition integrity failures |
 
 ```typescript
 import { ConfigurationError, ModelNotFoundError, ExecutionError } from '@uluops/core';

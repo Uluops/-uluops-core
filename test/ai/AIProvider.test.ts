@@ -64,7 +64,7 @@ const mockConfig: ResolvedConfig = {
   validationUrl: 'https://validation.example.com',
   dashboardUrl: 'https://app.example.com',
   trackingEnabled: true,
-  hashVerificationEnabled: true,
+
   timeout: 300_000,
   debug: false,
   defaultThinkingBudget: 10_000,

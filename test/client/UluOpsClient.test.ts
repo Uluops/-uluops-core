@@ -349,13 +349,6 @@ describe('UluOpsClient', () => {
       expect(config.timeout).toBe(300_000);
     });
 
-    it('defaults hashVerificationEnabled to true', () => {
-      new UluOpsClient({ apiKey: 'ulr_test-key' });
-
-      const config = constructorArgs(RegistryClient as unknown as ReturnType<typeof vi.fn>)[0] as Record<string, unknown>;
-      expect(config.hashVerificationEnabled).toBe(true);
-    });
-
     it('defaults defaultThinkingBudget to 10000', () => {
       new UluOpsClient({ apiKey: 'ulr_test-key' });
 

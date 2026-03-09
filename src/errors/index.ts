@@ -26,14 +26,6 @@ export class PreflightError extends UluOpsError {
   }
 }
 
-/** Thrown when a definition's SHA-256 hash does not match the expected value. */
-export class HashVerificationError extends UluOpsError {
-  constructor(message: string) {
-    super(message);
-    this.name = 'HashVerificationError';
-  }
-}
-
 /** Thrown when the SDK is misconfigured (missing API key, invalid provider, etc.). */
 export class ConfigurationError extends UluOpsError {
   constructor(message: string) {

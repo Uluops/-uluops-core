@@ -283,7 +283,6 @@ export class UluOpsClient {
       dashboardUrl: config.dashboardUrl ?? process.env['ULUOPS_DASHBOARD_URL'] ?? 'https://app.uluops.ai',
       localDefinitions: config.localDefinitions ?? process.env['ULUOPS_LOCAL_DEFINITIONS'],
       trackingEnabled: config.trackingEnabled ?? (process.env['ULUOPS_TRACKING_ENABLED'] !== 'false'),
-      hashVerificationEnabled: config.hashVerificationEnabled ?? true,
       timeout: config.timeout ?? DEFAULT_TIMEOUT_MS,
       defaultProject: config.defaultProject ?? process.env['ULUOPS_PROJECT'],
       defaultThinkingBudget: config.defaultThinkingBudget ?? 10_000,

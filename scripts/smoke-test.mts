@@ -58,7 +58,7 @@ async function testLocalResolution() {
     dashboardUrl: 'https://app.uluops.ai',
     localDefinitions: DEFINITIONS_DIR,
     trackingEnabled: false,
-    hashVerificationEnabled: false,
+
     timeout: 30000,
   };
 
@@ -166,7 +166,7 @@ async function testAIConnectivity() {
     validationUrl: 'https://ops.uluops.ai/api',
     dashboardUrl: 'https://app.uluops.ai',
     trackingEnabled: false,
-    hashVerificationEnabled: false,
+
     timeout: 30000,
   };
 
@@ -223,7 +223,7 @@ async function testFullExecution() {
     dashboardUrl: 'https://app.uluops.ai',
     localDefinitions: DEFINITIONS_DIR,
     trackingEnabled: false,
-    hashVerificationEnabled: false,
+
     timeout: 120000,
   };
 

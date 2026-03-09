@@ -137,7 +137,6 @@ export {
   UluOpsError,
   ExecutionError,
   PreflightError,
-  HashVerificationError,
   ConfigurationError,
   ModelNotFoundError,
   CapabilityError,

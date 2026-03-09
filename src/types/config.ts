@@ -102,12 +102,6 @@ export interface UluOpsConfig {
    */
   trackingEnabled?: boolean;
 
-  /**
-   * Enable hash verification for definitions
-   * @default true
-   */
-  hashVerificationEnabled?: boolean;
-
   /** Request timeout in ms (default: 300000) */
   timeout?: number;
 
@@ -148,7 +142,6 @@ export interface ResolvedConfig {
   dashboardUrl: string;
   localDefinitions?: string;
   trackingEnabled: boolean;
-  hashVerificationEnabled: boolean;
   timeout: number;
   defaultProject?: string;
   defaultThinkingBudget: number;
