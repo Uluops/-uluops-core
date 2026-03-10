@@ -197,10 +197,12 @@ export class AIProvider {
           stepCount++;
           const toolNames = step.toolCalls?.map(tc => tc.toolName) ?? [];
           const usage = step.usage;
+          const textLen = step.text?.length ?? 0;
           this.logger.info(
             `Step ${stepCount}: ${step.finishReason}` +
             (toolNames.length > 0 ? ` | tools: [${toolNames.join(', ')}]` : '') +
-            ` | usage: ${usage.inputTokens ?? 0}in/${usage.outputTokens ?? 0}out`,
+            ` | usage: ${usage.inputTokens ?? 0}in/${usage.outputTokens ?? 0}out` +
+            (textLen > 0 ? ` | text: ${textLen} chars` : ''),
           );
 
           // Update budget tracker for get_token_budget tool
