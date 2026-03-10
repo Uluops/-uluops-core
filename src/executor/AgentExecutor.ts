@@ -87,13 +87,26 @@ export class AgentExecutor {
       budgetTracker,
     });
 
+    // 5b. Log raw LLM output for cross-model diagnosis
+    const rawText = result.text ?? '';
+    this.logger.debug(`Raw output: ${rawText.length} chars, finishReason=${result.finishReason}`);
+    if (rawText.length > 0 && rawText.length <= 5000) {
+      this.logger.debug(`Raw output text:\n${rawText}`);
+    } else if (rawText.length > 5000) {
+      this.logger.debug(`Raw output (last 2000 chars):\n${rawText.slice(-2000)}`);
+    } else {
+      this.logger.warn('Empty output — model likely hit maxSteps while still calling tools');
+    }
+
     // 6. Parse structured output with metadata
     const extraction = this.outputExtractor.extractWithMetadata(result.text, agentType);
     const parsed = extraction.output;
     this.logger.info(`Output extraction: method=${extraction.method}, confidence=${extraction.confidence}`);
+    this.logger.debug(`Parsed output: decision=${parsed.decision}, score=${parsed.score}, hasRawJson=${!!parsed.rawJson}`);
     if (parsed.rawJson) {
       const keys = Object.keys(parsed.rawJson as Record<string, unknown>);
       this.logger.debug(`Raw JSON keys: [${keys.join(', ')}]`);
+      this.logger.debug(`Raw JSON sample: ${JSON.stringify(parsed.rawJson).slice(0, 1000)}`);
     }
     if (extraction.warnings.length > 0) {
       this.logger.warn(`Extraction warnings: ${extraction.warnings.join('; ')}`);

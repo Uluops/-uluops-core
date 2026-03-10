@@ -387,6 +387,9 @@ export class UluOpsClient {
       this.logger.warn(
         `Tracking submission failed (non-fatal): ${error instanceof Error ? error.message : String(error)}`,
       );
+      if (error instanceof Error && 'statusCode' in error) {
+        this.logger.debug(`Tracking error: statusCode=${(error as any).statusCode}`);
+      }
     }
   }
 

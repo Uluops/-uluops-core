@@ -138,7 +138,7 @@ export class ValidationClient {
       project: submission.project,
       workflowType: submission.workflowType,
       idempotencyKey: submission.idempotencyKey,
-      validators: [{
+      agents: [{
         name: result.name,
         score: result.score ?? 0,
         maxScore: 100,
@@ -154,6 +154,7 @@ export class ValidationClient {
         durationMs: result.metrics.durationMs,
       }],
       recommendations: result.recommendations.map(r => ({
+        agent: r.validator ?? 'unknown',
         validator: r.validator ?? 'unknown',
         title: r.title,
         priority: r.priority,
@@ -179,7 +180,7 @@ export class ValidationClient {
       definitionType: result.type,
       definitionName: result.name,
       definitionVersion: result.version !== 'unknown' ? result.version : undefined,
-      definitionHash: result.definitionHash,
+      definitionHash: result.definitionHash?.replace(/^sha256:/, ''),
     };
   }
 

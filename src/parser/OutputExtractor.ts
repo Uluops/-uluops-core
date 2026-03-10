@@ -19,8 +19,16 @@ export class OutputExtractor {
   private static readonly INLINE_JSON_PATTERN = /\{[\s\S]*?"decision"[\s\S]*?\}/;
   private static readonly STRUCTURED_PATTERNS = {
     decision: /(?:decision|status|result)\s*[:=]\s*["']?(\w+)["']?/i,
+    // Section-header style: "DECISION" on its own line followed by separator, then decision value
+    sectionDecision: /^DECISION\s*\n[━═─\-]+\n+[✅❌⚠️🔴🟡]*\s*(PASS|FAIL|WARN|WARNING|ERROR|SHIP|REJECT|SKIP)\b/im,
+    // Emoji-prefixed: "✅ PASS" anywhere in text
+    emojiDecision: /[✅❌⚠️🔴🟡🟢]\s*(PASS|FAIL|WARN|WARNING|ERROR|SHIP|REJECT)\b/i,
     score: /(?:score|points)\s*[:=]\s*(\d+(?:\.\d+)?)/i,
+    // Score with denominator: "95/100"
+    scoreFraction: /(?:score|points)\s*[:=]?\s*(\d+)\s*\/\s*(\d+)/i,
     maxScore: /(?:max(?:imum)?[\s_]?score|out[\s_]?of|total)\s*[:=]\s*(\d+)/i,
+    // Issue line: "- description: file/path.ts:123 [CODE]"
+    issueLine: /^[\s]*[-•🟡🔴🟠🔵]\s+(.+?):\s+([\w/.-]+\.(?:ts|js|tsx|jsx|py|go|rs|java|rb|css|html|json|yaml|yml|toml|md)):(\d+)\s*(?:\[([^\]]+)\])?/gm,
   };
 
   /**
@@ -177,8 +185,12 @@ export class OutputExtractor {
   ): ParsedOutput | null {
     const patterns = OutputExtractor.STRUCTURED_PATTERNS;
 
-    const decisionMatch = content.match(patterns.decision);
-    const scoreMatch = content.match(patterns.score);
+    // Try multiple decision patterns in priority order
+    const decisionMatch = content.match(patterns.decision)
+      ?? content.match(patterns.sectionDecision)
+      ?? content.match(patterns.emojiDecision);
+    const scoreMatch = content.match(patterns.scoreFraction)
+      ?? content.match(patterns.score);
 
     if (!decisionMatch && !scoreMatch) {
       return null;
@@ -195,13 +207,74 @@ export class OutputExtractor {
     }
 
     if (agentType === 'validator') {
-      const maxScoreMatch = content.match(patterns.maxScore);
-      if (maxScoreMatch?.[1]) {
-        output.maxScore = parseInt(maxScoreMatch[1], 10);
+      // Extract maxScore from fraction pattern (95/100) or explicit pattern
+      if (scoreMatch?.[2]) {
+        output.maxScore = parseInt(scoreMatch[2], 10);
+      } else {
+        const maxScoreMatch = content.match(patterns.maxScore);
+        if (maxScoreMatch?.[1]) {
+          output.maxScore = parseInt(maxScoreMatch[1], 10);
+        }
+      }
+
+      // Extract issues from structured text (warning/suggestion lines with file:line references)
+      const issues = this.extractIssuesFromText(content);
+      if (issues.length > 0) {
+        output.categories = [{
+          name: 'Extracted Issues',
+          score: output.score ?? 0,
+          maxPoints: output.maxScore ?? 100,
+          findings: [{
+            criterion: 'Text-extracted findings',
+            pointsEarned: 0,
+            pointsPossible: 0,
+            issues,
+          }],
+        }];
       }
     }
 
     return output;
+  }
+
+  private extractIssuesFromText(content: string): Issue[] {
+    const issues: Issue[] = [];
+    const pattern = OutputExtractor.STRUCTURED_PATTERNS.issueLine;
+    // Reset lastIndex for global regex
+    pattern.lastIndex = 0;
+
+    let match;
+    while ((match = pattern.exec(content)) !== null) {
+      const [, title, filePath, lineStr, failureCode] = match;
+      if (title && filePath) {
+        issues.push({
+          title: title.trim(),
+          priority: this.inferPriorityFromContext(content, match.index),
+          severity: this.inferSeverityFromContext(content, match.index),
+          failureCode: failureCode?.trim(),
+          filePath,
+          lineNumber: lineStr ? parseInt(lineStr, 10) : undefined,
+          description: title.trim(),
+        });
+      }
+    }
+    return issues;
+  }
+
+  private inferPriorityFromContext(content: string, matchIndex: number): 'critical' | 'suggested' | 'backlog' {
+    // Look backwards from match for section headers
+    const preceding = content.slice(Math.max(0, matchIndex - 200), matchIndex).toLowerCase();
+    if (preceding.includes('critical') || preceding.includes('blocker') || preceding.includes('🔴')) return 'critical';
+    if (preceding.includes('suggestion') || preceding.includes('consider') || preceding.includes('🔵')) return 'backlog';
+    return 'suggested';
+  }
+
+  private inferSeverityFromContext(content: string, matchIndex: number): 'critical' | 'high' | 'medium' | 'low' | 'info' {
+    const preceding = content.slice(Math.max(0, matchIndex - 200), matchIndex).toLowerCase();
+    if (preceding.includes('critical') || preceding.includes('🔴')) return 'critical';
+    if (preceding.includes('warning') || preceding.includes('🟡')) return 'medium';
+    if (preceding.includes('suggestion') || preceding.includes('🔵')) return 'low';
+    return 'medium';
   }
 
   private normalizeOutput(raw: unknown, agentType: AgentType): ParsedOutput {
