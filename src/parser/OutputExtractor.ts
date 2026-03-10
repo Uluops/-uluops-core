@@ -756,6 +756,20 @@ export class OutputExtractor {
                 ? item['line_start']
                 : undefined;
 
+        // Handle line as string: "24-50" or "24"
+        if (lineNumber === undefined && typeof item['line'] === 'string') {
+          const lineMatch = item['line'].match(/^(\d+)/);
+          if (lineMatch) lineNumber = parseInt(lineMatch[1]!, 10);
+        }
+        if (lineNumber === undefined && typeof item['line_number'] === 'string') {
+          const lineMatch = item['line_number'].match(/^(\d+)/);
+          if (lineMatch) lineNumber = parseInt(lineMatch[1]!, 10);
+        }
+        if (lineNumber === undefined && typeof item['lineNumber'] === 'string') {
+          const lineMatch = (item['lineNumber'] as string).match(/^(\d+)/);
+          if (lineMatch) lineNumber = parseInt(lineMatch[1]!, 10);
+        }
+
         // Handle combined "file_line" field: "src/foo.ts:42-50" or "src/foo.ts:42"
         if (!filePath && typeof item['file_line'] === 'string') {
           const flMatch = item['file_line'].match(/^([\w/.@-]+\.\w+):(\d+)/);
@@ -776,8 +790,19 @@ export class OutputExtractor {
           }
         }
 
+        // Resolve title: prefer explicit title/message, fall back to description/name
+        const hasExplicitTitle = item['title'] !== undefined || item['message'] !== undefined;
+        const title = String(
+          item['title'] ?? item['message'] ?? item['name']
+          ?? item['description'] ?? 'Untitled Issue',
+        );
+        // For description: if title consumed 'description', use explanation/suggestion/recommendation instead
+        const description = hasExplicitTitle
+          ? String(item['description'] ?? item['explanation'] ?? item['suggestion'] ?? item['recommendation'] ?? '')
+          : String(item['explanation'] ?? item['suggestion'] ?? item['recommendation'] ?? item['description'] ?? '');
+
         return {
-          title: String(item['title'] ?? item['message'] ?? 'Untitled Issue'),
+          title,
           priority: this.normalizePriority(item['priority'] ?? item['type']),
           severity: this.normalizeSeverity(item['severity']),
           failureCode: (item['failureCode'] as string | undefined)
@@ -785,7 +810,7 @@ export class OutputExtractor {
             ?? (item['code'] as string | undefined),
           filePath,
           lineNumber,
-          description: String(item['description'] ?? item['explanation'] ?? item['suggestion'] ?? ''),
+          description,
         };
       });
   }

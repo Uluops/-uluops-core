@@ -689,6 +689,45 @@ After further analysis:
       expect(allIssues[0]!.failureCode).toBe('PRA-FRA/M');
     });
 
+    it('should use description as title when no title/message key exists', () => {
+      const content = JSON.stringify({
+        score: 92,
+        decision: 'FAIL',
+        issues: [
+          {
+            description: 'sanitizePathAsFolderName fails for Windows paths',
+            file: 'src/utils.ts',
+            line: '24-50',
+            failure_code: 'SEM-COM/H',
+            severity: 'H',
+            explanation: 'Backslashes and drive letters are not normalized',
+          },
+        ],
+      });
+      const result = extractor.extract(content, 'validator');
+      const issues = result.categories![0]!.findings[0]!.issues;
+      expect(issues).toHaveLength(1);
+      expect(issues[0]!.title).toBe('sanitizePathAsFolderName fails for Windows paths');
+      expect(issues[0]!.description).toBe('Backslashes and drive letters are not normalized');
+      expect(issues[0]!.filePath).toBe('src/utils.ts');
+      expect(issues[0]!.lineNumber).toBe(24);
+    });
+
+    it('should parse line number from string range like "24-50"', () => {
+      const content = JSON.stringify({
+        score: 85,
+        decision: 'FAIL',
+        issues: [
+          { title: 'Long function', file: 'src/main.ts', line: '100-200', severity: 'medium' },
+          { title: 'Missing check', file: 'src/auth.ts', line: '42', severity: 'high' },
+        ],
+      });
+      const result = extractor.extract(content, 'validator');
+      const issues = result.categories![0]!.findings[0]!.issues;
+      expect(issues[0]!.lineNumber).toBe(100);
+      expect(issues[1]!.lineNumber).toBe(42);
+    });
+
     it('should extract issues from wrapper with recommendations key', () => {
       const content = JSON.stringify({
         validationReport: {
