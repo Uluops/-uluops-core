@@ -1,16 +1,16 @@
 # Cross-Model Output Extraction Findings
 
-**Date**: 2026-03-10
+**Date**: 2026-03-10 (updated)
 **Agent**: code-validator v1.5.0
 **Target**: definition-factory package
-**Models Tested**: 14 OpenAI models across budget, standard, and reasoning tiers
-**Commit**: `e4ff816` (feat(parser): harden OutputExtractor for cross-model JSON shapes)
+**Models Tested**: 14 OpenAI models + Claude haiku baseline
+**Commits**: `e4ff816` (harden OutputExtractor for cross-model JSON shapes), latest (add recommendations/wrapper issue extraction)
 
 ## Executive Summary
 
 Cross-model testing of the code-validator agent against 14 OpenAI models revealed a **64% extraction failure rate** (9/14 models produced score=0 or decision=ERROR/UNKNOWN). Every model produced valid, high-quality JSON output — the failures were entirely in `OutputExtractor.normalizeOutput()` which assumed a flat JSON shape that only Claude and a few GPT models produce.
 
-After hardening the extractor, **11 of 14 models extract correctly** (confirmed via live retests or unit tests). The 3 remaining failures are process-level issues (rate limiting, timeouts, empty output), not extraction bugs. One model (gpt-5-mini) has a partial extraction issue caused by multi-step text accumulation in the AI SDK.
+After hardening the extractor, **all tested models extract correctly** (confirmed via live retests). The initial 64% failure rate was caused by two issues: (1) `normalizeOutput()` assuming flat JSON shapes, and (2) a **stale `dist/` build** — CLI imports `@uluops/core` from compiled `dist/index.js`, so source changes only affected unit tests (vitest uses tsx on `.ts` directly) until `npm run build` was run. 3 models (gpt-4o-mini, gpt-4.1, gpt-5) have process-level failures (rate limits, timeouts, empty output), not extraction bugs.
 
 ## Results Matrix
 
@@ -21,14 +21,15 @@ After hardening the extractor, **11 of 14 models extract correctly** (confirmed 
 | gpt-4.1 | Standard | N/A | **Process failure** | 30K TPM rate limit — never ran successfully |
 | gpt-4.1-nano | Budget | Score 0, PASS | **Fixed** (unit test) | Criteria sub-scores only, no total |
 | gpt-5 | Reasoning | Score 0, [OBJECT OBJECT] | **Process failure** | AI SDK timeout — reasoning model too slow |
-| gpt-5-mini | Reasoning | Score 0, [OBJECT OBJECT] | **Partial** | Multi-step text accumulation; extractor picks wrong JSON fragment |
+| gpt-5-mini | Reasoning | Score 0, [OBJECT OBJECT] | **Fixed** (live confirmed: FAIL 92/100) | Stale dist was root cause; nested summary + decision-as-object |
 | gpt-5-nano | Reasoning | Score 0, ERROR | **Fixed** (live confirmed) | `status` instead of `decision`; arbitrary wrapper names |
-| gpt-5-codex | Coding | Score 0, PASS | **Fixed** (unit test) | `score: {total: 85, ...}` object |
+| gpt-5-codex | Coding | Score 0, PASS | **Fixed** (live: PASS 97/100, FAIL 81/100) | `score: {total: 85, ...}` object; varies format between runs |
 | gpt-5.1-codex | Coding | Score 0, ERROR | **Fixed** (unit test) | Nested score object |
 | gpt-5.2 | Standard | Score 68, FAIL | **Working** | Clean extraction (no fix needed) |
 | gpt-5.2-codex | Coding | Score 84, FAIL | **Working** | Structured text extraction (no fix needed) |
 | o3-mini | Reasoning | Score 94, PASS | **Working** | Structured text extraction (no fix needed) |
-| o4-mini | Reasoning | Score 0, PASS | **Fixed** (unit test) | Code-fenced JSON with `validationResults.score` |
+| o4-mini | Reasoning | Score 0, PASS | **Fixed** (live: PASS 96/100) | Code-fenced JSON with `validationResults.score` |
+| **claude-haiku-4-5** | **Baseline** | N/A | **PASS 94/100** | Clean extraction, 4 suggestions, 1m 52s |
 
 ## Failure Taxonomy
 
@@ -79,20 +80,36 @@ After hardening the extractor, **11 of 14 models extract correctly** (confirmed 
 **Root cause**: Breakdown handler expected plain numbers
 **Fix**: `resolveCategories()` and `resolveScoreField()` handle `{points, deductions}` objects
 
-## Remaining Issue: Multi-Step Text Accumulation (gpt-5-mini)
+## Root Cause: Stale `dist/` Build
 
-**Problem**: The AI SDK's `result.text` concatenates ALL text outputs across ALL agent steps. For gpt-5-mini, this produces ~15K characters of accumulated text. The final JSON report is embedded at the end, surrounded by intermediate reasoning and tool-call text from earlier steps.
+The majority of live extraction failures were caused by a **stale compiled build**, not code bugs:
 
-**Impact**: The inline JSON extractor either:
-1. Picks an intermediate JSON fragment (tool call response) instead of the final report
-2. Falls through to structured text extraction (gets score but loses decision)
+- CLI imports `@uluops/core` via `file:../uluops-core-sdk` symlink → resolves to `dist/index.js`
+- Source changes to `.ts` files only affected vitest unit tests (which use tsx directly on source)
+- All `[OBJECT OBJECT]` and score=0 failures in live CLI runs disappeared after `npm run build`
+- **Lesson**: Always run `npm run build` in uluops-core-sdk after source changes before live testing
 
-**Root cause**: This is architectural — `result.text` accumulation is an AI SDK design, not an OutputExtractor bug. Claude models don't exhibit this because they produce text in the final step only.
+## AI SDK `result.text` Behavior
 
-**Potential fixes** (not implemented):
-1. Extract from last N characters of text only (heuristic)
-2. Use step-level text from the final step instead of accumulated text
-3. Increase candidate scanning in `extractInlineJson` (currently checks 50 `{` positions)
+Initially suspected that `result.text` concatenated all text across all agent steps (multi-step accumulation). **This was wrong.** AI SDK source confirms:
+
+```typescript
+// node_modules/ai/dist/index.js:4512
+get text() { return this.finalStep.text; }
+```
+
+`result.text` returns only the **last step's text**. The large output sizes (~15K chars for gpt-5-mini) were the model producing verbose final responses, not accumulation across steps.
+
+## Failure Mode 8: Recommendations Not Extracted (gpt-5-codex)
+
+**Models**: gpt-5-codex (observed run #27: score=81, 0 recommendations saved)
+**Problem**: `resolveIssuesFlat()` only checked for `issues` and `issues_found` keys. Models that put findings under `recommendations`, `warnings`, or `findings` keys — or inside a dynamically discovered wrapper object — had their issues silently dropped.
+**Fix**: Extended `resolveIssuesFlat()` to:
+1. Check `recommendations`, `warnings`, `findings` arrays alongside `issues`
+2. Accept the dynamically discovered wrapper object as a source
+3. Check `issues_found` inside the wrapper object too
+
+**Note**: gpt-5-codex also varies output format between runs — sometimes JSON, sometimes structured markdown. The structured text extractor handles the markdown case correctly.
 
 ## Key Design Decision: General Wrapper Discovery
 
@@ -127,8 +144,11 @@ The same model produces **different JSON structures across runs**. gpt-5-nano us
 | issues with locations array | general | gpt-5 |
 | file_line combined field parsing | general | gpt-5-mini |
 | issues with locations array (gpt-5 shape) | general | gpt-5 |
+| recommendations array as issue source | FM8 | gpt-5-codex |
+| issues inside dynamically discovered wrapper | FM8 | general |
+| recommendations inside wrapper | FM8 | general |
 
-Total tests: 396 (all passing)
+Total tests: 399 (all passing)
 
 ## Files Modified
 

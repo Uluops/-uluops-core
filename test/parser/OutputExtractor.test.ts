@@ -607,6 +607,85 @@ After further analysis:
       expect(issues[0]!.filePath).toBe('src/pipelines/cdl.ts');
       expect(issues[0]!.lineNumber).toBe(36);
     });
+
+    it('should extract issues from recommendations array (gpt-5-codex shape)', () => {
+      const content = JSON.stringify({
+        score: 81,
+        decision: 'FAIL',
+        recommendations: [
+          {
+            title: 'Large function in transformer',
+            severity: 'medium',
+            file_path: 'src/transformer/builder.ts',
+            line_number: 97,
+            description: 'Function exceeds 50 lines',
+          },
+          {
+            title: 'Missing error handling',
+            severity: 'high',
+            file_path: 'src/parser/main.ts',
+            line_number: 42,
+            description: 'No try/catch around async call',
+          },
+        ],
+      });
+      const result = extractor.extract(content, 'validator');
+      expect(result.score).toBe(81);
+      expect(result.decision).toBe('FAIL');
+      const issues = result.categories![0]!.findings[0]!.issues;
+      expect(issues).toHaveLength(2);
+      expect(issues[0]!.filePath).toBe('src/transformer/builder.ts');
+      expect(issues[1]!.filePath).toBe('src/parser/main.ts');
+      expect(issues[1]!.lineNumber).toBe(42);
+    });
+
+    it('should extract issues from inside dynamically discovered wrapper', () => {
+      const content = JSON.stringify({
+        codeValidation: {
+          score: 88,
+          decision: 'PASS',
+          issues: [
+            {
+              title: 'Unused import',
+              severity: 'low',
+              file_path: 'src/utils.ts',
+              line_number: 3,
+              description: 'Import is never used',
+            },
+          ],
+        },
+      });
+      const result = extractor.extract(content, 'validator');
+      expect(result.score).toBe(88);
+      expect(result.decision).toBe('PASS');
+      const issues = result.categories![0]!.findings[0]!.issues;
+      expect(issues).toHaveLength(1);
+      expect(issues[0]!.filePath).toBe('src/utils.ts');
+    });
+
+    it('should extract issues from wrapper with recommendations key', () => {
+      const content = JSON.stringify({
+        validationReport: {
+          score: 75,
+          decision: 'FAIL',
+          recommendations: [
+            {
+              title: 'Add type annotations',
+              severity: 'medium',
+              file_path: 'src/api.ts',
+              line_number: 15,
+              description: 'Missing return type',
+            },
+          ],
+        },
+      });
+      const result = extractor.extract(content, 'validator');
+      expect(result.score).toBe(75);
+      expect(result.decision).toBe('FAIL');
+      const issues = result.categories![0]!.findings[0]!.issues;
+      expect(issues).toHaveLength(1);
+      expect(issues[0]!.title).toBe('Add type annotations');
+    });
   });
 });
 

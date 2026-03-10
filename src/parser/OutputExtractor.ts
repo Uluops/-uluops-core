@@ -389,7 +389,7 @@ export class OutputExtractor {
       }
 
       // Resolve issues from flat locations and attach to categories
-      const flatIssues = this.resolveIssuesFlat(obj, result, report);
+      const flatIssues = this.resolveIssuesFlat(obj, result, report, validationSummary);
       if (flatIssues.length > 0) {
         if (!output.categories || output.categories.length === 0) {
           output.categories = [{
@@ -628,37 +628,42 @@ export class OutputExtractor {
     obj: Record<string, unknown>,
     result?: Record<string, unknown>,
     report?: Record<string, unknown>,
+    wrapper?: Record<string, unknown>,
   ): Issue[] {
     const issues: Issue[] = [];
 
-    // Direct issues array
-    for (const source of [obj, result, report]) {
+    // Check multiple issue-like keys across all source objects
+    const issueKeys = ['issues', 'recommendations', 'warnings', 'findings'];
+    for (const source of [obj, result, report, wrapper]) {
       if (!source) continue;
-      if (Array.isArray(source['issues'])) {
-        issues.push(...this.parseIssues(source['issues']));
-        return issues;
-      }
-      // Nested: { issues: { items: [...] } }
-      const issuesObj = this.asRecord(source['issues']);
-      if (issuesObj) {
-        if (Array.isArray(issuesObj['items'])) {
-          issues.push(...this.parseIssues(issuesObj['items']));
-          return issues;
+      for (const key of issueKeys) {
+        if (Array.isArray(source[key])) {
+          issues.push(...this.parseIssues(source[key] as unknown[]));
+          if (issues.length > 0) return issues;
+        }
+        // Nested: { issues: { items: [...] } }
+        const nested = this.asRecord(source[key]);
+        if (nested && Array.isArray(nested['items'])) {
+          issues.push(...this.parseIssues(nested['items']));
+          if (issues.length > 0) return issues;
         }
       }
     }
 
     // issues_found with warnings/suggestions (gpt-5-mini shape)
-    const issuesFound = this.asRecord(obj['issues_found']);
-    if (issuesFound) {
-      if (Array.isArray(issuesFound['critical'])) {
-        issues.push(...this.parseIssues(issuesFound['critical']));
-      }
-      if (Array.isArray(issuesFound['warnings'])) {
-        issues.push(...this.parseIssues(issuesFound['warnings']));
-      }
-      if (Array.isArray(issuesFound['suggestions'])) {
-        issues.push(...this.parseIssues(issuesFound['suggestions']));
+    for (const source of [obj, wrapper]) {
+      if (!source) continue;
+      const issuesFound = this.asRecord(source['issues_found']);
+      if (issuesFound) {
+        if (Array.isArray(issuesFound['critical'])) {
+          issues.push(...this.parseIssues(issuesFound['critical']));
+        }
+        if (Array.isArray(issuesFound['warnings'])) {
+          issues.push(...this.parseIssues(issuesFound['warnings']));
+        }
+        if (Array.isArray(issuesFound['suggestions'])) {
+          issues.push(...this.parseIssues(issuesFound['suggestions']));
+        }
       }
     }
 
