@@ -658,11 +658,14 @@ export class OutputExtractor {
           issues.push(...this.parseIssues(source[key] as unknown[]));
           if (issues.length > 0) return issues;
         }
-        // Nested: { issues: { items: [...] } }
+        // Nested: { issues: { items: [...] } } or { issues: { details: [...] } }
         const nested = this.asRecord(source[key]);
-        if (nested && Array.isArray(nested['items'])) {
-          issues.push(...this.parseIssues(nested['items']));
-          if (issues.length > 0) return issues;
+        if (nested) {
+          const nestedArray = nested['items'] ?? nested['details'] ?? nested['list'];
+          if (Array.isArray(nestedArray)) {
+            issues.push(...this.parseIssues(nestedArray));
+            if (issues.length > 0) return issues;
+          }
         }
       }
     }
@@ -773,14 +776,16 @@ export class OutputExtractor {
           if (lineMatch) lineNumber = parseInt(lineMatch[1]!, 10);
         }
 
-        // Handle combined "file_line" field: "src/foo.ts:42-50" or "src/foo.ts:42"
-        if (!filePath && typeof item['file_line'] === 'string') {
-          const flMatch = item['file_line'].match(/^([\w/.@-]+\.\w+):(\d+)/);
-          if (flMatch) {
-            filePath = flMatch[1];
-            lineNumber = lineNumber ?? parseInt(flMatch[2]!, 10);
-          } else {
-            filePath = item['file_line'];
+        // Handle combined fields: "file_line" or "location" like "src/foo.ts:42-50"
+        for (const combinedKey of ['file_line', 'location']) {
+          if (!filePath && typeof item[combinedKey] === 'string') {
+            const flMatch = (item[combinedKey] as string).match(/^([\w/.@-]+\.\w+):(\d+)/);
+            if (flMatch) {
+              filePath = flMatch[1];
+              lineNumber = lineNumber ?? parseInt(flMatch[2]!, 10);
+            } else if (combinedKey === 'file_line') {
+              filePath = item[combinedKey] as string;
+            }
           }
         }
 

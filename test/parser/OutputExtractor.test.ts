@@ -713,6 +713,41 @@ After further analysis:
       expect(issues[0]!.lineNumber).toBe(24);
     });
 
+    it('should extract issues from issues.details array (gpt-5.1 shape)', () => {
+      const content = JSON.stringify({
+        score: { total: 92 },
+        decision: 'PASS',
+        issues: {
+          total_issues: 2,
+          details: [
+            {
+              title: 'Large facade class',
+              severity: 'M',
+              failure_code: 'PRA-FRA/M',
+              location: 'src/client.ts:151',
+              description: 'OpsClient aggregating too many operations',
+            },
+            {
+              title: 'No dependency audit',
+              severity: 'M',
+              failure_code: 'PRA-EFF/M',
+              location: 'project-wide: package.json',
+              description: 'No explicit audit strategy',
+            },
+          ],
+        },
+      });
+      const result = extractor.extract(content, 'validator');
+      expect(result.score).toBe(92);
+      const issues = result.categories!.flatMap(c => c.findings.flatMap(f => f.issues));
+      expect(issues).toHaveLength(2);
+      expect(issues[0]!.title).toBe('Large facade class');
+      expect(issues[0]!.filePath).toBe('src/client.ts');
+      expect(issues[0]!.lineNumber).toBe(151);
+      // location without file:line pattern should not extract a path
+      expect(issues[1]!.filePath).toBeUndefined();
+    });
+
     it('should extract score from report.results.score (gpt-5.1 nested shape)', () => {
       const content = JSON.stringify({
         report: {
