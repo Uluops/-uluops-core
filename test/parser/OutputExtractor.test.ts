@@ -663,6 +663,32 @@ After further analysis:
       expect(issues[0]!.filePath).toBe('src/utils.ts');
     });
 
+    it('should attach flat issues when categories already exist from scores (gpt-5-codex shape)', () => {
+      const content = JSON.stringify({
+        scores: { total: 98, code_quality: 28, standards_compliance: 25, testing: 25, best_practices: 20 },
+        decision: { status: 'PASS', reason: 'Score 98/100' },
+        issues: [
+          {
+            title: 'trackIfEnabled mixes responsibilities',
+            severity: 'M',
+            failure_code: 'PRA-FRA/M',
+            file: 'src/client/UluOpsClient.ts',
+            line_start: 336,
+            description: 'Function exceeds 50-line guideline',
+          },
+        ],
+      });
+      const result = extractor.extract(content, 'validator');
+      expect(result.score).toBe(98);
+      expect(result.decision).toBe('PASS');
+      // Categories from scores + issues should be attached
+      const allIssues = result.categories!.flatMap(c => c.findings.flatMap(f => f.issues));
+      expect(allIssues).toHaveLength(1);
+      expect(allIssues[0]!.filePath).toBe('src/client/UluOpsClient.ts');
+      expect(allIssues[0]!.lineNumber).toBe(336);
+      expect(allIssues[0]!.failureCode).toBe('PRA-FRA/M');
+    });
+
     it('should extract issues from wrapper with recommendations key', () => {
       const content = JSON.stringify({
         validationReport: {

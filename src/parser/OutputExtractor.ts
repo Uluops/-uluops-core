@@ -391,18 +391,32 @@ export class OutputExtractor {
       // Resolve issues from flat locations and attach to categories
       const flatIssues = this.resolveIssuesFlat(obj, result, report, validationSummary);
       if (flatIssues.length > 0) {
+        const issuesFinding = {
+          criterion: 'Extracted findings',
+          pointsEarned: 0,
+          pointsPossible: 0,
+          issues: flatIssues,
+        };
         if (!output.categories || output.categories.length === 0) {
           output.categories = [{
             name: 'Extracted Issues',
             score: output.score ?? 0,
             maxPoints: output.maxScore ?? 100,
-            findings: [{
-              criterion: 'Extracted findings',
-              pointsEarned: 0,
-              pointsPossible: 0,
-              issues: flatIssues,
-            }],
+            findings: [issuesFinding],
           }];
+        } else {
+          // Append issues to the first category that has no findings, or add a new category
+          const emptyCategory = output.categories.find(c => c.findings.length === 0);
+          if (emptyCategory) {
+            emptyCategory.findings.push(issuesFinding);
+          } else {
+            output.categories.push({
+              name: 'Extracted Issues',
+              score: output.score ?? 0,
+              maxPoints: output.maxScore ?? 100,
+              findings: [issuesFinding],
+            });
+          }
         }
       }
     }
