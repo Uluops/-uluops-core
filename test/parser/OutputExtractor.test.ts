@@ -312,6 +312,302 @@ After further analysis:
       expect(result.warnings).toEqual(['Could not extract structured output from response']);
     });
   });
+
+  describe('cross-model JSON shapes', () => {
+    // Failure Mode 1: score is an object { total: N, ... } (gpt-5-codex, gpt-5.1-codex)
+    it('handles score as nested object with total (gpt-5-codex shape)', () => {
+      const content = JSON.stringify({
+        score: { total: 85, code_quality: 15, standards_compliance: 25, testing: 25, best_practices: 20 },
+        decision: 'PASS',
+        issues: [
+          { title: 'Large function', severity: 'M', failure_code: 'PRA-FRA/M', file: 'src/renderer.ts', line: 27 }
+        ],
+      });
+      const result = extractor.extract(content, 'validator');
+      expect(result.decision).toBe('PASS');
+      expect(result.score).toBe(85);
+    });
+
+    // Failure Mode 2: decision is an object { pass: true, label: "PASS" } (gpt-5)
+    it('handles decision as object with label (gpt-5 shape)', () => {
+      const content = JSON.stringify({
+        report: {
+          summary: { score: 97, code_quality: 27, standards_compliance: 25, testing: 25, best_practices: 20 },
+        },
+        decision: { pass: true, label: 'PASS - Ready for next phase' },
+        issues: { total_issues: 4, items: [
+          { title: 'Large function', category: 'Code Quality', file: 'src/renderer.ts', line: 27, failure_code: 'PRA-FRA/M' }
+        ]},
+      });
+      const result = extractor.extract(content, 'validator');
+      expect(result.decision).toBe('PASS');
+      expect(result.score).toBe(97);
+      expect(result.categories).toBeDefined();
+    });
+
+    it('handles decision as object with result key (gpt-5-mini variant)', () => {
+      const content = JSON.stringify({
+        score: 92,
+        decision: { result: 'PASS', explanation: 'Score 92/100 >= 70' },
+      });
+      const result = extractor.extract(content, 'validator');
+      expect(result.decision).toBe('PASS');
+      expect(result.score).toBe(92);
+    });
+
+    it('handles string summary as decision fallback', () => {
+      const content = JSON.stringify({
+        summary: 'PASS — ready for next phase',
+        score: 92,
+      });
+      const result = extractor.extract(content, 'validator');
+      expect(result.decision).toBe('PASS');
+    });
+
+    it('handles decision as object with pass boolean (false)', () => {
+      const content = JSON.stringify({
+        decision: { pass: false, label: 'FAIL - Issues found' },
+        score: 45,
+      });
+      const result = extractor.extract(content, 'validator');
+      expect(result.decision).toBe('FAIL');
+      expect(result.score).toBe(45);
+    });
+
+    // Failure Mode 3: score/decision nested under summary (gpt-5-mini)
+    it('handles score and decision under summary (gpt-5-mini shape)', () => {
+      const content = JSON.stringify({
+        summary: {
+          score: 93,
+          decision: 'PASS',
+          reasoning_short: 'Comprehensive test suite present',
+        },
+        scores: {
+          'Code Quality': 23,
+          'Standards Compliance': 25,
+          'Testing': 25,
+          'Best Practices': 20,
+          'Total': 93,
+          'pass_threshold': 70,
+        },
+        issues_found: {
+          critical: [],
+          warnings: [
+            { title: 'Large function', file_line: 'src/adl-context-builder.ts:97-169', failure_code: 'PRA-FRA/M', explanation: 'buildADLContext() is ~72 lines' },
+          ],
+          suggestions: [
+            { title: 'Wrap transform phase', file_line: 'src/pipelines/cdl.ts:36-47', failure_code: 'SEM-COM/M', explanation: 'Pipeline should catch errors' },
+          ],
+        },
+      });
+      const result = extractor.extract(content, 'validator');
+      expect(result.decision).toBe('PASS');
+      expect(result.score).toBe(93);
+      expect(result.categories).toBeDefined();
+      expect(result.categories!.length).toBeGreaterThan(0);
+    });
+
+    // Failure Mode 4: no total score, only category sub-scores (gpt-4.1-nano)
+    it('sums category sub-scores when no total exists (gpt-4.1-nano shape)', () => {
+      const content = JSON.stringify({
+        criteria: {
+          code_quality: { score: 20, issues: [{ file: 'src/index.ts', line: 96, issue: 'Function complexity' }] },
+          standards_compliance: { score: 20, issues: [] },
+          testing: { score: 20, issues: [] },
+          best_practices: { score: 15, issues: [] },
+        },
+        decision: 'PASS',
+        reason: 'Overall codebase meets thresholds',
+      });
+      const result = extractor.extract(content, 'validator');
+      expect(result.decision).toBe('PASS');
+      expect(result.score).toBe(75); // 20+20+20+15
+      expect(result.categories).toHaveLength(4);
+    });
+
+    // Failure Mode 5: JSON inside markdown code fence (o4-mini)
+    it('handles code-fenced JSON with nested validationResults (o4-mini shape)', () => {
+      const content = '```json\n' + JSON.stringify({
+        validationResults: {
+          score: 95,
+          breakdown: {
+            'Code Quality': 30,
+            'Standards Compliance': 24,
+            'Testing': 25,
+            'Best Practices': 16,
+          },
+        },
+        issues: [
+          { type: 'WARNING', file: 'eslint.config.js:5', failureCode: 'STR-INC/L', message: 'Minor config gap' },
+        ],
+        decision: 'PASS',
+      }, null, 2) + '\n```';
+      const result = extractor.extractWithMetadata(content, 'validator');
+      expect(result.method).toBe('json_code_fence');
+      expect(result.output.decision).toBe('PASS');
+      expect(result.output.score).toBe(95);
+      expect(result.output.categories).toBeDefined();
+    });
+
+    // Breakdown without validationResults wrapper
+    it('handles flat breakdown object (score sum fallback)', () => {
+      const content = JSON.stringify({
+        decision: 'PASS',
+        breakdown: { 'Code Quality': 30, 'Standards': 25, 'Testing': 25, 'Practices': 20 },
+      });
+      const result = extractor.extract(content, 'validator');
+      expect(result.decision).toBe('PASS');
+      expect(result.score).toBe(100); // 30+25+25+20
+      expect(result.categories).toHaveLength(4);
+    });
+
+    // gpt-5-nano shape: flat issues array at top level + breakdown score object
+    it('handles issues with locations array (gpt-5-nano shape)', () => {
+      const content = JSON.stringify({
+        score: 99,
+        status: 'PASS',
+        issues: [
+          {
+            severity: 'L',
+            code: 'STR-OMI/L',
+            message: 'buildOutputTemplate is a placeholder',
+            location: 'src/transformer/adl-context-builder.ts',
+            start_line: 292,
+          },
+        ],
+      });
+      const result = extractor.extract(content, 'validator');
+      expect(result.decision).toBe('PASS');
+      expect(result.score).toBe(99);
+    });
+
+    // Issues with file_line combined field
+    it('parses file_line combined field into filePath and lineNumber', () => {
+      const content = JSON.stringify({
+        decision: 'FAIL',
+        score: 68,
+        issues_found: {
+          critical: [],
+          warnings: [
+            { title: 'Test issue', file_line: 'src/foo.ts:42-50', failure_code: 'PRA-FRA/M', explanation: 'Too long' },
+          ],
+          suggestions: [],
+        },
+      });
+      const result = extractor.extract(content, 'validator');
+      expect(result.decision).toBe('FAIL');
+      expect(result.score).toBe(68);
+      // Issues should be extracted from issues_found
+      expect(result.categories).toBeDefined();
+      const issues = result.categories![0]!.findings[0]!.issues;
+      expect(issues[0]!.filePath).toBe('src/foo.ts');
+      expect(issues[0]!.lineNumber).toBe(42);
+      expect(issues[0]!.failureCode).toBe('PRA-FRA/M');
+    });
+
+    // gpt-5-nano retest shape: score nested under validations wrapper
+    it('handles score under validations wrapper (gpt-5-nano retest shape)', () => {
+      const content = JSON.stringify({
+        phase: 1,
+        validations: {
+          score: 100,
+          breakdown: { CodeQuality: 30, StandardsCompliance: 25, Testing: 25, BestPractices: 20 },
+        },
+        decision: 'PASS - Ready for next phase',
+        issuesFound: [],
+      });
+      const result = extractor.extract(content, 'validator');
+      expect(result.decision).toBe('PASS');
+      expect(result.score).toBe(100);
+      expect(result.categories).toBeDefined();
+      expect(result.categories!.length).toBe(4);
+    });
+
+    // gpt-5-nano retest2 shape: validation_summary wrapper with final_decision
+    it('handles validation_summary wrapper with final_decision (gpt-5-nano retest2 shape)', () => {
+      const content = JSON.stringify({
+        target_path: '/some/path',
+        validation_summary: {
+          status: 'PASS',
+          score: 100,
+          score_breakdown: { 'Code Quality': 30, 'Standards Compliance': 25, Testing: 25, 'Best Practices': 20 },
+          threshold: 70,
+        },
+        issues_found: [],
+        final_decision: 'PASS - Ready for next phase',
+        reasoning_trace: [{ category: 'Code Quality', notes: 'Good' }],
+      });
+      const result = extractor.extract(content, 'validator');
+      expect(result.decision).toBe('PASS');
+      expect(result.score).toBe(100);
+      expect(result.categories).toBeDefined();
+      expect(result.categories!.length).toBe(4);
+    });
+
+    // gpt-5-nano retest3 shape: arbitrary wrapper name with {points, deductions} breakdown
+    it('handles arbitrary wrapper name with points/deductions breakdown', () => {
+      const content = JSON.stringify({
+        phase: 3,
+        validation: {
+          score: 100,
+          breakdown: {
+            CodeQuality: { points: 30, deductions: 0 },
+            StandardsCompliance: { points: 25, deductions: 0 },
+            Testing: { points: 25, deductions: 0 },
+            BestPractices: { points: 20, deductions: 0 },
+          },
+        },
+        decision: 'PASS',
+        issues: [],
+      });
+      const result = extractor.extract(content, 'validator');
+      expect(result.decision).toBe('PASS');
+      expect(result.score).toBe(100);
+      expect(result.categories).toBeDefined();
+      expect(result.categories!.length).toBe(4);
+      expect(result.categories![0]!.score).toBe(30);
+    });
+
+    // Multi-step output: final JSON report at end of accumulated text
+    it('extracts the last JSON object from multi-step output', () => {
+      const content = [
+        'I will now review the codebase.',
+        '{"tool_call": "read_file", "path": "src/index.ts"}',
+        'The code looks good. Let me check the tests.',
+        '{"tool_call": "read_file", "path": "test/smoke.test.ts"}',
+        'Here is my final assessment:',
+        JSON.stringify({
+          validation_results: { score: 90, breakdown: { CodeQuality: 28, Testing: 25 } },
+          decision: { result: 'PASS', reasoning: 'Score 90 >= 70' },
+          issues_found: [],
+        }),
+      ].join('\n');
+      const result = extractor.extract(content, 'validator');
+      expect(result.decision).toBe('PASS');
+      expect(result.score).toBe(90);
+    });
+
+    // Issues with locations array (gpt-5 shape)
+    it('parses issues with locations array', () => {
+      const content = JSON.stringify({
+        decision: 'FAIL',
+        score: 85,
+        issues: [
+          {
+            title: 'Unhandled rejection',
+            severity: 'H',
+            failure_code: 'SEM-COM/H',
+            description: 'Pipeline missing try/catch',
+            locations: [{ file: 'src/pipelines/cdl.ts', line_start: 36, line_end: 48 }],
+          },
+        ],
+      });
+      const result = extractor.extract(content, 'validator');
+      const issues = result.categories![0]!.findings[0]!.issues;
+      expect(issues[0]!.filePath).toBe('src/pipelines/cdl.ts');
+      expect(issues[0]!.lineNumber).toBe(36);
+    });
+  });
 });
 
 function extractDecision(decision: string, agentType: 'validator' | 'executor'): string {

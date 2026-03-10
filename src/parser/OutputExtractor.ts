@@ -16,7 +16,7 @@ import { ParseError } from '../errors/index.js';
  * 3. Structured text pattern matching (lowest confidence)
  */
 export class OutputExtractor {
-  private static readonly INLINE_JSON_PATTERN = /\{[\s\S]*?"decision"[\s\S]*?\}/;
+  private static readonly INLINE_JSON_PATTERN = /\{[\s\S]*?(?:"decision"|"status"|"score")[\s\S]*?\}/;
   private static readonly STRUCTURED_PATTERNS = {
     decision: /(?:decision|status|result)\s*[:=]\s*["']?(\w+)["']?/i,
     // Section-header style: "DECISION" on its own line followed by separator, then decision value
@@ -60,6 +60,17 @@ export class OutputExtractor {
         output: this.normalizeOutput(fenceResult, agentType),
         method: 'json_code_fence',
         confidence: 0.95,
+        warnings,
+      };
+    }
+
+    // Strategy 1b: Try parsing trimmed content as whole JSON object
+    const wholeJsonResult = this.extractWholeJson(content);
+    if (wholeJsonResult) {
+      return {
+        output: this.normalizeOutput(wholeJsonResult, agentType),
+        method: 'inline_json',
+        confidence: 0.9,
         warnings,
       };
     }
@@ -126,20 +137,68 @@ export class OutputExtractor {
     }
   }
 
+  private extractWholeJson(content: string): unknown | null {
+    const trimmed = content.trim();
+    if (!trimmed.startsWith('{') || !trimmed.endsWith('}')) return null;
+    try {
+      const parsed = JSON.parse(trimmed);
+      if (typeof parsed === 'object' && parsed !== null) return parsed;
+    } catch {
+      // Not valid JSON
+    }
+    return null;
+  }
+
   private extractInlineJson(content: string): unknown | null {
     const match = content.match(OutputExtractor.INLINE_JSON_PATTERN);
     if (!match) return null;
 
-    const startIndex = content.indexOf(match[0]);
-    const jsonStr = this.extractBalancedJson(content, startIndex);
-
-    if (!jsonStr) return null;
-
-    try {
-      return JSON.parse(jsonStr) as unknown;
-    } catch {
-      return null;
+    // For multi-step LLM output, the final JSON report is often at the end.
+    // Find all valid JSON objects and pick the best one (largest with agent output fields).
+    const candidates: { index: number; parsed: Record<string, unknown>; length: number }[] = [];
+    let searchFrom = content.length - 1;
+    for (let found = 0; found < 50 && searchFrom >= 0; searchFrom--) {
+      if (content[searchFrom] === '{') {
+        const jsonStr = this.extractBalancedJson(content, searchFrom);
+        if (jsonStr && jsonStr.length >= 20) {
+          try {
+            const parsed = JSON.parse(jsonStr);
+            if (typeof parsed === 'object' && parsed !== null) {
+              candidates.push({ index: searchFrom, parsed, length: jsonStr.length });
+            }
+          } catch { /* skip */ }
+        }
+        found++;
+      }
     }
+    // Also try from the first regex match
+    const firstMatchIndex = content.indexOf(match[0]);
+    if (!candidates.some(c => c.index === firstMatchIndex)) {
+      const jsonStr = this.extractBalancedJson(content, firstMatchIndex);
+      if (jsonStr && jsonStr.length >= 20) {
+        try {
+          const parsed = JSON.parse(jsonStr);
+          if (typeof parsed === 'object' && parsed !== null) {
+            candidates.push({ index: firstMatchIndex, parsed, length: jsonStr.length });
+          }
+        } catch { /* skip */ }
+      }
+    }
+
+    if (candidates.length === 0) return null;
+
+    // Prefer the largest JSON object — the final report is typically the biggest.
+    // Among ties, prefer objects with more agent-relevant fields.
+    const agentFields = ['decision', 'final_decision', 'score', 'status', 'categories',
+      'validation_results', 'validation_summary', 'validations', 'validationResults',
+      'breakdown', 'issues', 'issues_found', 'summary', 'recommendations'];
+    const scored = candidates.map(c => {
+      const fieldCount = agentFields.filter(f => f in c.parsed).length;
+      return { ...c, fieldCount };
+    });
+    // Sort by length desc (largest JSON object), then by field count desc
+    scored.sort((a, b) => b.length - a.length || b.fieldCount - a.fieldCount);
+    return scored[0]!.parsed;
   }
 
   private extractBalancedJson(content: string, startIndex: number): string | null {
@@ -284,25 +343,25 @@ export class OutputExtractor {
 
     const obj = raw as Record<string, unknown>;
 
-    // Unwrap common nesting: { result: { decision, score, ... }, categories, ... }
-    const result = (obj['result'] && typeof obj['result'] === 'object')
-      ? obj['result'] as Record<string, unknown>
-      : undefined;
-
-    // Resolve decision: top-level > result.decision > result.status
-    const rawDecision = obj['decision']
-      ?? result?.['decision']
-      ?? result?.['status']
-      ?? obj['status']
-      ?? 'UNKNOWN';
+    // Unwrap common nesting: { result: { ... } } or { report: { ... } }
+    const result = this.asRecord(obj['result']);
+    const summary = this.asRecord(obj['summary']) ?? this.asRecord(result?.['summary']);
+    const report = this.asRecord(obj['report']);
+    const reportSummary = this.asRecord(report?.['summary']);
+    // Scan all top-level object values for score/decision (handles arbitrary wrapper names
+    // like validation, validations, validationResults, validation_summary, etc.)
+    const validationSummary = this.findWrapperWithScoreOrDecision(obj);
 
     const output: ParsedOutput = {
-      decision: this.normalizeDecision(String(rawDecision), agentType),
+      decision: this.normalizeDecision(
+        this.resolveDecisionField(obj, result, summary, report, reportSummary, validationSummary),
+        agentType,
+      ),
       rawJson: raw,
     };
 
-    // Resolve score: top-level > result.score
-    const rawScore = obj['score'] ?? result?.['score'];
+    // Resolve score through nested shapes
+    const rawScore = this.resolveScoreField(obj, result, summary, report, reportSummary, validationSummary);
     if (typeof rawScore === 'number') {
       output.score = rawScore;
     } else if (typeof rawScore === 'string') {
@@ -312,15 +371,39 @@ export class OutputExtractor {
     if (agentType === 'validator') {
       // Resolve maxScore: top-level > result.max_score > result.maxScore
       const rawMaxScore = obj['maxScore'] ?? obj['max_score']
-        ?? result?.['max_score'] ?? result?.['maxScore'];
+        ?? result?.['max_score'] ?? result?.['maxScore']
+        ?? summary?.['max_score'] ?? summary?.['maxScore']
+        ?? obj['pass_threshold'];
       if (typeof rawMaxScore === 'number') {
         output.maxScore = rawMaxScore;
       } else if (typeof rawMaxScore === 'string') {
         output.maxScore = parseInt(rawMaxScore, 10);
       }
 
-      if (Array.isArray(obj['categories'])) {
-        output.categories = this.parseCategories(obj['categories']);
+      // Resolve categories from multiple possible locations
+      output.categories = this.resolveCategories(obj, result, report);
+
+      // If no score found but categories exist, sum category scores
+      if (output.score === undefined && output.categories && output.categories.length > 0) {
+        output.score = output.categories.reduce((sum, c) => sum + c.score, 0);
+      }
+
+      // Resolve issues from flat locations and attach to categories
+      const flatIssues = this.resolveIssuesFlat(obj, result, report);
+      if (flatIssues.length > 0) {
+        if (!output.categories || output.categories.length === 0) {
+          output.categories = [{
+            name: 'Extracted Issues',
+            score: output.score ?? 0,
+            maxPoints: output.maxScore ?? 100,
+            findings: [{
+              criterion: 'Extracted findings',
+              pointsEarned: 0,
+              pointsPossible: 0,
+              issues: flatIssues,
+            }],
+          }];
+        }
       }
     }
 
@@ -333,19 +416,272 @@ export class OutputExtractor {
     return output;
   }
 
+  private asRecord(value: unknown): Record<string, unknown> | undefined {
+    return (value && typeof value === 'object' && !Array.isArray(value))
+      ? value as Record<string, unknown>
+      : undefined;
+  }
+
+  /**
+   * Scan all top-level object values for one that contains 'score' or 'decision'.
+   * Handles arbitrary wrapper names (validation, validations, validationResults, etc.)
+   * without whitelisting specific field names.
+   */
+  private findWrapperWithScoreOrDecision(obj: Record<string, unknown>): Record<string, unknown> | undefined {
+    // Skip known non-wrapper fields
+    const skip = new Set(['issues', 'categories', 'recommendations', 'evidence',
+      'reasoning', 'reasoning_trace', 'notes', 'auto_fail_conditions', 'filesReviewed',
+      'files_reviewed', 'artifacts', 'result', 'summary', 'report']);
+    for (const [key, value] of Object.entries(obj)) {
+      if (skip.has(key)) continue;
+      const rec = this.asRecord(value);
+      if (!rec) continue;
+      if ('score' in rec || 'decision' in rec || 'status' in rec || 'breakdown' in rec || 'score_breakdown' in rec) {
+        return rec;
+      }
+    }
+    return undefined;
+  }
+
+  private resolveDecisionField(
+    obj: Record<string, unknown>,
+    result?: Record<string, unknown>,
+    summary?: Record<string, unknown>,
+    report?: Record<string, unknown>,
+    reportSummary?: Record<string, unknown>,
+    validationSummary?: Record<string, unknown>,
+  ): string {
+    const sources = [obj, summary, result, report, reportSummary, validationSummary];
+    // Check each source for decision/final_decision fields
+    for (const source of sources) {
+      if (!source) continue;
+      for (const key of ['decision', 'final_decision']) {
+        const d = source[key];
+        if (typeof d === 'string') return d;
+        // Handle decision as object: { pass: true, label: "PASS" } or { result: "PASS" }
+        if (d && typeof d === 'object') {
+          const dObj = d as Record<string, unknown>;
+          if (typeof dObj['result'] === 'string') return dObj['result'];
+          if (typeof dObj['label'] === 'string') return dObj['label'];
+          if (typeof dObj['value'] === 'string') return dObj['value'];
+          if (typeof dObj['status'] === 'string') return dObj['status'];
+          if (typeof dObj['pass'] === 'boolean') return dObj['pass'] ? 'PASS' : 'FAIL';
+        }
+      }
+    }
+    // Fallback to status field
+    for (const source of sources) {
+      if (!source) continue;
+      if (typeof source['status'] === 'string') return source['status'];
+    }
+    // Fallback: check if summary is a string starting with a decision word
+    if (typeof obj['summary'] === 'string') {
+      const summaryFirst = obj['summary'].split(/[\s\-–—]+/)[0]?.toUpperCase();
+      if (summaryFirst && ['PASS', 'FAIL', 'WARN', 'ERROR', 'COMPLETE'].includes(summaryFirst)) {
+        return summaryFirst;
+      }
+    }
+    return 'UNKNOWN';
+  }
+
+  private resolveScoreField(
+    obj: Record<string, unknown>,
+    result?: Record<string, unknown>,
+    summary?: Record<string, unknown>,
+    report?: Record<string, unknown>,
+    reportSummary?: Record<string, unknown>,
+    validationSummary?: Record<string, unknown>,
+  ): number | string | undefined {
+    // Check each source for a score value
+    for (const source of [obj, summary, result, report, reportSummary, validationSummary]) {
+      if (!source) continue;
+      const s = source['score'];
+      if (typeof s === 'number') return s;
+      if (typeof s === 'string' && !isNaN(parseFloat(s))) return s;
+      // Handle score as object: { total: 85, ... }
+      if (s && typeof s === 'object') {
+        const sObj = s as Record<string, unknown>;
+        for (const key of ['total', 'value', 'overall', 'final']) {
+          if (typeof sObj[key] === 'number') return sObj[key] as number;
+          if (typeof sObj[key] === 'string') return sObj[key] as string;
+        }
+      }
+    }
+    // Note: validationSummary (from findWrapperWithScoreOrDecision) is already in the sources loop above.
+    // Check scores object with named sub-scores (gpt-4.1-nano shape: { scores: { "Code Quality": 23, ... } })
+    const scores = this.asRecord(obj['scores']);
+    if (scores) {
+      if (typeof scores['Total'] === 'number') return scores['Total'];
+      if (typeof scores['total'] === 'number') return scores['total'];
+    }
+    // Check breakdown with sub-scores sum (search wrapper objects too)
+    const wrapper = this.findWrapperWithScoreOrDecision(obj);
+    const breakdown = this.asRecord(obj['breakdown'])
+      ?? this.asRecord(obj['score_breakdown'])
+      ?? this.asRecord(wrapper?.['breakdown'])
+      ?? this.asRecord(wrapper?.['score_breakdown']);
+    if (breakdown) {
+      const values: number[] = [];
+      for (const v of Object.values(breakdown)) {
+        if (typeof v === 'number') { values.push(v); continue; }
+        // Handle { points: N, deductions: N } shape
+        const rec = this.asRecord(v);
+        if (rec && typeof rec['points'] === 'number') {
+          const deductions = typeof rec['deductions'] === 'number' ? rec['deductions'] as number : 0;
+          values.push((rec['points'] as number) - deductions);
+        }
+      }
+      if (values.length > 0) return values.reduce((a, b) => a + b, 0);
+    }
+    // Check criteria with sub-scores sum (gpt-4.1-nano shape)
+    const criteria = this.asRecord(obj['criteria']);
+    if (criteria) {
+      const values = Object.values(criteria)
+        .map(v => this.asRecord(v))
+        .filter((v): v is Record<string, unknown> => v !== undefined)
+        .map(v => v['score'])
+        .filter((v): v is number => typeof v === 'number');
+      if (values.length > 0) return values.reduce((a, b) => a + b, 0);
+    }
+    return undefined;
+  }
+
+  private resolveCategories(
+    obj: Record<string, unknown>,
+    result?: Record<string, unknown>,
+    report?: Record<string, unknown>,
+  ): ParsedCategory[] | undefined {
+    // Direct categories array
+    for (const source of [obj, result, report]) {
+      if (!source) continue;
+      if (Array.isArray(source['categories'])) {
+        return this.parseCategories(source['categories']);
+      }
+    }
+
+    // Named scores object → synthetic categories (e.g., { scores: { "Code Quality": 23, ... } })
+    const scores = this.asRecord(obj['scores']) ?? this.asRecord(report?.['scores']);
+    if (scores) {
+      const cats: ParsedCategory[] = [];
+      for (const [name, value] of Object.entries(scores)) {
+        if (typeof value === 'number' && name !== 'Total' && name !== 'total' && name !== 'pass_threshold') {
+          cats.push({ name, score: value, maxPoints: 100, findings: [] });
+        }
+      }
+      if (cats.length > 0) return cats;
+    }
+
+    // Breakdown object → synthetic categories
+    // Search top-level breakdown, score_breakdown, and inside any wrapper object
+    const wrapper = this.findWrapperWithScoreOrDecision(obj);
+    const breakdown = this.asRecord(obj['breakdown'])
+      ?? this.asRecord(obj['score_breakdown'])
+      ?? this.asRecord(wrapper?.['breakdown'])
+      ?? this.asRecord(wrapper?.['score_breakdown']);
+    if (breakdown) {
+      const cats: ParsedCategory[] = [];
+      for (const [name, value] of Object.entries(breakdown)) {
+        if (typeof value === 'number') {
+          cats.push({ name, score: value, maxPoints: 100, findings: [] });
+        } else {
+          // Handle { points: N, deductions: N } shape
+          const rec = this.asRecord(value);
+          if (rec && typeof rec['points'] === 'number') {
+            const points = rec['points'] as number;
+            const deductions = typeof rec['deductions'] === 'number' ? rec['deductions'] as number : 0;
+            cats.push({ name, score: points - deductions, maxPoints: 100, findings: [] });
+          }
+        }
+      }
+      if (cats.length > 0) return cats;
+    }
+
+    // Criteria object with nested scores → synthetic categories
+    const criteria = this.asRecord(obj['criteria']);
+    if (criteria) {
+      const cats: ParsedCategory[] = [];
+      for (const [name, value] of Object.entries(criteria)) {
+        const rec = this.asRecord(value);
+        if (rec && typeof rec['score'] === 'number') {
+          cats.push({
+            name,
+            score: rec['score'],
+            maxPoints: 100,
+            findings: this.parseIssues(
+              Array.isArray(rec['issues']) ? rec['issues'] : [],
+            ).map(issue => ({
+              criterion: issue.title,
+              pointsEarned: 0,
+              pointsPossible: 0,
+              issues: [issue],
+            })),
+          });
+        }
+      }
+      if (cats.length > 0) return cats;
+    }
+
+    return undefined;
+  }
+
+  private resolveIssuesFlat(
+    obj: Record<string, unknown>,
+    result?: Record<string, unknown>,
+    report?: Record<string, unknown>,
+  ): Issue[] {
+    const issues: Issue[] = [];
+
+    // Direct issues array
+    for (const source of [obj, result, report]) {
+      if (!source) continue;
+      if (Array.isArray(source['issues'])) {
+        issues.push(...this.parseIssues(source['issues']));
+        return issues;
+      }
+      // Nested: { issues: { items: [...] } }
+      const issuesObj = this.asRecord(source['issues']);
+      if (issuesObj) {
+        if (Array.isArray(issuesObj['items'])) {
+          issues.push(...this.parseIssues(issuesObj['items']));
+          return issues;
+        }
+      }
+    }
+
+    // issues_found with warnings/suggestions (gpt-5-mini shape)
+    const issuesFound = this.asRecord(obj['issues_found']);
+    if (issuesFound) {
+      if (Array.isArray(issuesFound['critical'])) {
+        issues.push(...this.parseIssues(issuesFound['critical']));
+      }
+      if (Array.isArray(issuesFound['warnings'])) {
+        issues.push(...this.parseIssues(issuesFound['warnings']));
+      }
+      if (Array.isArray(issuesFound['suggestions'])) {
+        issues.push(...this.parseIssues(issuesFound['suggestions']));
+      }
+    }
+
+    return issues;
+  }
+
   private normalizeDecision(decision: string, agentType: AgentType): string {
-    const upper = decision.toUpperCase().trim();
+    // Strip emojis and non-ASCII symbols before processing
+    const cleaned = decision.replace(/[\u{1F000}-\u{1FFFF}]|[\u{2600}-\u{27BF}]|[\u{FE00}-\u{FE0F}]|[\u{200D}]/gu, '').trim();
+    const upper = cleaned.toUpperCase().trim();
+    // Extract first word for labels like "PASS - Ready for next phase"
+    const firstWord = upper.split(/[\s\-–—]+/)[0] ?? upper;
 
     if (agentType === 'validator') {
-      if (['PASS', 'PASSED', 'OK', 'SUCCESS'].includes(upper)) return 'PASS';
-      if (['WARN', 'WARNING', 'CAUTION'].includes(upper)) return 'WARN';
-      if (['FAIL', 'FAILED', 'ERROR', 'REJECT'].includes(upper)) return 'FAIL';
+      if (['PASS', 'PASSED', 'OK', 'SUCCESS'].includes(firstWord)) return 'PASS';
+      if (['WARN', 'WARNING', 'CAUTION'].includes(firstWord)) return 'WARN';
+      if (['FAIL', 'FAILED', 'ERROR', 'REJECT'].includes(firstWord)) return 'FAIL';
     }
 
     if (agentType === 'executor') {
-      if (['SUCCESS', 'COMPLETE', 'DONE', 'PASS'].includes(upper)) return 'COMPLETE';
-      if (['PARTIAL', 'INCOMPLETE'].includes(upper)) return 'PARTIAL';
-      if (['FAIL', 'FAILED', 'ERROR'].includes(upper)) return 'FAILED';
+      if (['SUCCESS', 'COMPLETE', 'DONE', 'PASS'].includes(firstWord)) return 'COMPLETE';
+      if (['PARTIAL', 'INCOMPLETE'].includes(firstWord)) return 'PARTIAL';
+      if (['FAIL', 'FAILED', 'ERROR'].includes(firstWord)) return 'FAILED';
     }
 
     return upper;
@@ -386,19 +722,53 @@ export class OutputExtractor {
       .filter((item): item is Record<string, unknown> =>
         typeof item === 'object' && item !== null,
       )
-      .map(item => ({
-        title: String(item['title'] ?? 'Untitled Issue'),
-        priority: this.normalizePriority(item['priority']),
-        severity: this.normalizeSeverity(item['severity']),
-        failureCode: item['failureCode'] as string | undefined,
-        filePath: (item['filePath'] as string | undefined) ?? (item['file_path'] as string | undefined),
-        lineNumber: typeof item['lineNumber'] === 'number'
+      .map(item => {
+        // Resolve file path and line number from various shapes
+        let filePath = (item['filePath'] as string | undefined)
+          ?? (item['file_path'] as string | undefined)
+          ?? (item['file'] as string | undefined);
+        let lineNumber = typeof item['lineNumber'] === 'number'
           ? item['lineNumber']
           : typeof item['line_number'] === 'number'
             ? item['line_number']
-            : undefined,
-        description: String(item['description'] ?? ''),
-      }));
+            : typeof item['line'] === 'number'
+              ? item['line']
+              : typeof item['line_start'] === 'number'
+                ? item['line_start']
+                : undefined;
+
+        // Handle combined "file_line" field: "src/foo.ts:42-50" or "src/foo.ts:42"
+        if (!filePath && typeof item['file_line'] === 'string') {
+          const flMatch = item['file_line'].match(/^([\w/.@-]+\.\w+):(\d+)/);
+          if (flMatch) {
+            filePath = flMatch[1];
+            lineNumber = lineNumber ?? parseInt(flMatch[2]!, 10);
+          } else {
+            filePath = item['file_line'];
+          }
+        }
+
+        // Handle locations array: [{ file: "...", line_start: N }]
+        if (!filePath && Array.isArray(item['locations']) && item['locations'].length > 0) {
+          const loc = this.asRecord(item['locations'][0]);
+          if (loc) {
+            filePath = (loc['file'] as string | undefined) ?? (loc['filePath'] as string | undefined);
+            lineNumber = lineNumber ?? (typeof loc['line_start'] === 'number' ? loc['line_start'] : undefined);
+          }
+        }
+
+        return {
+          title: String(item['title'] ?? item['message'] ?? 'Untitled Issue'),
+          priority: this.normalizePriority(item['priority'] ?? item['type']),
+          severity: this.normalizeSeverity(item['severity']),
+          failureCode: (item['failureCode'] as string | undefined)
+            ?? (item['failure_code'] as string | undefined)
+            ?? (item['code'] as string | undefined),
+          filePath,
+          lineNumber,
+          description: String(item['description'] ?? item['explanation'] ?? item['suggestion'] ?? ''),
+        };
+      });
   }
 
   private parseArtifacts(raw: unknown[]): ArtifactResult[] {
