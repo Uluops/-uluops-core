@@ -713,6 +713,29 @@ After further analysis:
       expect(issues[0]!.lineNumber).toBe(24);
     });
 
+    it('should use "issue" field as title (gpt-5.1 shape)', () => {
+      const content = JSON.stringify({
+        score: { total: 95 },
+        decision: 'PASS',
+        issues: { items: [
+          {
+            issue: 'Single class file aggregating many bound operation groups',
+            file: 'src/client.ts',
+            line: 117,
+            failure_code: 'PRA-FRA/M',
+            severity: 'M',
+            explanation: 'RegistryClient owns construction of 8+ sub-clients',
+            suggestion: 'Extract session management to a dedicated service',
+          },
+        ]},
+      });
+      const result = extractor.extract(content, 'validator');
+      const issues = result.categories![0]!.findings[0]!.issues;
+      expect(issues).toHaveLength(1);
+      expect(issues[0]!.title).toBe('Single class file aggregating many bound operation groups');
+      expect(issues[0]!.description).toBe('RegistryClient owns construction of 8+ sub-clients');
+    });
+
     it('should parse line number from string range like "24-50"', () => {
       const content = JSON.stringify({
         score: 85,

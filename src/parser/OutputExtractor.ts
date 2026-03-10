@@ -790,10 +790,11 @@ export class OutputExtractor {
           }
         }
 
-        // Resolve title: prefer explicit title/message, fall back to description/name
-        const hasExplicitTitle = item['title'] !== undefined || item['message'] !== undefined;
+        // Resolve title: prefer explicit title/message, fall back to issue/description/name
+        const hasExplicitTitle = item['title'] !== undefined || item['message'] !== undefined
+          || item['issue'] !== undefined;
         const title = String(
-          item['title'] ?? item['message'] ?? item['name']
+          item['title'] ?? item['message'] ?? item['issue'] ?? item['name']
           ?? item['description'] ?? 'Untitled Issue',
         );
         // For description: if title consumed 'description', use explanation/suggestion/recommendation instead
