@@ -433,6 +433,9 @@ interface AgentResultBase {
 
   /** Execution metrics */
   metrics: ExecutionMetrics;
+
+  /** Raw LLM output text (the agent's full report before parsing) */
+  rawOutput?: string;
 }
 
 /**

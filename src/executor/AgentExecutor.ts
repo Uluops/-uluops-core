@@ -151,6 +151,7 @@ export class AgentExecutor {
         recommendations,
         durationMs,
         metrics,
+        rawOutput: rawText || undefined,
       } satisfies ValidatorAgentResult;
     }
 
@@ -165,6 +166,7 @@ export class AgentExecutor {
       recommendations,
       durationMs,
       metrics,
+      rawOutput: rawText || undefined,
     } satisfies ExecutorAgentResult;
   }
 
