@@ -713,6 +713,22 @@ After further analysis:
       expect(issues[0]!.lineNumber).toBe(24);
     });
 
+    it('should extract score from report.results.score (gpt-5.1 nested shape)', () => {
+      const content = JSON.stringify({
+        report: {
+          files_reviewed: ['src/cli.ts'],
+          results: {
+            score: 96,
+            by_category: { code_quality: 29, testing: 25 },
+          },
+        },
+        decision: 'PASS',
+      });
+      const result = extractor.extract(content, 'validator');
+      expect(result.score).toBe(96);
+      expect(result.decision).toBe('PASS');
+    });
+
     it('should use "issue" field as title (gpt-5.1 shape)', () => {
       const content = JSON.stringify({
         score: { total: 95 },

@@ -347,21 +347,22 @@ export class OutputExtractor {
     const result = this.asRecord(obj['result']);
     const summary = this.asRecord(obj['summary']) ?? this.asRecord(result?.['summary']);
     const report = this.asRecord(obj['report']);
-    const reportSummary = this.asRecord(report?.['summary']);
+    const reportResults = this.asRecord(report?.['results']);
+    const reportSummary = this.asRecord(report?.['summary']) ?? this.asRecord(reportResults?.['summary']);
     // Scan all top-level object values for score/decision (handles arbitrary wrapper names
     // like validation, validations, validationResults, validation_summary, etc.)
     const validationSummary = this.findWrapperWithScoreOrDecision(obj);
 
     const output: ParsedOutput = {
       decision: this.normalizeDecision(
-        this.resolveDecisionField(obj, result, summary, report, reportSummary, validationSummary),
+        this.resolveDecisionField(obj, result, summary, report, reportResults, reportSummary, validationSummary),
         agentType,
       ),
       rawJson: raw,
     };
 
     // Resolve score through nested shapes
-    const rawScore = this.resolveScoreField(obj, result, summary, report, reportSummary, validationSummary);
+    const rawScore = this.resolveScoreField(obj, result, summary, report, reportResults, reportSummary, validationSummary);
     if (typeof rawScore === 'number') {
       output.score = rawScore;
     } else if (typeof rawScore === 'string') {
@@ -462,10 +463,11 @@ export class OutputExtractor {
     result?: Record<string, unknown>,
     summary?: Record<string, unknown>,
     report?: Record<string, unknown>,
+    reportResults?: Record<string, unknown>,
     reportSummary?: Record<string, unknown>,
     validationSummary?: Record<string, unknown>,
   ): string {
-    const sources = [obj, summary, result, report, reportSummary, validationSummary];
+    const sources = [obj, summary, result, report, reportResults, reportSummary, validationSummary];
     // Check each source for decision/final_decision fields
     for (const source of sources) {
       if (!source) continue;
@@ -503,11 +505,12 @@ export class OutputExtractor {
     result?: Record<string, unknown>,
     summary?: Record<string, unknown>,
     report?: Record<string, unknown>,
+    reportResults?: Record<string, unknown>,
     reportSummary?: Record<string, unknown>,
     validationSummary?: Record<string, unknown>,
   ): number | string | undefined {
     // Check each source for a score value
-    for (const source of [obj, summary, result, report, reportSummary, validationSummary]) {
+    for (const source of [obj, summary, result, report, reportResults, reportSummary, validationSummary]) {
       if (!source) continue;
       const s = source['score'];
       if (typeof s === 'number') return s;
