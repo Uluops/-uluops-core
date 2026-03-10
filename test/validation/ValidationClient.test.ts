@@ -99,7 +99,7 @@ describe('ValidationClient', () => {
           allGatesPassed: true,
           averageScore: 85,
         },
-        validators: [],
+        agents: [],
         correlation: { newIssues: 1, recurringIssues: 0, regressions: 0 },
         deduplicated: false,
       });
@@ -119,7 +119,7 @@ describe('ValidationClient', () => {
     it('transforms execution result to ops input format', async () => {
       mockSave.mockResolvedValueOnce({
         run: { id: 'r', projectId: 'p', runNumber: 1, allGatesPassed: true, averageScore: 85 },
-        validators: [],
+        agents: [],
         correlation: { newIssues: 0, recurringIssues: 0, regressions: 0 },
         deduplicated: false,
       });
@@ -138,14 +138,14 @@ describe('ValidationClient', () => {
       expect(input.rawMarkdown).toBe('# Report');
 
       // Validators
-      const validators = input.validators as Array<Record<string, unknown>>;
-      expect(validators).toHaveLength(1);
-      expect(validators[0]!.name).toBe('code-validator');
-      expect(validators[0]!.score).toBe(85);
-      expect(validators[0]!.status).toBe('PASS');
-      expect(validators[0]!.model).toBe('claude-sonnet-4-5-20250929');
+      const agents = input.agents as Array<Record<string, unknown>>;
+      expect(agents).toHaveLength(1);
+      expect(agents[0]!.name).toBe('code-validator');
+      expect(agents[0]!.score).toBe(85);
+      expect(agents[0]!.status).toBe('PASS');
+      expect(agents[0]!.model).toBe('claude-sonnet-4-5-20250929');
 
-      const tokens = validators[0]!.tokens as Record<string, unknown>;
+      const tokens = agents[0]!.tokens as Record<string, unknown>;
       expect(tokens.inputTokens).toBe(1000);
       expect(tokens.outputTokens).toBe(500);
       expect(tokens.cacheCreationTokens).toBe(200);
@@ -171,7 +171,7 @@ describe('ValidationClient', () => {
     it('defaults score to 0 when not provided', async () => {
       mockSave.mockResolvedValueOnce({
         run: { id: 'r', projectId: 'p', runNumber: 1, allGatesPassed: false, averageScore: 0 },
-        validators: [],
+        agents: [],
         correlation: { newIssues: 0, recurringIssues: 0, regressions: 0 },
         deduplicated: false,
       });
@@ -182,14 +182,14 @@ describe('ValidationClient', () => {
       }));
 
       const input = mockSave.mock.calls[0]![0] as Record<string, unknown>;
-      const validators = input.validators as Array<Record<string, unknown>>;
-      expect(validators[0]!.score).toBe(0);
+      const agents = input.agents as Array<Record<string, unknown>>;
+      expect(agents[0]!.score).toBe(0);
     });
 
     it('defaults validator name to "unknown" when not provided', async () => {
       mockSave.mockResolvedValueOnce({
         run: { id: 'r', projectId: 'p', runNumber: 1, allGatesPassed: true, averageScore: 90 },
-        validators: [],
+        agents: [],
         correlation: { newIssues: 0, recurringIssues: 0, regressions: 0 },
         deduplicated: false,
       });
