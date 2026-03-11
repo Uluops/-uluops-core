@@ -336,33 +336,32 @@ export class OutputExtractor {
     return 'medium';
   }
 
+  /** Resolved source objects from common nesting patterns. Reduces parameter passing across resolve methods. */
+  private buildParseSources(obj: Record<string, unknown>) {
+    const result = this.asRecord(obj['result']);
+    const summary = this.asRecord(obj['summary']) ?? this.asRecord(result?.['summary']);
+    const report = this.asRecord(obj['report']);
+    const reportResults = this.asRecord(report?.['results']) ?? this.asRecord(obj['results']);
+    const reportSummary = this.asRecord(report?.['summary']) ?? this.asRecord(reportResults?.['summary']);
+    const validationSummary = this.findWrapperWithScoreOrDecision(obj);
+    return { obj, result, summary, report, reportResults, reportSummary, validationSummary };
+  }
+
   private normalizeOutput(raw: unknown, agentType: AgentType): ParsedOutput {
     if (!raw || typeof raw !== 'object') {
       return { decision: 'ERROR' };
     }
 
     const obj = raw as Record<string, unknown>;
-
-    // Unwrap common nesting: { result: { ... } } or { report: { ... } }
-    const result = this.asRecord(obj['result']);
-    const summary = this.asRecord(obj['summary']) ?? this.asRecord(result?.['summary']);
-    const report = this.asRecord(obj['report']);
-    const reportResults = this.asRecord(report?.['results']) ?? this.asRecord(obj['results']);
-    const reportSummary = this.asRecord(report?.['summary']) ?? this.asRecord(reportResults?.['summary']);
-    // Scan all top-level object values for score/decision (handles arbitrary wrapper names
-    // like validation, validations, validationResults, validation_summary, etc.)
-    const validationSummary = this.findWrapperWithScoreOrDecision(obj);
+    const sources = this.buildParseSources(obj);
 
     const output: ParsedOutput = {
-      decision: this.normalizeDecision(
-        this.resolveDecisionField(obj, result, summary, report, reportResults, reportSummary, validationSummary),
-        agentType,
-      ),
+      decision: this.normalizeDecision(this.resolveDecisionField(sources), agentType),
       rawJson: raw,
     };
 
-    // Resolve score through nested shapes
-    const rawScore = this.resolveScoreField(obj, result, summary, report, reportResults, reportSummary, validationSummary);
+    // Resolve score
+    const rawScore = this.resolveScoreField(sources);
     if (typeof rawScore === 'number') {
       output.score = rawScore;
     } else if (typeof rawScore === 'string') {
@@ -370,65 +369,78 @@ export class OutputExtractor {
     }
 
     if (agentType === 'validator') {
-      // Resolve maxScore: top-level > result.max_score > result.maxScore
-      const rawMaxScore = obj['maxScore'] ?? obj['max_score']
-        ?? result?.['max_score'] ?? result?.['maxScore']
-        ?? summary?.['max_score'] ?? summary?.['maxScore']
-        ?? obj['pass_threshold'];
-      if (typeof rawMaxScore === 'number') {
-        output.maxScore = rawMaxScore;
-      } else if (typeof rawMaxScore === 'string') {
-        output.maxScore = parseInt(rawMaxScore, 10);
-      }
-
-      // Resolve categories from multiple possible locations
-      output.categories = this.resolveCategories(obj, result, report);
-
-      // If no score found but categories exist, sum category scores
-      if (output.score === undefined && output.categories && output.categories.length > 0) {
-        output.score = output.categories.reduce((sum, c) => sum + c.score, 0);
-      }
-
-      // Resolve issues from flat locations and attach to categories
-      const flatIssues = this.resolveIssuesFlat(obj, result, report, validationSummary);
-      if (flatIssues.length > 0) {
-        const issuesFinding = {
-          criterion: 'Extracted findings',
-          pointsEarned: 0,
-          pointsPossible: 0,
-          issues: flatIssues,
-        };
-        if (!output.categories || output.categories.length === 0) {
-          output.categories = [{
-            name: 'Extracted Issues',
-            score: output.score ?? 0,
-            maxPoints: output.maxScore ?? 100,
-            findings: [issuesFinding],
-          }];
-        } else {
-          // Append issues to the first category that has no findings, or add a new category
-          const emptyCategory = output.categories.find(c => c.findings.length === 0);
-          if (emptyCategory) {
-            emptyCategory.findings.push(issuesFinding);
-          } else {
-            output.categories.push({
-              name: 'Extracted Issues',
-              score: output.score ?? 0,
-              maxPoints: output.maxScore ?? 100,
-              findings: [issuesFinding],
-            });
-          }
-        }
-      }
+      this.resolveValidatorFields(output, sources);
     }
 
-    if (agentType === 'executor') {
-      if (Array.isArray(obj['artifacts'])) {
-        output.artifacts = this.parseArtifacts(obj['artifacts']);
-      }
+    if (agentType === 'executor' && Array.isArray(obj['artifacts'])) {
+      output.artifacts = this.parseArtifacts(obj['artifacts']);
     }
 
     return output;
+  }
+
+  private resolveValidatorFields(
+    output: ParsedOutput,
+    sources: ReturnType<OutputExtractor['buildParseSources']>,
+  ): void {
+    const { obj, result, summary, report } = sources;
+
+    // Resolve maxScore
+    const rawMaxScore = obj['maxScore'] ?? obj['max_score']
+      ?? result?.['max_score'] ?? result?.['maxScore']
+      ?? summary?.['max_score'] ?? summary?.['maxScore']
+      ?? obj['pass_threshold'];
+    if (typeof rawMaxScore === 'number') {
+      output.maxScore = rawMaxScore;
+    } else if (typeof rawMaxScore === 'string') {
+      output.maxScore = parseInt(rawMaxScore, 10);
+    }
+
+    // Resolve categories
+    output.categories = this.resolveCategories(obj, result, report);
+
+    // If no score found but categories exist, sum category scores
+    if (output.score === undefined && output.categories && output.categories.length > 0) {
+      output.score = output.categories.reduce((sum, c) => sum + c.score, 0);
+    }
+
+    // Resolve flat issues and attach to categories
+    this.attachFlatIssues(output, sources);
+  }
+
+  private attachFlatIssues(
+    output: ParsedOutput,
+    sources: ReturnType<OutputExtractor['buildParseSources']>,
+  ): void {
+    const flatIssues = this.resolveIssuesFlat(sources.obj, sources.result, sources.report, sources.validationSummary);
+    if (flatIssues.length === 0) return;
+
+    const issuesFinding = {
+      criterion: 'Extracted findings',
+      pointsEarned: 0,
+      pointsPossible: 0,
+      issues: flatIssues,
+    };
+    if (!output.categories || output.categories.length === 0) {
+      output.categories = [{
+        name: 'Extracted Issues',
+        score: output.score ?? 0,
+        maxPoints: output.maxScore ?? 100,
+        findings: [issuesFinding],
+      }];
+    } else {
+      const emptyCategory = output.categories.find(c => c.findings.length === 0);
+      if (emptyCategory) {
+        emptyCategory.findings.push(issuesFinding);
+      } else {
+        output.categories.push({
+          name: 'Extracted Issues',
+          score: output.score ?? 0,
+          maxPoints: output.maxScore ?? 100,
+          findings: [issuesFinding],
+        });
+      }
+    }
   }
 
   private asRecord(value: unknown): Record<string, unknown> | undefined {
@@ -459,15 +471,10 @@ export class OutputExtractor {
   }
 
   private resolveDecisionField(
-    obj: Record<string, unknown>,
-    result?: Record<string, unknown>,
-    summary?: Record<string, unknown>,
-    report?: Record<string, unknown>,
-    reportResults?: Record<string, unknown>,
-    reportSummary?: Record<string, unknown>,
-    validationSummary?: Record<string, unknown>,
+    ctx: ReturnType<OutputExtractor['buildParseSources']>,
   ): string {
-    const sources = [obj, summary, result, report, reportResults, reportSummary, validationSummary];
+    const { obj } = ctx;
+    const sources = [ctx.obj, ctx.summary, ctx.result, ctx.report, ctx.reportResults, ctx.reportSummary, ctx.validationSummary];
     // Check each source for decision/final_decision fields
     for (const source of sources) {
       if (!source) continue;
@@ -501,16 +508,12 @@ export class OutputExtractor {
   }
 
   private resolveScoreField(
-    obj: Record<string, unknown>,
-    result?: Record<string, unknown>,
-    summary?: Record<string, unknown>,
-    report?: Record<string, unknown>,
-    reportResults?: Record<string, unknown>,
-    reportSummary?: Record<string, unknown>,
-    validationSummary?: Record<string, unknown>,
+    ctx: ReturnType<OutputExtractor['buildParseSources']>,
   ): number | string | undefined {
+    const { obj } = ctx;
+    const sources = [ctx.obj, ctx.summary, ctx.result, ctx.report, ctx.reportResults, ctx.reportSummary, ctx.validationSummary];
     // Check each source for a score value
-    for (const source of [obj, summary, result, report, reportResults, reportSummary, validationSummary]) {
+    for (const source of sources) {
       if (!source) continue;
       for (const scoreKey of ['score', 'total_score', 'score_total']) {
         const s = source[scoreKey];

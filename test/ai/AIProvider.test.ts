@@ -1000,22 +1000,20 @@ describe('AIProvider', () => {
   });
 
   describe('FACTORY_NAME_OVERRIDES (behavioral)', () => {
-    it('ensureProvider succeeds for google when dynamically loaded as fallback', async () => {
-      // Google is normally eager-loaded, but if a provider with a non-standard
-      // factory name falls through to ensureProvider, the override map resolves it.
-      // We test this by creating an AIProvider without google in config,
-      // then manually adding creds and calling ensureProvider.
-      const configNoGoogle: ResolvedConfig = {
+    it('ensureProvider succeeds for google using factory name override', async () => {
+      // Google uses a non-standard factory name (createGoogleGenerativeAI instead of createGoogle).
+      // ensureProvider should use FACTORY_NAME_OVERRIDES to find the correct factory.
+      const configWithGoogle: ResolvedConfig = {
         ...mockConfig,
         ai: {
-          providers: { anthropic: { apiKey: 'test-key' } },
+          providers: {
+            anthropic: { apiKey: 'test-key' },
+            google: { apiKey: 'test-google-key' },
+          },
           defaultProvider: 'anthropic',
         },
       };
-      const provider = new AIProvider(configNoGoogle, mockCatalog(), noopLogger);
-
-      // Manually inject google creds to simulate dynamic path
-      (provider as any).config.ai.providers['google'] = { apiKey: 'test-google-key' };
+      const provider = new AIProvider(configWithGoogle, mockCatalog(), noopLogger);
 
       // ensureProvider should use FACTORY_NAME_OVERRIDES to find createGoogleGenerativeAI
       await expect(provider.ensureProvider('google')).resolves.toBeUndefined();
