@@ -1,0 +1,56 @@
+{
+  "agent": "code-validator",
+  "version": "1.5.0",
+  "decision": "PASS",
+  "score": 94,
+  "maxScore": 100,
+  "recommendations": [
+    {
+      "validator": "code-validator",
+      "title": "Inconsistent formatting in package manifest",
+      "priority": "suggested",
+      "severity": "medium",
+      "failureCode": "STR-INC/M",
+      "filePath": "package.json",
+      "lineNumber": 55,
+      "description": "The jsdom dependency line is misindented compared with the surrounding dependency entries. This is a style-guide/formatting inconsistency in a top-level config file."
+    },
+    {
+      "validator": "code-validator",
+      "title": "Dependency block formatting drift",
+      "priority": "suggested",
+      "severity": "low",
+      "failureCode": "STR-INC/L",
+      "filePath": "package.json",
+      "lineNumber": 54,
+      "description": "Mixed indentation appears in the devDependencies section, reducing consistency with the rest of the file."
+    },
+    {
+      "validator": "code-validator",
+      "title": "Export surface is only partially documented",
+      "priority": "suggested",
+      "severity": "low",
+      "failureCode": "STR-OMI/M",
+      "filePath": "src/index.ts",
+      "lineNumber": 1,
+      "description": "Main public components/utilities have JSDoc, but the barrel export and exported type surface are not documented directly. This is minor because the underlying exported APIs are documented."
+    },
+    {
+      "validator": "code-validator",
+      "title": "Development warning logs raw rejected avatar URL",
+      "priority": "suggested",
+      "severity": "low",
+      "failureCode": "SEM-COM/H",
+      "filePath": "src/UserMenu.tsx",
+      "lineNumber": 97,
+      "description": "Rejected user-provided avatarUrl values are interpolated directly into console.warn output. This is not a production blocker here, but it is better practice to avoid echoing raw untrusted input in diagnostics."
+    }
+  ],
+  "metrics": {
+    "durationMs": 56452,
+    "model": "openai:gpt-5.4",
+    "inputTokens": 20519,
+    "outputTokens": 2876,
+    "totalEffectiveTokens": 23395
+  }
+}

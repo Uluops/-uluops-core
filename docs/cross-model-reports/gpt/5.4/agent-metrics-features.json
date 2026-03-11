@@ -1,0 +1,76 @@
+{
+  "agent": "code-validator",
+  "version": "1.5.0",
+  "decision": "FAIL",
+  "score": 65,
+  "maxScore": 100,
+  "recommendations": [
+    {
+      "validator": "code-validator",
+      "title": "Buffer list project filtering is structurally inconsistent and leads to broken advertised behavior",
+      "priority": "suggested",
+      "severity": "high",
+      "failureCode": "SEM-INC/H",
+      "filePath": "src/commands/buffer.ts",
+      "lineNumber": 94,
+      "description": "The CLI advertises `buffer list --project` filtering, but queryBuffer() supports an exact `projectPath` filter while the command never passes `projectPath` into queryBuffer(). Instead it applies a later partial-match filter manually. This split behavior is inconsistent and leaves the underlying query API unused for the project filter. It is a concrete functional defect because the command behavior and core query abstraction diverge, increasing likelihood of incorrect or surprising results."
+    },
+    {
+      "validator": "code-validator",
+      "title": "Synchronous busy-wait lock blocks the event loop",
+      "priority": "suggested",
+      "severity": "medium",
+      "failureCode": "PRA-EFF/M",
+      "filePath": "src/buffer.ts",
+      "lineNumber": 162,
+      "description": "acquireLock() spins in a while loop until timeout, blocking the process during contention. The code documents the tradeoff, but this is still an event-loop blocking pattern in a Node package."
+    },
+    {
+      "validator": "code-validator",
+      "title": "Large multi-responsibility exported functions reduce maintainability",
+      "priority": "suggested",
+      "severity": "medium",
+      "failureCode": "PRA-FRA/M",
+      "filePath": "src/buffer.ts",
+      "lineNumber": 222,
+      "description": "Several exported functions combine orchestration, formatting, aggregation, and I/O. They remain readable, but exceed ideal single-purpose boundaries and will be harder to evolve safely."
+    },
+    {
+      "validator": "code-validator",
+      "title": "Public exported command registration APIs lack API-level documentation",
+      "priority": "suggested",
+      "severity": "medium",
+      "failureCode": "STR-OMI/M",
+      "filePath": "src/commands/core.ts",
+      "lineNumber": 34,
+      "description": "The package has strong file headers and a thorough README, but exported command registration functions and the public index surface are not individually documented, reducing discoverability for programmatic consumers."
+    },
+    {
+      "validator": "code-validator",
+      "title": "No execution evidence that tests were run and passing in this validation pass",
+      "priority": "suggested",
+      "severity": "high",
+      "failureCode": "SEM-INC/H",
+      "filePath": "package.json",
+      "lineNumber": 19,
+      "description": "The repository has extensive test files and valid scripts, but validator tooling did not provide actual test execution output. Under the scoring rubric, the run-and-pass criterion cannot be awarded without evidence."
+    },
+    {
+      "validator": "code-validator",
+      "title": "CLI project filter branch lacks direct test evidence",
+      "priority": "suggested",
+      "severity": "medium",
+      "failureCode": "STR-OMI/H",
+      "filePath": "src/commands/buffer.ts",
+      "lineNumber": 103,
+      "description": "A user-facing filter branch is present, but no reviewed test evidence targeted this path specifically. This likely contributed to the functional inconsistency surviving."
+    }
+  ],
+  "metrics": {
+    "durationMs": 109836,
+    "model": "openai:gpt-5.4",
+    "inputTokens": 61230,
+    "outputTokens": 3438,
+    "totalEffectiveTokens": 64668
+  }
+}

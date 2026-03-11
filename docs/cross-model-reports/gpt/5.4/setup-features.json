@@ -1,0 +1,106 @@
+{
+  "agent": "code-validator",
+  "version": "1.5.0",
+  "decision": "FAIL",
+  "score": 68,
+  "maxScore": 100,
+  "recommendations": [
+    {
+      "validator": "code-validator",
+      "title": "Sensitive API key is echoed back in setup summary",
+      "priority": "suggested",
+      "severity": "critical",
+      "failureCode": "SEM-INC/C",
+      "filePath": "src/cli.ts",
+      "lineNumber": 243,
+      "description": "The CLI prints the full API key in a suggested export command. This unnecessarily exposes credentials in terminal output and raises accidental leakage risk."
+    },
+    {
+      "validator": "code-validator",
+      "title": "Missing unit tests for multiple exported core modules",
+      "priority": "suggested",
+      "severity": "high",
+      "failureCode": "STR-OMI/H",
+      "filePath": "src/steps/verify.ts",
+      "lineNumber": 11,
+      "description": "verify(), installMcp()/uninstallMcp(), installCommands()/uninstallCommands(), and installAgents()/uninstallAgents() have no corresponding test modules, leaving core install/verify behavior insufficiently covered."
+    },
+    {
+      "validator": "code-validator",
+      "title": "Large multi-responsibility CLI orchestration function",
+      "priority": "suggested",
+      "severity": "medium",
+      "failureCode": "PRA-FRA/M",
+      "filePath": "src/cli.ts",
+      "lineNumber": 38,
+      "description": "runSetup() is substantially over the 50-line guideline and combines auth, install, health-check, shell, manifest, and summary responsibilities."
+    },
+    {
+      "validator": "code-validator",
+      "title": "Public documentation is inconsistent with implementation",
+      "priority": "suggested",
+      "severity": "medium",
+      "failureCode": "STR-INC/M",
+      "filePath": "README.md",
+      "lineNumber": 14,
+      "description": "README claims 22 agents and includes /agents:workflow-synthesis, while the CLI's AGENT_LIST contains only 21 entries and omits that command."
+    },
+    {
+      "validator": "code-validator",
+      "title": "Missing API documentation on exported functions/interfaces",
+      "priority": "suggested",
+      "severity": "medium",
+      "failureCode": "STR-OMI/M",
+      "filePath": "src/steps/mcp.ts",
+      "lineNumber": 11,
+      "description": "Several exported interfaces and functions are missing JSDoc or equivalent API documentation."
+    },
+    {
+      "validator": "code-validator",
+      "title": "Edge-case coverage incomplete for networked verification paths",
+      "priority": "suggested",
+      "severity": "medium",
+      "failureCode": "SEM-COM/M",
+      "filePath": "src/steps/auth.ts",
+      "lineNumber": 81,
+      "description": "Network-validation branches and verification failure paths are implemented but not covered by tests."
+    },
+    {
+      "validator": "code-validator",
+      "title": "Business flow remains concentrated in CLI layer",
+      "priority": "suggested",
+      "severity": "medium",
+      "failureCode": "PRA-MAT/M",
+      "filePath": "src/cli.ts",
+      "lineNumber": 38,
+      "description": "The CLI entrypoint mixes presentation with orchestration and persistence concerns instead of delegating more workflow logic to dedicated modules."
+    },
+    {
+      "validator": "code-validator",
+      "title": "Test execution was not evidenced from repository inspection",
+      "priority": "suggested",
+      "severity": "high",
+      "failureCode": "SEM-INC/H",
+      "filePath": "package.json",
+      "lineNumber": 20,
+      "description": "A test command exists, but no execution evidence was available in the inspected artifacts, so passing status could not be confirmed."
+    },
+    {
+      "validator": "code-validator",
+      "title": "Dependency justification not documented",
+      "priority": "suggested",
+      "severity": "low",
+      "failureCode": "PRA-EFF/L",
+      "filePath": "package.json",
+      "lineNumber": 24,
+      "description": "Runtime dependency choices are reasonable but undocumented."
+    }
+  ],
+  "metrics": {
+    "durationMs": 70280,
+    "model": "openai:gpt-5.4",
+    "inputTokens": 35436,
+    "outputTokens": 2860,
+    "totalEffectiveTokens": 38296
+  }
+}

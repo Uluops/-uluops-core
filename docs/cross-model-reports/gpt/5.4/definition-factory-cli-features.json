@@ -1,0 +1,48 @@
+{
+  "agent": "code-validator",
+  "version": "1.5.0",
+  "decision": "FAIL",
+  "score": 88,
+  "maxScore": 100,
+  "recommendations": [
+    {
+      "validator": "code-validator",
+      "title": "README omits implemented PDL support and misdocuments accepted --type values",
+      "priority": "suggested",
+      "severity": "medium",
+      "failureCode": "STR-OMI/M",
+      "description": "Public documentation still states the CLI supports ADL, CDL, and WDL only, and documents `--type` as `adl|cdl|wdl`. The implementation and changelog clearly include PDL/pipeline support. This creates user-facing inconsistency for a public CLI surface."
+    },
+    {
+      "validator": "code-validator",
+      "title": "GlobalOptions.type does not include 'pdl' although the CLI supports it",
+      "priority": "suggested",
+      "severity": "medium",
+      "failureCode": "STR-INC/M",
+      "description": "The shared options type advertises only `'adl' | 'cdl' | 'wdl'`, but runtime behavior and messages accept `pdl`. This is an internal contract mismatch that can confuse maintainers and consumers of typed command code."
+    },
+    {
+      "validator": "code-validator",
+      "title": "Command helpers are tightly coupled to process.exit()",
+      "priority": "suggested",
+      "severity": "medium",
+      "failureCode": "PRA-MAT/M",
+      "description": "Deep command helpers terminate the process directly instead of returning status or throwing controlled errors. This reduces reuse and makes isolation/unit testing harder."
+    },
+    {
+      "validator": "code-validator",
+      "title": "Some exported utility functions appear unused in production code",
+      "priority": "suggested",
+      "severity": "low",
+      "failureCode": "STR-EXC/L",
+      "description": "defaultOutputPath(), isFile(), and definitionName() are exported but not referenced by the package source. Unused exported surface area increases maintenance cost and can mislead future contributors."
+    }
+  ],
+  "metrics": {
+    "durationMs": 92774,
+    "model": "openai:gpt-5.4",
+    "inputTokens": 31457,
+    "outputTokens": 3967,
+    "totalEffectiveTokens": 35424
+  }
+}

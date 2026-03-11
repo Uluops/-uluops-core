@@ -2,8 +2,8 @@
 
 **Date**: 2026-03-10 (updated 2026-03-11)
 **Agent**: code-validator v1.5.0
-**Target**: Multiple packages (definition-factory, registry-sdk, ops-sdk, agent-metrics, cli, sdk-core, uluops-core-sdk)
-**Models Tested**: 14 OpenAI models + Claude haiku baseline
+**Target**: Multiple packages (definition-factory, registry-sdk, ops-sdk, agent-metrics, cli, sdk-core, uluops-core-sdk, setup, shell, definition-factory-cli)
+**Models Tested**: 16 OpenAI models + Claude haiku baseline
 **Commits**: `e4ff816` through `b169b06` (OutputExtractor hardening series)
 
 ## Executive Summary
@@ -31,6 +31,27 @@ After hardening the extractor across 11 failure modes, **gpt-5.1 now extracts re
 | o3-mini | Reasoning | Score 94, PASS | **Working** | Structured text extraction (no fix needed) |
 | o4-mini | Reasoning | Score 0, PASS | **Fixed** (live: PASS 96/100) | Code-fenced JSON with `validationResults.score` |
 | **claude-haiku-4-5** | **Baseline** | N/A | **PASS 94/100** | Clean extraction, 4 suggestions, 1m 52s |
+| **gpt-5.4** | **Flagship** | N/A | **Working** (4/4 clean) | See gpt-5.4 results below |
+| gpt-5.4-pro | Reasoning | N/A | **Process failure** | Timeout at 10m — reasoning model too slow (same pattern as gpt-5) |
+
+## gpt-5.4 Verification Results (2026-03-11)
+
+4 runs across 4 packages, all clean extraction:
+
+| # | Target | Score | Decision | Recs | Tokens (in/out) | Time | Status |
+|---|--------|-------|----------|------|-----------------|------|--------|
+| 1 | setup | 68 | PASS | 9 | 35K/3K | ~60s | Clean |
+| 2 | shell | 94 | PASS | 4 | 21K/3K | 56s | Clean |
+| 3 | definition-factory-cli | 88 | FAIL | 4 | 31K/4K | 1m 33s | Clean |
+| 4 | agent-metrics | 65 | PASS | 6 | 61K/3K | 1m 50s | Clean |
+
+**Success rate**: 4/4 (100%)
+**Score range**: 65–94
+**Notable findings**: Caught real issues — API key echo in setup, missing PDL type in definition-factory-cli, synchronous busy-wait lock in agent-metrics.
+
+### gpt-5.4-pro Timeout
+
+Both gpt-5.4-pro runs (setup and shell) timed out at 10 minutes (600,000ms). The model is classified as a reasoning model (AI SDK warns "temperature is not supported for reasoning models"). Same failure pattern as gpt-5 — reasoning models are too slow for agent workloads within practical timeout budgets.
 
 ## gpt-5.1 Deep-Dive: 15-Run Grinding Results
 
