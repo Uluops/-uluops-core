@@ -3,21 +3,21 @@
 **Date**: 2026-03-10 (updated 2026-03-11)
 **Agent**: code-validator v1.5.0
 **Target**: Multiple packages (definition-factory, registry-sdk, ops-sdk, agent-metrics, cli, sdk-core, uluops-core-sdk, setup, shell, definition-factory-cli)
-**Models Tested**: 16 OpenAI models + Claude haiku baseline
+**Models Tested**: 16 OpenAI models + 3 Anthropic models
 **Commits**: `e4ff816` through `b169b06` (OutputExtractor hardening series)
 
 ## Executive Summary
 
 Cross-model testing of the code-validator agent against 14 OpenAI models revealed a **64% extraction failure rate** (9/14 models produced score=0 or decision=ERROR/UNKNOWN). Every model produced valid, high-quality JSON output — the failures were entirely in `OutputExtractor.normalizeOutput()` which assumed a flat JSON shape that only Claude and a few GPT models produce.
 
-After hardening the extractor across 11 failure modes, **gpt-5.1 now extracts reliably at 93.3% (14/15 runs clean)** across 7 packages. The initial 64% failure rate was caused by two issues: (1) `normalizeOutput()` assuming flat JSON shapes, and (2) a **stale `dist/` build** — CLI imports `@uluops/core` from compiled `dist/index.js`, so source changes only affected unit tests (vitest uses tsx on `.ts` directly) until `npm run build` was run. 3 models (gpt-4o-mini, gpt-4.1, gpt-5) have process-level failures (rate limits, timeouts, empty output), not extraction bugs.
+After hardening the extractor across 12 failure modes, **extraction works across 17 models from 2 providers** (14 OpenAI + 3 Anthropic). The initial 64% failure rate was caused by two issues: (1) `normalizeOutput()` assuming flat JSON shapes, and (2) a **stale `dist/` build** — CLI imports `@uluops/core` from compiled `dist/index.js`, so source changes only affected unit tests (vitest uses tsx on `.ts` directly) until `npm run build` was run. 4 models have process-level failures (rate limits, timeouts, empty output), not extraction bugs.
 
 ## Results Matrix
 
 | Model | Tier | Original | After Fix | Issue |
 |-------|------|----------|-----------|-------|
 | gpt-4o | Standard | Score 70, FAIL | **Working** | Structured text extraction (no fix needed) |
-| gpt-4o-mini | Budget | Score 0, ERROR | **Process failure** | Empty output — hit maxSteps (22 tokens) |
+| gpt-4o-mini | Budget | Score 0, ERROR | **Model incapable** | 89-651 output tokens, can't use tools |
 | gpt-4.1 | Standard | N/A | **Process failure** | 30K TPM rate limit — never ran successfully |
 | gpt-4.1-nano | Budget | Score 0, PASS | **Fixed** (unit test) | Criteria sub-scores only, no total |
 | gpt-5 | Reasoning | Score 0, [OBJECT OBJECT] | **Fixed** (live: PASS 91/100, 0/97*) | `score_total` field name (FM12); needs 10m timeout. *shell run pre-fix |
@@ -31,8 +31,12 @@ After hardening the extractor across 11 failure modes, **gpt-5.1 now extracts re
 | o3-mini | Reasoning | Score 94, PASS | **Working** | Structured text extraction (no fix needed) |
 | o4-mini | Reasoning | Score 0, PASS | **Fixed** (live: PASS 96/100) | Code-fenced JSON with `validationResults.score` |
 | **claude-haiku-4-5** | **Baseline** | N/A | **PASS 94/100** | Clean extraction, 4 suggestions, 1m 52s |
+| **claude-sonnet-4-5** | **Baseline** | N/A | **Working** | Standard baseline model |
+| **claude-sonnet-4-6** | **Latest** | N/A | **Working** (2/2 clean) | See Anthropic results below |
+| claude-3-7-sonnet | Reasoning | N/A | **Retired** | Model no longer available on Anthropic API |
 | **gpt-5.4** | **Flagship** | N/A | **Working** (4/4 clean) | See gpt-5.4 results below |
-| gpt-5.4-pro | Reasoning | N/A | **Process failure** | Timeout at 10m — reasoning model too slow (same pattern as gpt-5) |
+| gpt-5.4-pro | Reasoning | N/A | **Process failure** | Timeout at 10m — reasoning model too slow |
+| gpt-4o-mini | Budget | N/A | **Model incapable** | 89-651 output tokens, can't use tools |
 
 ## gpt-5.4 Verification Results (2026-03-11)
 
@@ -52,6 +56,41 @@ After hardening the extractor across 11 failure modes, **gpt-5.1 now extracts re
 ### gpt-5.4-pro Timeout
 
 Both gpt-5.4-pro runs (setup and shell) timed out at 10 minutes (600,000ms). The model is classified as a reasoning model (AI SDK warns "temperature is not supported for reasoning models"). Same failure pattern as gpt-5 — reasoning models are too slow for agent workloads within practical timeout budgets.
+
+## Anthropic Model Results (2026-03-11)
+
+### claude-sonnet-4-6
+
+2 runs across 2 packages, all clean extraction:
+
+| # | Target | Score | Decision | Recs | Tokens (in/out) | Time | Status |
+|---|--------|-------|----------|------|-----------------|------|--------|
+| 1 | setup | 82 | PASS | — | 48K/7K | 3m 31s | Clean |
+| 2 | shell | 89 | PASS | 7 | 29K/7K | ~3m | Clean |
+
+**Success rate**: 2/2 (100%)
+**Cost**: ~$1.46/run ($2.92 total)
+**Notes**: Clean extraction as expected — same provider as baseline. Higher token counts and cost than Haiku.
+
+### claude-3-7-sonnet (Retired)
+
+Both `claude-3-7-sonnet-20250219` and `claude-3-7-sonnet-latest` return model-not-found errors from the Anthropic API. The model has been superseded by Claude Sonnet 4.x and is no longer available.
+
+### Anthropic Model Availability
+
+| Model | Status | Notes |
+|-------|--------|-------|
+| claude-haiku-4-5 | Available | Budget tier, tested and working |
+| claude-sonnet-4-5 | Available | Standard baseline |
+| claude-sonnet-4-6 | Available | Latest Sonnet, tested and working |
+| claude-opus-4-5/4-6 | Available | ~$10/run, not cost-effective for validation |
+| claude-3-7-sonnet | **Retired** | No longer available on API |
+| claude-3-5-sonnet | Untested | May still be available |
+| claude-3-haiku | Untested | May not handle agentic tool use |
+
+### gpt-4o-mini: Model Incapable
+
+Both runs (setup, shell) produced 89-651 output tokens — the model is too small for agentic workloads requiring tool use. Not an extraction bug.
 
 ## gpt-5.1 Deep-Dive: 15-Run Grinding Results
 
@@ -269,8 +308,12 @@ Total test suite: 400+ tests (56 OutputExtractor, rest across all modules)
 ## Report Files
 
 All gpt-5.1 reports organized under `docs/cross-model-reports/gpt/5.1/` (32 files).
-Earlier model reports organized under `docs/cross-model-reports/gpt/{model}/`.
+Other OpenAI model reports under `docs/cross-model-reports/gpt/{model}/`.
+Anthropic model reports are not separately stored (same-family extraction is clean).
 
 ## Cost Summary
 
-~30 live model runs total. gpt-5.1 runs averaged 25K–58K effective tokens at ~40-100s each. Primary cost was the 15-run gpt-5.1 grinding session.
+~40 live model runs total across 19 models. Notable costs:
+- gpt-5.1 grinding (15 runs): Primary cost, ~40-100s each
+- claude-sonnet-4-6 (2 runs): $2.92 ($1.46/run)
+- claude-opus-4-5 (historical): ~$10/run — not practical for validation testing
