@@ -10,6 +10,8 @@ import { z } from 'zod';
 const issueSchema = z.object({
   title: z.string().describe('Short description of the issue'),
   description: z.string().nullable().describe('Detailed explanation'),
+  priority: z.enum(['critical', 'suggested', 'backlog']).nullable()
+    .describe('Issue priority level'),
   severity: z.enum(['critical', 'high', 'medium', 'low', 'info']).nullable()
     .describe('Issue severity level'),
   filePath: z.string().nullable().describe('File path where the issue was found'),
