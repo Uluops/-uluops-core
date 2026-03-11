@@ -1,0 +1,26 @@
+{
+  "agent": "code-validator",
+  "version": "1.5.0",
+  "decision": "PASS",
+  "score": 97,
+  "maxScore": 100,
+  "recommendations": [
+    {
+      "validator": "code-validator",
+      "title": "SDK version constant out of sync with package version",
+      "priority": "suggested",
+      "severity": "medium",
+      "failureCode": "SEM-INC/M",
+      "filePath": "src/config/constants.ts",
+      "lineNumber": 59,
+      "description": "SDK_VERSION is hardcoded to \"0.1.6\" while package.json declares version \"0.2.0\". This breaks the documented requirement to keep them aligned and causes incorrect user agent metadata to be sent with requests."
+    }
+  ],
+  "metrics": {
+    "durationMs": 170163,
+    "model": "openai:gpt-5-codex",
+    "inputTokens": 48570,
+    "outputTokens": 3642,
+    "totalEffectiveTokens": 52212
+  }
+}

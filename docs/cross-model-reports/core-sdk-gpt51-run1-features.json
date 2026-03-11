@@ -1,0 +1,56 @@
+{
+  "agent": "code-validator",
+  "version": "1.5.0",
+  "decision": "PASS",
+  "score": 95,
+  "maxScore": 100,
+  "recommendations": [
+    {
+      "validator": "code-validator",
+      "title": "Orchestrator methods with multiple responsibilities and high length",
+      "priority": "suggested",
+      "severity": "medium",
+      "failureCode": "PRA-FRA/M",
+      "filePath": "src/ai/AIProvider.ts",
+      "lineNumber": 143,
+      "description": "Key orchestrator methods such as AIProvider.generate(), OutputExtractor.extractWithMetadata(), and AgentExecutor.execute() handle several concerns in a single function (resolution, logging, normalization, metric aggregation). While still cohesive, they exceed the ideal single‑purpose guideline and increase cognitive load."
+    },
+    {
+      "validator": "code-validator",
+      "title": "Complex parsing logic concentrated in a single class without finer-grained responsibilities",
+      "priority": "suggested",
+      "severity": "medium",
+      "failureCode": "PRA-FRA/M",
+      "filePath": "src/parser/OutputExtractor.ts",
+      "lineNumber": 140,
+      "description": "OutputExtractor centralizes multiple parsing strategies, regex heuristics, and JSON extraction utilities within one class. Although well‑documented at the class level, the density of logic in extractInlineJson, extractBalancedJson, and extractFromStructuredText increases risk of regressions when evolving parsing rules."
+    },
+    {
+      "validator": "code-validator",
+      "title": "Missing method-level documentation for complex configuration and parsing helpers",
+      "priority": "suggested",
+      "severity": "medium",
+      "failureCode": "STR-OMI/M",
+      "filePath": "src/executor/AgentExecutor.ts",
+      "lineNumber": 176,
+      "description": "Some non‑trivial helpers that encode important behavior (e.g., configuration precedence, threshold resolution, parsing heuristics) lack explicit doc comments, requiring readers to infer invariants from the code."
+    },
+    {
+      "validator": "code-validator",
+      "title": "Highly privileged bash tool integration exposes strong operational risk if misconfigured",
+      "priority": "suggested",
+      "severity": "medium",
+      "failureCode": "PRA-MAT/L",
+      "filePath": "src/ai/ShellExecutor.ts",
+      "lineNumber": 28,
+      "description": "The bash tool implementation, via ShellExecutor and AIProvider.createProviderShellTool (and AgentExecutor enabling based on agentTools: ['bash']), uses exec()-style command execution that gives the LLM substantial control over the host environment. The code explicitly warns about this and documents that only isolated environments should enable the tool; however, the SDK itself provides no additional sandboxing or allowlisting."
+    }
+  ],
+  "metrics": {
+    "durationMs": 58642,
+    "model": "openai:gpt-5.1",
+    "inputTokens": 28577,
+    "outputTokens": 3593,
+    "totalEffectiveTokens": 32170
+  }
+}

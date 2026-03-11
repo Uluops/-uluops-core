@@ -825,6 +825,44 @@ After further analysis:
       expect(issues).toHaveLength(1);
       expect(issues[0]!.title).toBe('Add type annotations');
     });
+
+    it('should extract score.total and decision from inline JSON with prefix text', () => {
+      // Simulates gpt-5.1 CLI run where model produces analysis text before JSON
+      const json = JSON.stringify({
+        score: { total: 93, code_quality: 28, standards_compliance: 23, testing: 23, best_practices: 19 },
+        issues: {
+          total_issues: 7,
+          by_severity: { C: 0, H: 0, M: 5, L: 2 },
+          items: [
+            {
+              id: 'CQ1', type: 'code_quality', severity: 'M', failure_code: 'PRA-FRA/M',
+              title: 'Overly large multi-responsibility command functions',
+              description: 'Several command registration functions contain very long action handlers.',
+              file: 'src/commands/admin.ts', line: 10,
+            },
+          ],
+        },
+        auto_fail: { 'AF-001': 'clear' },
+        decision: 'PASS',
+        reasoning_trace: {
+          code_quality: { score: 28, max_score: 30, deductions: [{ criterion: 'test', points_lost: 2 }] },
+        },
+        summary: {
+          files_reviewed: ['package.json', 'src/cli.ts'],
+          narrative: 'The CLI package is in a very strong state.',
+        },
+      }, null, 2);
+      const content = `I've reviewed the codebase thoroughly. Here is my assessment:\n\n${json}`;
+      const result = extractor.extractWithMetadata(content, 'validator');
+      expect(result.method).toBe('inline_json');
+      expect(result.output.decision).toBe('PASS');
+      expect(result.output.score).toBe(93);
+      expect(result.output.categories).toBeDefined();
+      expect(result.output.categories!.length).toBeGreaterThan(0);
+      const issues = result.output.categories!.flatMap(c => c.findings.flatMap(f => f.issues));
+      expect(issues.length).toBeGreaterThan(0);
+      expect(issues[0]!.title).toBe('Overly large multi-responsibility command functions');
+    });
   });
 });
 

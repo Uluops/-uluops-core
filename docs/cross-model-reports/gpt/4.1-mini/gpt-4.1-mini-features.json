@@ -1,0 +1,36 @@
+{
+  "agent": "code-validator",
+  "version": "1.5.0",
+  "decision": "PASS",
+  "score": 95,
+  "maxScore": 100,
+  "recommendations": [
+    {
+      "validator": "code-validator",
+      "title": "Large function exceeds 50 lines",
+      "priority": "suggested",
+      "severity": "medium",
+      "failureCode": "PRA-FRA/M",
+      "filePath": "src/renderer/pdl-renderer.ts",
+      "lineNumber": 362,
+      "description": "Large function exceeds 50 lines"
+    },
+    {
+      "validator": "code-validator",
+      "title": "Large function exceeds 50 lines",
+      "priority": "backlog",
+      "severity": "medium",
+      "failureCode": "PRA-FRA/M",
+      "filePath": "src/renderer/pdl-renderer.ts",
+      "lineNumber": 457,
+      "description": "Large function exceeds 50 lines"
+    }
+  ],
+  "metrics": {
+    "durationMs": 29441,
+    "model": "openai:gpt-4.1-mini",
+    "inputTokens": 25670,
+    "outputTokens": 971,
+    "totalEffectiveTokens": 26641
+  }
+}

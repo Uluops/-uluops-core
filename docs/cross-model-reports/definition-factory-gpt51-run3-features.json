@@ -1,0 +1,46 @@
+{
+  "agent": "code-validator",
+  "version": "1.5.0",
+  "decision": "PASS",
+  "score": 96,
+  "maxScore": 100,
+  "recommendations": [
+    {
+      "validator": "code-validator",
+      "title": "renderPDL is a large (587-line) function that handles frontmatter, metadata, triggers, environment, dependency graph, stages, rollback, notifications, artifacts, state, postflight, and footer rendering in one body. This violates single-purpose and maintainability guidance.",
+      "priority": "suggested",
+      "severity": "medium",
+      "failureCode": "PRA-FRA/M",
+      "filePath": "src/renderer/pdl-renderer.ts",
+      "lineNumber": 27,
+      "description": "The renderer in src/renderer/pdl-renderer.ts contains a single exported function renderPDL spanning ~587 lines (see file info and content starting at line 27). It orchestrates many responsibilities (layout, table generation, environment rendering, notifications, artifacts, postflight, and default results-submission instructions). Such a large, multi-responsibility function increases cyclomatic complexity and makes future modifications error-prone."
+    },
+    {
+      "validator": "code-validator",
+      "title": "loadAgentFromDisk, extractAgentData, loadCommandFromDisk, and extractCommandData form a fairly dense block of parsing/heuristic logic in a single file. While individually reasonable, the combined responsibilities make this module harder to reason about.",
+      "priority": "suggested",
+      "severity": "medium",
+      "failureCode": "PRA-FRA/M",
+      "filePath": "src/resolvers/filesystem.ts",
+      "lineNumber": 146,
+      "description": "In src/resolvers/filesystem.ts (lines 146–210 and 215–259), the resolver both locates files on disk and performs non-trivial shape extraction and heuristic agentType inference. The logic itself is clear and well-guarded, but for a core resolver it would be easier to maintain if file search and ADL/CDL shape interpretation were split into separate helpers or modules."
+    },
+    {
+      "validator": "code-validator",
+      "title": "The public API function renderPDL lacks JSDoc-level documentation of parameters and behavior, unlike the main package entry which is documented.",
+      "priority": "suggested",
+      "severity": "medium",
+      "failureCode": "STR-OMI/L",
+      "filePath": "src/renderer/pdl-renderer.ts",
+      "lineNumber": 24,
+      "description": "src/index.ts has a top-level package JSDoc, but renderPDL in src/renderer/pdl-renderer.ts (lines 24–27) only has a brief description comment and no structured JSDoc detailing parameter expectations (e.g., required fields on PDLPipeline) or output guarantees. Given that this is a primary renderer for PDL, richer documentation would help consumers and maintain consistency with other documented entry points."
+    }
+  ],
+  "metrics": {
+    "durationMs": 40435,
+    "model": "openai:gpt-5.1",
+    "inputTokens": 30346,
+    "outputTokens": 2705,
+    "totalEffectiveTokens": 33051
+  }
+}

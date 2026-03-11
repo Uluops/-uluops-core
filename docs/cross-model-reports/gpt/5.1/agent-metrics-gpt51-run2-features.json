@@ -1,0 +1,66 @@
+{
+  "agent": "code-validator",
+  "version": "1.5.0",
+  "decision": "PASS",
+  "score": 96,
+  "maxScore": 100,
+  "recommendations": [
+    {
+      "validator": "code-validator",
+      "title": "acquireLock() is a long, multi-responsibility function implementing file locking, stale-lock detection, and a custom exponential backoff busy-wait loop in ~60+ LOC with nested control flow.",
+      "priority": "suggested",
+      "severity": "medium",
+      "failureCode": "PRA-FRA/M",
+      "filePath": "src/buffer.ts",
+      "lineNumber": 130,
+      "description": "Consider extracting stale-lock detection and backoff waiting into smaller helpers (e.g., isStaleLock(), busyWait(ms)) to reduce cyclomatic complexity and make the core lock acquisition logic clearer."
+    },
+    {
+      "validator": "code-validator",
+      "title": "extractMetricsFromFile() combines streaming IO, JSON parsing/validation, token accumulation, model tracking, tool counting, and error logging in a single long async function.",
+      "priority": "suggested",
+      "severity": "medium",
+      "failureCode": "PRA-FRA/M",
+      "filePath": "src/extractor.ts",
+      "lineNumber": 82,
+      "description": "Split the message-processing loop into smaller helpers (e.g., parseLine(), updateTokenAccumulators(), updateExecutionStats()) while keeping the read loop focused on orchestration."
+    },
+    {
+      "validator": "code-validator",
+      "title": "registerCoreCommands() is part of the public CLI surface but lacks JSDoc describing the commands it registers and their expected usage.",
+      "priority": "suggested",
+      "severity": "medium",
+      "failureCode": "STR-OMI/M",
+      "filePath": "src/commands/core.ts",
+      "lineNumber": 34,
+      "description": "Add a brief JSDoc comment documenting that registerCoreCommands wires up extract/list/find/compare and is the public entry for integrating core commands into a Commander program."
+    },
+    {
+      "validator": "code-validator",
+      "title": "acquireLock() uses a tight synchronous busy-wait loop for delays, which can waste CPU cycles under lock contention.",
+      "priority": "suggested",
+      "severity": "medium",
+      "failureCode": "PRA-EFF/M",
+      "filePath": "src/buffer.ts",
+      "lineNumber": 162,
+      "description": "Given the constraints are documented, this may be acceptable; still, consider using a small synchronous sleep via child_process.spawnSync('sleep', ...) or revisiting async locking if Claude Code’s hook environment evolves."
+    },
+    {
+      "validator": "code-validator",
+      "title": "Commander is used as the sole runtime dependency for CLI parsing; while appropriate, there is no explicit rationale in docs/code about dependency selection.",
+      "priority": "suggested",
+      "severity": "medium",
+      "failureCode": "PRA-EFF/L",
+      "filePath": "package.json",
+      "lineNumber": 34,
+      "description": "Optionally add a short note in README or a comment in src/cli.ts clarifying commander is used for robust, tested CLI parsing instead of custom argument handling."
+    }
+  ],
+  "metrics": {
+    "durationMs": 93951,
+    "model": "openai:gpt-5.1",
+    "inputTokens": 50928,
+    "outputTokens": 2546,
+    "totalEffectiveTokens": 53474
+  }
+}

@@ -1,0 +1,48 @@
+{
+  "agent": "code-validator",
+  "version": "1.5.0",
+  "decision": "PASS",
+  "score": 0,
+  "maxScore": 100,
+  "recommendations": [
+    {
+      "validator": "code-validator",
+      "title": "Multi-responsibility functions reduce single-purpose clarity",
+      "priority": "suggested",
+      "severity": "medium",
+      "failureCode": "PRA-FRA/M",
+      "description": "Some exported functions handle multiple concerns (I/O, locking, logging, and formatting) within a single long function body. While logically correct, this increases maintenance overhead and makes testing granular behaviors slightly harder."
+    },
+    {
+      "validator": "code-validator",
+      "title": "Some public-facing types lack brief documentation comments",
+      "priority": "suggested",
+      "severity": "medium",
+      "failureCode": "STR-OMI/M",
+      "description": "Core public types used by CLI-facing APIs are self-explanatory by naming, but explicit doc comments would make the library easier to consume and improve IDE experience."
+    },
+    {
+      "validator": "code-validator",
+      "title": "Synchronous busy-wait locking is a deliberate but potentially expensive pattern",
+      "priority": "suggested",
+      "severity": "medium",
+      "failureCode": "PRA-EFF/M",
+      "description": "The file-locking mechanism uses a synchronous busy-wait loop with exponential backoff. The comments justify this choice for the synchronous hook context, but it does spin the CPU while waiting for a lock."
+    },
+    {
+      "validator": "code-validator",
+      "title": "Minor opportunity to centralize CLI output responsibilities",
+      "priority": "suggested",
+      "severity": "medium",
+      "failureCode": "PRA-EFF/L",
+      "description": "Most complex text formatting is correctly delegated to display/formatters.ts, but a few CLI commands still embed multi-line console.log templates directly."
+    }
+  ],
+  "metrics": {
+    "durationMs": 46680,
+    "model": "openai:gpt-5.1",
+    "inputTokens": 46249,
+    "outputTokens": 2837,
+    "totalEffectiveTokens": 49086
+  }
+}

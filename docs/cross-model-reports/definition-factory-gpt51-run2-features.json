@@ -1,0 +1,96 @@
+{
+  "agent": "code-validator",
+  "version": "1.5.0",
+  "decision": "PASS",
+  "score": 93,
+  "maxScore": 100,
+  "recommendations": [
+    {
+      "validator": "code-validator",
+      "title": "Parser API relies on caller to supply string input; tests demonstrate casting null to string, which is not defended against at runtime.",
+      "priority": "suggested",
+      "severity": "medium",
+      "failureCode": "SEM-COM/M",
+      "filePath": "test/edge-cases.test.ts",
+      "lineNumber": 20,
+      "description": "Add a runtime type guard at the top of `adl.parse`/`parseDefinition` (e.g., throw or return `{ success: false }` when content is not a non-empty string) to prevent accidental misuse outside TypeScript."
+    },
+    {
+      "validator": "code-validator",
+      "title": "ADL context builder file is large and dense (~458 lines) combining profile resolution, feature flags, and scoring logic, which increases maintenance overhead.",
+      "priority": "suggested",
+      "severity": "medium",
+      "failureCode": "PRA-FRA/M",
+      "filePath": "src/transformer/adl-context-builder.ts",
+      "lineNumber": 1,
+      "description": "Split out severity mapping, feature-flag handling, and profile descriptions into dedicated modules (e.g., `severity-mapping.ts`, `profile-defaults.ts`) to keep each file focused."
+    },
+    {
+      "validator": "code-validator",
+      "title": "`extractAgentData` in filesystem resolver handles interface, scoring categories, and auto-fail conditions in one function, slightly increasing cognitive complexity.",
+      "priority": "suggested",
+      "severity": "medium",
+      "failureCode": "PRA-FRA/M",
+      "filePath": "src/resolvers/filesystem.ts",
+      "lineNumber": 167,
+      "description": "Refactor into smaller helpers (e.g., `extractAgentInterface`, `extractScoringCategories`, `extractAutoFailConditions`) to simplify reasoning and testing."
+    },
+    {
+      "validator": "code-validator",
+      "title": "ESLint is configured but not executed in this validation; zero linter errors cannot be confirmed.",
+      "priority": "suggested",
+      "severity": "medium",
+      "failureCode": "STR-INC/L",
+      "filePath": "eslint.config.js",
+      "lineNumber": 8,
+      "description": "Ensure `npm run lint` is part of CI and runs cleanly on src/ to fully satisfy the style guide criterion."
+    },
+    {
+      "validator": "code-validator",
+      "title": "Test suite configuration appears sound and coverage artifacts exist, but tests were not executed in this environment.",
+      "priority": "suggested",
+      "severity": "medium",
+      "failureCode": "SEM-INC/H",
+      "filePath": "vitest.config.ts",
+      "lineNumber": 3,
+      "description": "Run `npm test` / `npm run test:coverage` in CI and ensure they are gating merges. From a code perspective this is likely already true; this item reflects environmental limitation here, not a project defect."
+    },
+    {
+      "validator": "code-validator",
+      "title": "FileSystemResolver trusts the provided `baseDir` and only validates definition names. Misuse with untrusted baseDir could unintentionally reveal filesystem structure.",
+      "priority": "suggested",
+      "severity": "medium",
+      "failureCode": "SEM-INC/M",
+      "filePath": "src/resolvers/filesystem.ts",
+      "lineNumber": 27,
+      "description": "Keep the current JSDoc warning and additionally consider runtime guards in consuming applications (e.g., restrict baseDir to known roots). For the library, clarifying docs around security assumptions is appropriate and already mostly present."
+    },
+    {
+      "validator": "code-validator",
+      "title": "Command thresholds and policy mappings in `cdl-context-builder` mix semantic rules with context preparation, slightly tightening coupling between domain policy and rendering.",
+      "priority": "suggested",
+      "severity": "medium",
+      "failureCode": "PRA-MAT/M",
+      "filePath": "src/transformer/cdl-context-builder.ts",
+      "lineNumber": 166,
+      "description": "Consider extracting command-type thresholds and decision policies into a configuration module or data structure consumed by the context builder to better isolate business rules."
+    },
+    {
+      "validator": "code-validator",
+      "title": "Runtime dependencies (ajv, nunjucks, yaml) are minimal and purposeful, but their ongoing security/maintenance status cannot be confirmed here.",
+      "priority": "suggested",
+      "severity": "medium",
+      "failureCode": "PRA-EFF/L",
+      "filePath": "package.json",
+      "lineNumber": 69,
+      "description": "Ensure a dependency audit (e.g., `npm audit`, GitHub Dependabot) is in place to monitor `ajv`, `nunjucks`, and `yaml` for vulnerabilities over time."
+    }
+  ],
+  "metrics": {
+    "durationMs": 75402,
+    "model": "openai:gpt-5.1",
+    "inputTokens": 31536,
+    "outputTokens": 4823,
+    "totalEffectiveTokens": 36359
+  }
+}

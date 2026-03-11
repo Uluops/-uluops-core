@@ -1,0 +1,76 @@
+{
+  "agent": "code-validator",
+  "version": "1.5.0",
+  "decision": "PASS",
+  "score": 93,
+  "maxScore": 100,
+  "recommendations": [
+    {
+      "validator": "code-validator",
+      "title": "Large multi-responsibility façade class (OpsClient) with many inlined method groups.",
+      "priority": "suggested",
+      "severity": "medium",
+      "failureCode": "PRA-FRA/M",
+      "filePath": "src/client.ts",
+      "lineNumber": 151,
+      "description": "OpsClient aggregates all auth, projects, runs, issues, analytics, taxonomy, and admin operations as large readonly object properties in a single 500+ line class. While each property delegates to extracted operation modules, the class itself is quite large and not trivially scannable. This is not strictly a bug, but it increases cognitive load and makes future expansion harder."
+    },
+    {
+      "validator": "code-validator",
+      "title": "toSnakeCase implementation produces leading underscores for consecutive uppercase characters.",
+      "priority": "suggested",
+      "severity": "medium",
+      "failureCode": "PRA-FRA/M",
+      "filePath": "src/utils/helpers.ts",
+      "lineNumber": 123,
+      "description": "toSnakeCase uses a simple /[A-Z]/g replacement which transforms 'XMLParser' into '_x_m_l_parser'. Tests in test/utils/helpers.test.ts:253 expect this behavior, so it is deliberate; however, this may be surprising for callers expecting 'xml_parser'."
+    },
+    {
+      "validator": "code-validator",
+      "title": "toApiQuery currently silently ignores array-valued filters and non-primitive values.",
+      "priority": "suggested",
+      "severity": "medium",
+      "failureCode": "PRA-FRA/M",
+      "filePath": "src/http/http-client.ts",
+      "lineNumber": 21,
+      "description": "toApiQuery only forwards null, string, number, and boolean values. If a caller passes arrays or nested objects, they will be dropped without warning. In this codebase, high-level operations (e.g., projects.listIssues, runs.listByProject) already flatten values appropriately, so this is safe now but somewhat fragile for future additions."
+    },
+    {
+      "validator": "code-validator",
+      "title": "Index barrel exports multiple concerns from a single file without inline documentation.",
+      "priority": "suggested",
+      "severity": "medium",
+      "failureCode": "STR-INC/L",
+      "filePath": "src/index.ts",
+      "lineNumber": 5,
+      "description": "src/index.ts re-exports client, http client, auth strategies, errors, all types, and config utilities. This is idiomatic for SDK entrypoints but there is no brief comment per export group to help navigation for new maintainers."
+    },
+    {
+      "validator": "code-validator",
+      "title": "Public README does not yet document newer run agent fields (e.g., definition* metadata) used by SaveRunInput.",
+      "priority": "suggested",
+      "severity": "medium",
+      "failureCode": "STR-OMI/M",
+      "filePath": "README.md",
+      "lineNumber": 20,
+      "description": "The SaveRunInput and related types in src/types/runs.ts support fields such as definitionType, definitionName, definitionVersion, and definitionHash, which are used in src/operations/runs.ts:24-48. The README's examples focus on basic validators and recommendations and appear to omit these newer metadata fields, which are important for reproducible workflows."
+    },
+    {
+      "validator": "code-validator",
+      "title": "Integration smoke tests are gated behind environment variables and frequently skipped locally.",
+      "priority": "suggested",
+      "severity": "medium",
+      "failureCode": "PRA-EFF/M",
+      "filePath": "test/integration/smoke.test.ts",
+      "lineNumber": 31,
+      "description": "test/integration/smoke.test.ts:31-36 short-circuits the entire file with describe.skip when INTEGRATION_TEST_CONFIG.enabled is false. This is intentional and documented, but it means that in many environments only mocked-contract tests will run, and regressions in real API behavior may be missed unless CI explicitly enables these tests."
+    }
+  ],
+  "metrics": {
+    "durationMs": 85919,
+    "model": "openai:gpt-5.1",
+    "inputTokens": 53606,
+    "outputTokens": 5068,
+    "totalEffectiveTokens": 58674
+  }
+}

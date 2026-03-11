@@ -1,0 +1,66 @@
+{
+  "agent": "code-validator",
+  "version": "1.5.0",
+  "decision": "PASS",
+  "score": 93,
+  "maxScore": 100,
+  "recommendations": [
+    {
+      "validator": "code-validator",
+      "title": "Exported factory functions (createOpsContext, createRegistryContext, createUnauthenticatedContext, createCoreContext) form core public API for commands but only some have brief comments and no JSDoc-style parameter/return documentation. This slightly hinders discoverability and IDE help.",
+      "priority": "suggested",
+      "severity": "medium",
+      "failureCode": "STR-OMI/M",
+      "filePath": "src/context.ts",
+      "lineNumber": 214,
+      "description": ""
+    },
+    {
+      "validator": "code-validator",
+      "title": "Utility helpers used across commands (exitWithError, readFileOption, writeFileAtomic, parseIntOption, parseFloatOption, normalizeKeys, getFlexibleProperty) have brief comments but no structured JSDoc. For a shared library-like module, stronger docs would help future contributors.",
+      "priority": "suggested",
+      "severity": "medium",
+      "failureCode": "STR-OMI/L",
+      "filePath": "src/utils.ts",
+      "lineNumber": 72,
+      "description": ""
+    },
+    {
+      "validator": "code-validator",
+      "title": "readFileOption logs friendly messages for common fs errors but falls back to exitWithError for any other error without including the original error code/message, which may make debugging less clear in some edge cases (e.g., ENOENT on network filesystems).",
+      "priority": "suggested",
+      "severity": "medium",
+      "failureCode": "SEM-COM/M",
+      "filePath": "src/utils.ts",
+      "lineNumber": 91,
+      "description": ""
+    },
+    {
+      "validator": "code-validator",
+      "title": "Multiple command registration functions (e.g., src/commands/admin.ts, analytics.ts, issues.ts, runs.ts, auth.ts) are likely approaching or exceeding 200–500 lines and combine argument parsing, domain coordination, and console formatting. While acceptable for a CLI, this increases cyclomatic complexity and reduces single-responsibility clarity.",
+      "priority": "suggested",
+      "severity": "medium",
+      "failureCode": "PRA-FRA/M",
+      "filePath": "src/commands/*.ts",
+      "lineNumber": 1,
+      "description": ""
+    },
+    {
+      "validator": "code-validator",
+      "title": "Commands (auth, projects, runs, issues, config, definitions, etc.) call process.exit directly from handlers. This is reasonable for a top-level CLI but makes unit testing and programmatic reuse harder because it forces process termination rather than returning exit codes.",
+      "priority": "suggested",
+      "severity": "medium",
+      "failureCode": "PRA-FRA/M",
+      "filePath": "src/commands/auth.ts",
+      "lineNumber": 100,
+      "description": ""
+    }
+  ],
+  "metrics": {
+    "durationMs": 45296,
+    "model": "openai:gpt-5.1",
+    "inputTokens": 23304,
+    "outputTokens": 2490,
+    "totalEffectiveTokens": 25794
+  }
+}

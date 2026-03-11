@@ -1,0 +1,46 @@
+{
+  "agent": "code-validator",
+  "version": "1.5.0",
+  "decision": "PASS",
+  "score": 96,
+  "maxScore": 100,
+  "recommendations": [
+    {
+      "validator": "code-validator",
+      "title": "Buffer module is a large, multi-responsibility file (~600 lines) encompassing locking, serialization, querying, cleanup, statistics, and various edge-case handling, making it harder to maintain and reason about.",
+      "priority": "suggested",
+      "severity": "medium",
+      "failureCode": "PRA-FRA/M",
+      "filePath": "src/buffer.ts",
+      "lineNumber": 1,
+      "description": "Although individual functions mostly appear reasonable, the buffer module aggregates many concerns (entry validation, JSONL handling, locking, TTL logic, statistics, querying helpers). This increases cognitive load and makes changes risky. Splitting responsibilities into smaller modules (e.g., lock management, file I/O, querying/statistics) would improve maintainability."
+    },
+    {
+      "validator": "code-validator",
+      "title": "The `acquireLock` function in the buffer module encapsulates a relatively complex busy-wait locking strategy with exponential backoff and stale-lock detection, increasing cognitive complexity in a single function.",
+      "priority": "suggested",
+      "severity": "medium",
+      "failureCode": "PRA-FRA/M",
+      "filePath": "src/buffer.ts",
+      "lineNumber": 162,
+      "description": "The function is well-documented and justified, but it mixes lock acquisition policy, stale-lock cleanup, and timing/backoff logic. This makes it harder to test or adjust behavior (e.g., stale timeout) without touching a large, tightly-coupled block."
+    },
+    {
+      "validator": "code-validator",
+      "title": "Some exported entry points and CLI/command registration functions have minimal or no high-level documentation, despite being core public APIs for this package.",
+      "priority": "suggested",
+      "severity": "medium",
+      "failureCode": "STR-EXC/L",
+      "filePath": "src/index.ts",
+      "lineNumber": 1,
+      "description": "Most modules (e.g., `cli.ts`, `extractor.ts`, `buffer.ts`, `logger.ts`) contain header comments and inline explanations. However, the main public entry surface (`src/index.ts`, and some command registration functions) are not fully documented at the same level, which can slow onboarding for new contributors."
+    }
+  ],
+  "metrics": {
+    "durationMs": 57197,
+    "model": "openai:gpt-5.1",
+    "inputTokens": 39682,
+    "outputTokens": 4157,
+    "totalEffectiveTokens": 43839
+  }
+}

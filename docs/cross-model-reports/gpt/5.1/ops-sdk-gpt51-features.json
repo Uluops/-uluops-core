@@ -1,0 +1,15 @@
+{
+  "agent": "code-validator",
+  "version": "1.5.0",
+  "decision": "PASS",
+  "score": 92,
+  "maxScore": 100,
+  "recommendations": [],
+  "metrics": {
+    "durationMs": 52607,
+    "model": "openai:gpt-5.1",
+    "inputTokens": 26589,
+    "outputTokens": 4307,
+    "totalEffectiveTokens": 30896
+  }
+}

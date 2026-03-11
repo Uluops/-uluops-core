@@ -1,0 +1,36 @@
+{
+  "agent": "code-validator",
+  "version": "1.5.0",
+  "decision": "PASS",
+  "score": 96,
+  "maxScore": 100,
+  "recommendations": [
+    {
+      "validator": "code-validator",
+      "title": "Untitled Issue",
+      "priority": "suggested",
+      "severity": "medium",
+      "failureCode": "STR-INC/L",
+      "filePath": "src/config/validators.ts",
+      "lineNumber": 34,
+      "description": "Split the object literal across multiple lines with one property per line to match the dominant formatting style and ease future diffs."
+    },
+    {
+      "validator": "code-validator",
+      "title": "Untitled Issue",
+      "priority": "suggested",
+      "severity": "medium",
+      "failureCode": "SEM-COM/M",
+      "filePath": "vitest.config.ts",
+      "lineNumber": 8,
+      "description": "Re-evaluate whether src/index.ts and other index files should be excluded from coverage. If they contain significant logic or re-export wiring that could break, consider including them in coverage or adding explicit tests while documenting the rationale for any exclusions."
+    }
+  ],
+  "metrics": {
+    "durationMs": 56194,
+    "model": "openai:gpt-5.1",
+    "inputTokens": 34190,
+    "outputTokens": 3227,
+    "totalEffectiveTokens": 37417
+  }
+}

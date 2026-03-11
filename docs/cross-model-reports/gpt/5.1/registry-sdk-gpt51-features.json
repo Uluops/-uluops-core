@@ -1,0 +1,56 @@
+{
+  "agent": "code-validator",
+  "version": "1.5.0",
+  "decision": "PASS",
+  "score": 95,
+  "maxScore": 100,
+  "recommendations": [
+    {
+      "validator": "code-validator",
+      "title": "Untitled Issue",
+      "priority": "suggested",
+      "severity": "medium",
+      "failureCode": "PRA-FRA/M",
+      "filePath": "src/client.ts",
+      "lineNumber": 117,
+      "description": "RegistryClient acts primarily as a façade, but it owns construction and binding of a large surface area. This is acceptable for an SDK entry point, yet any additional concerns (e.g., more session flows, global config) would push it into being harder to maintain."
+    },
+    {
+      "validator": "code-validator",
+      "title": "Untitled Issue",
+      "priority": "suggested",
+      "severity": "medium",
+      "failureCode": "STR-INC/L",
+      "filePath": "test/setup.ts",
+      "lineNumber": 143,
+      "description": "While tests are allowed to be looser, using broad `Record<string, unknown>` can hide mistakes (e.g., misspelled fields) that stricter structural types would catch."
+    },
+    {
+      "validator": "code-validator",
+      "title": "Untitled Issue",
+      "priority": "suggested",
+      "severity": "medium",
+      "failureCode": "STR-OMI/M",
+      "filePath": "src/http/http-client.ts",
+      "lineNumber": 38,
+      "description": "The brief file-level comment explains that this wraps @uluops/sdk-core, but does not describe how defaults (baseUrl, headers, retry behavior) map to the underlying core client. For an exported public API in a library, more explicit config docs aid consumers."
+    },
+    {
+      "validator": "code-validator",
+      "title": "Untitled Issue",
+      "priority": "suggested",
+      "severity": "medium",
+      "failureCode": "PRA-EFF/L",
+      "filePath": "package.json",
+      "lineNumber": 53,
+      "description": "Relying heavily on another internal package for HTTP and auth is reasonable, but future changes in @uluops/sdk-core could affect this package’s public behavior. There is no local documentation of this coupling or its versioning policy."
+    }
+  ],
+  "metrics": {
+    "durationMs": 49411,
+    "model": "openai:gpt-5.1",
+    "inputTokens": 30970,
+    "outputTokens": 3362,
+    "totalEffectiveTokens": 34332
+  }
+}

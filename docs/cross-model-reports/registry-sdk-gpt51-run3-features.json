@@ -1,0 +1,56 @@
+{
+  "agent": "code-validator",
+  "version": "1.5.0",
+  "decision": "PASS",
+  "score": 93,
+  "maxScore": 100,
+  "recommendations": [
+    {
+      "validator": "code-validator",
+      "title": "RegistryClient aggregates a large number of operation bindings and responsibilities (definitions, versions, validation, dependencies, forks, executions, translation, models, users, render, session management, auth inspection) within a single class, making it somewhat monolithic.",
+      "priority": "suggested",
+      "severity": "medium",
+      "failureCode": "PRA-FRA/M",
+      "filePath": "src/client.ts",
+      "lineNumber": 117,
+      "description": "Consider extracting specific concerns into smaller façade classes (e.g., DefinitionsClient, ModelsClient) or moving session-management helpers (login/logout) into a separate AuthClient to keep the main client focused on API surface orchestration."
+    },
+    {
+      "validator": "code-validator",
+      "title": "The \"bind*\" methods in RegistryClient follow an almost identical pattern and duplicate structural logic for wiring operations to the underlying HTTP client.",
+      "priority": "suggested",
+      "severity": "medium",
+      "failureCode": "PRA-FRA/M",
+      "filePath": "src/client.ts",
+      "lineNumber": 276,
+      "description": "Consider introducing a small helper factory (e.g., bindOps(http, opsModule, mapping)) or a generic wrapper to reduce duplication while maintaining type safety."
+    },
+    {
+      "validator": "code-validator",
+      "title": "Public classes and interfaces are only partially documented with JSDoc-style comments; some exported types across src (e.g., individual operation functions, validators, loaders) appear to lack explicit API-level documentation.",
+      "priority": "suggested",
+      "severity": "medium",
+      "failureCode": "STR-OMI/M",
+      "filePath": "src/http/http-client.ts",
+      "lineNumber": 38,
+      "description": "Add concise JSDoc comments to key public exports (especially in operations/, config/loaders.ts, and validators) to clarify behavior and parameters for SDK consumers and improve IDE support."
+    },
+    {
+      "validator": "code-validator",
+      "title": "SDK version is hardcoded and needs manual synchronization with package.json, which can lead to drift if releases are not carefully managed.",
+      "priority": "suggested",
+      "severity": "medium",
+      "failureCode": "PRA-EFF/L",
+      "filePath": "src/config/constants.ts",
+      "lineNumber": 76,
+      "description": "Automate SDK_VERSION synchronization (e.g., via a small build step or script that updates constants.ts from package.json during release) to avoid human error around version mismatches."
+    }
+  ],
+  "metrics": {
+    "durationMs": 68170,
+    "model": "openai:gpt-5.1",
+    "inputTokens": 34805,
+    "outputTokens": 3236,
+    "totalEffectiveTokens": 38041
+  }
+}

@@ -1,0 +1,46 @@
+{
+  "agent": "code-validator",
+  "version": "1.5.0",
+  "decision": "PASS",
+  "score": 96,
+  "maxScore": 100,
+  "recommendations": [
+    {
+      "validator": "code-validator",
+      "title": "Missing specialized unauthorized handling in executeFetch error path",
+      "priority": "suggested",
+      "severity": "medium",
+      "failureCode": "SEM-COM/M",
+      "filePath": "src/http/http-client.ts",
+      "lineNumber": 412,
+      "description": "executeFetch() maps fetch errors through handleFetchError, but unlike doFetch(), it does not benefit from the special-case UnauthorizedError guidance when there is no auth strategy and a network TypeError occurs. This leads to slightly inconsistent behavior between request()/get() and requestRaw()/requestBinary() in the 'no credentials' + network-failure scenario."
+    },
+    {
+      "validator": "code-validator",
+      "title": "SDK_CORE_VERSION constant out of sync with package.json and README",
+      "priority": "suggested",
+      "severity": "medium",
+      "failureCode": "PRA-FRA/M",
+      "filePath": "src/config/constants.ts",
+      "lineNumber": 9,
+      "description": "SDK_CORE_VERSION is documented as needing to match the package version in package.json, but it currently differs. package.json declares version 0.1.2, README documents 'Current version: 0.1.1', and SDK_CORE_VERSION is '0.1.1'."
+    },
+    {
+      "validator": "code-validator",
+      "title": "Backoff configuration can be misused to create excessive waits",
+      "priority": "suggested",
+      "severity": "medium",
+      "failureCode": "PRA-EFF/L",
+      "filePath": "src/http/http-client.ts",
+      "lineNumber": 701,
+      "description": "HttpClient and the retry helper implement exponential backoff with caps on delay, which is good, but there is no internal guard against very high retry counts configured by callers. While not an issue in this repo’s own usage, external SDKs could inadvertently set large retries, leading to long total waits."
+    }
+  ],
+  "metrics": {
+    "durationMs": 83960,
+    "model": "openai:gpt-5.1",
+    "inputTokens": 43179,
+    "outputTokens": 5618,
+    "totalEffectiveTokens": 48797
+  }
+}

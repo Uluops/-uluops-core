@@ -1,0 +1,66 @@
+{
+  "agent": "code-validator",
+  "version": "1.5.0",
+  "decision": "PASS",
+  "score": 96,
+  "maxScore": 100,
+  "recommendations": [
+    {
+      "validator": "code-validator",
+      "title": "HttpClient class is quite large and multi-responsibility",
+      "priority": "suggested",
+      "severity": "medium",
+      "failureCode": "PRA-FRA/M",
+      "filePath": "src/http/http-client.ts",
+      "lineNumber": 102,
+      "description": "The HttpClient class (src/http/http-client.ts:102) centralizes configuration, auth strategy wiring, envelope parsing, retry logic, rate limiting, raw/binary accessors, and error mapping in a single class of ~700+ lines. While methods are individually focused, the aggregate responsibility of the class is broad and makes it harder to navigate and modify."
+    },
+    {
+      "validator": "code-validator",
+      "title": "SDK_CORE_VERSION constant out of sync with package.json version",
+      "priority": "suggested",
+      "severity": "medium",
+      "failureCode": "PRA-FRA/M",
+      "filePath": "src/config/constants.ts",
+      "lineNumber": 15,
+      "description": "SDK_CORE_VERSION in src/config/constants.ts is '0.1.1' (line 15), while package.json declares version '0.1.2' (package.json:3). This creates a divergence between the runtime constant and the published package version."
+    },
+    {
+      "validator": "code-validator",
+      "title": "Minor style inconsistency in arrow function formatting",
+      "priority": "suggested",
+      "severity": "medium",
+      "failureCode": "STR-INC/L",
+      "filePath": "src/utils/logger.ts",
+      "lineNumber": 41,
+      "description": "In sanitizeForLog (src/utils/logger.ts:40–42), the arrow function uses an implicit return without parentheses around the argument (`value.map(item => sanitizeForLog(item, seen));`). Elsewhere, arguments often use parentheses, and the rest of the codebase is highly consistent. This is a minor style nit but stands out in an otherwise very uniform codebase."
+    },
+    {
+      "validator": "code-validator",
+      "title": "validateCredentials public behavior not surfaced in README",
+      "priority": "suggested",
+      "severity": "medium",
+      "failureCode": "STR-OMI/M",
+      "filePath": "src/config/loaders.ts",
+      "lineNumber": 188,
+      "description": "validateCredentials (src/config/loaders.ts:319–331) is a public export (src/index.ts:43–53) and enforces important behavior (throwing ValidationError when no credentials or inconsistent email/password are provided). README.md explains the credential chain and env vars but does not explicitly document validateCredentials, which could be used by SDKs or apps to pre-validate configs."
+    },
+    {
+      "validator": "code-validator",
+      "title": "Version constant mixes runtime constants with release process concerns",
+      "priority": "suggested",
+      "severity": "medium",
+      "failureCode": "PRA-MAT/L",
+      "filePath": "src/config/constants.ts",
+      "lineNumber": 15,
+      "description": "SDK_CORE_VERSION (src/config/constants.ts:15) is manually kept in sync with package.json (README.md:10 notes the current version as 0.1.1). While not incorrect, this couples the config constants module to the release process, and any missed bump leads to inconsistencies."
+    }
+  ],
+  "metrics": {
+    "durationMs": 101146,
+    "model": "openai:gpt-5.1",
+    "inputTokens": 51089,
+    "outputTokens": 5128,
+    "totalEffectiveTokens": 56217
+  }
+}
