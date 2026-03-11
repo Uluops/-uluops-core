@@ -4,10 +4,17 @@ import { ToolHandler, extToLanguage } from './ToolHandler.js';
 import { ToolAdapter } from '../ai/ToolAdapter.js';
 import { TokenBudgetTracker } from '../ai/TokenBudgetTracker.js';
 import { OutputExtractor } from '../parser/OutputExtractor.js';
+import {
+  validatorOutputSchema,
+  executorOutputSchema,
+  genericOutputSchema,
+} from '../parser/outputSchemas.js';
 import type { ResolvedConfig } from '../types/config.js';
 import type { ResolvedDefinition, ValidatorRuntime, ExecutorRuntime } from '../types/registry.js';
 import type { ExecutionInput, ExecutionOptions, ResolvedExecutionContext, Recommendation } from '../types/execution.js';
 import type { AgentResult, ValidatorAgentResult, ExecutorAgentResult } from '../types/agent.js';
+import type { AgentType } from '../types/execution.js';
+import type { ParsedOutput, ExtractionResult } from '../types/parser.js';
 import type { UsageMetrics } from '../types/ai.js';
 import type { Logger } from '@uluops/sdk-core';
 
@@ -74,6 +81,7 @@ export class AgentExecutor {
     const initialMessage = await this.buildInitialMessage(input, toolHandler);
 
     // 6. Execute via AI SDK (tool loop handled automatically)
+    const outputSchema = this.getOutputSchema(agentType);
     const result = await this.aiProvider.generate({
       model: context.model,
       system: systemPrompt,
@@ -85,9 +93,10 @@ export class AgentExecutor {
       temperature: context.temperature,
       contextBudget,
       budgetTracker,
+      output: outputSchema,
     });
 
-    // 5b. Log raw LLM output for cross-model diagnosis
+    // 6b. Log raw LLM output for cross-model diagnosis
     const rawText = result.text ?? '';
     this.logger.debug(`Raw output: ${rawText.length} chars, finishReason=${result.finishReason}`);
     if (rawText.length > 0 && rawText.length <= 5000) {
@@ -98,10 +107,24 @@ export class AgentExecutor {
       this.logger.warn('Empty output — model likely hit maxSteps while still calling tools');
     }
 
-    // 6. Parse structured output with metadata
-    const extraction = this.outputExtractor.extractWithMetadata(result.text, agentType);
-    const parsed = extraction.output;
-    this.logger.info(`Output extraction: method=${extraction.method}, confidence=${extraction.confidence}`);
+    // 7. Parse output — prefer structured output, fall back to extraction
+    let parsed: ParsedOutput;
+    let extraction: ExtractionResult;
+
+    if (result.structuredOutput) {
+      parsed = this.mapStructuredOutput(result.structuredOutput, agentType);
+      extraction = {
+        output: parsed,
+        method: 'structured_output',
+        confidence: 1.0,
+        warnings: [],
+      };
+      this.logger.info('Output extraction: method=structured_output, confidence=1.0');
+    } else {
+      extraction = this.outputExtractor.extractWithMetadata(result.text, agentType);
+      parsed = extraction.output;
+      this.logger.info(`Output extraction: method=${extraction.method}, confidence=${extraction.confidence}`);
+    }
     this.logger.debug(`Parsed output: decision=${parsed.decision}, score=${parsed.score}, hasRawJson=${!!parsed.rawJson}`);
     if (parsed.rawJson) {
       const keys = Object.keys(parsed.rawJson as Record<string, unknown>);
@@ -282,6 +305,52 @@ export class AgentExecutor {
     if (remaining > 0) tree += `\n  ... and ${remaining} more files`;
 
     return tree;
+  }
+
+  /**
+   * Get the appropriate output schema for an agent type.
+   */
+  private getOutputSchema(agentType: AgentType) {
+    switch (agentType) {
+      case 'validator':
+        return { schema: validatorOutputSchema, name: 'ValidationResult' };
+      case 'executor':
+        return { schema: executorOutputSchema, name: 'ExecutionResult' };
+      case 'analyst':
+      case 'generator':
+      case 'explorer':
+      case 'forecaster':
+        return { schema: genericOutputSchema, name: 'AgentResult' };
+    }
+  }
+
+  /**
+   * Map structured output to ParsedOutput.
+   * Null values from .nullable() fields are converted to undefined.
+   */
+  private mapStructuredOutput(output: unknown, agentType: AgentType): ParsedOutput {
+    const base = output as { decision: string; score: number; maxScore: number; summary: string | null };
+    const result: ParsedOutput = {
+      decision: base.decision,
+      score: base.score,
+      maxScore: base.maxScore,
+      summary: base.summary ?? undefined,
+      rawJson: output,
+    };
+
+    if (agentType === 'validator') {
+      const v = output as { categories: Array<unknown> | null };
+      if (v.categories) {
+        result.categories = v.categories as ParsedOutput['categories'];
+      }
+    } else if (agentType === 'executor') {
+      const e = output as { artifacts: Array<unknown> | null };
+      if (e.artifacts) {
+        result.artifacts = e.artifacts as ParsedOutput['artifacts'];
+      }
+    }
+
+    return result;
   }
 
   /**

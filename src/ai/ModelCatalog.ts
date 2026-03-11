@@ -49,6 +49,7 @@ const DEFAULT_CAPABILITIES: ModelCapabilities = {
   tools: true,
   streaming: true,
   extendedThinking: false,
+  structuredOutput: false,
 };
 
 /**

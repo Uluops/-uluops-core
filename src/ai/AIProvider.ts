@@ -1,4 +1,4 @@
-import { generateText, stepCountIs, type LanguageModel, type ToolSet } from 'ai';
+import { generateText, Output, NoObjectGeneratedError, stepCountIs, type LanguageModel, type ToolSet } from 'ai';
 import type { ProviderOptions } from '@ai-sdk/provider-utils';
 import { createAnthropic, type AnthropicProvider } from '@ai-sdk/anthropic';
 import { createOpenAI, type OpenAIProvider } from '@ai-sdk/openai';
@@ -45,6 +45,10 @@ export interface AIGenerateResult {
 
   /** Finish reason */
   finishReason: string;
+
+  /** Structured output object, if output schema was provided and model supports it.
+   *  When present, this is already validated against the schema — no extraction needed. */
+  structuredOutput?: unknown;
 }
 
 /**
@@ -86,6 +90,10 @@ export interface AIGenerateOptions {
 
   /** Optional budget tracker for sharing state with tools (e.g., get_token_budget) */
   budgetTracker?: TokenBudgetTracker;
+
+  /** Structured output schema. When provided and the model supports it,
+   *  constrains the final response to match this schema exactly. */
+  output?: Parameters<typeof Output.object>[0];
 }
 
 /**
@@ -171,6 +179,16 @@ export class AIProvider {
     }
     this.logger.debug(`Config: maxTokens=${options.maxTokens ?? 8192}, maxSteps=${options.maxSteps ?? 50}, temp=${options.temperature ?? 0}`);
 
+    // Determine if structured output should be used
+    const useStructuredOutput = !!options.output
+      && resolved.capabilities.structuredOutput;
+
+    if (options.output && !resolved.capabilities.structuredOutput) {
+      this.logger.info(
+        `Model ${resolved.modelId} does not support structured output — falling back to free-form extraction`,
+      );
+    }
+
     try {
       let stepCount = 0;
       const budgetTracker = options.budgetTracker;
@@ -180,19 +198,23 @@ export class AIProvider {
         ? this.buildBudgetPrepareStep(options.contextBudget)
         : undefined;
 
+      const maxSteps = options.maxSteps ?? 50;
+
       const result = await generateText({
         model: languageModel,
         system,
         prompt: options.prompt,
         tools: options.tools,
         maxOutputTokens: options.maxTokens ?? 8192,
-        stopWhen: stepCountIs(options.maxSteps ?? 50),
+        // +2 when structured output: +1 for the output generation step, +1 buffer
+        stopWhen: stepCountIs(maxSteps + (useStructuredOutput ? 2 : 0)),
         temperature: options.temperature ?? 0,
         abortSignal: options.timeoutMs
           ? AbortSignal.timeout(options.timeoutMs)
           : undefined,
         ...(providerOptions ? { providerOptions } : {}),
         ...(prepareStep ? { prepareStep } : {}),
+        ...(useStructuredOutput ? { output: Output.object(options.output!) } : {}),
         onStepFinish: (step) => {
           stepCount++;
           const toolNames = step.toolCalls?.map(tc => tc.toolName) ?? [];
@@ -238,8 +260,28 @@ export class AIProvider {
         provider: resolved.provider,
         steps: result.steps.length,
         finishReason: result.finishReason,
+        structuredOutput: useStructuredOutput ? result.output : undefined,
       };
     } catch (error) {
+      // If structured output fails, extract from the error's preserved text
+      // instead of re-running the entire generation (which would double cost).
+      if (useStructuredOutput && NoObjectGeneratedError.isInstance(error)) {
+        this.logger.warn(
+          `Structured output generation failed — falling back to text extraction: ${(error as Error).message}`,
+        );
+        return {
+          text: (error as NoObjectGeneratedError).text ?? '',
+          structuredOutput: undefined,
+          usage: this.mapUsage(
+            (error as NoObjectGeneratedError).usage ?? { inputTokens: 0, outputTokens: 0 },
+          ),
+          toolCallCount: 0,
+          model: `${resolved.provider}:${resolved.modelId}`,
+          provider: resolved.provider,
+          steps: 0,
+          finishReason: (error as NoObjectGeneratedError).finishReason ?? 'error',
+        };
+      }
       throw this.mapError(error, options.timeoutMs);
     }
   }

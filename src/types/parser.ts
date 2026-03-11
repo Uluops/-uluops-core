@@ -21,6 +21,9 @@ export interface ParsedOutput {
 
   /** Raw JSON if extraction was from code fence */
   rawJson?: unknown;
+
+  /** Brief human-readable summary of the result */
+  summary?: string;
 }
 
 /**
@@ -82,7 +85,7 @@ export interface ExtractionResult {
   output: ParsedOutput;
 
   /** Extraction method used */
-  method: 'json_code_fence' | 'inline_json' | 'structured_text';
+  method: 'json_code_fence' | 'inline_json' | 'structured_text' | 'structured_output';
 
   /** Confidence in extraction (0-1) */
   confidence: number;
