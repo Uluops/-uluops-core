@@ -77,9 +77,9 @@ async function checkCommand(check: PreflightCheck): Promise<void> {
   }
 
   // Reject commands with shell metacharacters that could be used for injection:
-  // backtick/process substitution (`cmd`, $(cmd)), chaining (;), pipes (|),
-  // and redirections (>, <) which could exfiltrate data or chain arbitrary commands.
-  if (/`|\$\(|;|&&|\|[^|]|(?<![|])>|</.test(check.command)) {
+  // backtick/process substitution (`cmd`, $(cmd)), chaining (; && || newlines),
+  // pipes (|), and redirections (>, <) which could exfiltrate data or chain commands.
+  if (/`|\$\(|;|&&|\|\||\|[^|]|(?<![|])>|<|\n|\r/.test(check.command)) {
     throw new PreflightError(
       `Preflight command contains disallowed shell metacharacter: ${check.command}`,
       'command',

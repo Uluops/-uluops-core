@@ -376,7 +376,12 @@ export class ToolHandler {
       signal: AbortSignal.timeout(GLOB_TIMEOUT_MS),
     });
 
-    const regex = new RegExp(opts.pattern, 'gi');
+    let regex: RegExp;
+    try {
+      regex = new RegExp(opts.pattern, 'gi');
+    } catch {
+      return { tool_use_id: id, content: `Error: invalid regex pattern: ${opts.pattern}` };
+    }
 
     switch (opts.mode) {
       case 'files': {

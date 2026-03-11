@@ -117,6 +117,14 @@ export class AIProvider {
     google: 'createGoogleGenerativeAI',
   };
 
+  /**
+   * Allowlist of valid provider names for dynamic import.
+   * Prevents path traversal via crafted provider strings (CWE-829).
+   */
+  private static readonly VALID_DYNAMIC_PROVIDERS = new Set([
+    'anthropic', 'openai', 'google', 'mistral', 'cohere', 'groq', 'xai', 'deepseek',
+  ]);
+
   /** Initialized AI SDK provider factories, keyed by provider name */
   private providers = new Map<string, (modelId: string) => LanguageModel>();
 
@@ -573,6 +581,13 @@ export class AIProvider {
     const creds = this.config.ai.providers[providerName];
     if (!creds) {
       throw this.missingProviderError(providerName);
+    }
+
+    if (!AIProvider.VALID_DYNAMIC_PROVIDERS.has(providerName)) {
+      throw new ConfigurationError(
+        `Unknown AI provider: "${providerName}". ` +
+        `Valid providers: ${[...AIProvider.VALID_DYNAMIC_PROVIDERS].join(', ')}`,
+      );
     }
 
     try {
