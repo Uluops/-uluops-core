@@ -20,7 +20,7 @@ After hardening the extractor across 11 failure modes, **gpt-5.1 now extracts re
 | gpt-4o-mini | Budget | Score 0, ERROR | **Process failure** | Empty output — hit maxSteps (22 tokens) |
 | gpt-4.1 | Standard | N/A | **Process failure** | 30K TPM rate limit — never ran successfully |
 | gpt-4.1-nano | Budget | Score 0, PASS | **Fixed** (unit test) | Criteria sub-scores only, no total |
-| gpt-5 | Reasoning | Score 0, [OBJECT OBJECT] | **Process failure** | AI SDK timeout — reasoning model too slow |
+| gpt-5 | Reasoning | Score 0, [OBJECT OBJECT] | **Fixed** (live: PASS 91/100, 0/97*) | `score_total` field name (FM12); needs 10m timeout. *shell run pre-fix |
 | gpt-5-mini | Reasoning | Score 0, [OBJECT OBJECT] | **Fixed** (live confirmed: FAIL 92/100) | Stale dist was root cause; nested summary + decision-as-object |
 | gpt-5-nano | Reasoning | Score 0, ERROR | **Fixed** (live confirmed) | `status` instead of `decision`; arbitrary wrapper names |
 | gpt-5-codex | Coding | Score 0, PASS | **Fixed** (live: PASS 97/100, FAIL 81/100) | `score: {total: 85, ...}` object; varies format between runs |
@@ -172,6 +172,11 @@ All token data saved correctly to the tracker with full breakdowns:
 **Shape**: `"issues": { "total_issues": 2, "details": [...] }`
 **Fix**: Check `details` and `list` alongside `items` for nested issue arrays
 
+### FM12: `score_total` Field Name
+**Models**: gpt-5
+**Shape**: `"results": { "score_total": 97, "code_quality": 27, ... }`
+**Fix**: Added `score_total` to score key search in `resolveScoreField()`, added to wrapper detection in `findWrapperWithScoreOrDecision()`, and unwrap top-level `obj['results']` alongside `report['results']`
+
 ## Title/Description Field Resolution
 
 Models use different field names for the same semantic content. Full resolution chain:
@@ -221,7 +226,7 @@ When text contains multiple JSON objects (tool results, partial outputs), the in
 
 ## Test Coverage
 
-54 tests in `test/parser/OutputExtractor.test.ts` (all passing), including cross-model cases:
+56 tests in `test/parser/OutputExtractor.test.ts` (all passing), including cross-model cases:
 
 | Test Case | Failure Mode | Source Model |
 |-----------|-------------|--------------|
@@ -250,8 +255,9 @@ When text contains multiple JSON objects (tool results, partial outputs), the in
 | issues.details with location field | FM11 | gpt-5.1 |
 | summary as title + details as description | FM title | gpt-5.1 |
 | inline JSON with prefix text + score.total | FM1 | gpt-5.1 |
+| score_total inside results wrapper | FM12 | gpt-5 |
 
-Total test suite: 400+ tests (54 OutputExtractor, rest across all modules)
+Total test suite: 400+ tests (56 OutputExtractor, rest across all modules)
 
 ## Files Modified
 

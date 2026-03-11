@@ -1,0 +1,26 @@
+{
+  "agent": "code-validator",
+  "version": "1.5.0",
+  "decision": "PASS",
+  "score": 0,
+  "maxScore": 100,
+  "recommendations": [
+    {
+      "validator": "code-validator",
+      "title": "Large, multi-responsibility component exceeds 50-line guidance for single-purpose functions",
+      "priority": "suggested",
+      "severity": "medium",
+      "failureCode": "PRA-FRA/M",
+      "filePath": "src/UserMenu.tsx",
+      "lineNumber": 29,
+      "description": "Extract keyboard/focus management into a dedicated hook (e.g., useUserMenuInteractions), and separate avatar/display-name rendering into small subcomponents or helpers to keep the main component focused and shorter."
+    }
+  ],
+  "metrics": {
+    "durationMs": 173587,
+    "model": "openai:gpt-5",
+    "inputTokens": 23661,
+    "outputTokens": 4321,
+    "totalEffectiveTokens": 27982
+  }
+}

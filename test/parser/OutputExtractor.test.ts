@@ -568,6 +568,24 @@ After further analysis:
       expect(result.categories![0]!.score).toBe(30);
     });
 
+    // FM12: score_total field name (gpt-5 shape)
+    it('resolves score_total inside results wrapper', () => {
+      const content = JSON.stringify({
+        results: {
+          score_total: 97,
+          code_quality: 27,
+          standards_compliance: 25,
+          testing: 25,
+          best_practices: 20,
+        },
+        decision: 'PASS',
+        issues: [],
+      });
+      const result = extractor.extract(content, 'validator');
+      expect(result.decision).toBe('PASS');
+      expect(result.score).toBe(97);
+    });
+
     // Multi-step output: final JSON report at end of accumulated text
     it('extracts the last JSON object from multi-step output', () => {
       const content = [

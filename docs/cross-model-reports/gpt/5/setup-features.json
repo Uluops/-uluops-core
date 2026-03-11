@@ -1,0 +1,66 @@
+{
+  "agent": "code-validator",
+  "version": "1.5.0",
+  "decision": "PASS",
+  "score": 91,
+  "maxScore": 100,
+  "recommendations": [
+    {
+      "validator": "code-validator",
+      "title": "Long, multi-responsibility function (exceeds 50 lines)",
+      "priority": "suggested",
+      "severity": "medium",
+      "failureCode": "PRA-FRA/M",
+      "filePath": "src/cli.ts",
+      "lineNumber": 38,
+      "description": "runSetup() orchestrates many distinct steps (auth, file copy, health checks, shell updates, manifest save) and is ~140 lines. Extract sub-steps into smaller functions for single responsibility."
+    },
+    {
+      "validator": "code-validator",
+      "title": "Long, multi-responsibility function (exceeds 50 lines)",
+      "priority": "suggested",
+      "severity": "medium",
+      "failureCode": "PRA-FRA/M",
+      "filePath": "src/cli.ts",
+      "lineNumber": 249,
+      "description": "runUninstall() performs several independent teardown steps and is ~60 lines. Consider extracting removal steps into dedicated functions."
+    },
+    {
+      "validator": "code-validator",
+      "title": "Long function (exceeds 50 lines) for CLI wiring",
+      "priority": "suggested",
+      "severity": "medium",
+      "failureCode": "PRA-FRA/M",
+      "filePath": "src/cli.ts",
+      "lineNumber": 384,
+      "description": "main() handles option parsing, validation, and dispatch in ~70+ lines. Consider extracting subcommands/handlers for clarity."
+    },
+    {
+      "validator": "code-validator",
+      "title": "Duplicated logic for removing old manifest files",
+      "priority": "suggested",
+      "severity": "medium",
+      "failureCode": "STR-EXC/M",
+      "filePath": "src/steps/commands.ts",
+      "lineNumber": 63,
+      "description": "Similar unlink/removal logic appears in src/lib/file-ops.ts:93-108. Consider centralizing this behavior in a shared utility to reduce duplication."
+    },
+    {
+      "validator": "code-validator",
+      "title": "No direct unit tests for CLI orchestrator",
+      "priority": "suggested",
+      "severity": "medium",
+      "failureCode": "STR-OMI/M",
+      "filePath": "src/cli.ts",
+      "lineNumber": 1,
+      "description": "While steps/libs are well-tested, the top-level CLI flow lacks tests (e.g., argument parsing, verify/uninstall dispatch). Consider adding minimal CLI integration tests."
+    }
+  ],
+  "metrics": {
+    "durationMs": 288264,
+    "model": "openai:gpt-5",
+    "inputTokens": 36387,
+    "outputTokens": 6437,
+    "totalEffectiveTokens": 42824
+  }
+}

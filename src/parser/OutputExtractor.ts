@@ -347,7 +347,7 @@ export class OutputExtractor {
     const result = this.asRecord(obj['result']);
     const summary = this.asRecord(obj['summary']) ?? this.asRecord(result?.['summary']);
     const report = this.asRecord(obj['report']);
-    const reportResults = this.asRecord(report?.['results']);
+    const reportResults = this.asRecord(report?.['results']) ?? this.asRecord(obj['results']);
     const reportSummary = this.asRecord(report?.['summary']) ?? this.asRecord(reportResults?.['summary']);
     // Scan all top-level object values for score/decision (handles arbitrary wrapper names
     // like validation, validations, validationResults, validation_summary, etc.)
@@ -451,7 +451,7 @@ export class OutputExtractor {
       if (skip.has(key)) continue;
       const rec = this.asRecord(value);
       if (!rec) continue;
-      if ('score' in rec || 'decision' in rec || 'status' in rec || 'breakdown' in rec || 'score_breakdown' in rec) {
+      if ('score' in rec || 'score_total' in rec || 'total_score' in rec || 'decision' in rec || 'status' in rec || 'breakdown' in rec || 'score_breakdown' in rec) {
         return rec;
       }
     }
@@ -512,7 +512,7 @@ export class OutputExtractor {
     // Check each source for a score value
     for (const source of [obj, summary, result, report, reportResults, reportSummary, validationSummary]) {
       if (!source) continue;
-      for (const scoreKey of ['score', 'total_score']) {
+      for (const scoreKey of ['score', 'total_score', 'score_total']) {
         const s = source[scoreKey];
         if (typeof s === 'number') return s;
         if (typeof s === 'string' && !isNaN(parseFloat(s))) return s;
