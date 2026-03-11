@@ -1,0 +1,48 @@
+{
+  "agent": "code-validator",
+  "version": "1.5.0",
+  "decision": "FAIL",
+  "score": 83,
+  "maxScore": 100,
+  "recommendations": [
+    {
+      "validator": "code-validator",
+      "title": "CDL parser can throw on non-string input (inconsistent ParseResult contract)",
+      "priority": "suggested",
+      "severity": "high",
+      "failureCode": "SEM-COM/H",
+      "description": "parseCDL() calls `content.trim()` without checking `typeof content === 'string'`. Passing null/undefined (or any non-string) will throw instead of returning `{ success: false, error: ... }`, unlike parseADL/parseWDL/parsePDL which route through parseDefinition() with a type guard."
+    },
+    {
+      "validator": "code-validator",
+      "title": "Missing unit/integration tests for core exported PDL pipeline and renderer",
+      "priority": "suggested",
+      "severity": "high",
+      "failureCode": "STR-OMI/H",
+      "description": "PDL is exported as part of the main API but there are no tests asserting pdl.generate()/renderPDL() output or behavior. Only schema registration is tested for PDL."
+    },
+    {
+      "validator": "code-validator",
+      "title": "renderPDL() is very large and multi-responsibility",
+      "priority": "suggested",
+      "severity": "medium",
+      "failureCode": "PRA-FRA/M",
+      "description": "renderPDL() builds many distinct sections (frontmatter, metadata, triggers, environment, dependency graph, stages, rollback, notifications, artifacts, state, postflight, footer) in one function. This increases change risk and makes targeted testing harder."
+    },
+    {
+      "validator": "code-validator",
+      "title": "Test includes a realistic-looking hardcoded password example that may trigger scanners",
+      "priority": "suggested",
+      "severity": "low",
+      "failureCode": "SEM-INC/L",
+      "description": "The test asserts on output containing `password: \"admin123\"`. While clearly an example, it can cause false positives in secret-scanning pipelines."
+    }
+  ],
+  "metrics": {
+    "durationMs": 241181,
+    "model": "openai:gpt-5.2-pro",
+    "inputTokens": 38538,
+    "outputTokens": 4325,
+    "totalEffectiveTokens": 42863
+  }
+}

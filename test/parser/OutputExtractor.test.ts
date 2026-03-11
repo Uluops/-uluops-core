@@ -863,6 +863,38 @@ After further analysis:
       expect(issues.length).toBeGreaterThan(0);
       expect(issues[0]!.title).toBe('Overly large multi-responsibility command functions');
     });
+
+    it('should handle total_score and grouped issues array (gpt-4.1-nano shape)', () => {
+      const content = JSON.stringify({
+        criteria: { 'Code Quality': 20, 'Standards Compliance': 18, Testing: 15, 'Best Practices': 12 },
+        total_score: 65,
+        issues: [
+          {
+            severity: 'CRITICAL', count: 2,
+            issues: [
+              { description: 'Missing null check', file: 'src/index.ts', line: 96, failure_code: 'SEM-COM/H' },
+              { description: 'Large function exceeds 80 lines', file: 'test/smoke.test.ts', line: 328, failure_code: 'PRA-FRA/M' },
+            ],
+          },
+          {
+            severity: 'WARNING', count: 1,
+            issues: [
+              { description: 'Missing JSDoc comments', file: 'src/index.ts', line: 96, failure_code: 'STR-OMI/L' },
+            ],
+          },
+        ],
+        decision: 'FAIL',
+      });
+      const result = extractor.extract(content, 'validator');
+      expect(result.decision).toBe('FAIL');
+      expect(result.score).toBe(65);
+      const issues = result.categories!.flatMap(c => c.findings.flatMap(f => f.issues));
+      expect(issues).toHaveLength(3);
+      expect(issues[0]!.title).toBe('Missing null check');
+      expect(issues[0]!.filePath).toBe('src/index.ts');
+      expect(issues[0]!.lineNumber).toBe(96);
+      expect(issues[2]!.title).toBe('Missing JSDoc comments');
+    });
   });
 });
 

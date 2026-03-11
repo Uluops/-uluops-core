@@ -1,0 +1,80 @@
+{
+  "agent": "code-validator",
+  "version": "1.5.0",
+  "decision": "PASS",
+  "score": 78,
+  "maxScore": 100,
+  "recommendations": [
+    {
+      "validator": "code-validator",
+      "title": "Large functions exceeding 80 lines, e.g., src/transformer/wdl-context-builder.ts:458 (196 lines).",
+      "priority": "suggested",
+      "severity": "medium",
+      "failureCode": "PRA-FRA/M",
+      "description": "Large functions exceeding 80 lines, e.g., src/transformer/wdl-context-builder.ts:458 (196 lines)."
+    },
+    {
+      "validator": "code-validator",
+      "title": "Some functions have nesting depth approaching 4, e.g., src/adl-validator.ts:99.",
+      "priority": "suggested",
+      "severity": "medium",
+      "failureCode": "PRA-FRA/H",
+      "description": "Some functions have nesting depth approaching 4, e.g., src/adl-validator.ts:99."
+    },
+    {
+      "validator": "code-validator",
+      "title": "Some files lack consistent formatting, e.g., inconsistent indentation in src/renderer/nunjucks-env.ts.",
+      "priority": "suggested",
+      "severity": "medium",
+      "failureCode": "STR-INC/M",
+      "description": "Some files lack consistent formatting, e.g., inconsistent indentation in src/renderer/nunjucks-env.ts."
+    },
+    {
+      "validator": "code-validator",
+      "title": "Missing JSDoc comments on exported functions in src/index.ts.",
+      "priority": "suggested",
+      "severity": "medium",
+      "failureCode": "STR-OMI/H",
+      "description": "Missing JSDoc comments on exported functions in src/index.ts."
+    },
+    {
+      "validator": "code-validator",
+      "title": "Most test files have comprehensive coverage, but some edge cases are not tested, e.g., null inputs in parser/error-mapping.ts.",
+      "priority": "suggested",
+      "severity": "medium",
+      "failureCode": "SEM-COM/M",
+      "description": "Most test files have comprehensive coverage, but some edge cases are not tested, e.g., null inputs in parser/error-mapping.ts."
+    },
+    {
+      "validator": "code-validator",
+      "title": "Some tests mock internal functions rather than testing behavior, e.g., pipelines/validation-integration.test.ts:211.",
+      "priority": "suggested",
+      "severity": "medium",
+      "failureCode": "EPI-GRN/L",
+      "description": "Some tests mock internal functions rather than testing behavior, e.g., pipelines/validation-integration.test.ts:211."
+    },
+    {
+      "validator": "code-validator",
+      "title": "No hardcoded secrets detected, but some schema files are large and could benefit from validation optimization.",
+      "priority": "suggested",
+      "severity": "medium",
+      "failureCode": "SEM-INC/L",
+      "description": "No hardcoded secrets detected, but some schema files are large and could benefit from validation optimization."
+    },
+    {
+      "validator": "code-validator",
+      "title": "Some functions could benefit from separation of concerns, e.g., large context builder functions.",
+      "priority": "suggested",
+      "severity": "medium",
+      "failureCode": "PRA-MAT/M",
+      "description": "Some functions could benefit from separation of concerns, e.g., large context builder functions."
+    }
+  ],
+  "metrics": {
+    "durationMs": 11559,
+    "model": "openai:gpt-4.1-nano",
+    "inputTokens": 9098,
+    "outputTokens": 688,
+    "totalEffectiveTokens": 9786
+  }
+}

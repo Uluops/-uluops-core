@@ -1,0 +1,86 @@
+{
+  "agent": "code-validator",
+  "version": "1.5.0",
+  "decision": "FAIL",
+  "score": 66,
+  "maxScore": 100,
+  "recommendations": [
+    {
+      "validator": "code-validator",
+      "title": "Legacy executor commandType is incorrectly normalized to 'agent'",
+      "priority": "suggested",
+      "severity": "critical",
+      "failureCode": "SEM-INC/C",
+      "filePath": "src/resolvers/filesystem.ts",
+      "lineNumber": 262,
+      "description": ""
+    },
+    {
+      "validator": "code-validator",
+      "title": "Public PDL pipeline functionality lacks direct tests",
+      "priority": "suggested",
+      "severity": "high",
+      "failureCode": "STR-OMI/H",
+      "filePath": "src/pipelines/pdl.ts",
+      "lineNumber": 15,
+      "description": ""
+    },
+    {
+      "validator": "code-validator",
+      "title": "PDL renderer lacks direct tests despite non-trivial implementation",
+      "priority": "suggested",
+      "severity": "high",
+      "failureCode": "STR-OMI/H",
+      "filePath": "src/renderer/pdl-renderer.ts",
+      "lineNumber": 27,
+      "description": ""
+    },
+    {
+      "validator": "code-validator",
+      "title": "README version is stale",
+      "priority": "suggested",
+      "severity": "medium",
+      "failureCode": "STR-OMI/M",
+      "filePath": "README.md",
+      "lineNumber": 12,
+      "description": ""
+    },
+    {
+      "validator": "code-validator",
+      "title": "README incorrectly states PDL has no factory",
+      "priority": "suggested",
+      "severity": "medium",
+      "failureCode": "STR-OMI/M",
+      "filePath": "README.md",
+      "lineNumber": 611,
+      "description": ""
+    },
+    {
+      "validator": "code-validator",
+      "title": "README lists outdated bundled PDL schema version",
+      "priority": "suggested",
+      "severity": "medium",
+      "failureCode": "STR-INC/M",
+      "filePath": "README.md",
+      "lineNumber": 112,
+      "description": ""
+    },
+    {
+      "validator": "code-validator",
+      "title": "Resolver silently suppresses read/parse failures",
+      "priority": "suggested",
+      "severity": "high",
+      "failureCode": "SEM-COM/H",
+      "filePath": "src/resolvers/filesystem.ts",
+      "lineNumber": 116,
+      "description": ""
+    }
+  ],
+  "metrics": {
+    "durationMs": 70570,
+    "model": "openai:gpt-5.4",
+    "inputTokens": 39868,
+    "outputTokens": 3310,
+    "totalEffectiveTokens": 43178
+  }
+}

@@ -512,15 +512,17 @@ export class OutputExtractor {
     // Check each source for a score value
     for (const source of [obj, summary, result, report, reportResults, reportSummary, validationSummary]) {
       if (!source) continue;
-      const s = source['score'];
-      if (typeof s === 'number') return s;
-      if (typeof s === 'string' && !isNaN(parseFloat(s))) return s;
-      // Handle score as object: { total: 85, ... }
-      if (s && typeof s === 'object') {
-        const sObj = s as Record<string, unknown>;
-        for (const key of ['total', 'value', 'overall', 'final']) {
-          if (typeof sObj[key] === 'number') return sObj[key] as number;
-          if (typeof sObj[key] === 'string') return sObj[key] as string;
+      for (const scoreKey of ['score', 'total_score']) {
+        const s = source[scoreKey];
+        if (typeof s === 'number') return s;
+        if (typeof s === 'string' && !isNaN(parseFloat(s))) return s;
+        // Handle score as object: { total: 85, ... }
+        if (s && typeof s === 'object') {
+          const sObj = s as Record<string, unknown>;
+          for (const key of ['total', 'value', 'overall', 'final']) {
+            if (typeof sObj[key] === 'number') return sObj[key] as number;
+            if (typeof sObj[key] === 'string') return sObj[key] as string;
+          }
         }
       }
     }
@@ -553,11 +555,12 @@ export class OutputExtractor {
     // Check criteria with sub-scores sum (gpt-4.1-nano shape)
     const criteria = this.asRecord(obj['criteria']);
     if (criteria) {
-      const values = Object.values(criteria)
-        .map(v => this.asRecord(v))
-        .filter((v): v is Record<string, unknown> => v !== undefined)
-        .map(v => v['score'])
-        .filter((v): v is number => typeof v === 'number');
+      const values: number[] = [];
+      for (const v of Object.values(criteria)) {
+        if (typeof v === 'number') { values.push(v); continue; }
+        const rec = this.asRecord(v);
+        if (rec && typeof rec['score'] === 'number') values.push(rec['score'] as number);
+      }
       if (values.length > 0) return values.reduce((a, b) => a + b, 0);
     }
     return undefined;
@@ -743,10 +746,26 @@ export class OutputExtractor {
   }
 
   private parseIssues(raw: unknown[]): Issue[] {
-    return raw
-      .filter((item): item is Record<string, unknown> =>
-        typeof item === 'object' && item !== null,
-      )
+    // Flatten grouped issues: [{severity: "CRITICAL", issues: [...]}, ...] → flat array
+    const flatItems: Record<string, unknown>[] = [];
+    for (const item of raw) {
+      if (typeof item !== 'object' || item === null) continue;
+      const rec = item as Record<string, unknown>;
+      if (Array.isArray(rec['issues'])) {
+        // This is a group — recurse into the nested issues array, inheriting severity
+        const groupSeverity = rec['severity'] as string | undefined;
+        for (const sub of rec['issues'] as unknown[]) {
+          if (typeof sub === 'object' && sub !== null) {
+            const subRec = sub as Record<string, unknown>;
+            if (groupSeverity && !subRec['severity']) subRec['severity'] = groupSeverity;
+            flatItems.push(subRec);
+          }
+        }
+      } else {
+        flatItems.push(rec);
+      }
+    }
+    return flatItems
       .map(item => {
         // Resolve file path and line number from various shapes
         let filePath = (item['filePath'] as string | undefined)

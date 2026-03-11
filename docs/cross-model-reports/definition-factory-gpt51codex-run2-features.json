@@ -1,0 +1,40 @@
+{
+  "agent": "code-validator",
+  "version": "1.5.0",
+  "decision": "FAIL",
+  "score": 75,
+  "maxScore": 100,
+  "recommendations": [
+    {
+      "validator": "code-validator",
+      "title": "renderPDL handles all rendering concerns in one 160+ line function",
+      "priority": "suggested",
+      "severity": "medium",
+      "failureCode": "PRA-FRA/M",
+      "description": "renderPDL builds front matter, triggers, environment tables, dependency graphs, stages, rollback, notifications, artifacts, state, postflight, and footer logic all inline. At 160+ lines with many nested responsibilities, it is difficult to reason about or unit-test and violates the single-purpose guidance."
+    },
+    {
+      "validator": "code-validator",
+      "title": "No tests exercise the PDL pipeline or renderer",
+      "priority": "suggested",
+      "severity": "high",
+      "failureCode": "STR-OMI/H",
+      "description": "A search across test/**/*.ts shows the only PDL-focused tests are the schema registration checks in test/parser/schema-validator.test.ts:469-485. None of the suites call pdl.parse, pdl.generate, or renderPDL, so regressions in the PDL renderer and pipeline will ship undetected."
+    },
+    {
+      "validator": "code-validator",
+      "title": "Async filesystem resolver performs blocking synchronous I/O",
+      "priority": "suggested",
+      "severity": "medium",
+      "failureCode": "PRA-EFF/M",
+      "description": "resolveAgent/resolveCommand are async but call existsSync and readFileSync inside searchDefinitionFile/readFileWithRetry. In server contexts this blocks the event loop for each resolution and violates the guideline against synchronous blocking in async code paths."
+    }
+  ],
+  "metrics": {
+    "durationMs": 217555,
+    "model": "openai:gpt-5.1-codex",
+    "inputTokens": 44213,
+    "outputTokens": 2292,
+    "totalEffectiveTokens": 46505
+  }
+}

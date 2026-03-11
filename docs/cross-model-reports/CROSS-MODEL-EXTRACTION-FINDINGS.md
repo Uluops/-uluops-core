@@ -1,16 +1,16 @@
 # Cross-Model Output Extraction Findings
 
-**Date**: 2026-03-10 (updated)
+**Date**: 2026-03-10 (updated 2026-03-11)
 **Agent**: code-validator v1.5.0
-**Target**: definition-factory package
+**Target**: Multiple packages (definition-factory, registry-sdk, ops-sdk, agent-metrics, cli, sdk-core, uluops-core-sdk)
 **Models Tested**: 14 OpenAI models + Claude haiku baseline
-**Commits**: `e4ff816` (harden OutputExtractor for cross-model JSON shapes), latest (add recommendations/wrapper issue extraction)
+**Commits**: `e4ff816` through `b169b06` (OutputExtractor hardening series)
 
 ## Executive Summary
 
 Cross-model testing of the code-validator agent against 14 OpenAI models revealed a **64% extraction failure rate** (9/14 models produced score=0 or decision=ERROR/UNKNOWN). Every model produced valid, high-quality JSON output — the failures were entirely in `OutputExtractor.normalizeOutput()` which assumed a flat JSON shape that only Claude and a few GPT models produce.
 
-After hardening the extractor, **all tested models extract correctly** (confirmed via live retests). The initial 64% failure rate was caused by two issues: (1) `normalizeOutput()` assuming flat JSON shapes, and (2) a **stale `dist/` build** — CLI imports `@uluops/core` from compiled `dist/index.js`, so source changes only affected unit tests (vitest uses tsx on `.ts` directly) until `npm run build` was run. 3 models (gpt-4o-mini, gpt-4.1, gpt-5) have process-level failures (rate limits, timeouts, empty output), not extraction bugs.
+After hardening the extractor across 11 failure modes, **gpt-5.1 now extracts reliably at 93.3% (14/15 runs clean)** across 7 packages. The initial 64% failure rate was caused by two issues: (1) `normalizeOutput()` assuming flat JSON shapes, and (2) a **stale `dist/` build** — CLI imports `@uluops/core` from compiled `dist/index.js`, so source changes only affected unit tests (vitest uses tsx on `.ts` directly) until `npm run build` was run. 3 models (gpt-4o-mini, gpt-4.1, gpt-5) have process-level failures (rate limits, timeouts, empty output), not extraction bugs.
 
 ## Results Matrix
 
@@ -24,6 +24,7 @@ After hardening the extractor, **all tested models extract correctly** (confirme
 | gpt-5-mini | Reasoning | Score 0, [OBJECT OBJECT] | **Fixed** (live confirmed: FAIL 92/100) | Stale dist was root cause; nested summary + decision-as-object |
 | gpt-5-nano | Reasoning | Score 0, ERROR | **Fixed** (live confirmed) | `status` instead of `decision`; arbitrary wrapper names |
 | gpt-5-codex | Coding | Score 0, PASS | **Fixed** (live: PASS 97/100, FAIL 81/100) | `score: {total: 85, ...}` object; varies format between runs |
+| **gpt-5.1** | **Flagship** | N/A | **Reliable** (14/15 clean) | See gpt-5.1 deep-dive below |
 | gpt-5.1-codex | Coding | Score 0, ERROR | **Fixed** (unit test) | Nested score object |
 | gpt-5.2 | Standard | Score 68, FAIL | **Working** | Clean extraction (no fix needed) |
 | gpt-5.2-codex | Coding | Score 84, FAIL | **Working** | Structured text extraction (no fix needed) |
@@ -31,58 +32,144 @@ After hardening the extractor, **all tested models extract correctly** (confirme
 | o4-mini | Reasoning | Score 0, PASS | **Fixed** (live: PASS 96/100) | Code-fenced JSON with `validationResults.score` |
 | **claude-haiku-4-5** | **Baseline** | N/A | **PASS 94/100** | Clean extraction, 4 suggestions, 1m 52s |
 
+## gpt-5.1 Deep-Dive: 15-Run Grinding Results
+
+gpt-5.1 was selected for intensive extraction validation. 15 runs were executed across 7 packages to test consistency.
+
+### Run Results
+
+| # | Target | Score | Recs | Tokens (in/out) | Status |
+|---|--------|-------|------|-----------------|--------|
+| 1 | registry-sdk | 95 | 4 | 34K/3K | Clean |
+| 2 | agent-metrics | 96 | 5 | 31K/5K | Clean |
+| 3 | ops-sdk | 92 | 4 | 53K/5K | Clean |
+| 4 | agent-metrics | 96 | 5 | 50K/2K | Clean |
+| 5 | registry-sdk | 96 | 2 | 34K/3K | Clean |
+| 6 | definition-factory | 93 | 8 | 31K/5K | Clean |
+| 7 | sdk-core | 96 | 3 | 43K/6K | Clean |
+| 8 | cli | 0 | 0 | 242K/3K | **FAILED** |
+| 9 | cli | 93 | 5 | 23K/2K | Clean |
+| 10 | ops-sdk | 93 | 6 | 53K/5K | Clean |
+| 11 | registry-sdk | 93 | 4 | 34K/3K | Clean |
+| 12 | agent-metrics | 96 | 3 | 39K/4K | Clean |
+| 13 | uluops-core-sdk | 95 | 4 | 28K/4K | Clean |
+| 14 | definition-factory | 96 | 3 | 30K/3K | Clean |
+| 15 | sdk-core | 96 | 5 | 51K/5K | Clean |
+
+**Success rate**: 14/15 (93.3%)
+**Score range**: 92–96 (extremely consistent)
+**Recommendations per run**: 2–8
+
+### The Single Failure (Run #8)
+
+The CLI run consumed **242K input tokens** (10x the normal 23K–53K range), indicating the model entered an anomalous deep-browse mode where it read far more files than necessary. This produced malformed output that even the inline JSON extractor couldn't recover. The identical target succeeded on run #9 with 23K tokens and score 93.
+
+**Conclusion**: This is a model behavior anomaly, not an extraction bug. The extractor has no reasonable way to handle output from a 242K-token context that the model itself struggled with.
+
+### JSON Shape Variants Discovered from gpt-5.1
+
+Each run can produce a different JSON structure. Variants discovered:
+
+| Variant | Example | Runs Observed |
+|---------|---------|---------------|
+| `score: {total: N, ...}` | `"score": {"total": 93, "code_quality": 28}` | Majority |
+| `decision: {status: "PASS"}` | Object decision instead of string | Run 9 (cli) |
+| `issues.items[]` | Issues nested under items array | Runs 1, 5 |
+| `issues.details[]` | Issues nested under details array | Run 3 |
+| `report.results.score` | Double-nested score | Run 2 (early) |
+| `location: "path:line"` | Combined file+line field | Run 3 |
+| Title as `issue` | `"issue": "..."` instead of `"title"` | Run 1 |
+| Title as `summary` | `"summary": "..."` instead of `"title"` | Run 5 |
+| Title as `message` | `"message": "..."` instead of `"title"` | Run 9 |
+| Line as string range | `"line": "24-50"` instead of number | Run 3 |
+
+### Token Usage Patterns
+
+All token data saved correctly to the tracker with full breakdowns:
+
+| Field | Typical Range | Notes |
+|-------|--------------|-------|
+| `inputTokens` | 23K–53K | Proportional to target codebase size |
+| `outputTokens` | 2K–6K | Consistent across runs |
+| `cacheReadTokens` | 6K–39K | OpenAI prompt caching active |
+| `totalEffectiveTokens` | 25K–58K | Saved to tracker |
+
 ## Failure Taxonomy
 
-### Failure Mode 1: Score as Object
-**Models**: gpt-5-codex, gpt-5.1-codex
+### FM1: Score as Object
+**Models**: gpt-5-codex, gpt-5.1-codex, gpt-5.1
 **Shape**: `"score": { "total": 85, "code_quality": 15, ... }`
-**Root cause**: `typeof rawScore === 'number'` fails when score is an object
 **Fix**: `resolveScoreField()` checks `score.total`, `.value`, `.overall`, `.final`
 
-### Failure Mode 2: Decision as Object
-**Models**: gpt-5, gpt-5-mini
-**Shape**: `"decision": { "pass": true, "label": "PASS - Ready for next phase" }` or `"decision": { "result": "PASS", "reasoning": "..." }`
-**Root cause**: `String(rawDecision)` → `"[object Object]"`
-**Fix**: `resolveDecisionField()` checks `decision.result`, `.label`, `.value`, `.status`, `.pass` (boolean)
+### FM2: Decision as Object
+**Models**: gpt-5, gpt-5-mini, gpt-5.1
+**Shape**: `"decision": { "pass": true, "label": "PASS" }` or `"decision": { "status": "PASS" }`
+**Fix**: `resolveDecisionField()` checks `.result`, `.label`, `.value`, `.status`, `.pass` (boolean)
 
-### Failure Mode 3: Nested Under Wrapper
+### FM3: Nested Under Wrapper
 **Models**: gpt-5-mini, gpt-5-nano (varies per run)
-**Shapes observed across runs**:
-- `"summary": { "score": 93, "decision": "PASS" }`
-- `"validations": { "score": 100, "breakdown": {...} }`
-- `"validation_summary": { "status": "PASS", "score": 100, "score_breakdown": {...} }`
-- `"validation_results": { "score": 92, "categories": {...} }`
-- `"validation": { "score": 100, "breakdown": { "CodeQuality": { "points": 30, "deductions": 0 } } }`
-**Root cause**: No unwrap path for arbitrary wrapper names
-**Fix**: `findWrapperWithScoreOrDecision()` scans ALL top-level object values for score/decision fields
+**Shapes**: `summary.score`, `validations.score`, `validation_summary.status`, etc.
+**Fix**: `findWrapperWithScoreOrDecision()` scans ALL top-level object values
 
-### Failure Mode 4: Category Sub-Scores Only
+### FM4: Category Sub-Scores Only
 **Models**: gpt-4.1-nano
-**Shape**: `"criteria": { "code_quality": { "score": 20 }, ... }` — no total score
-**Root cause**: No sum-categories fallback
-**Fix**: `resolveCategories()` parses criteria objects; score falls back to category sum
+**Shape**: `"criteria": { "code_quality": { "score": 20 }, ... }` — no total
+**Fix**: Score falls back to category sum
 
-### Failure Mode 5: Alternative Field Names
+### FM5: Alternative Field Names
 **Models**: gpt-5-nano
-**Shapes**: `"status": "PASS"` instead of `"decision"`, `"final_decision": "PASS - Ready for next phase"`
-**Root cause**: Inline pattern only matched `"decision"` key
-**Fix**: Widened `INLINE_JSON_PATTERN` to match `"status"` and `"score"`; `resolveDecisionField` checks `final_decision`
+**Shape**: `"status": "PASS"` instead of `"decision"`, `"final_decision": "PASS"`
+**Fix**: Widened field name resolution
 
-### Failure Mode 6: Emoji Prefixed Decisions
+### FM6: Emoji Prefixed Decisions
 **Models**: gpt-5-mini
 **Shape**: `"result": "✅ PASS - Ready for next phase"`
-**Root cause**: Emoji becomes first "word" after splitting, doesn't match decision vocabulary
 **Fix**: `normalizeDecision()` strips emojis before processing
 
-### Failure Mode 7: Breakdown as Objects
-**Models**: gpt-5-nano (some runs)
+### FM7: Breakdown as Objects
+**Models**: gpt-5-nano
 **Shape**: `"breakdown": { "CodeQuality": { "points": 30, "deductions": 0 } }`
-**Root cause**: Breakdown handler expected plain numbers
-**Fix**: `resolveCategories()` and `resolveScoreField()` handle `{points, deductions}` objects
+**Fix**: `resolveCategories()` and `resolveScoreField()` handle `{points, deductions}`
+
+### FM8: Recommendations Not Extracted
+**Models**: gpt-5-codex
+**Problem**: Only checked `issues` and `issues_found` keys
+**Fix**: Added `recommendations`, `warnings`, `findings` keys + wrapper as source
+
+### FM9: Flat Issues Dropped When Categories Exist
+**Models**: gpt-5-codex (when `scores` object creates synthetic categories)
+**Problem**: Line 394 had `if (!output.categories || output.categories.length === 0)` — flat issues silently dropped
+**Fix**: Append issues to empty-findings category or add new "Extracted Issues" category
+
+### FM10: Double-Nested Score (`report.results.score`)
+**Models**: gpt-5.1
+**Shape**: `"report": { "results": { "score": 96 } }`
+**Fix**: Unwrap `report.results` as additional source in resolveScoreField/resolveDecisionField
+
+### FM11: Issues Under `issues.details` or `issues.list`
+**Models**: gpt-5.1
+**Shape**: `"issues": { "total_issues": 2, "details": [...] }`
+**Fix**: Check `details` and `list` alongside `items` for nested issue arrays
+
+## Title/Description Field Resolution
+
+Models use different field names for the same semantic content. Full resolution chain:
+
+| Purpose | Fields Checked (in order) |
+|---------|--------------------------|
+| Title | `title`, `message`, `issue`, `summary`, `name`, `description` |
+| Description | `description`, `details`, `explanation`, `suggestion`, `recommendation` |
+| File path | `filePath`, `file_path`, `file`, `path` |
+| Line number | `lineNumber`, `line_number`, `line` (number or string range), `line_start` |
+| Combined location | `file_line`, `location` (parsed as `"path:line"`) |
+| Severity | `severity` (mapped: C→critical, H→high, M→medium, L→low, I→info) |
+| Failure code | `failureCode`, `failure_code`, `code` |
+
+Smart title/description logic: when `title` or `message` exists, `description` is used for details. When only `description` exists, it becomes the title and `explanation`/`details` become the description.
 
 ## Root Cause: Stale `dist/` Build
 
-The majority of live extraction failures were caused by a **stale compiled build**, not code bugs:
+The majority of initial live extraction failures were caused by a **stale compiled build**, not code bugs:
 
 - CLI imports `@uluops/core` via `file:../uluops-core-sdk` symlink → resolves to `dist/index.js`
 - Source changes to `.ts` files only affected vitest unit tests (which use tsx directly on source)
@@ -100,31 +187,20 @@ get text() { return this.finalStep.text; }
 
 `result.text` returns only the **last step's text**. The large output sizes (~15K chars for gpt-5-mini) were the model producing verbose final responses, not accumulation across steps.
 
-## Failure Mode 8: Recommendations Not Extracted (gpt-5-codex)
+## Key Design Decisions
 
-**Models**: gpt-5-codex (observed run #27: score=81, 0 recommendations saved)
-**Problem**: `resolveIssuesFlat()` only checked for `issues` and `issues_found` keys. Models that put findings under `recommendations`, `warnings`, or `findings` keys — or inside a dynamically discovered wrapper object — had their issues silently dropped.
-**Fix**: Extended `resolveIssuesFlat()` to:
-1. Check `recommendations`, `warnings`, `findings` arrays alongside `issues`
-2. Accept the dynamically discovered wrapper object as a source
-3. Check `issues_found` inside the wrapper object too
+### General Wrapper Discovery
+Rather than whitelisting specific wrapper names (`validationResults`, `validations`, `validation_summary`, etc.), we implemented `findWrapperWithScoreOrDecision()` which scans ALL top-level object values for ones containing `score`, `decision`, `status`, `breakdown`, or `score_breakdown`. This handles the observed behavior where models produce **different wrapper names on every run**.
 
-**Note**: gpt-5-codex also varies output format between runs — sometimes JSON, sometimes structured markdown. The structured text extractor handles the markdown case correctly.
+### Resilient Field Resolution
+The same model (gpt-5.1) used 10+ different field naming patterns across 15 runs. The extractor uses ordered fallback chains for every semantic field rather than expecting specific names.
 
-## Key Design Decision: General Wrapper Discovery
-
-Rather than whitelisting specific wrapper names (`validationResults`, `validations`, `validation_summary`, etc.), we implemented `findWrapperWithScoreOrDecision()` which scans ALL top-level object values for ones containing `score`, `decision`, `status`, `breakdown`, or `score_breakdown`. This handles the observed behavior where gpt-5-nano produces a **different wrapper name on every run** (5 distinct names across 5 runs).
-
-## Key Observation: Model Output Variance
-
-The same model produces **different JSON structures across runs**. gpt-5-nano used 5 different wrapper names and 3 different breakdown formats across 5 consecutive runs against the same target. This means:
-- Whitelisting specific field names is a losing strategy
-- The extractor must be resilient to arbitrary nesting and naming
-- Unit tests should cover the structural patterns, not specific model outputs
+### Inline JSON: Largest Object Wins
+When text contains multiple JSON objects (tool results, partial outputs), the inline extractor searches backwards from the end, collects all valid JSON candidates, and picks the largest one with the most agent-relevant fields (`decision`, `score`, `categories`, etc.).
 
 ## Test Coverage
 
-16 new cross-model test cases added to `test/parser/OutputExtractor.test.ts`:
+54 tests in `test/parser/OutputExtractor.test.ts` (all passing), including cross-model cases:
 
 | Test Case | Failure Mode | Source Model |
 |-----------|-------------|--------------|
@@ -137,26 +213,37 @@ The same model produces **different JSON structures across runs**. gpt-5-nano us
 | category sub-score summing | FM4 | gpt-4.1-nano |
 | code-fenced JSON with validationResults | FM5 | o4-mini |
 | flat breakdown sum | FM4 | general |
-| score under validations wrapper | FM3 | gpt-5-nano retest |
-| validation_summary with final_decision | FM3+FM5 | gpt-5-nano retest2 |
-| arbitrary wrapper with points/deductions | FM3+FM7 | gpt-5-nano retest3 |
+| score under validations wrapper | FM3 | gpt-5-nano |
+| validation_summary with final_decision | FM3+FM5 | gpt-5-nano |
+| arbitrary wrapper with points/deductions | FM3+FM7 | gpt-5-nano |
 | multi-step output (last JSON wins) | FM7 | gpt-5-mini |
 | issues with locations array | general | gpt-5 |
 | file_line combined field parsing | general | gpt-5-mini |
-| issues with locations array (gpt-5 shape) | general | gpt-5 |
 | recommendations array as issue source | FM8 | gpt-5-codex |
 | issues inside dynamically discovered wrapper | FM8 | general |
 | recommendations inside wrapper | FM8 | general |
+| description as title fallback | FM title | gpt-5-codex |
+| string line range parsing ("24-50") | FM line | gpt-5-codex |
+| issue field as title | FM title | gpt-5.1 |
+| report.results.score nesting | FM10 | gpt-5.1 |
+| issues.details with location field | FM11 | gpt-5.1 |
+| summary as title + details as description | FM title | gpt-5.1 |
+| inline JSON with prefix text + score.total | FM1 | gpt-5.1 |
 
-Total tests: 399 (all passing)
+Total test suite: 400+ tests (54 OutputExtractor, rest across all modules)
 
 ## Files Modified
 
 | File | Changes |
 |------|---------|
-| `src/parser/OutputExtractor.ts` | +666/-44 lines — new resolution methods, enhanced extraction strategies |
-| `test/parser/OutputExtractor.test.ts` | +296 lines — 16 new cross-model test cases |
+| `src/parser/OutputExtractor.ts` | ~700 lines added — new resolution methods, enhanced extraction strategies |
+| `test/parser/OutputExtractor.test.ts` | ~350 lines added — 25 new cross-model test cases |
+
+## Report Files
+
+All gpt-5.1 reports organized under `docs/cross-model-reports/gpt/5.1/` (32 files).
+Earlier model reports organized under `docs/cross-model-reports/gpt/{model}/`.
 
 ## Cost Summary
 
-~15 live model runs across the session at ~20K-50K tokens each. Primary cost driver was gpt-5-mini retests (~50K tokens, 3min each due to reasoning).
+~30 live model runs total. gpt-5.1 runs averaged 25K–58K effective tokens at ~40-100s each. Primary cost was the 15-run gpt-5.1 grinding session.
