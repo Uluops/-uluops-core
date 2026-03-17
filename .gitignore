@@ -6,3 +6,7 @@ coverage/
 .env.local
 docs/features/
 *-features-list-*.md
+
+# Auto-generated context files
+CLAUDE.md
+**/CLAUDE.md
