@@ -1,3 +1,7 @@
+**[UluOps](https://uluops.ai)** · Operating Intelligence as Infrastructure
+
+---
+
 # @uluops/core
 
 [![npm version](https://img.shields.io/npm/v/@uluops/core.svg)](https://www.npmjs.com/package/@uluops/core)
