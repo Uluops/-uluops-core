@@ -238,7 +238,7 @@ export interface DefinitionSummary {
   domain: Domain;
   subdomain?: string;
   agentType?: AgentType;
-  status: 'draft' | 'published' | 'deprecated';
+  status: 'draft' | 'published' | 'deprecated' | 'archived';
   tags?: string[];
 }
 
