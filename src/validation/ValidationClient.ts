@@ -142,7 +142,7 @@ export class ValidationClient {
         name: result.name,
         score: result.score ?? 0,
         maxScore: 100,
-        status: result.decision,
+        decision: result.decision,
         model: result.metrics.model,
         tokens: {
           inputTokens: result.metrics.inputTokens,

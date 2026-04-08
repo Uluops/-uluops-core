@@ -142,7 +142,7 @@ describe('ValidationClient', () => {
       expect(agents).toHaveLength(1);
       expect(agents[0]!.name).toBe('code-validator');
       expect(agents[0]!.score).toBe(85);
-      expect(agents[0]!.status).toBe('PASS');
+      expect(agents[0]!.decision).toBe('PASS');
       expect(agents[0]!.model).toBe('claude-sonnet-4-5-20250929');
 
       const tokens = agents[0]!.tokens as Record<string, unknown>;
