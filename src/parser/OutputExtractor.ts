@@ -518,7 +518,7 @@ export class OutputExtractor {
       for (const scoreKey of ['score', 'total_score', 'score_total']) {
         const s = source[scoreKey];
         if (typeof s === 'number') return s;
-        if (typeof s === 'string' && !isNaN(parseFloat(s))) return s;
+        if (typeof s === 'string' && s.trim() !== '' && !isNaN(Number(s))) return s;
         // Handle score as object: { total: 85, ... }
         if (s && typeof s === 'object') {
           const sObj = s as Record<string, unknown>;

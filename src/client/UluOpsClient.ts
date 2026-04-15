@@ -174,39 +174,72 @@ export class UluOpsClient {
 
   // ─── Convenience Methods ────────────────────────────────────────────────
 
-  /** Run the built-in `validate` command against a target. */
+  /**
+   * Run the built-in `validate` command against a target.
+   * @param target - Absolute path to the project directory to validate
+   * @param options - Optional overrides passed to the command executor
+   * @returns Aggregated command result with scores and recommendations
+   */
   async validate(target: string, options?: Record<string, unknown>): Promise<CommandResult> {
     return this.runCommand('validate', { target, options });
   }
 
-  /** Run the built-in `security` command against a target. */
+  /**
+   * Run the built-in `security` command against a target.
+   * @param target - Absolute path to the project directory to scan
+   * @param options - Optional overrides passed to the command executor
+   * @returns Aggregated command result with security findings
+   */
   async security(target: string, options?: Record<string, unknown>): Promise<CommandResult> {
     return this.runCommand('security', { target, options });
   }
 
-  /** Run the built-in `optimize` command against a target. */
+  /**
+   * Run the built-in `optimize` command against a target.
+   * @param target - Absolute path to the project directory to analyze
+   * @param options - Optional overrides passed to the command executor
+   * @returns Aggregated command result with optimization recommendations
+   */
   async optimize(target: string, options?: Record<string, unknown>): Promise<CommandResult> {
     return this.runCommand('optimize', { target, options });
   }
 
-  /** Run the built-in `ship` workflow against a target. */
+  /**
+   * Run the built-in `ship` workflow against a target.
+   * @param target - Absolute path to the project directory to validate for shipping
+   * @param options - Optional overrides passed to the workflow executor
+   * @returns Workflow result with per-phase outcomes and aggregate decision
+   */
   async ship(target: string, options?: Record<string, unknown>): Promise<WorkflowResult> {
     return this.runWorkflow('ship', { target, options });
   }
 
-  /** Run the built-in `post-implementation` workflow against a target. */
+  /**
+   * Run the built-in `post-implementation` workflow against a target.
+   * @param target - Absolute path to the project directory to validate
+   * @param options - Optional overrides passed to the workflow executor
+   * @returns Workflow result with iterative validation outcomes
+   */
   async postImplementation(target: string, options?: Record<string, unknown>): Promise<WorkflowResult> {
     return this.runWorkflow('post-implementation', { target, options });
   }
 
   // ─── Discovery ──────────────────────────────────────────────────────────
 
-  /** List available definitions from local files and registry. */
+  /**
+   * List available definitions from local files and registry.
+   * @param filter - Optional filter by definition type or domain
+   * @returns Array of definition summaries matching the filter
+   */
   async list(filter?: { type?: DefinitionType; domain?: string }): Promise<DefinitionSummary[]> {
     return this.registry.list(filter);
   }
 
-  /** Inspect a definition's metadata and interface. */
+  /**
+   * Inspect a definition's metadata and interface.
+   * @param name - Definition name, optionally with version suffix (e.g. "code-validator@1.2.0")
+   * @returns Resolved definition metadata including type, version, hash, and interface
+   */
   async describe(name: string): Promise<{
     type: DefinitionType;
     name: string;

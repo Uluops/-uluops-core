@@ -1,5 +1,5 @@
 import type { ToolSet } from 'ai';
-import type { AIProvider } from '../ai/AIProvider.js';
+import type { AIProvider, AIGenerateResult } from '../ai/AIProvider.js';
 import { ToolHandler, extToLanguage } from './ToolHandler.js';
 import { ToolAdapter } from '../ai/ToolAdapter.js';
 import { TokenBudgetTracker } from '../ai/TokenBudgetTracker.js';
@@ -10,10 +10,10 @@ import {
   genericOutputSchema,
 } from '../parser/outputSchemas.js';
 import { ExecutionError } from '../errors/index.js';
-import { classifyDecision, buildVocabularyMap } from './classifyDecision.js';
+import { classifyDecision, buildVocabularyMap, type DecisionCategory } from './classifyDecision.js';
 import type { ResolvedConfig } from '../types/config.js';
 import type { ResolvedDefinition, ValidatorRuntime, ExecutorRuntime } from '../types/registry.js';
-import type { ExecutionInput, ExecutionOptions, ResolvedExecutionContext, Recommendation } from '../types/execution.js';
+import type { ExecutionInput, ExecutionOptions, ExecutionMetrics, ResolvedExecutionContext, Recommendation } from '../types/execution.js';
 import type { AgentResult, ValidatorAgentResult, ExecutorAgentResult } from '../types/agent.js';
 import type { AgentType } from '../types/execution.js';
 import type { ParsedOutput, ExtractionResult } from '../types/parser.js';
@@ -69,52 +69,75 @@ export class AgentExecutor {
     this.logger.info(`Agent: ${resolved.name} v${resolved.version} (${agentType})`);
     this.logger.debug(`Target: ${input.target}`);
 
-    // 1. Merge options with agent defaults
+    // 1. Setup execution context and tools
     const context = this.resolveContext(resolved, options);
     this.logger.debug(`Context: model=${context.model}, maxSteps=${context.maxSteps}, temp=${context.temperature}, timeout=${context.timeoutMs}ms`);
 
-    // 2. Determine if shell tool should be enabled (opt-in via agent tools list)
     const runtime = this.assertAgentRuntime(resolved);
+    const toolAdapter = await this.setupTools(runtime, input, options, context);
+
+    // 2. Execute LLM with tool loop
+    const initialMessage = await this.buildInitialMessage(input, toolAdapter.toolHandler);
+    const result = await this.aiProvider.generate({
+      model: context.model,
+      system: runtime.prompt,
+      prompt: initialMessage,
+      tools: toolAdapter.adapter.getTools(),
+      maxTokens: context.maxTokens,
+      maxSteps: context.maxSteps,
+      timeoutMs: context.timeoutMs,
+      temperature: context.temperature,
+      contextBudget: this.config.contextBudget,
+      budgetTracker: toolAdapter.budgetTracker,
+      output: this.getOutputSchema(agentType),
+    });
+
+    // 3. Parse and extract output
+    const rawText = result.text ?? '';
+    this.logRawOutput(rawText, result.finishReason);
+    const { parsed, extraction } = this.parseOutput(result, agentType);
+    this.logExtraction(parsed, extraction);
+
+    // 4. Build result
+    const recommendations = this.flattenRecommendations(parsed, resolved.name);
+    this.logger.info(`Result: decision=${parsed.decision}, score=${parsed.score ?? 'N/A'}, recommendations=${recommendations.length}`);
+
+    const durationMs = Date.now() - startTime;
+    const metrics = this.buildMetrics(result, durationMs);
+    const decisionCategory = this.classifyAgentDecision(resolved, parsed.decision);
+
+    return this.buildResult(resolved, agentType, context, parsed, recommendations, durationMs, metrics, decisionCategory, rawText);
+  }
+
+  /**
+   * Setup tool handler, budget tracker, and optional shell tool.
+   */
+  private async setupTools(
+    runtime: ValidatorRuntime | ExecutorRuntime,
+    input: ExecutionInput,
+    options: ExecutionOptions | undefined,
+    context: ResolvedExecutionContext,
+  ) {
     const agentTools = runtime.interface?.tools;
     let additionalTools: ToolSet | undefined;
     if (agentTools?.includes('bash')) {
-      // Resolve model early to determine the provider for shell tool selection
       const modelInput = options?.model ?? runtime.defaults?.model ?? this.config.ai.modelOverride ?? DEFAULT_MODEL_ALIAS;
       const resolvedModel = await this.aiProvider.resolveModel(modelInput);
       additionalTools = this.aiProvider.createProviderShellTool(resolvedModel.provider, input.target, context.timeoutMs);
     }
 
-    // 3. Setup tool handler, budget tracker, and AI SDK tool adapter
     const toolHandler = new ToolHandler(input.target, this.logger);
-    const contextBudget = this.config.contextBudget;
-    const budgetTracker = new TokenBudgetTracker(contextBudget);
-    const toolAdapter = new ToolAdapter(toolHandler, additionalTools, budgetTracker);
+    const budgetTracker = new TokenBudgetTracker(this.config.contextBudget);
+    const adapter = new ToolAdapter(toolHandler, additionalTools, budgetTracker);
 
-    // 4. Get the system prompt
-    const systemPrompt = runtime.prompt;
+    return { toolHandler, budgetTracker, adapter };
+  }
 
-    // 5. Build initial context message
-    const initialMessage = await this.buildInitialMessage(input, toolHandler);
-
-    // 6. Execute via AI SDK (tool loop handled automatically)
-    const outputSchema = this.getOutputSchema(agentType);
-    const result = await this.aiProvider.generate({
-      model: context.model,
-      system: systemPrompt,
-      prompt: initialMessage,
-      tools: toolAdapter.getTools(),
-      maxTokens: context.maxTokens,
-      maxSteps: context.maxSteps,
-      timeoutMs: context.timeoutMs,
-      temperature: context.temperature,
-      contextBudget,
-      budgetTracker,
-      output: outputSchema,
-    });
-
-    // 6b. Log raw LLM output for cross-model diagnosis
-    const rawText = result.text ?? '';
-    this.logger.debug(`Raw output: ${rawText.length} chars, finishReason=${result.finishReason}`);
+  /**
+   * Log raw LLM output for cross-model diagnosis.
+   */
+  private logRawOutput(rawText: string, finishReason: string): void {
+    this.logger.debug(`Raw output: ${rawText.length} chars, finishReason=${finishReason}`);
     if (rawText.length > 0 && rawText.length <= 5000) {
       this.logger.debug(`Raw output text:\n${rawText}`);
     } else if (rawText.length > 5000) {
@@ -122,25 +145,28 @@ export class AgentExecutor {
     } else {
       this.logger.warn('Empty output — model likely hit maxSteps while still calling tools');
     }
+  }
 
-    // 7. Parse output — prefer structured output, fall back to extraction
-    let parsed: ParsedOutput;
-    let extraction: ExtractionResult;
-
+  /**
+   * Parse LLM output — prefer structured output, fall back to text extraction.
+   */
+  private parseOutput(result: AIGenerateResult, agentType: AgentType): { parsed: ParsedOutput; extraction: ExtractionResult } {
     if (result.structuredOutput) {
-      parsed = this.mapStructuredOutput(result.structuredOutput, agentType);
-      extraction = {
-        output: parsed,
-        method: 'structured_output',
-        confidence: 1.0,
-        warnings: [],
+      const parsed = this.mapStructuredOutput(result.structuredOutput, agentType);
+      return {
+        parsed,
+        extraction: { output: parsed, method: 'structured_output', confidence: 1.0, warnings: [] },
       };
-      this.logger.info('Output extraction: method=structured_output, confidence=1.0');
-    } else {
-      extraction = this.outputExtractor.extractWithMetadata(result.text, agentType);
-      parsed = extraction.output;
-      this.logger.info(`Output extraction: method=${extraction.method}, confidence=${extraction.confidence}`);
     }
+    const extraction = this.outputExtractor.extractWithMetadata(result.text, agentType);
+    return { parsed: extraction.output, extraction };
+  }
+
+  /**
+   * Log extraction details and warnings.
+   */
+  private logExtraction(parsed: ParsedOutput, extraction: ExtractionResult): void {
+    this.logger.info(`Output extraction: method=${extraction.method}, confidence=${extraction.confidence}`);
     this.logger.debug(`Parsed output: decision=${parsed.decision}, score=${parsed.score}, hasRawJson=${!!parsed.rawJson}`);
     if (parsed.rawJson) {
       const keys = Object.keys(parsed.rawJson as Record<string, unknown>);
@@ -150,14 +176,13 @@ export class AgentExecutor {
     if (extraction.warnings.length > 0) {
       this.logger.warn(`Extraction warnings: ${extraction.warnings.join('; ')}`);
     }
+  }
 
-    // 7. Build recommendations
-    const recommendations = this.flattenRecommendations(parsed, resolved.name);
-    this.logger.info(`Result: decision=${parsed.decision}, score=${parsed.score ?? 'N/A'}, recommendations=${recommendations.length}`);
-
-    // 8. Compute metrics
-    const durationMs = Date.now() - startTime;
-    const metrics = {
+  /**
+   * Build execution metrics from AI result.
+   */
+  private buildMetrics(result: AIGenerateResult, durationMs: number): ExecutionMetrics {
+    return {
       inputTokens: result.usage.input_tokens,
       outputTokens: result.usage.output_tokens,
       cacheCreationTokens: result.usage.cache_creation_input_tokens,
@@ -168,24 +193,50 @@ export class AgentExecutor {
       model: result.model,
       toolCallCount: result.toolCallCount,
     };
+  }
 
-    // 9. Resolve decision category from definition vocabulary
+  /**
+   * Classify decision using agent definition vocabulary.
+   */
+  private classifyAgentDecision(resolved: ResolvedDefinition, decision: string | undefined): DecisionCategory {
     const vocabularyMap = buildVocabularyMap(resolved.definition as {
       decisions?: { vocabulary?: { positive?: string; negative?: string; conditional?: string | null } };
       completion?: { vocabulary?: { complete?: string; partial?: string; failed?: string } };
     });
-    const decisionCategory = classifyDecision(parsed.decision, vocabularyMap);
+    return classifyDecision(decision, vocabularyMap);
+  }
 
-    // 10. Return discriminated result
+  /**
+   * Build discriminated agent result based on agent type.
+   */
+  private buildResult(
+    resolved: ResolvedDefinition,
+    agentType: AgentType,
+    context: ResolvedExecutionContext,
+    parsed: ParsedOutput,
+    recommendations: Recommendation[],
+    durationMs: number,
+    metrics: ExecutionMetrics,
+    decisionCategory: DecisionCategory,
+    rawText: string,
+  ): AgentResult {
+    const base = {
+      type: 'agent' as const,
+      name: resolved.name,
+      version: resolved.version,
+      definitionHash: resolved.hash,
+      decisionCategory,
+      recommendations,
+      durationMs,
+      metrics,
+      rawOutput: rawText || undefined,
+    };
+
     if (agentType === 'validator') {
       return {
-        type: 'agent',
+        ...base,
         agentType: 'validator',
-        name: resolved.name,
-        version: resolved.version,
-        definitionHash: resolved.hash,
         decision: this.validatedDecision(parsed.decision, ['PASS', 'WARN', 'FAIL'], 'FAIL'),
-        decisionCategory,
         score: parsed.score ?? 0,
         maxScore: parsed.maxScore ?? 100,
         threshold: context.thresholds?.pass,
@@ -195,26 +246,14 @@ export class AgentExecutor {
           maxScore: c.maxScore,
           findings: c.findings,
         })),
-        recommendations,
-        durationMs,
-        metrics,
-        rawOutput: rawText || undefined,
       } satisfies ValidatorAgentResult;
     }
 
     return {
-      type: 'agent',
+      ...base,
       agentType: 'executor',
-      name: resolved.name,
-      version: resolved.version,
-      definitionHash: resolved.hash,
       decision: this.validatedDecision(parsed.decision, ['COMPLETE', 'PARTIAL', 'FAILED'], 'FAILED'),
-      decisionCategory,
       artifacts: parsed.artifacts,
-      recommendations,
-      durationMs,
-      metrics,
-      rawOutput: rawText || undefined,
     } satisfies ExecutorAgentResult;
   }
 

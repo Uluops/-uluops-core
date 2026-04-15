@@ -165,28 +165,39 @@ export class AIProvider {
    * 5. Call generateText with maxSteps for automatic tool loop
    */
   async generate(options: AIGenerateOptions): Promise<AIGenerateResult> {
-    // Apply model override if configured
+    // 1. Resolve model and prepare generation config
     const modelInput = this.config.ai.modelOverride ?? options.model;
-
-    // Resolve alias → provider:modelId with capability check
     const resolved = await this.catalog.resolve(modelInput, {
       requiredCapabilities: options.requiredCapabilities,
     });
-
-    // Ensure provider is loaded (for dynamic providers)
     await this.ensureProvider(resolved.provider);
 
-    // Get provider factory
     const factory = this.getProviderFactory(resolved.provider);
     const languageModel = factory(resolved.providerModelId);
-
-    // Build provider-specific options (thinking, caching, etc.)
     const providerOptions = this.buildProviderOptions(resolved, options.providerOptions);
-
-    // Build system message with cache control for Anthropic
     const system = this.buildSystemMessage(resolved.provider, options.system);
+    const useStructuredOutput = !!options.output && resolved.capabilities.structuredOutput;
 
-    // Log pre-generation context
+    this.logPreGeneration(options, resolved, modelInput, useStructuredOutput);
+
+    // 2. Execute LLM with tool loop
+    try {
+      const result = await this.executeGeneration(options, languageModel, system, providerOptions, useStructuredOutput);
+      return this.buildGenerateResult(result, resolved, useStructuredOutput);
+    } catch (error) {
+      return this.handleGenerateError(error, resolved, useStructuredOutput, options.timeoutMs);
+    }
+  }
+
+  /**
+   * Log pre-generation context for debugging.
+   */
+  private logPreGeneration(
+    options: AIGenerateOptions,
+    resolved: ResolvedModel,
+    modelInput: string,
+    useStructuredOutput: boolean,
+  ): void {
     this.logger.info(`Model: ${resolved.provider}:${resolved.modelId} (from "${modelInput}")`);
     this.logger.debug(`System prompt: ${options.system.length} chars`);
     this.logger.debug(`User prompt: ${options.prompt.length} chars`);
@@ -195,111 +206,125 @@ export class AIProvider {
     }
     this.logger.debug(`Config: maxTokens=${options.maxTokens ?? 8192}, maxSteps=${options.maxSteps ?? 50}, temp=${options.temperature ?? 0}`);
 
-    // Determine if structured output should be used
-    const useStructuredOutput = !!options.output
-      && resolved.capabilities.structuredOutput;
-
-    if (options.output && !resolved.capabilities.structuredOutput) {
+    if (options.output && !useStructuredOutput) {
       this.logger.info(
         `Model ${resolved.modelId} does not support structured output — falling back to free-form extraction`,
       );
     }
+  }
 
-    try {
-      let stepCount = 0;
-      const budgetTracker = options.budgetTracker;
+  /**
+   * Execute generateText with tool loop and step tracking.
+   */
+  private async executeGeneration(
+    options: AIGenerateOptions,
+    languageModel: ReturnType<ReturnType<typeof this.getProviderFactory>>,
+    system: ReturnType<typeof this.buildSystemMessage>,
+    providerOptions: ReturnType<typeof this.buildProviderOptions>,
+    useStructuredOutput: boolean,
+  ) {
+    let stepCount = 0;
+    const budgetTracker = options.budgetTracker;
+    const prepareStep = options.contextBudget
+      ? this.buildBudgetPrepareStep(options.contextBudget)
+      : undefined;
+    const maxSteps = options.maxSteps ?? DEFAULT_MAX_STEPS;
 
-      // Build prepareStep for budget-based wrap-up
-      const prepareStep = options.contextBudget
-        ? this.buildBudgetPrepareStep(options.contextBudget)
-        : undefined;
+    return generateText({
+      model: languageModel,
+      system,
+      prompt: options.prompt,
+      tools: options.tools,
+      maxOutputTokens: options.maxTokens ?? 8192,
+      stopWhen: stepCountIs(maxSteps + (useStructuredOutput ? 2 : 0)),
+      temperature: options.temperature ?? 0,
+      abortSignal: options.timeoutMs
+        ? AbortSignal.timeout(options.timeoutMs)
+        : undefined,
+      ...(providerOptions ? { providerOptions } : {}),
+      ...(prepareStep ? { prepareStep } : {}),
+      ...(useStructuredOutput ? { output: Output.object(options.output!) } : {}),
+      onStepFinish: (step) => {
+        stepCount++;
+        const toolNames = step.toolCalls?.map(tc => tc.toolName) ?? [];
+        const usage = step.usage;
+        const textLen = step.text?.length ?? 0;
+        this.logger.info(
+          `Step ${stepCount}: ${step.finishReason}` +
+          (toolNames.length > 0 ? ` | tools: [${toolNames.join(', ')}]` : '') +
+          ` | usage: ${usage.inputTokens ?? 0}in/${usage.outputTokens ?? 0}out` +
+          (textLen > 0 ? ` | text: ${textLen} chars` : ''),
+        );
+        if (budgetTracker) {
+          budgetTracker.update(usage.inputTokens ?? 0, usage.outputTokens ?? 0);
+        }
+      },
+    });
+  }
 
-      const maxSteps = options.maxSteps ?? DEFAULT_MAX_STEPS;
+  /**
+   * Build AIGenerateResult from successful generateText output.
+   */
+  private buildGenerateResult(
+    result: Awaited<ReturnType<typeof generateText>>,
+    resolved: ResolvedModel,
+    useStructuredOutput: boolean,
+  ): AIGenerateResult {
+    const toolCallCount = result.steps.reduce(
+      (sum, step) => sum + (step.toolCalls?.length ?? 0),
+      0,
+    );
+    const usage = this.mapUsage(result.usage, result.providerMetadata);
 
-      const result = await generateText({
-        model: languageModel,
-        system,
-        prompt: options.prompt,
-        tools: options.tools,
-        maxOutputTokens: options.maxTokens ?? 8192,
-        // +2 when structured output: +1 for the output generation step, +1 buffer
-        stopWhen: stepCountIs(maxSteps + (useStructuredOutput ? 2 : 0)),
-        temperature: options.temperature ?? 0,
-        abortSignal: options.timeoutMs
-          ? AbortSignal.timeout(options.timeoutMs)
-          : undefined,
-        ...(providerOptions ? { providerOptions } : {}),
-        ...(prepareStep ? { prepareStep } : {}),
-        ...(useStructuredOutput ? { output: Output.object(options.output!) } : {}),
-        onStepFinish: (step) => {
-          stepCount++;
-          const toolNames = step.toolCalls?.map(tc => tc.toolName) ?? [];
-          const usage = step.usage;
-          const textLen = step.text?.length ?? 0;
-          this.logger.info(
-            `Step ${stepCount}: ${step.finishReason}` +
-            (toolNames.length > 0 ? ` | tools: [${toolNames.join(', ')}]` : '') +
-            ` | usage: ${usage.inputTokens ?? 0}in/${usage.outputTokens ?? 0}out` +
-            (textLen > 0 ? ` | text: ${textLen} chars` : ''),
-          );
+    this.logger.info(
+      `Complete: ${result.steps.length} steps, ${toolCallCount} tool calls, finish=${result.finishReason}`,
+    );
+    this.logger.info(
+      `Usage: ${usage.input_tokens}in / ${usage.output_tokens}out` +
+      (usage.cache_creation_input_tokens ? ` / cache_write=${usage.cache_creation_input_tokens}` : '') +
+      (usage.cache_read_input_tokens ? ` / cache_read=${usage.cache_read_input_tokens}` : '') +
+      (usage.thinking_tokens ? ` / thinking=${usage.thinking_tokens}` : ''),
+    );
 
-          // Update budget tracker for get_token_budget tool
-          if (budgetTracker) {
-            budgetTracker.update(usage.inputTokens ?? 0, usage.outputTokens ?? 0);
-          }
-        },
-      });
+    return {
+      text: result.text,
+      usage,
+      toolCallCount,
+      model: `${resolved.provider}:${resolved.modelId}`,
+      provider: resolved.provider,
+      steps: result.steps.length,
+      finishReason: result.finishReason,
+      structuredOutput: useStructuredOutput ? result.output : undefined,
+    };
+  }
 
-      // Count tool calls across all steps
-      const toolCallCount = result.steps.reduce(
-        (sum, step) => sum + (step.toolCalls?.length ?? 0),
-        0,
+  /**
+   * Handle generate errors — structured output fallback or error mapping.
+   */
+  private handleGenerateError(
+    error: unknown,
+    resolved: ResolvedModel,
+    useStructuredOutput: boolean,
+    timeoutMs?: number,
+  ): AIGenerateResult {
+    if (useStructuredOutput && NoObjectGeneratedError.isInstance(error)) {
+      this.logger.warn(
+        `Structured output generation failed — falling back to text extraction: ${(error as Error).message}`,
       );
-
-      const usage = this.mapUsage(result.usage, result.providerMetadata);
-
-      this.logger.info(
-        `Complete: ${result.steps.length} steps, ${toolCallCount} tool calls, finish=${result.finishReason}`,
-      );
-      this.logger.info(
-        `Usage: ${usage.input_tokens}in / ${usage.output_tokens}out` +
-        (usage.cache_creation_input_tokens ? ` / cache_write=${usage.cache_creation_input_tokens}` : '') +
-        (usage.cache_read_input_tokens ? ` / cache_read=${usage.cache_read_input_tokens}` : '') +
-        (usage.thinking_tokens ? ` / thinking=${usage.thinking_tokens}` : ''),
-      );
-
       return {
-        text: result.text,
-        usage,
-        toolCallCount,
+        text: (error as NoObjectGeneratedError).text ?? '',
+        structuredOutput: undefined,
+        usage: this.mapUsage(
+          (error as NoObjectGeneratedError).usage ?? { inputTokens: 0, outputTokens: 0 },
+        ),
+        toolCallCount: 0,
         model: `${resolved.provider}:${resolved.modelId}`,
         provider: resolved.provider,
-        steps: result.steps.length,
-        finishReason: result.finishReason,
-        structuredOutput: useStructuredOutput ? result.output : undefined,
+        steps: 0,
+        finishReason: (error as NoObjectGeneratedError).finishReason ?? 'error',
       };
-    } catch (error) {
-      // If structured output fails, extract from the error's preserved text
-      // instead of re-running the entire generation (which would double cost).
-      if (useStructuredOutput && NoObjectGeneratedError.isInstance(error)) {
-        this.logger.warn(
-          `Structured output generation failed — falling back to text extraction: ${(error as Error).message}`,
-        );
-        return {
-          text: (error as NoObjectGeneratedError).text ?? '',
-          structuredOutput: undefined,
-          usage: this.mapUsage(
-            (error as NoObjectGeneratedError).usage ?? { inputTokens: 0, outputTokens: 0 },
-          ),
-          toolCallCount: 0,
-          model: `${resolved.provider}:${resolved.modelId}`,
-          provider: resolved.provider,
-          steps: 0,
-          finishReason: (error as NoObjectGeneratedError).finishReason ?? 'error',
-        };
-      }
-      throw this.mapError(error, options.timeoutMs);
     }
+    throw this.mapError(error, timeoutMs);
   }
 
   /**
