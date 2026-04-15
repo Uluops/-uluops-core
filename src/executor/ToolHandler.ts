@@ -253,6 +253,11 @@ export class ToolHandler {
       signal: AbortSignal.timeout(GLOB_TIMEOUT_MS),
     });
 
+    // Cap pattern length to mitigate ReDoS from LLM-generated pathological regexes (CWE-1333)
+    if (opts.pattern.length > 200) {
+      return { tool_use_id: id, content: `Error: regex pattern too long (${opts.pattern.length} chars, max 200)` };
+    }
+
     let regex: RegExp;
     try {
       regex = new RegExp(opts.pattern, 'gi');

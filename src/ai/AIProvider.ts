@@ -139,6 +139,14 @@ export class AIProvider {
     private catalog: ModelCatalog,
     private logger: Logger,
   ) {
+    // Validate additionalProviders are safe alphanumeric names before adding
+    // to the dynamic import allowlist (CWE-829 defense)
+    const PROVIDER_NAME_PATTERN = /^[a-z][a-z0-9-]{0,30}$/;
+    for (const name of config.ai.additionalProviders ?? []) {
+      if (!PROVIDER_NAME_PATTERN.test(name)) {
+        throw new ConfigurationError(`Invalid provider name "${name}": must be lowercase alphanumeric with hyphens (e.g. "mistral", "deep-seek")`);
+      }
+    }
     this.validProviders = new Set([
       ...DEFAULT_DYNAMIC_PROVIDERS,
       ...(config.ai.additionalProviders ?? []),

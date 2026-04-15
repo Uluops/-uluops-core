@@ -449,7 +449,7 @@ import type { AgentResult, ExecutionInput } from '@uluops/core/types';
 import { ExecutionError, ConfigurationError } from '@uluops/core/errors';
 ```
 
-> **Note:** The `/types` subpath exports consumer-facing types only. Internal registry configuration types (`CategoryConfig`, `CriteriaConfig`, `PhaseConfig`, etc.) are available via direct import from `@uluops/core/types/registry` if needed.
+> **Note:** The `/types` subpath exports consumer-facing types only. Internal registry configuration types (`CategoryConfig`, `CriteriaConfig`, `PhaseConfig`, etc.) are available via the root import `@uluops/core`.
 
 ## Error Handling
 
@@ -542,4 +542,4 @@ npm run build
 
 ## License
 
-MIT
+Proprietary — Copyright (c) 2026 Uluops. See [LICENSE](LICENSE) for details.
