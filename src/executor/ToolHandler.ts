@@ -30,11 +30,28 @@ const MAX_DIR_ENTRIES = 50;
  */
 export class ToolHandler {
   private basePath: string;
+  private realBasePath: string | undefined;
   private logger: Logger;
 
   constructor(basePath: string, logger?: Logger) {
     this.basePath = path.resolve(basePath);
     this.logger = logger ?? noopLogger;
+  }
+
+  /**
+   * Get the real (symlink-resolved) base path, lazily computed.
+   * Required on macOS where /tmp → /private/tmp, causing realpath
+   * comparisons to fail against the logical basePath.
+   */
+  private async getRealBasePath(): Promise<string> {
+    if (this.realBasePath === undefined) {
+      try {
+        this.realBasePath = await fs.realpath(this.basePath);
+      } catch {
+        this.realBasePath = this.basePath;
+      }
+    }
+    return this.realBasePath;
   }
 
   /**
@@ -269,10 +286,13 @@ export class ToolHandler {
     const logicalPath = path.resolve(fullPath);
     if (!logicalPath.startsWith(this.basePath)) return false;
 
-    // Second check: resolve symlinks to detect escape via symlink
+    // Second check: resolve symlinks to detect escape via symlink.
+    // Compare against realpath-resolved base to handle platforms where
+    // tmpdir is a symlink (e.g., macOS /tmp → /private/tmp).
     try {
       const realPath = await fs.realpath(fullPath);
-      return realPath.startsWith(this.basePath);
+      const realBase = await this.getRealBasePath();
+      return realPath.startsWith(realBase);
     } catch {
       // Path doesn't exist — logical check above is sufficient
       return true;
