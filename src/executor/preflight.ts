@@ -50,7 +50,15 @@ async function checkFileExists(
     throw new PreflightError('file_exists check requires a path', 'file_exists');
   }
 
+  const targetRoot = path.resolve(input.target);
   const fullPath = path.resolve(input.target, check.path);
+  if (!fullPath.startsWith(targetRoot + path.sep) && fullPath !== targetRoot) {
+    throw new PreflightError(
+      `file_exists path escapes target directory: ${check.path}`,
+      'file_exists',
+      { path: check.path },
+    );
+  }
   try {
     await fs.access(fullPath);
   } catch {
@@ -82,6 +90,17 @@ async function checkCommand(check: PreflightCheck): Promise<void> {
   if (/`|\$\(|;|&&|\|\||\|[^|]|(?<![|])>|<|\n|\r/.test(check.command)) {
     throw new PreflightError(
       `Preflight command contains disallowed shell metacharacter: ${check.command}`,
+      'command',
+      { command: check.command },
+    );
+  }
+
+  // Reject interpreter-based code execution that bypasses the metacharacter filter.
+  // Commands like `node -e "..."` or `python3 -c "..."` can execute arbitrary code
+  // without using any blocked metacharacters.
+  if (/\b(node|python[23]?|ruby|perl|php|lua|deno|bun)\s+(-e|--eval|-c)\b/.test(check.command)) {
+    throw new PreflightError(
+      `Preflight command contains disallowed interpreter eval: ${check.command}`,
       'command',
       { command: check.command },
     );

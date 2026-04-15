@@ -38,6 +38,12 @@ export class WorkflowExecutor {
    */
   async execute(resolved: ResolvedDefinition, input: ExecutionInput): Promise<WorkflowResult> {
     const startTime = Date.now();
+    if (resolved.type !== 'workflow') {
+      throw new WorkflowError(
+        `WorkflowExecutor received a '${resolved.type}' definition (expected 'workflow')`,
+        { partialResult: undefined },
+      );
+    }
     const def = resolved.definition as WorkflowDefinition;
     const phaseResults: PhaseResult[] = [];
     const allRecommendations: Recommendation[] = [];
@@ -201,16 +207,8 @@ export class WorkflowExecutor {
       if (outcome.status === 'fulfilled') {
         results.push(outcome.value);
       } else {
-        // Phase threw — create a blocked result with error info
-        results.push({
-          id: phases[i]!.id,
-          name: phases[i]!.name,
-          decision: 'blocked',
-          commands: [],
-          gateThreshold: phases[i]!.gate?.threshold ?? 70,
-          score: 0,
-          durationMs: 0,
-        });
+        // Phase threw — create a blocked result preserving error context
+        results.push(this.createBlockedPhase(phases[i]!, outcome.reason));
       }
     }
     return results;
@@ -233,16 +231,8 @@ export class WorkflowExecutor {
         const phase = phases[idx]!;
         try {
           results[idx] = await executor.executePhase(phase, input);
-        } catch {
-          results[idx] = {
-            id: phase.id,
-            name: phase.name,
-            decision: 'blocked',
-            commands: [],
-            gateThreshold: phase.gate?.threshold ?? 70,
-            score: 0,
-            durationMs: 0,
-          };
+        } catch (error) {
+          results[idx] = executor.createBlockedPhase(phase, error);
         }
       }
     }
@@ -261,14 +251,30 @@ export class WorkflowExecutor {
         phase.commands.map(cmdName => this.executeCommand(cmdName, input)),
       );
       const errors: string[] = [];
-      for (const outcome of settled) {
+      for (let j = 0; j < settled.length; j++) {
+        const outcome = settled[j]!;
         if (outcome.status === 'fulfilled') {
           commandResults.push(outcome.value);
         } else {
-          errors.push(outcome.reason instanceof Error ? outcome.reason.message : String(outcome.reason));
+          const errorMsg = outcome.reason instanceof Error ? outcome.reason.message : String(outcome.reason);
+          errors.push(errorMsg);
+          // Failed commands contribute a zero-score result so they penalize the aggregate
+          commandResults.push({
+            type: 'command',
+            name: phase.commands[j]!,
+            version: '',
+            definitionHash: '',
+            agentType: 'validator',
+            decision: 'FAIL',
+            score: 0,
+            maxScore: 100,
+            recommendations: [],
+            durationMs: 0,
+            metrics: { inputTokens: 0, outputTokens: 0, totalEffectiveTokens: 0, durationMs: 0, model: 'unknown', toolCalls: 0 },
+          } as CommandResult);
         }
       }
-      if (errors.length > 0 && commandResults.length === 0) {
+      if (errors.length > 0 && commandResults.length === errors.length) {
         throw new Error(`All parallel commands in phase "${phase.name}" failed: ${errors.join('; ')}`);
       }
     } else {
@@ -355,6 +361,19 @@ export class WorkflowExecutor {
     }
 
     return { decision, score };
+  }
+
+  private createBlockedPhase(phase: PhaseDefinition, error?: unknown): PhaseResult {
+    return {
+      id: phase.id,
+      name: phase.name,
+      decision: 'blocked',
+      commands: [],
+      gateThreshold: phase.gate?.threshold ?? 70,
+      score: 0,
+      durationMs: 0,
+      ...(error ? { error: formatErrorMessage(error) } : {}),
+    };
   }
 
   private createSkippedPhase(phase: PhaseDefinition): PhaseResult {

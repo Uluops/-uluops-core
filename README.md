@@ -167,13 +167,39 @@ console.log(`Categories:`, result.categories);
 
 ### Workflow Execution
 
-Multi-phase orchestration with gates between phases:
+DAG-based multi-phase orchestration with quality gates. Independent phases execute in parallel; dependent phases wait for their dependencies:
 
 ```typescript
 const result = await client.runWorkflow('ship', { target: './src' });
 
-console.log(`Phases completed: ${result.phases.length}`);
-console.log(`Overall decision: ${result.decision}`);
+console.log(`Overall: ${result.decision} (score: ${result.score})`);
+
+for (const phase of result.phases) {
+  // decision: 'passed' | 'warned' | 'blocked' | 'skipped' | 'aborted'
+  console.log(`  ${phase.name}: ${phase.decision} (${phase.score})`);
+}
+
+// Metrics break down phase outcomes
+const { phasesExecuted, phasesPassed, phasesBlocked, phasesAborted } = result.metrics;
+```
+
+Workflows define phase dependencies and failure behaviors in their WDL definition:
+
+```yaml
+orchestration:
+  on_failure: stop       # stop | abort | continue | warn
+  max_parallel: 3        # optional concurrency limit
+  phases:
+    - id: lint
+      commands: [lint-validator@latest]
+    - id: test
+      commands: [test-architect@latest]
+    - id: security
+      commands: [security-analyst@latest]
+      depends_on: [lint, test]   # DAG dependency — waits for lint + test
+      gate:
+        threshold: 85
+        on_fail: abort
 ```
 
 ### Auto-Routing

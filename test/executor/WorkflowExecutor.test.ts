@@ -201,6 +201,42 @@ describe('WorkflowExecutor', () => {
       expect(result.decision).toBe('HOLD');
     });
 
+    it('passes when score equals threshold exactly (>= boundary)', async () => {
+      const cmdExec = makeCommandExecutor([makeCommandResult({ score: 70 })]);
+      const registry = makeRegistry();
+      const executor = new WorkflowExecutor(cmdExec, registry);
+
+      const def = makeWorkflowDef({
+        orchestration: {
+          phases: [
+            { id: 'validate', name: 'Validation', commands: ['cmd'], gate: { threshold: 70, aggregate: 'average', on_fail: 'stop' } },
+          ],
+          on_failure: 'stop',
+        },
+      });
+
+      const result = await executor.execute(def, { target: '/tmp/test' });
+      expect(result.phases[0]!.decision).toBe('passed');
+    });
+
+    it('blocks when score is one below threshold', async () => {
+      const cmdExec = makeCommandExecutor([makeCommandResult({ score: 69 })]);
+      const registry = makeRegistry();
+      const executor = new WorkflowExecutor(cmdExec, registry);
+
+      const def = makeWorkflowDef({
+        orchestration: {
+          phases: [
+            { id: 'validate', name: 'Validation', commands: ['cmd'], gate: { threshold: 70, aggregate: 'average', on_fail: 'stop' } },
+          ],
+          on_failure: 'stop',
+        },
+      });
+
+      const result = await executor.execute(def, { target: '/tmp/test' });
+      expect(result.phases[0]!.decision).toBe('blocked');
+    });
+
     it('passes when no gate is defined', async () => {
       const cmdExec = makeCommandExecutor([makeCommandResult({ score: 30 })]);
       const registry = makeRegistry();
@@ -618,6 +654,9 @@ describe('WorkflowExecutor', () => {
         const we = error as WorkflowError;
         expect(we.message).toContain('Agent timeout');
         expect(we.context?.partialResult).toBeDefined();
+        expect(we.context!.partialResult!.name).toBe('test-workflow');
+        expect(we.context!.partialResult!.type).toBe('workflow');
+        expect(we.context!.partialResult!.definitionHash).toBe('sha256:wf');
       }
     });
   });

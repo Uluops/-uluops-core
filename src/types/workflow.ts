@@ -158,4 +158,7 @@ export interface PhaseResult {
 
   /** Phase duration */
   durationMs: number;
+
+  /** Error message when phase threw (blocked phases only) */
+  error?: string;
 }
