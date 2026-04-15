@@ -93,6 +93,18 @@ The pass threshold (75) and gate threshold (70) are intentionally different valu
 
 The three bundled providers (Anthropic, OpenAI, Google) have custom option builders for thinking budgets, reasoning effort, and context management. All other providers receive passthrough options.
 
+### Anthropic-first provider strategy
+
+Anthropic is the primary provider by design. The SDK is built with Claude Code and Claude Desktop — Anthropic models receive the deepest optimization: prompt caching with cache control markup, context management (clearing old tool uses at budget thresholds), extended thinking budgets, and provider-specific bash tool integration. OpenAI receives reasoning effort auto-configuration and shell tools. Google receives thinking config. All other providers receive passthrough options via the provider options builder registry.
+
+This is an intentional engineering investment, not an oversight. The provider options builder registry (`AIProvider.providerOptionsBuilders`) is the extension point — adding first-class support for any Vercel AI SDK-supported provider requires one builder function. The AI SDK supports 15+ providers (Anthropic, OpenAI, Google, Mistral, Cohere, Groq, xAI, DeepSeek, Amazon Bedrock, Azure, Fireworks, Together, Perplexity, Cerebras, LMStudio) with a common interface. The SDK's multi-provider architecture is designed so that any of these can be elevated to first-class status by adding a provider options builder and, optionally, a provider-specific shell tool.
+
+The `DEFAULT_MODEL_ALIAS = 'sonnet'` and `defaultProvider = 'anthropic'` defaults reflect the team's primary development context. These are configurable via `UluOpsConfig.ai.defaultProvider` and environment variables.
+
+### costUsd — plumbed but not yet populated
+
+`ExecutionMetrics.costUsd` is declared in types, propagated through `CommandMetricsSummary` and `WorkflowExecutor`, and rendered by the CLI formatter when present. It is not yet computed because the registry `Model` type does not carry pricing data. Populating this field requires adding per-model pricing rates to the registry model catalog (input $/MTok, output $/MTok, cache read/write rates) and computing cost from token counts in `AgentExecutor.buildMetrics()`. This is deferred until the registry model schema supports pricing fields.
+
 ### Anthropic identifiers are volatile constants
 
 `ANTHROPIC_BASH_TOOL_VERSION` ('bash_20250124') and `ANTHROPIC_CONTEXT_MANAGEMENT_TYPE` ('clear_tool_uses_20250919') are date-stamped Anthropic API identifiers extracted to `constants.ts`. They are the fastest-decaying elements in the codebase (days-to-weeks timeline). When Anthropic ships successors, updating these constants is a single-line change.
@@ -135,6 +147,7 @@ The Zod schemas in `outputSchemas.ts` must stay synchronized with TypeScript typ
 | Progressive context summarization | Deferred | Would use a secondary model (haiku) to summarize old tool results. High impact but adds complexity and latency. Anthropic context management partially addresses this. |
 | Provider failover | Deferred | Automatic failover between providers would change model behavior. Multi-provider support exists for manual selection. |
 | `ResolvedDefinition` discriminated union | Deferred | Would eliminate `as` casts but requires coordinated update across multiple packages. Runtime type guards provide the safety net. |
+| Cost estimation (`costUsd`) | Deferred | Types, propagation, and CLI display are wired. Blocked on registry model pricing schema (input/output $/MTok per model). |
 | Windows support | Not planned | POSIX shell assumed for ShellExecutor and preflight. No platform detection or graceful degradation. |
 
 ## Inherent Tensions
@@ -149,3 +162,6 @@ These are structural properties of the package's design that have been examined 
 | **Vercel AI SDK structural coupling** | Accepted dependency | Deep API surface dependency on `generateText`, `Output.object`, `stepCountIs`, `prepareStep`. The SDK is the strategic abstraction layer — the coupling is the investment. |
 | **Issue → Recommendation lossy mapping** | By design | `flattenRecommendations()` maps `Issue` to `Recommendation`, dropping fields that don't have counterparts. Full data remains available in `parsed.categories` for consumers who need it. |
 | **Error propagation across layers** | Unexamined | How failures at the AgentExecutor level manifest at the Pipeline level with 3+ decision vocabularies has not been systematically analyzed. Identified as a coverage gap by fragility-map synthesis. |
+| **Validator-centric execution stack** | By design | The execution pipeline — default agent type, dedicated output schemas, decision vocabulary, scoring thresholds, starter agents — is optimized for the validator pattern. Non-validator agent types (analyst, generator, explorer, forecaster) share a generic output schema and receive less parsing fidelity. This reflects the platform's founding use case. Extending to first-class support for other types requires dedicated output schemas per type and corresponding result type discrimination. |
+| **Anthropic-first provider investment** | By design | Anthropic receives ~3x the provider-specific engineering (caching, context management, bash tools). This is an intentional optimization for the team's primary development context (Claude Code + Claude Desktop). The provider options builder registry is the extension point for elevating other providers. See "Anthropic-first provider strategy" above. |
+| **costUsd infrastructure gap** | Deferred | Type field exists, CLI renders it, workflow propagates it, but no execution path populates it. Blocked on registry model pricing data. Tracked as a known gap rather than dead code. |

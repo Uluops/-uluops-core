@@ -5,7 +5,7 @@ import type { ResolvedDefinition } from '../types/registry.js';
 import type { CommandDefinition } from '../types/command.js';
 import type { ExecutionInput, Recommendation } from '../types/execution.js';
 import type { CommandResult, CommandMetrics } from '../types/command.js';
-import type { AgentResult, ValidatorAgentResult } from '../types/agent.js';
+import type { AgentResult } from '../types/agent.js';
 import { ExecutionError } from '../errors/index.js';
 import { parseRef } from '../utils/parseRef.js';
 import { sumTokenMetrics } from '../utils/sumTokenMetrics.js';
@@ -135,34 +135,27 @@ export class CommandExecutor {
       toolCalls: agentResult.metrics.toolCallCount ?? 0,
     };
 
-    const base = {
+    return {
       type: 'command' as const,
       name: def.command.interface.name,
       version: def.command.interface.version,
       definitionHash: hash,
       agentType: agentResult.agentType,
       decision: agentResult.decision,
+      score: agentResult.score,
+      maxScore: agentResult.maxScore,
       threshold: def.command.execution.thresholds?.pass,
+      categories: agentResult.categories?.map(c => ({
+        name: c.name,
+        score: c.score,
+        maxScore: c.maxScore,
+        findings: c.findings,
+      })),
+      artifacts: agentResult.artifacts,
       recommendations: agentResult.recommendations,
       durationMs,
       metrics,
     };
-
-    if (agentResult.agentType === 'validator') {
-      return {
-        ...base,
-        score: agentResult.score,
-        maxScore: agentResult.maxScore,
-        categories: agentResult.categories?.map(c => ({
-          name: c.name,
-          score: c.score,
-          maxScore: c.maxScore,
-          findings: c.findings,
-        })),
-      };
-    }
-
-    return { ...base, artifacts: agentResult.artifacts };
   }
 
   /**
@@ -180,16 +173,14 @@ export class CommandExecutor {
     // Collect all recommendations
     const recommendations: Recommendation[] = results.flatMap(r => r.recommendations);
 
-    // Aggregate scores (for validators)
-    const validatorResults = results.filter(
-      (r): r is ValidatorAgentResult => r.agentType === 'validator',
-    );
+    // Aggregate scores from all scored agents
+    const scoredResults = results.filter(r => r.score !== undefined);
 
     let score: number | undefined;
     let maxScore: number | undefined;
 
-    if (validatorResults.length > 0) {
-      const scores = validatorResults.map(r => r.score);
+    if (scoredResults.length > 0) {
+      const scores = scoredResults.map(r => r.score);
 
       switch (aggregation.method) {
         case 'min':
@@ -202,7 +193,7 @@ export class CommandExecutor {
           const weights = aggregation.weights ?? {};
           let totalWeight = 0;
           let weightedSum = 0;
-          for (const r of validatorResults) {
+          for (const r of scoredResults) {
             const w = weights[r.name] ?? 1;
             totalWeight += w;
             weightedSum += r.score * w;
@@ -215,7 +206,7 @@ export class CommandExecutor {
           score = scores.reduce((a, b) => a + b, 0) / scores.length;
       }
 
-      maxScore = Math.max(...validatorResults.map(r => r.maxScore ?? 100));
+      maxScore = Math.max(...scoredResults.map(r => r.maxScore ?? 100));
     }
 
     // Determine overall decision
@@ -247,7 +238,7 @@ export class CommandExecutor {
       name: def.command.interface.name,
       version: def.command.interface.version,
       definitionHash: hash,
-      agentType: validatorResults.length > 0 ? 'validator' : 'executor',
+      agentType: results[0]?.agentType ?? 'validator',
       decision,
       score,
       maxScore,

@@ -619,6 +619,11 @@ npm run lint
 npm run build
 ```
 
+## Maintainers
+
+- **Alex Self** ([@aself](https://github.com/aself)) — architecture, execution engine, AI integration
+- **Claude** (Anthropic) — implementation, validation, documentation
+
 ## License
 
 Proprietary — Copyright (c) 2026 Uluops. See [LICENSE](LICENSE) for details.

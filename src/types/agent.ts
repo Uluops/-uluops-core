@@ -451,64 +451,32 @@ interface AgentResultBase {
 }
 
 /**
- * Result from a validator agent execution
+ * Universal agent result — used by all 6 agent types.
  *
- * Validators produce a numerical score, decision (PASS/WARN/FAIL),
- * and scored categories.
+ * The agent's native decision string passes through as-is (PASS, EXAMINED,
+ * VITAL, COMPLETE, etc.). Use `decisionCategory` for canonical classification.
+ *
+ * Categories and artifacts are both optional — validators and analysts
+ * produce categories; executors produce artifacts; some agents produce both.
  */
-export interface ValidatorAgentResult extends AgentResultBase {
-  agentType: 'validator';
-
-  /** Decision for validators */
-  decision: 'PASS' | 'WARN' | 'FAIL';
-
-  /** Validator score (0-100) */
+export interface AgentResult extends AgentResultBase {
+  /** Score (0-100) */
   score: number;
 
   /** Maximum possible score */
   maxScore: number;
 
-  /** Pass threshold used */
+  /** Pass threshold used (if applicable) */
   threshold?: number;
 
-  /** Scored categories */
+  /** Scored categories with findings */
   categories?: Array<{
     name: string;
     score: number;
     maxScore: number;
     findings: Finding[];
   }>;
-}
 
-/**
- * Result from an executor agent execution
- *
- * Executors produce artifacts and a completion decision
- * (COMPLETE/PARTIAL/FAILED).
- */
-export interface ExecutorAgentResult extends AgentResultBase {
-  agentType: 'executor';
-
-  /** Decision for executors */
-  decision: 'COMPLETE' | 'PARTIAL' | 'FAILED';
-
-  /** Score is optional for executors */
-  score?: number;
-
-  /** Generated artifacts */
+  /** Generated artifacts (executor agents) */
   artifacts?: ArtifactResult[];
 }
-
-/**
- * Discriminated union of all agent result types
- *
- * Use `result.agentType` to narrow:
- * ```typescript
- * if (result.agentType === 'validator') {
- *   console.log(result.score); // ValidatorAgentResult
- * } else {
- *   console.log(result.artifacts); // ExecutorAgentResult
- * }
- * ```
- */
-export type AgentResult = ValidatorAgentResult | ExecutorAgentResult;

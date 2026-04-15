@@ -368,18 +368,16 @@ export class OutputExtractor {
       output.score = parseFloat(rawScore);
     }
 
-    if (agentType === 'validator') {
-      this.resolveValidatorFields(output, sources);
-    }
+    this.resolveAgentFields(output, sources);
 
-    if (agentType === 'executor' && Array.isArray(obj['artifacts'])) {
+    if (Array.isArray(obj['artifacts'])) {
       output.artifacts = this.parseArtifacts(obj['artifacts']);
     }
 
     return output;
   }
 
-  private resolveValidatorFields(
+  private resolveAgentFields(
     output: ParsedOutput,
     sources: ReturnType<OutputExtractor['buildParseSources']>,
   ): void {

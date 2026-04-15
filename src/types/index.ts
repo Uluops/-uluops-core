@@ -28,8 +28,6 @@ export type {
   AgentOutput,
   ScoringCategory,
   ScoringCriterion,
-  ValidatorAgentResult,
-  ExecutorAgentResult,
   AgentResult,
 } from './agent.js';
 

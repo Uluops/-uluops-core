@@ -1,9 +1,9 @@
 import { describe, it, expect } from 'vitest';
-import { validatorOutputSchema, executorOutputSchema, genericOutputSchema } from '../../src/parser/outputSchemas';
+import { agentOutputSchema } from '../../src/parser/outputSchemas';
 
-describe('outputSchemas', () => {
-  describe('validatorOutputSchema', () => {
-    it('accepts valid validator output', () => {
+describe('agentOutputSchema', () => {
+  describe('categories', () => {
+    it('accepts valid output with categories', () => {
       const valid = {
         decision: 'PASS',
         score: 85,
@@ -20,43 +20,25 @@ describe('outputSchemas', () => {
             issues: [],
           }],
         }],
+        artifacts: null,
       };
-      expect(validatorOutputSchema.parse(valid)).toEqual(valid);
+      expect(agentOutputSchema.parse(valid)).toEqual(valid);
     });
 
     it('accepts null categories', () => {
-      const result = validatorOutputSchema.parse({
+      const result = agentOutputSchema.parse({
         decision: 'PASS',
         score: 90,
         maxScore: 100,
         summary: null,
         categories: null,
+        artifacts: null,
       });
       expect(result.categories).toBeNull();
     });
 
-    it('rejects score above 100', () => {
-      expect(() => validatorOutputSchema.parse({
-        decision: 'PASS',
-        score: 150,
-        maxScore: 100,
-        summary: null,
-        categories: null,
-      })).toThrow();
-    });
-
-    it('rejects score below 0', () => {
-      expect(() => validatorOutputSchema.parse({
-        decision: 'PASS',
-        score: -5,
-        maxScore: 100,
-        summary: null,
-        categories: null,
-      })).toThrow();
-    });
-
     it('accepts issues with all nullable fields as null', () => {
-      const result = validatorOutputSchema.parse({
+      const result = agentOutputSchema.parse({
         decision: 'FAIL',
         score: 30,
         maxScore: 100,
@@ -80,12 +62,13 @@ describe('outputSchemas', () => {
             }],
           }],
         }],
+        artifacts: null,
       });
       expect(result.categories![0].findings[0].issues[0].title).toBe('SQL injection found');
     });
 
     it('validates issue priority enum', () => {
-      expect(() => validatorOutputSchema.parse({
+      expect(() => agentOutputSchema.parse({
         decision: 'FAIL',
         score: 50,
         maxScore: 100,
@@ -109,64 +92,121 @@ describe('outputSchemas', () => {
             }],
           }],
         }],
+        artifacts: null,
       })).toThrow();
     });
   });
 
-  describe('executorOutputSchema', () => {
-    it('accepts valid executor output with artifacts', () => {
+  describe('artifacts', () => {
+    it('accepts valid output with artifacts', () => {
       const valid = {
         decision: 'COMPLETE',
         score: 100,
         maxScore: 100,
         summary: 'Generated report',
+        categories: null,
         artifacts: [{
           type: 'file',
           path: '/tmp/report.md',
           content: '# Report',
         }],
       };
-      expect(executorOutputSchema.parse(valid)).toEqual(valid);
+      expect(agentOutputSchema.parse(valid)).toEqual(valid);
     });
 
     it('accepts null artifacts', () => {
-      const result = executorOutputSchema.parse({
+      const result = agentOutputSchema.parse({
         decision: 'COMPLETE',
         score: 100,
         maxScore: 100,
         summary: null,
+        categories: null,
         artifacts: null,
       });
       expect(result.artifacts).toBeNull();
     });
 
     it('accepts artifacts with null path and content', () => {
-      const result = executorOutputSchema.parse({
+      const result = agentOutputSchema.parse({
         decision: 'COMPLETE',
         score: 80,
         maxScore: 100,
         summary: 'Done',
+        categories: null,
         artifacts: [{ type: 'report', path: null, content: null }],
       });
       expect(result.artifacts![0].type).toBe('report');
     });
   });
 
-  describe('genericOutputSchema', () => {
-    it('accepts minimal valid output', () => {
-      const result = genericOutputSchema.parse({
+  describe('score validation', () => {
+    it('rejects score above 100', () => {
+      expect(() => agentOutputSchema.parse({
+        decision: 'PASS',
+        score: 150,
+        maxScore: 100,
+        summary: null,
+        categories: null,
+        artifacts: null,
+      })).toThrow();
+    });
+
+    it('rejects score below 0', () => {
+      expect(() => agentOutputSchema.parse({
+        decision: 'PASS',
+        score: -5,
+        maxScore: 100,
+        summary: null,
+        categories: null,
+        artifacts: null,
+      })).toThrow();
+    });
+
+    it('rejects missing required fields', () => {
+      expect(() => agentOutputSchema.parse({
+        decision: 'PASS',
+      })).toThrow();
+    });
+  });
+
+  describe('universal schema', () => {
+    it('accepts custom decision vocabularies', () => {
+      const result = agentOutputSchema.parse({
         decision: 'EXAMINED',
         score: 75,
         maxScore: 100,
-        summary: null,
+        summary: 'Socratic examination complete',
+        categories: null,
+        artifacts: null,
       });
       expect(result.decision).toBe('EXAMINED');
     });
 
-    it('rejects missing required fields', () => {
-      expect(() => genericOutputSchema.parse({
-        decision: 'PASS',
-      })).toThrow();
+    it('accepts both categories and artifacts together', () => {
+      const result = agentOutputSchema.parse({
+        decision: 'COMPLETE',
+        score: 88,
+        maxScore: 100,
+        summary: 'Analysis with generated report',
+        categories: [{
+          name: 'Analysis',
+          score: 88,
+          maxScore: 100,
+          findings: [{
+            criterion: 'Depth',
+            pointsEarned: 88,
+            pointsPossible: 100,
+            issues: [],
+          }],
+        }],
+        artifacts: [{
+          type: 'report',
+          path: '/tmp/analysis.md',
+          content: '# Analysis Report',
+        }],
+      });
+      expect(result.categories).toHaveLength(1);
+      expect(result.artifacts).toHaveLength(1);
     });
   });
 });

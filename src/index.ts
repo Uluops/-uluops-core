@@ -58,8 +58,6 @@ export type {
   ScoringCategory,
   ScoringCriterion,
   AgentResult,
-  ValidatorAgentResult,
-  ExecutorAgentResult,
 } from './types/agent.js';
 
 // ─── Types: Command ───────────────────────────────────────────────────────────

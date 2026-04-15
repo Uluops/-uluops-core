@@ -21,7 +21,7 @@ const issueSchema = z.object({
 });
 
 /**
- * Category breakdown for validators
+ * Category breakdown — universal across all agent types.
  */
 const categorySchema = z.object({
   name: z.string().describe('Category name (e.g., "Code Quality", "Security")'),
@@ -36,51 +36,40 @@ const categorySchema = z.object({
 });
 
 /**
- * Base output schema — shared by all agent types.
+ * Artifact produced by executor agents.
+ */
+const artifactSchema = z.object({
+  type: z.string().describe('Artifact type (e.g., "file", "report")'),
+  path: z.string().nullable().describe('File path if applicable'),
+  content: z.string().nullable().describe('Artifact content'),
+});
+
+/**
+ * Universal agent output schema — used by all 6 agent types.
  *
  * Decision is z.string() (not an enum) because agents use diverse
  * decision vocabularies: PASS/FAIL, EXAMINED/UNEXAMINED, ALIGNED/MISALIGNED,
- * CALIBRATED/OVERCONFIDENT, etc. normalizeDecision() handles synonym mapping.
+ * VITAL/DECADENT, etc. classifyDecision() normalizes via vocabulary maps.
+ *
+ * Categories and artifacts are both nullable — validators and analysts
+ * produce categories; executors produce artifacts; some agents produce both.
  */
-const baseOutputSchema = z.object({
+export const agentOutputSchema = z.object({
   decision: z.string()
-    .describe('Overall decision (e.g., PASS, FAIL, EXAMINED, ALIGNED)'),
+    .describe('Overall decision (e.g., PASS, FAIL, EXAMINED, ALIGNED, VITAL)'),
   score: z.number().min(0).max(100)
     .describe('Overall score from 0 to 100'),
   maxScore: z.number()
     .describe('Maximum possible score (typically 100)'),
   summary: z.string().nullable()
     .describe('Brief human-readable summary of the result'),
-});
-
-/**
- * Validator output schema — extends base with category breakdown.
- */
-export const validatorOutputSchema = baseOutputSchema.extend({
   categories: z.array(categorySchema).nullable()
     .describe('Category breakdown with individual findings'),
+  artifacts: z.array(artifactSchema).nullable()
+    .describe('Generated artifacts (executor agents)'),
 });
 
-/**
- * Executor output schema — extends base with artifacts.
- */
-export const executorOutputSchema = baseOutputSchema.extend({
-  artifacts: z.array(z.object({
-    type: z.string().describe('Artifact type (e.g., "file", "report")'),
-    path: z.string().nullable().describe('File path if applicable'),
-    content: z.string().nullable().describe('Artifact content'),
-  })).nullable().describe('Generated artifacts'),
-});
-
-/**
- * Generic agent output schema — for analyst, generator, explorer, forecaster types.
- * Uses the base schema without type-specific extensions.
- */
-export const genericOutputSchema = baseOutputSchema;
-
-export type ValidatorOutput = z.infer<typeof validatorOutputSchema>;
-export type ExecutorOutput = z.infer<typeof executorOutputSchema>;
-export type GenericOutput = z.infer<typeof genericOutputSchema>;
+export type AgentOutput = z.infer<typeof agentOutputSchema>;
 
 /**
  * Compile-time check: issueSchema fields must be a superset of Issue fields.

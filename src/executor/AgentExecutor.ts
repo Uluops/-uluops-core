@@ -4,17 +4,13 @@ import { ToolHandler, extToLanguage } from './ToolHandler.js';
 import { ToolAdapter } from '../ai/ToolAdapter.js';
 import { TokenBudgetTracker } from '../ai/TokenBudgetTracker.js';
 import { OutputExtractor } from '../parser/OutputExtractor.js';
-import {
-  validatorOutputSchema,
-  executorOutputSchema,
-  genericOutputSchema,
-} from '../parser/outputSchemas.js';
+import { agentOutputSchema } from '../parser/outputSchemas.js';
 import { ExecutionError } from '../errors/index.js';
 import { classifyDecision, buildVocabularyMap, type DecisionCategory } from './classifyDecision.js';
 import type { ResolvedConfig } from '../types/config.js';
 import type { ResolvedDefinition, ValidatorRuntime, ExecutorRuntime } from '../types/registry.js';
 import type { ExecutionInput, ExecutionOptions, ExecutionMetrics, ResolvedExecutionContext, Recommendation } from '../types/execution.js';
-import type { AgentResult, ValidatorAgentResult, ExecutorAgentResult } from '../types/agent.js';
+import type { AgentResult } from '../types/agent.js';
 import type { AgentType } from '../types/execution.js';
 import type { ParsedOutput, ExtractionResult } from '../types/parser.js';
 import type { UsageMetrics } from '../types/ai.js';
@@ -89,7 +85,7 @@ export class AgentExecutor {
       temperature: context.temperature,
       contextBudget: this.config.contextBudget,
       budgetTracker: toolAdapter.budgetTracker,
-      output: this.getOutputSchema(agentType),
+      output: { schema: agentOutputSchema, name: 'AgentResult' },
     });
 
     // 3. Parse and extract output
@@ -152,7 +148,7 @@ export class AgentExecutor {
    */
   private parseOutput(result: AIGenerateResult, agentType: AgentType): { parsed: ParsedOutput; extraction: ExtractionResult } {
     if (result.structuredOutput) {
-      const parsed = this.mapStructuredOutput(result.structuredOutput, agentType);
+      const parsed = this.mapStructuredOutput(result.structuredOutput);
       return {
         parsed,
         extraction: { output: parsed, method: 'structured_output', confidence: 1.0, warnings: [] },
@@ -220,41 +216,29 @@ export class AgentExecutor {
     decisionCategory: DecisionCategory,
     rawText: string,
   ): AgentResult {
-    const base = {
-      type: 'agent' as const,
+    return {
+      type: 'agent',
+      agentType,
       name: resolved.name,
       version: resolved.version,
       definitionHash: resolved.hash,
+      decision: parsed.decision ?? 'FAIL',
       decisionCategory,
+      score: parsed.score ?? 0,
+      maxScore: parsed.maxScore ?? 100,
+      threshold: context.thresholds?.pass,
+      categories: parsed.categories?.map(c => ({
+        name: c.name,
+        score: c.score,
+        maxScore: c.maxScore,
+        findings: c.findings,
+      })),
+      artifacts: parsed.artifacts,
       recommendations,
       durationMs,
       metrics,
       rawOutput: rawText || undefined,
     };
-
-    if (agentType === 'validator') {
-      return {
-        ...base,
-        agentType: 'validator',
-        decision: this.validatedDecision(parsed.decision, ['PASS', 'WARN', 'FAIL'], 'FAIL'),
-        score: parsed.score ?? 0,
-        maxScore: parsed.maxScore ?? 100,
-        threshold: context.thresholds?.pass,
-        categories: parsed.categories?.map(c => ({
-          name: c.name,
-          score: c.score,
-          maxScore: c.maxScore,
-          findings: c.findings,
-        })),
-      } satisfies ValidatorAgentResult;
-    }
-
-    return {
-      ...base,
-      agentType: 'executor',
-      decision: this.validatedDecision(parsed.decision, ['COMPLETE', 'PARTIAL', 'FAILED'], 'FAILED'),
-      artifacts: parsed.artifacts,
-    } satisfies ExecutorAgentResult;
   }
 
   /**
@@ -298,14 +282,6 @@ export class AgentExecutor {
     const warn = optThresholds?.warn ?? defThresholds?.warn;
     if (pass === undefined && warn === undefined) return undefined;
     return { pass: pass ?? DEFAULT_PASS_THRESHOLD, warn: warn ?? DEFAULT_WARN_THRESHOLD };
-  }
-
-  /**
-   * Validate LLM decision string against known values, falling back to default.
-   */
-  private validatedDecision<T extends string>(raw: string | undefined, valid: readonly T[], fallback: T): T {
-    if (raw && (valid as readonly string[]).includes(raw)) return raw as T;
-    return fallback;
   }
 
   /**
@@ -387,53 +363,27 @@ export class AgentExecutor {
   }
 
   /**
-   * Get the appropriate output schema for an agent type.
-   */
-  private getOutputSchema(agentType: AgentType) {
-    switch (agentType) {
-      case 'validator':
-        return { schema: validatorOutputSchema, name: 'ValidationResult' };
-      case 'executor':
-        return { schema: executorOutputSchema, name: 'ExecutionResult' };
-      case 'analyst':
-      case 'generator':
-      case 'explorer':
-      case 'forecaster':
-        return { schema: genericOutputSchema, name: 'AgentResult' };
-      default: {
-        const _exhaustive: never = agentType;
-        throw new Error(`Unknown agent type: ${_exhaustive}`);
-      }
-    }
-  }
-
-  /**
    * Map structured output to ParsedOutput.
    * Null values from .nullable() fields are converted to undefined.
    */
-  private mapStructuredOutput(output: unknown, agentType: AgentType): ParsedOutput {
-    const base = output as { decision: string; score: number; maxScore: number; summary: string | null };
-    const result: ParsedOutput = {
-      decision: base.decision,
-      score: base.score,
-      maxScore: base.maxScore,
-      summary: base.summary ?? undefined,
+  private mapStructuredOutput(output: unknown): ParsedOutput {
+    const o = output as {
+      decision: string;
+      score: number;
+      maxScore: number;
+      summary: string | null;
+      categories: Array<unknown> | null;
+      artifacts: Array<unknown> | null;
+    };
+    return {
+      decision: o.decision,
+      score: o.score,
+      maxScore: o.maxScore,
+      summary: o.summary ?? undefined,
+      categories: o.categories as ParsedOutput['categories'] ?? undefined,
+      artifacts: o.artifacts as ParsedOutput['artifacts'] ?? undefined,
       rawJson: output,
     };
-
-    if (agentType === 'validator') {
-      const v = output as { categories: Array<unknown> | null };
-      if (v.categories) {
-        result.categories = v.categories as ParsedOutput['categories'];
-      }
-    } else if (agentType === 'executor') {
-      const e = output as { artifacts: Array<unknown> | null };
-      if (e.artifacts) {
-        result.artifacts = e.artifacts as ParsedOutput['artifacts'];
-      }
-    }
-
-    return result;
   }
 
   /**
