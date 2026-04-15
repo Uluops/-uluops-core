@@ -27,7 +27,7 @@ function makeWorkflowDef(overrides?: Partial<WorkflowDefinition['workflow']>): R
               id: 'validate',
               name: 'Validation',
               commands: ['code-validator'],
-              gate: { threshold: 70, aggregate: 'average', on_fail: 'block' },
+              gate: { threshold: 70, aggregate: 'average', on_fail: 'stop' },
             },
           ],
           on_failure: 'stop',
@@ -90,8 +90,8 @@ describe('WorkflowExecutor', () => {
       const def = makeWorkflowDef({
         orchestration: {
           phases: [
-            { id: 'phase-1', name: 'Phase 1', commands: ['validator-a'], gate: { threshold: 70, aggregate: 'average', on_fail: 'block' } },
-            { id: 'phase-2', name: 'Phase 2', commands: ['validator-b'], gate: { threshold: 70, aggregate: 'average', on_fail: 'block' } },
+            { id: 'phase-1', name: 'Phase 1', commands: ['validator-a'], gate: { threshold: 70, aggregate: 'average', on_fail: 'stop' } },
+            { id: 'phase-2', name: 'Phase 2', commands: ['validator-b'], gate: { threshold: 70, aggregate: 'average', on_fail: 'stop' } },
           ],
           on_failure: 'stop',
         },
@@ -106,7 +106,7 @@ describe('WorkflowExecutor', () => {
       expect(result.score).toBe(85); // average of 80 and 90
     });
 
-    it('stops on failure when on_failure is stop', async () => {
+    it('stops on failure when on_failure is stop (dependent phases skipped)', async () => {
       const results = [
         makeCommandResult({ name: 'validator-a', score: 40 }), // Below threshold
         makeCommandResult({ name: 'validator-b', score: 90 }),
@@ -118,8 +118,8 @@ describe('WorkflowExecutor', () => {
       const def = makeWorkflowDef({
         orchestration: {
           phases: [
-            { id: 'phase-1', name: 'Phase 1', commands: ['validator-a'], gate: { threshold: 70, aggregate: 'average', on_fail: 'block' } },
-            { id: 'phase-2', name: 'Phase 2', commands: ['validator-b'], gate: { threshold: 70, aggregate: 'average', on_fail: 'block' } },
+            { id: 'phase-1', name: 'Phase 1', commands: ['validator-a'], gate: { threshold: 70, aggregate: 'average', on_fail: 'stop' } },
+            { id: 'phase-2', name: 'Phase 2', commands: ['validator-b'], depends_on: ['phase-1'], gate: { threshold: 70, aggregate: 'average', on_fail: 'stop' } },
           ],
           on_failure: 'stop',
         },
@@ -127,8 +127,9 @@ describe('WorkflowExecutor', () => {
 
       const result = await executor.execute(def, { target: '/tmp/test' });
 
-      expect(result.phases).toHaveLength(1); // Phase 2 never executed
+      expect(result.phases).toHaveLength(2); // Phase 2 skipped due to stop
       expect(result.phases[0]!.decision).toBe('blocked');
+      expect(result.phases[1]!.decision).toBe('skipped');
       expect(result.decision).toBe('BLOCK');
     });
 
@@ -144,8 +145,8 @@ describe('WorkflowExecutor', () => {
       const def = makeWorkflowDef({
         orchestration: {
           phases: [
-            { id: 'phase-1', name: 'Phase 1', commands: ['validator-a'], gate: { threshold: 70, aggregate: 'average', on_fail: 'block' } },
-            { id: 'phase-2', name: 'Phase 2', commands: ['validator-b'], gate: { threshold: 70, aggregate: 'average', on_fail: 'block' } },
+            { id: 'phase-1', name: 'Phase 1', commands: ['validator-a'], gate: { threshold: 70, aggregate: 'average', on_fail: 'stop' } },
+            { id: 'phase-2', name: 'Phase 2', commands: ['validator-b'], gate: { threshold: 70, aggregate: 'average', on_fail: 'stop' } },
           ],
           on_failure: 'continue',
         },
@@ -212,7 +213,7 @@ describe('WorkflowExecutor', () => {
       const def = makeWorkflowDef({
         orchestration: {
           phases: [
-            { id: 'phase-1', name: 'Phase 1', commands: ['cmd-a'], gate: { threshold: 70, aggregate: 'average', on_fail: 'block' } },
+            { id: 'phase-1', name: 'Phase 1', commands: ['cmd-a'], gate: { threshold: 70, aggregate: 'average', on_fail: 'stop' } },
             { id: 'phase-2', name: 'Phase 2', commands: ['cmd-b'], depends_on: ['phase-1'] },
           ],
           on_failure: 'continue',
@@ -238,7 +239,7 @@ describe('WorkflowExecutor', () => {
       const def = makeWorkflowDef({
         orchestration: {
           phases: [
-            { id: 'phase-1', name: 'Phase 1', commands: ['cmd-a'], gate: { threshold: 70, aggregate: 'average', on_fail: 'block' } },
+            { id: 'phase-1', name: 'Phase 1', commands: ['cmd-a'], gate: { threshold: 70, aggregate: 'average', on_fail: 'stop' } },
             { id: 'phase-2', name: 'Phase 2', commands: ['cmd-b'], depends_on: ['phase-1'] },
           ],
           on_failure: 'stop',
@@ -313,7 +314,7 @@ describe('WorkflowExecutor', () => {
       const def = makeWorkflowDef({
         orchestration: {
           phases: [
-            { id: 'validate', name: 'Validation', commands: ['cmd-a', 'cmd-b'], parallel: true, gate: { threshold: 70, aggregate: 'average', on_fail: 'block' } },
+            { id: 'validate', name: 'Validation', commands: ['cmd-a', 'cmd-b'], parallel: true, gate: { threshold: 70, aggregate: 'average', on_fail: 'stop' } },
           ],
           on_failure: 'stop',
         },
@@ -469,7 +470,7 @@ describe('WorkflowExecutor', () => {
       const def = makeWorkflowDef({
         orchestration: {
           phases: [
-            { id: 'empty', name: 'Empty Phase', commands: [], gate: { threshold: 70, aggregate: 'average', on_fail: 'block' } },
+            { id: 'empty', name: 'Empty Phase', commands: [], gate: { threshold: 70, aggregate: 'average', on_fail: 'stop' } },
           ],
           on_failure: 'stop',
         },

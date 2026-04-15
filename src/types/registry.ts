@@ -153,7 +153,7 @@ export interface OutputConfig {
  */
 export interface WorkflowRuntime {
   phases: PhaseConfig[];
-  onFailure: 'stop' | 'continue' | 'skip_dependents';
+  onFailure: 'stop' | 'continue' | 'abort' | 'warn';
   aggregation: AggregationConfig;
   outputs?: OutputMapping[];
 }
@@ -176,7 +176,7 @@ export interface PhaseConfig {
   type?: 'validate' | 'execute' | 'mixed';
   commands: string[];
   depends_on?: string[];
-  gate?: { threshold: number; aggregate?: 'min' | 'max' | 'average'; on_fail?: 'block' | 'warn' };
+  gate?: { threshold: number; aggregate?: 'min' | 'max' | 'average'; on_fail?: 'stop' | 'warn' | 'abort' };
   inputs?: Record<string, string>;
   skip_if?: string;
 }

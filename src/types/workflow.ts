@@ -22,7 +22,10 @@ export interface WorkflowDefinition {
       phases: PhaseDefinition[];
 
       /** Behavior on phase failure */
-      on_failure: 'stop' | 'continue' | 'skip_dependents';
+      on_failure: 'stop' | 'continue' | 'abort' | 'warn';
+
+      /** Maximum concurrent phases (default: unlimited) */
+      max_parallel?: number;
     };
 
     /** Result aggregation */
@@ -72,7 +75,7 @@ export interface PhaseDefinition {
   gate?: {
     threshold: number;
     aggregate: 'average' | 'min' | 'max';
-    on_fail: 'block' | 'warn';
+    on_fail: 'stop' | 'warn' | 'abort';
   };
 }
 
@@ -111,6 +114,9 @@ export interface WorkflowMetrics extends ExecutionMetrics {
   /** Number of phases skipped */
   phasesSkipped: number;
 
+  /** Number of phases aborted */
+  phasesAborted: number;
+
   /** Per-command metrics breakdown */
   commands: CommandMetricsSummary[];
 }
@@ -139,7 +145,7 @@ export interface PhaseResult {
   name: string;
 
   /** Phase decision */
-  decision: 'passed' | 'warned' | 'blocked' | 'skipped';
+  decision: 'passed' | 'warned' | 'blocked' | 'skipped' | 'aborted';
 
   /** Command results within phase */
   commands: CommandResult[];

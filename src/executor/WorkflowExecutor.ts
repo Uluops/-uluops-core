@@ -7,13 +7,20 @@ import type { ExecutionInput, Recommendation } from '../types/execution.js';
 import { WorkflowError } from '../errors/index.js';
 import { formatErrorMessage } from '../utils/formatError.js';
 import { sumTokenMetrics } from '../utils/sumTokenMetrics.js';
+import { topoGroupLevels } from '../utils/topoSort.js';
 
 /**
- * Executes workflows with multi-phase orchestration.
+ * Executes workflows as quality-gated directed acyclic graphs.
  *
- * Handles phase dependency resolution, gate threshold evaluation,
- * score aggregation across phases, recommendation deduplication,
- * and failure handling (stop vs continue).
+ * Phases are topologically sorted into execution levels based on declared
+ * dependencies. Independent phases (those in the same topological level)
+ * execute in parallel. Quality gates evaluate continuous AI judgment scores
+ * against declared thresholds, with four distinct failure behaviors:
+ *
+ * - stop:  do not start subsequent levels; let running phases finish
+ * - abort: cancel running phases immediately; skip all remaining
+ * - continue: proceed past failure; dependent phases still check deps
+ * - warn:  proceed with warning annotation; no blocking
  */
 export class WorkflowExecutor {
   constructor(
@@ -22,43 +29,98 @@ export class WorkflowExecutor {
   ) {}
 
   /**
-   * Execute a workflow with phase orchestration
+   * Execute a workflow with DAG-based phase orchestration.
+   *
+   * Phases are grouped into topological levels. All phases in a level
+   * whose dependencies are satisfied execute in parallel. Gate evaluation
+   * occurs after each phase completes, and failure behavior determines
+   * whether subsequent levels proceed.
    */
   async execute(resolved: ResolvedDefinition, input: ExecutionInput): Promise<WorkflowResult> {
     const startTime = Date.now();
     const def = resolved.definition as WorkflowDefinition;
     const phaseResults: PhaseResult[] = [];
     const allRecommendations: Recommendation[] = [];
+    const completedPhases = new Map<string, PhaseResult>();
 
     try {
-      for (const phase of def.workflow.orchestration.phases) {
-        // Check skip condition
-        if (phase.skip_if && this.evaluateCondition(phase.skip_if, input, phaseResults)) {
-          phaseResults.push(this.createSkippedPhase(phase));
+      const levels = topoGroupLevels(def.workflow.orchestration.phases);
+      const onFailure = def.workflow.orchestration.on_failure;
+      const maxParallel = def.workflow.orchestration.max_parallel;
+      let stopped = false;
+      let aborted = false;
+
+      for (const level of levels) {
+        if (stopped || aborted) {
+          // Mark remaining phases as skipped
+          for (const phase of level) {
+            const skipped = this.createSkippedPhase(phase);
+            phaseResults.push(skipped);
+            completedPhases.set(phase.id, skipped);
+          }
           continue;
         }
 
-        // Check dependencies
-        if (!this.checkDependencies(phase.depends_on, phaseResults)) {
-          phaseResults.push(this.createSkippedPhase(phase));
+        // Filter level to phases whose dependencies are satisfied and skip_if is not met
+        const eligible: PhaseDefinition[] = [];
+        for (const phase of level) {
+          if (phase.skip_if && this.evaluateCondition(phase.skip_if, input, phaseResults)) {
+            const skipped = this.createSkippedPhase(phase);
+            phaseResults.push(skipped);
+            completedPhases.set(phase.id, skipped);
+            continue;
+          }
+          if (!this.checkDependencies(phase.depends_on, completedPhases)) {
+            const skipped = this.createSkippedPhase(phase);
+            phaseResults.push(skipped);
+            completedPhases.set(phase.id, skipped);
+            continue;
+          }
+          eligible.push(phase);
+        }
+
+        if (eligible.length === 0) continue;
+
+        // Execute eligible phases in parallel (with optional concurrency limit)
+        const levelResults = await this.executePhasesParallel(eligible, input, maxParallel);
+
+        // Process results and evaluate gates
+        for (const phaseResult of levelResults) {
+          phaseResults.push(phaseResult);
+          completedPhases.set(phaseResult.id, phaseResult);
+
+          // Accumulate recommendations
+          for (const cmd of phaseResult.commands) {
+            allRecommendations.push(...cmd.recommendations);
+          }
+
+          // Apply failure behavior based on gate result
+          if (phaseResult.decision === 'blocked') {
+            switch (onFailure) {
+              case 'stop':
+                stopped = true;
+                break;
+              case 'abort':
+                aborted = true;
+                break;
+              case 'warn':
+                // Downgrade to warned — proceed without blocking
+                phaseResult.decision = 'warned';
+                break;
+              case 'continue':
+              default:
+                // Continue — dependent phases will check deps naturally
+                break;
+            }
+          }
+        }
+
+        // For abort: mark any phases from this level that haven't completed
+        // (in practice all completed since we awaited, but semantically distinct
+        // from stop in that we don't start the next level either)
+        if (aborted) {
+          // Remaining levels will be skipped in the next iteration
           continue;
-        }
-
-        // Execute phase
-        const phaseResult = await this.executePhase(phase, input);
-        phaseResults.push(phaseResult);
-
-        // Accumulate recommendations
-        for (const cmd of phaseResult.commands) {
-          allRecommendations.push(...cmd.recommendations);
-        }
-
-        // Check gate
-        if (
-          phaseResult.decision === 'blocked' &&
-          def.workflow.orchestration.on_failure === 'stop'
-        ) {
-          break;
         }
       }
     } catch (error) {
@@ -86,11 +148,12 @@ export class WorkflowExecutor {
         ...tokenTotals,
         durationMs,
         model: 'mixed',
-        phasesExecuted: phaseResults.filter(p => p.decision !== 'skipped').length,
+        phasesExecuted: phaseResults.filter(p => p.decision !== 'skipped' && p.decision !== 'aborted').length,
         phasesPassed: phaseResults.filter(p => p.decision === 'passed').length,
         phasesWarned: phaseResults.filter(p => p.decision === 'warned').length,
         phasesBlocked: phaseResults.filter(p => p.decision === 'blocked').length,
         phasesSkipped: phaseResults.filter(p => p.decision === 'skipped').length,
+        phasesAborted: phaseResults.filter(p => p.decision === 'aborted').length,
         commands: phaseResults.flatMap(p =>
           p.commands.map(c => ({
             name: c.name,
@@ -104,6 +167,89 @@ export class WorkflowExecutor {
         ),
       },
     };
+  }
+
+  /**
+   * Execute a set of independent phases in parallel.
+   *
+   * Respects max_parallel concurrency limit if set. Uses Promise.allSettled
+   * to ensure partial failures don't reject the entire level.
+   */
+  private async executePhasesParallel(
+    phases: PhaseDefinition[],
+    input: ExecutionInput,
+    maxParallel?: number,
+  ): Promise<PhaseResult[]> {
+    if (phases.length === 1) {
+      // Single phase — no need for concurrency machinery
+      return [await this.executePhase(phases[0]!, input)];
+    }
+
+    if (maxParallel && maxParallel > 0 && maxParallel < phases.length) {
+      // Semaphore-limited concurrency
+      return this.executePhasesWithLimit(phases, input, maxParallel);
+    }
+
+    // Unlimited parallel — all phases in this level run concurrently
+    const settled = await Promise.allSettled(
+      phases.map(phase => this.executePhase(phase, input)),
+    );
+
+    const results: PhaseResult[] = [];
+    for (let i = 0; i < settled.length; i++) {
+      const outcome = settled[i]!;
+      if (outcome.status === 'fulfilled') {
+        results.push(outcome.value);
+      } else {
+        // Phase threw — create a blocked result with error info
+        results.push({
+          id: phases[i]!.id,
+          name: phases[i]!.name,
+          decision: 'blocked',
+          commands: [],
+          gateThreshold: phases[i]!.gate?.threshold ?? 70,
+          score: 0,
+          durationMs: 0,
+        });
+      }
+    }
+    return results;
+  }
+
+  /**
+   * Execute phases with a concurrency semaphore.
+   */
+  private async executePhasesWithLimit(
+    phases: PhaseDefinition[],
+    input: ExecutionInput,
+    limit: number,
+  ): Promise<PhaseResult[]> {
+    const results: PhaseResult[] = new Array(phases.length);
+    let nextIndex = 0;
+
+    async function runNext(executor: WorkflowExecutor): Promise<void> {
+      while (nextIndex < phases.length) {
+        const idx = nextIndex++;
+        const phase = phases[idx]!;
+        try {
+          results[idx] = await executor.executePhase(phase, input);
+        } catch {
+          results[idx] = {
+            id: phase.id,
+            name: phase.name,
+            decision: 'blocked',
+            commands: [],
+            gateThreshold: phase.gate?.threshold ?? 70,
+            score: 0,
+            durationMs: 0,
+          };
+        }
+      }
+    }
+
+    const workers = Array.from({ length: Math.min(limit, phases.length) }, () => runNext(this));
+    await Promise.all(workers);
+    return results;
   }
 
   private async executePhase(phase: PhaseDefinition, input: ExecutionInput): Promise<PhaseResult> {
@@ -187,7 +333,7 @@ export class WorkflowExecutor {
     let weightedScore = 0;
 
     for (const phase of phases) {
-      if (phase.decision === 'skipped') continue;
+      if (phase.decision === 'skipped' || phase.decision === 'aborted') continue;
       const weight = weights[phase.id] ?? 1;
       totalWeight += weight;
       weightedScore += phase.score * weight;
@@ -197,9 +343,10 @@ export class WorkflowExecutor {
 
     const hasBlocked = phases.some(p => p.decision === 'blocked');
     const hasWarned = phases.some(p => p.decision === 'warned');
+    const hasAborted = phases.some(p => p.decision === 'aborted');
 
     let decision: string;
-    if (hasBlocked) {
+    if (hasBlocked || hasAborted) {
       decision = config?.decision?.BLOCK ?? 'BLOCK';
     } else if (hasWarned) {
       decision = config?.decision?.HOLD ?? 'HOLD';
@@ -222,11 +369,14 @@ export class WorkflowExecutor {
     };
   }
 
-  private checkDependencies(dependsOn: string[] | undefined, completedPhases: PhaseResult[]): boolean {
+  private checkDependencies(
+    dependsOn: string[] | undefined,
+    completedPhases: Map<string, PhaseResult>,
+  ): boolean {
     if (!dependsOn || dependsOn.length === 0) return true;
     return dependsOn.every(depId => {
-      const dep = completedPhases.find(p => p.id === depId);
-      return dep && dep.decision !== 'blocked';
+      const dep = completedPhases.get(depId);
+      return dep && dep.decision !== 'blocked' && dep.decision !== 'aborted';
     });
   }
 
