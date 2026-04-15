@@ -70,8 +70,8 @@ export type {
   PipelineHandle,
 } from './pipeline.js';
 
-// Tools
-export type { Tool, ToolUseBlock, ToolResult } from './tools.js';
+// Tools (ToolUseBlock/ToolResult used by ToolHandler.fulfill; Tool removed — superseded by AI SDK ToolSet)
+export type { ToolUseBlock, ToolResult } from './tools.js';
 
 // AI
 export type { UsageMetrics } from './ai.js';

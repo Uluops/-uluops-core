@@ -27,6 +27,7 @@ export interface PipelineDefinition {
     settings?: {
       timeout?: number;
       retries?: number;
+      /** @reserved — typed for schema fidelity; PipelineExecutor runs stages sequentially. */
       parallel_stages?: boolean;
     };
   };
@@ -48,13 +49,13 @@ export interface StageDefinition {
   /** Stage dependencies */
   depends_on?: string[];
 
-  /** Execution condition (e.g., "pre-merge.decision == 'PASS'") */
+  /** Execution condition. @reserved — typed for schema fidelity; use skip_if for current skip logic. */
   condition?: string;
 
   /** Skip condition (deprecated, use condition with negation) */
   skip_if?: string;
 
-  /** Stage-specific options */
+  /** Stage-specific options. @reserved — typed for schema fidelity; not yet passed to executors. */
   options?: Record<string, unknown>;
 }
 

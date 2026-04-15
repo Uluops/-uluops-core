@@ -9,7 +9,8 @@ import type { Finding, ArtifactResult } from './command.js';
  * Agent definition — the atomic validation/execution unit.
  * Matches the ADL v1.6.0 JSON schema structure.
  *
- * Agents are NOT directly executable; they must be wrapped in a Command.
+ * Agents can be executed directly via `UluOpsClient.runAgent()` or wrapped
+ * in a Command for preflight checks, multi-agent aggregation, and saved config.
  */
 export interface AgentDefinition {
   agent: {

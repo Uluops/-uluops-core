@@ -124,7 +124,7 @@ export type {
 } from './types/parser.js';
 
 // ─── Types: Tools ─────────────────────────────────────────────────────────────
-export type { Tool, ToolUseBlock, ToolResult } from './types/tools.js';
+export type { ToolUseBlock, ToolResult } from './types/tools.js';
 
 // ─── Types: AI ────────────────────────────────────────────────────────────────
 export type { UsageMetrics } from './types/ai.js';

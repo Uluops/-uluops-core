@@ -65,7 +65,7 @@ export interface PhaseDefinition {
   /** Phase dependencies */
   depends_on?: string[];
 
-  /** Input mappings from previous phases */
+  /** Input mappings from previous phases. @reserved — typed for schema fidelity; not yet processed by WorkflowExecutor. */
   inputs?: Record<string, string>;
 
   /** Skip condition expression */
@@ -87,9 +87,6 @@ export interface WorkflowResult extends ExecutionResult {
 
   /** Phase-by-phase results */
   phases: PhaseResult[];
-
-  /** Path to generated features list (if enabled) */
-  featuresListPath?: string;
 
   /** Workflow-specific metrics */
   metrics: WorkflowMetrics;

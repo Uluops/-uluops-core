@@ -24,25 +24,7 @@ describe('ToolHandler', () => {
     await fs.rm(tmpDir, { recursive: true, force: true });
   });
 
-  describe('getTools', () => {
-    it('returns six tool definitions', () => {
-      const tools = handler.getTools();
-      expect(tools).toHaveLength(6);
-      expect(tools.map(t => t.name)).toEqual([
-        'read_file', 'list_files', 'search_content',
-        'get_file_info', 'get_directory_tree', 'get_symbols',
-      ]);
-    });
 
-    it('each tool has required fields', () => {
-      for (const tool of handler.getTools()) {
-        expect(tool.name).toBeTruthy();
-        expect(tool.description).toBeTruthy();
-        expect(tool.input_schema).toBeDefined();
-        expect(tool.input_schema.type).toBe('object');
-      }
-    });
-  });
 
   describe('read_file', () => {
     it('reads file content', async () => {

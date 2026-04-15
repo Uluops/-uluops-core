@@ -2,7 +2,7 @@ import { generateText, Output, NoObjectGeneratedError, stepCountIs, type Languag
 import type { ProviderOptions } from '@ai-sdk/provider-utils';
 import { createAnthropic, type AnthropicProvider } from '@ai-sdk/anthropic';
 import { createOpenAI, type OpenAIProvider } from '@ai-sdk/openai';
-import { createGoogleGenerativeAI, type GoogleGenerativeAIProvider } from '@ai-sdk/google';
+import { createGoogleGenerativeAI } from '@ai-sdk/google';
 import type { UsageMetrics } from '../types/ai.js';
 import { formatErrorMessage } from '../utils/formatError.js';
 import type { ResolvedConfig, ResolvedAIConfig } from '../types/config.js';
@@ -133,10 +133,6 @@ export class AIProvider {
 
   /** OpenAI provider instance for accessing provider-defined tools */
   private openaiInstance?: OpenAIProvider;
-
-  /** Google provider instance for future provider-defined tools (googleSearch, codeExecution) */
-  // @ts-expect-error Reserved for future Google tool integration (googleSearch, codeExecution, urlContext)
-  private googleInstance?: GoogleGenerativeAIProvider;
 
   constructor(
     private config: ResolvedConfig,
@@ -578,7 +574,6 @@ export class AIProvider {
         this.providers.set('openai', (modelId) => openai(modelId));
       } else if (providerName === 'google') {
         const google = createGoogleGenerativeAI({ apiKey: creds.apiKey });
-        this.googleInstance = google;
         this.providers.set('google', (modelId) => google(modelId));
       }
       // Other providers are loaded lazily in ensureProvider()

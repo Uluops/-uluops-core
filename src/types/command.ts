@@ -20,10 +20,10 @@ export interface CommandDefinition {
 
     /** Execution configuration */
     execution: {
-      /** Model selection */
+      /** Model selection (alias, tier, or provider:modelId — resolved via ModelCatalog) */
       model: {
-        default: 'haiku' | 'sonnet' | 'opus';
-        allowed?: Array<'haiku' | 'sonnet' | 'opus'>;
+        default: string;
+        allowed?: string[];
       };
 
       /** Timeout in ms */
@@ -35,7 +35,7 @@ export interface CommandDefinition {
       /** Preflight checks */
       preflight?: PreflightCheck[];
 
-      /** Postflight actions */
+      /** Postflight actions. @reserved — typed for schema fidelity; not yet processed by CommandExecutor. */
       postflight?: PostflightAction[];
 
       /** Thresholds for validators */

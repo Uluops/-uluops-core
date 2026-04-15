@@ -11,7 +11,14 @@ export const STARTER_DEFINITIONS_DIR = resolve(__dirname, '../definitions/starte
 
 // ─── Threshold Defaults ────────────────────────────────────────────────────
 
-/** Default pass threshold for agent/command scoring (0-100). */
+/**
+ * Default pass threshold for agent/command scoring (0-100).
+ *
+ * Score normalization: The Zod output schema constrains `score` to 0-100
+ * (`z.number().min(0).max(100)` in outputSchemas.ts). The `maxScore` field
+ * on results is informational (category point totals) and is NOT used in
+ * threshold comparisons. Thresholds always operate on the normalized 0-100 scale.
+ */
 export const DEFAULT_PASS_THRESHOLD = 75;
 
 /** Default warn threshold for agent/command scoring (0-100). */

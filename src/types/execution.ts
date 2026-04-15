@@ -11,7 +11,10 @@
 export type DefinitionType = 'agent' | 'command' | 'workflow' | 'pipeline';
 
 /**
- * Execution type discriminator (excludes agent - agents aren't directly executable)
+ * Execution type for multi-layer orchestration results.
+ * Excludes 'agent' because agent results use the `AgentResult` type directly
+ * (discriminated by `agentType`) rather than the `ExecutionResult` base.
+ * Agents ARE directly executable via `UluOpsClient.runAgent()`.
  */
 export type ExecutionType = 'command' | 'workflow' | 'pipeline';
 

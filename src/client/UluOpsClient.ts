@@ -323,6 +323,7 @@ export class UluOpsClient {
       providers,
       defaultProvider: ai?.defaultProvider ?? 'anthropic',
       modelOverride: ai?.modelOverride,
+      additionalProviders: ai?.additionalProviders,
     };
   }
 
