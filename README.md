@@ -47,6 +47,7 @@ console.log(`Score: ${result.score} | Decision: ${result.decision}`);
   - [Validation Tracking](#validation-tracking)
 - [Architecture](#architecture)
 - [Execution Hierarchy](#execution-hierarchy)
+- [Advanced Exports](#advanced-exports)
 - [Configuration](#configuration)
 - [TypeScript Support](#typescript-support)
 - [Error Handling](#error-handling)
@@ -353,6 +354,84 @@ UluOpsClient (facade)
 | Command | CDL | Wraps 1+ agents with preflight checks and aggregation |
 | Workflow | WDL | Sequences commands into phases with gates |
 | Pipeline | PDL | Orchestrates workflows/commands across stages |
+
+## Advanced Exports
+
+All internal components are exported for direct use when `UluOpsClient` is too opinionated. Import from the package root:
+
+```typescript
+import {
+  // Executors — run definitions at any level without the UluOpsClient facade
+  AgentExecutor,       // Single-agent LLM execution with tool loop
+  CommandExecutor,     // Multi-agent aggregation with preflight checks
+  WorkflowExecutor,    // DAG-based parallel phase orchestration with quality gates
+  PipelineExecutor,    // Multi-stage async pipelines
+
+  // Service clients — talk to UluOps APIs directly
+  RegistryClient,      // Definition resolution, local/remote with hash verification
+  ValidationClient,    // Run submission, history queries, regression detection
+
+  // AI layer — provider management and model resolution
+  AIProvider,          // AI SDK v6 wrapper with provider registry and error mapping
+  ModelCatalog,        // Registry-backed model alias → provider/model resolution
+  ToolAdapter,         // Converts ToolHandler tools to AI SDK ToolSet format
+  TokenBudgetTracker,  // Tracks token consumption against configurable budgets
+
+  // Utilities
+  OutputExtractor,     // 4-strategy LLM output parser (structured > JSON fence > inline > regex)
+  ToolHandler,         // Sandboxed filesystem tools (read, write, glob, grep, search)
+  parseRef,            // Parse "name@version" reference strings
+  classifyDecision,    // Classify decision strings into positive/negative/conditional/neutral
+  buildVocabularyMap,  // Build custom decision vocabulary from agent definitions
+} from '@uluops/core';
+```
+
+### Direct Executor Usage
+
+```typescript
+import { AgentExecutor, AIProvider, RegistryClient } from '@uluops/core';
+
+// Wire up dependencies manually
+const ai = new AIProvider(config, catalog, logger);
+const executor = new AgentExecutor(config, ai, logger);
+
+// Execute with full control over options
+const result = await executor.execute(resolvedDefinition, {
+  target: '/path/to/project',
+}, {
+  model: 'opus',
+  maxTokens: 16384,
+  timeoutMs: 60_000,
+});
+```
+
+### Model Resolution
+
+```typescript
+import { ModelCatalog } from '@uluops/core';
+
+const catalog = new ModelCatalog(registrySdk, logger);
+const resolved = await catalog.resolve('sonnet', {
+  requiredCapabilities: ['tools', 'extendedThinking'],
+});
+// → { provider: 'anthropic', model: 'claude-sonnet-4-...' }
+```
+
+### Decision Classification
+
+```typescript
+import { classifyDecision, buildVocabularyMap } from '@uluops/core';
+
+// Default vocabularies
+classifyDecision('PASS');    // → 'positive'
+classifyDecision('FAIL');    // → 'negative'
+classifyDecision('WARN');    // → 'conditional'
+classifyDecision('MAYBE');   // → 'neutral' (unknown)
+
+// Custom vocabulary from agent definition
+const vocab = buildVocabularyMap(agentDefinition);
+classifyDecision('SHIP', vocab); // → 'positive' (if SHIP is in positive vocabulary)
+```
 
 ## Configuration
 

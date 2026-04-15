@@ -145,7 +145,7 @@ export class RegistryClient {
         const code = (error as NodeJS.ErrnoException).code;
         if (code === 'ENOENT') continue; // File doesn't exist, try next candidate
         if (code === 'ENOTDIR') continue; // Path component isn't a directory
-        throw new ConfigurationError(`Cannot read ${candidate.path}: ${formatErrorMessage(error)}`);
+        throw new ConfigurationError(`Cannot read definition file: ${formatErrorMessage(error)}`);
       }
 
       let definition: Record<string, unknown>;
@@ -153,7 +153,7 @@ export class RegistryClient {
         definition = yaml.parse(yamlContent) as Record<string, unknown>;
       } catch (parseError) {
         throw new ConfigurationError(
-          `Failed to parse YAML at ${candidate.path}: ${parseError instanceof Error ? parseError.message : String(parseError)}`,
+          `Failed to parse definition YAML: ${parseError instanceof Error ? parseError.message : String(parseError)}`,
         );
       }
       this.logger.debug(`Resolved locally: ${name} @ ${candidate.path}`);
@@ -328,6 +328,8 @@ export class RegistryClient {
 
     // Workflow/pipeline definitions ARE the runtime — the parsed YAML structure
     // is used directly. Already validated by castDefinition() in resolveLocal().
+    // Double assertion: definition is Record<string, unknown> from YAML parse,
+    // but structurally conforms to WorkflowRuntime | PipelineRuntime post-validation.
     return definition as unknown as ResolvedDefinition['runtime'];
   }
 

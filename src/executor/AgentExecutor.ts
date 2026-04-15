@@ -184,7 +184,7 @@ export class AgentExecutor {
         name: resolved.name,
         version: resolved.version,
         definitionHash: resolved.hash,
-        decision: (parsed.decision as 'PASS' | 'WARN' | 'FAIL') ?? 'FAIL',
+        decision: this.validatedDecision(parsed.decision, ['PASS', 'WARN', 'FAIL'], 'FAIL'),
         decisionCategory,
         score: parsed.score ?? 0,
         maxScore: parsed.maxScore ?? 100,
@@ -208,7 +208,7 @@ export class AgentExecutor {
       name: resolved.name,
       version: resolved.version,
       definitionHash: resolved.hash,
-      decision: (parsed.decision as 'COMPLETE' | 'PARTIAL' | 'FAILED') ?? 'FAILED',
+      decision: this.validatedDecision(parsed.decision, ['COMPLETE', 'PARTIAL', 'FAILED'], 'FAILED'),
       decisionCategory,
       artifacts: parsed.artifacts,
       recommendations,
@@ -259,6 +259,14 @@ export class AgentExecutor {
     const warn = optThresholds?.warn ?? defThresholds?.warn;
     if (pass === undefined && warn === undefined) return undefined;
     return { pass: pass ?? DEFAULT_PASS_THRESHOLD, warn: warn ?? DEFAULT_WARN_THRESHOLD };
+  }
+
+  /**
+   * Validate LLM decision string against known values, falling back to default.
+   */
+  private validatedDecision<T extends string>(raw: string | undefined, valid: readonly T[], fallback: T): T {
+    if (raw && (valid as readonly string[]).includes(raw)) return raw as T;
+    return fallback;
   }
 
   /**
