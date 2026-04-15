@@ -457,18 +457,18 @@ The SDK provides a structured error hierarchy:
 
 ### Core SDK Errors
 
-| Error | Description |
-|-------|-------------|
-| `UluOpsError` | Base error class for all SDK errors |
-| `ExecutionError` | Agent/command execution failures (includes definition type mismatch) |
-| `PreflightError` | Preflight check failures |
-| `ConfigurationError` | Invalid configuration |
-| `ModelNotFoundError` | Model alias not found in registry |
-| `CapabilityError` | Model lacks required capabilities |
-| `ValidationError` | Output validation failures. Use `ValidationErrorCodes` to narrow by code. |
-| `WorkflowError` | Workflow phase gate failures |
-| `PipelineError` | Pipeline stage failures |
-| `ParseError` | Output extraction failures |
+| Error | Thrown by | Description |
+|-------|----------|-------------|
+| `UluOpsError` | _(base class)_ | Base error class for all SDK errors |
+| `ConfigurationError` | `UluOpsClient` constructor, `RegistryClient.resolve()`, `AIProvider.ensureProvider()` | Missing API key, invalid provider config, definition not found in registry, invalid definition format |
+| `ModelNotFoundError` | `ModelCatalog.resolve()` | Model alias not found in registry catalog |
+| `CapabilityError` | `ModelCatalog.resolve()` | Resolved model lacks a required capability (e.g. tools, vision, extendedThinking) |
+| `PreflightError` | `CommandExecutor` (preflight phase) | Preflight check failed — missing env var, file not found, command unavailable |
+| `ExecutionError` | `AgentExecutor.execute()`, `CommandExecutor.execute()` | Agent execution failure or definition type mismatch. Check `error.partialResult` for partial output |
+| `ParseError` | `OutputExtractor.extractWithMetadata()` | LLM output could not be parsed as structured JSON. Check `error.contentPreview` for raw output |
+| `ValidationError` | `ValidationClient` methods | Validation service rejected a submission. Use `ValidationErrorCodes` to narrow by code |
+| `WorkflowError` | `WorkflowExecutor.execute()` | Phase gate failure. Check `error.context.partialResult` for completed phase results |
+| `PipelineError` | `PipelineExecutor.execute()` | Pipeline stage failure. Check `error.context` for stage name/index |
 
 ```typescript
 import { ConfigurationError, ModelNotFoundError, ExecutionError } from '@uluops/core';

@@ -42,7 +42,20 @@ export class AgentExecutor {
   ) {}
 
   /**
-   * Execute an agent with optional runtime options
+   * Execute an agent against a target directory and return structured results.
+   *
+   * Orchestrates prompt rendering, tool setup, LLM generation (with tool loop),
+   * output parsing, and result construction for a single agent run.
+   *
+   * @param resolved - Registry-resolved agent definition (must have `type: 'agent'`)
+   * @param input - Execution input containing the target directory path and optional config
+   * @param options - Runtime overrides for model, thresholds, temperature, timeout, etc.
+   * @returns Discriminated union: `ValidatorAgentResult` (score + categories) or `ExecutorAgentResult` (artifacts)
+   * @throws {ExecutionError} When the resolved definition is not an agent (type mismatch)
+   * @throws {ConfigurationError} When AI provider cannot be initialized (missing API key, unknown provider)
+   * @throws {ModelNotFoundError} When the model alias cannot be resolved via the model catalog
+   * @throws {CapabilityError} When the resolved model lacks required capabilities
+   * @throws {ParseError} When the LLM output cannot be extracted as structured JSON
    */
   async execute(
     resolved: ResolvedDefinition,

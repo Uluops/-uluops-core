@@ -20,6 +20,25 @@ This project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.htm
 - **`WorkflowRuntime.onFailure`** and **`PhaseConfig.gate.on_fail`** in registry types updated to match
 - **Phase execution model** — sequential `for...of` loop replaced with level-based DAG execution; phases without dependencies now run concurrently instead of sequentially
 
+### Migration from 0.4.x
+
+**`on_failure` enum values changed.** If you set `on_failure` in workflow definitions or pass it programmatically, update the values:
+
+| Old value | New value | Behavior change |
+|-----------|-----------|----------------|
+| `'skip_dependents'` | `'stop'` | Finishes current parallel level, then skips remaining phases |
+| _(new)_ | `'abort'` | Immediately skips all remaining phases (including current level) |
+| _(new)_ | `'warn'` | Downgrades blocked phases to `'warned'` instead of `'skipped'` |
+
+**`gate.on_fail` enum values changed.** Update gate configurations:
+
+| Old value | New value | Behavior change |
+|-----------|-----------|----------------|
+| `'block'` | `'stop'` | Same behavior (halts after current level) |
+| _(new)_ | `'abort'` | Immediate halt of all remaining phases |
+
+**Phase execution is now parallel by default.** Phases without `depends_on` declarations run concurrently. If your workflow relied on sequential execution order, add explicit `depends_on` edges between phases to preserve ordering.
+
 ## [0.4.0] - 2026-03-15
 
 ### Added
@@ -65,6 +84,24 @@ This project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.htm
 
 ### Removed
 - **`createBashTool()`** — replaced by `createProviderShellTool(provider, targetDir, timeoutMs)`
+
+### Migration from 0.1.x
+
+**`createBashTool()` removed.** Replace with the provider-aware shell tool:
+
+```typescript
+// Before (0.1.x)
+import { createBashTool } from '@uluops/core';
+const tool = createBashTool(targetDir, timeoutMs);
+
+// After (0.2.0+)
+// Shell tool is now created internally by AgentExecutor when the agent
+// definition includes 'bash' in its tools list. No manual creation needed.
+// For advanced usage, use AIProvider.createProviderShellTool():
+const tool = aiProvider.createProviderShellTool(provider, targetDir, timeoutMs);
+```
+
+**Provider auto-detection added.** If you hardcoded Anthropic-only config, the SDK now scans for `OPENAI_API_KEY` and `GOOGLE_API_KEY` automatically. To keep Anthropic-only behavior, set `defaultProvider: 'anthropic'` explicitly.
 
 ## [0.1.0] - 2026-02-09
 
