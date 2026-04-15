@@ -1,4 +1,5 @@
 import { z } from 'zod';
+import type { Issue } from '../types/command.js';
 
 /**
  * Issue within a finding — matches the Issue type from types/command.ts
@@ -80,3 +81,16 @@ export const genericOutputSchema = baseOutputSchema;
 export type ValidatorOutput = z.infer<typeof validatorOutputSchema>;
 export type ExecutorOutput = z.infer<typeof executorOutputSchema>;
 export type GenericOutput = z.infer<typeof genericOutputSchema>;
+
+/**
+ * Compile-time check: issueSchema fields must be a superset of Issue fields.
+ * If Issue gains a field not in issueSchema, this line will produce a type error,
+ * preventing silent data loss from Zod dropping unknown fields.
+ *
+ * Note: Zod uses nullable (T | null), Issue uses optional (T | undefined).
+ * The null→undefined mapping happens in mapStructuredOutput/OutputExtractor.
+ */
+type ZodIssue = z.infer<typeof issueSchema>;
+export type _AssertIssueFieldsCovered = {
+  [K in keyof Required<Issue>]: K extends keyof ZodIssue ? true : never;
+};

@@ -1,5 +1,12 @@
 /**
- * Definition type discriminator
+ * Definition type discriminator.
+ *
+ * Adding a new type requires updating:
+ * - RegistryClient.resolveLocal() candidate path list
+ * - RegistryClient.listLocal() typeConfig map
+ * - RegistryClient.castDefinition() knownTopKeys
+ * - UluOpsClient routing (run/execute methods)
+ * - Corresponding executor class with type guard
  */
 export type DefinitionType = 'agent' | 'command' | 'workflow' | 'pipeline';
 

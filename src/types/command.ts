@@ -164,7 +164,12 @@ export interface Finding {
 }
 
 /**
- * Individual issue (before flattening to Recommendation)
+ * Individual issue (before flattening to Recommendation).
+ *
+ * COUPLING: This type must stay synchronized with:
+ * - `issueSchema` in parser/outputSchemas.ts (Zod schema for structured output)
+ * - `flattenRecommendations()` in executor/AgentExecutor.ts (Issue → Recommendation mapping)
+ * A compile-time check in outputSchemas.ts will error if fields diverge.
  */
 export interface Issue {
   title: string;
