@@ -52,6 +52,8 @@ async function checkFileExists(
 
   const targetRoot = path.resolve(input.target);
   const fullPath = path.resolve(input.target, check.path);
+
+  // Logical path check — catches ../.. traversal
   if (!fullPath.startsWith(targetRoot + path.sep) && fullPath !== targetRoot) {
     throw new PreflightError(
       `file_exists path escapes target directory: ${check.path}`,
@@ -59,11 +61,34 @@ async function checkFileExists(
       { path: check.path },
     );
   }
+
   try {
     await fs.access(fullPath);
   } catch {
     throw new PreflightError(
       check.message ?? `Required file not found: ${check.path}`,
+      'file_exists',
+      { path: check.path },
+    );
+  }
+
+  // Symlink check — resolve real paths to detect escape via symlink.
+  // Must run after access check so realpath has a valid target.
+  try {
+    const realTarget = await fs.realpath(targetRoot);
+    const realFull = await fs.realpath(fullPath);
+    if (!realFull.startsWith(realTarget + path.sep) && realFull !== realTarget) {
+      throw new PreflightError(
+        `file_exists path escapes target directory via symlink: ${check.path}`,
+        'file_exists',
+        { path: check.path },
+      );
+    }
+  } catch (error) {
+    if (error instanceof PreflightError) throw error;
+    // realpath failure on target root itself is unexpected — re-throw
+    throw new PreflightError(
+      `Failed to resolve real path: ${error instanceof Error ? error.message : 'unknown'}`,
       'file_exists',
       { path: check.path },
     );

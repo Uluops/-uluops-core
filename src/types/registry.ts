@@ -175,6 +175,7 @@ export interface PhaseConfig {
   name: string;
   type?: 'validate' | 'execute' | 'mixed';
   commands: string[];
+  parallel?: boolean;
   depends_on?: string[];
   gate?: { threshold: number; aggregate?: 'min' | 'max' | 'average'; on_fail?: 'stop' | 'warn' | 'abort' };
   inputs?: Record<string, string>;

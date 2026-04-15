@@ -1155,6 +1155,44 @@ describe('WorkflowExecutor', () => {
     });
   });
 
+  describe('aborted phase in aggregate path', () => {
+    it('excludes aborted phases from score calculation and produces BLOCK decision', async () => {
+      // Phase a scores 40 (blocked), phase b scores 90 (passed), phase c is skipped by abort.
+      // With abort behavior, c should be skipped. The aggregate should only consider
+      // phases that actually ran (a=40, b=90). Since hasAborted is true → BLOCK.
+      const cmdExec = makeNamedCommandExecutor({
+        'cmd-a': { score: 40 },
+        'cmd-b': { score: 90 },
+      });
+      const registry = makeRegistry();
+      const executor = new WorkflowExecutor(cmdExec, registry);
+
+      const def = makeWorkflowDef({
+        orchestration: {
+          phases: [
+            { id: 'a', name: 'A', commands: ['cmd-a'], gate: { threshold: 70, aggregate: 'average', on_fail: 'abort' } },
+            { id: 'b', name: 'B', commands: ['cmd-b'] },
+            { id: 'c', name: 'C', commands: ['cmd-b'], depends_on: ['a'] },
+          ],
+          on_failure: 'abort',
+        },
+        aggregation: {
+          score: { method: 'weighted_average', weights: { a: 1, b: 1, c: 1 } },
+          decision: { SHIP: 'SHIP', HOLD: 'HOLD', BLOCK: 'BLOCK' },
+        },
+      });
+
+      const result = await executor.execute(def, { target: '/tmp/test' });
+
+      // c is skipped (abort) — its score should not factor into aggregate
+      expect(result.phases.find(p => p.id === 'c')!.decision).toBe('skipped');
+      // Score should be average of a (40) and b (90) only = 65, not diluted by c's zero
+      expect(result.score).toBe(65);
+      // Decision is BLOCK because phase a was blocked
+      expect(result.decision).toBe('BLOCK');
+    });
+  });
+
   // ─── Complex DAG Scenarios ──────────────────────────────────────────────
 
   describe('complex DAG scenarios', () => {

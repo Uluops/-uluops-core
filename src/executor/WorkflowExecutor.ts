@@ -45,83 +45,24 @@ export class WorkflowExecutor {
 
     try {
       const levels = topoGroupLevels(def.workflow.orchestration.phases);
-      const onFailure = def.workflow.orchestration.on_failure;
-      const maxParallel = def.workflow.orchestration.max_parallel;
+      const { on_failure: onFailure, max_parallel: maxParallel } = def.workflow.orchestration;
       let stopped = false;
       let aborted = false;
 
       for (const level of levels) {
         if (stopped || aborted) {
-          // Mark remaining phases as skipped
-          for (const phase of level) {
-            const skipped = this.createSkippedPhase(phase);
-            phaseResults.push(skipped);
-            completedPhases.set(phase.id, skipped);
-          }
+          this.skipLevel(level, phaseResults, completedPhases);
           continue;
         }
 
-        // Filter level to phases whose dependencies are satisfied and skip_if is not met
-        const eligible: PhaseDefinition[] = [];
-        for (const phase of level) {
-          if (phase.skip_if && this.evaluateCondition(phase.skip_if, input, phaseResults)) {
-            const skipped = this.createSkippedPhase(phase);
-            phaseResults.push(skipped);
-            completedPhases.set(phase.id, skipped);
-            continue;
-          }
-          if (!this.checkDependencies(phase.depends_on, completedPhases)) {
-            const skipped = this.createSkippedPhase(phase);
-            phaseResults.push(skipped);
-            completedPhases.set(phase.id, skipped);
-            continue;
-          }
-          eligible.push(phase);
-        }
-
+        const eligible = this.filterEligible(level, input, phaseResults, completedPhases);
         if (eligible.length === 0) continue;
 
-        // Execute eligible phases in parallel (with optional concurrency limit)
         const levelResults = await this.executePhasesParallel(eligible, input, maxParallel);
+        const behavior = this.processLevelResults(levelResults, onFailure, phaseResults, completedPhases, allRecommendations);
 
-        // Process results and evaluate gates
-        for (const phaseResult of levelResults) {
-          phaseResults.push(phaseResult);
-          completedPhases.set(phaseResult.id, phaseResult);
-
-          // Accumulate recommendations
-          for (const cmd of phaseResult.commands) {
-            allRecommendations.push(...cmd.recommendations);
-          }
-
-          // Apply failure behavior based on gate result
-          if (phaseResult.decision === 'blocked') {
-            switch (onFailure) {
-              case 'stop':
-                stopped = true;
-                break;
-              case 'abort':
-                aborted = true;
-                break;
-              case 'warn':
-                // Downgrade to warned — proceed without blocking
-                phaseResult.decision = 'warned';
-                break;
-              case 'continue':
-              default:
-                // Continue — dependent phases will check deps naturally
-                break;
-            }
-          }
-        }
-
-        // For abort: mark any phases from this level that haven't completed
-        // (in practice all completed since we awaited, but semantically distinct
-        // from stop in that we don't start the next level either)
-        if (aborted) {
-          // Remaining levels will be skipped in the next iteration
-          continue;
-        }
+        if (behavior === 'stop') stopped = true;
+        if (behavior === 'abort') aborted = true;
       }
     } catch (error) {
       throw new WorkflowError(
@@ -167,6 +108,91 @@ export class WorkflowExecutor {
         ),
       },
     };
+  }
+
+  /**
+   * Mark all phases in a level as skipped (used when stopped or aborted).
+   */
+  private skipLevel(
+    level: PhaseDefinition[],
+    phaseResults: PhaseResult[],
+    completedPhases: Map<string, PhaseResult>,
+  ): void {
+    for (const phase of level) {
+      const skipped = this.createSkippedPhase(phase);
+      phaseResults.push(skipped);
+      completedPhases.set(phase.id, skipped);
+    }
+  }
+
+  /**
+   * Filter a level to phases whose dependencies are satisfied and skip_if is not met.
+   */
+  private filterEligible(
+    level: PhaseDefinition[],
+    input: ExecutionInput,
+    phaseResults: PhaseResult[],
+    completedPhases: Map<string, PhaseResult>,
+  ): PhaseDefinition[] {
+    const eligible: PhaseDefinition[] = [];
+    for (const phase of level) {
+      if (phase.skip_if && this.evaluateCondition(phase.skip_if, input, phaseResults)) {
+        const skipped = this.createSkippedPhase(phase);
+        phaseResults.push(skipped);
+        completedPhases.set(phase.id, skipped);
+        continue;
+      }
+      if (!this.checkDependencies(phase.depends_on, completedPhases)) {
+        const skipped = this.createSkippedPhase(phase);
+        phaseResults.push(skipped);
+        completedPhases.set(phase.id, skipped);
+        continue;
+      }
+      eligible.push(phase);
+    }
+    return eligible;
+  }
+
+  /**
+   * Record level results and apply failure behavior. Returns the triggered
+   * behavior ('stop' | 'abort') or undefined if execution should continue.
+   */
+  private processLevelResults(
+    levelResults: PhaseResult[],
+    onFailure: WorkflowDefinition['workflow']['orchestration']['on_failure'],
+    phaseResults: PhaseResult[],
+    completedPhases: Map<string, PhaseResult>,
+    allRecommendations: Recommendation[],
+  ): 'stop' | 'abort' | undefined {
+    let behavior: 'stop' | 'abort' | undefined;
+
+    for (const phaseResult of levelResults) {
+      phaseResults.push(phaseResult);
+      completedPhases.set(phaseResult.id, phaseResult);
+
+      for (const cmd of phaseResult.commands) {
+        allRecommendations.push(...cmd.recommendations);
+      }
+
+      if (phaseResult.decision === 'blocked') {
+        switch (onFailure) {
+          case 'stop':
+            behavior = 'stop';
+            break;
+          case 'abort':
+            behavior = 'abort';
+            break;
+          case 'warn':
+            phaseResult.decision = 'warned';
+            break;
+          case 'continue':
+          default:
+            break;
+        }
+      }
+    }
+
+    return behavior;
   }
 
   /**

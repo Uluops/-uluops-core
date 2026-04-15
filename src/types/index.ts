@@ -85,24 +85,13 @@ export type {
   ExtractionResult,
 } from './parser.js';
 
-// Registry
+// Registry (consumer-facing types only; internal config types stay in registry.ts)
 export type {
   ResolvedDefinition,
   ValidatorRuntime,
   ExecutorRuntime,
   WorkflowRuntime,
   PipelineRuntime,
-  CategoryConfig,
-  CriteriaConfig,
-  InputConfig,
-  TaskConfig,
-  OutputConfig,
-  PhaseConfig,
-  AggregationConfig,
-  OutputMapping,
-  StageConfig,
-  TriggerConfig,
-  StateConfig,
   DefinitionSummary,
   Reference,
 } from './registry.js';
