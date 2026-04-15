@@ -10,6 +10,7 @@ import {
   genericOutputSchema,
 } from '../parser/outputSchemas.js';
 import { ExecutionError } from '../errors/index.js';
+import { classifyDecision, buildVocabularyMap } from './classifyDecision.js';
 import type { ResolvedConfig } from '../types/config.js';
 import type { ResolvedDefinition, ValidatorRuntime, ExecutorRuntime } from '../types/registry.js';
 import type { ExecutionInput, ExecutionOptions, ResolvedExecutionContext, Recommendation } from '../types/execution.js';
@@ -168,7 +169,14 @@ export class AgentExecutor {
       toolCallCount: result.toolCallCount,
     };
 
-    // 9. Return discriminated result
+    // 9. Resolve decision category from definition vocabulary
+    const vocabularyMap = buildVocabularyMap(resolved.definition as {
+      decisions?: { vocabulary?: { positive?: string; negative?: string; conditional?: string | null } };
+      completion?: { vocabulary?: { complete?: string; partial?: string; failed?: string } };
+    });
+    const decisionCategory = classifyDecision(parsed.decision, vocabularyMap);
+
+    // 10. Return discriminated result
     if (agentType === 'validator') {
       return {
         type: 'agent',
@@ -177,6 +185,7 @@ export class AgentExecutor {
         version: resolved.version,
         definitionHash: resolved.hash,
         decision: (parsed.decision as 'PASS' | 'WARN' | 'FAIL') ?? 'FAIL',
+        decisionCategory,
         score: parsed.score ?? 0,
         maxScore: parsed.maxScore ?? 100,
         threshold: context.thresholds?.pass,
@@ -200,6 +209,7 @@ export class AgentExecutor {
       version: resolved.version,
       definitionHash: resolved.hash,
       decision: (parsed.decision as 'COMPLETE' | 'PARTIAL' | 'FAILED') ?? 'FAILED',
+      decisionCategory,
       artifacts: parsed.artifacts,
       recommendations,
       durationMs,

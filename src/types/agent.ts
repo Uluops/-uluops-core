@@ -430,6 +430,10 @@ interface AgentResultBase {
   /** Final decision */
   decision: string;
 
+  /** Normalized decision category, resolved from the agent definition's vocabulary.
+   * When present, consumers should use this instead of re-classifying via classifyDecision(). */
+  decisionCategory?: import('../executor/classifyDecision.js').DecisionCategory;
+
   /** All recommendations */
   recommendations: Recommendation[];
 

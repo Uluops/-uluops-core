@@ -373,6 +373,8 @@ export class RegistryClient {
       return {
         mode: 'execute',
         inputs: agent.tasks.inputs,
+        // ADL uses `operations` (AgentTasks.operations: TaskOperation[]) — renamed to
+        // `tasks` here for the runtime config (ExecutorRuntime.config.tasks: TaskConfig[]).
         tasks: agent.tasks.operations,
         outputs: agent.tasks.outputs,
         completionCriteria: agent.completion?.criteria ?? [],
