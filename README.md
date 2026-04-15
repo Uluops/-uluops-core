@@ -61,9 +61,9 @@ The `@uluops/core` SDK provides:
 - **AI SDK v6 Integration** - Vercel AI SDK for LLM communication with automatic tool loops (`maxSteps`) and built-in retry
 - **Registry-Backed Model Resolution** - Model aliases resolved via UluOps Registry with provider metadata
 - **Multi-Provider AI** - Anthropic + OpenAI + Google bundled; Mistral, Cohere, and others supported via dynamic `@ai-sdk/*` import
-- **Filesystem Sandboxing** - ToolHandler restricts LLM file access to the target directory
+- **Filesystem Sandboxing** - ToolHandler restricts LLM file access to the target directory with symlink-aware path validation
 - **Content-Addressed Integrity** - SHA-256 hash verification on all definitions
-- **Structured Output Extraction** - 3-strategy fallback: JSON code fence > inline JSON > regex text parsing
+- **Structured Output Extraction** - 4-strategy fallback: AI SDK structured output > JSON code fence > inline JSON > regex text parsing
 - **Validation Tracking** - Automatic result submission with issue correlation, regression detection, and analytics
 - **Local Development Support** - Load definitions from local YAML files with registry fallback
 - **Bundled Starter Agents** - 5 built-in agents for immediate use without registry access
@@ -324,16 +324,16 @@ console.log(`Effective total: ${metrics.totalEffectiveTokens}`);
 UluOpsClient (facade)
   |
   +-- AgentExecutor        (single-agent LLM execution)
-  |     +-- AIProvider     (AI SDK v6 wrapper, tool loop via maxSteps)
-  |     +-- ToolHandler    (sandboxed filesystem tools)
+  |     +-- AIProvider     (AI SDK v6 wrapper, provider registry, context management)
+  |     +-- ToolHandler    (sandboxed filesystem tools with symlink protection)
   |     +-- ToolAdapter    (converts tools to AI SDK format)
-  |     +-- OutputExtractor (3-strategy JSON parsing)
+  |     +-- OutputExtractor (4-strategy: structured output > JSON fence > inline JSON > regex)
   |
-  +-- CommandExecutor      (single/multi-agent aggregation)
+  +-- CommandExecutor      (single/multi-agent aggregation via Promise.allSettled)
   |     +-- AgentExecutor
-  |     +-- preflight      (prerequisite checks)
+  |     +-- preflight      (prerequisite checks with path traversal protection)
   |
-  +-- WorkflowExecutor     (multi-phase orchestration with gates)
+  +-- WorkflowExecutor     (DAG-based parallel phase orchestration with quality gates)
   |     +-- CommandExecutor
   |
   +-- PipelineExecutor     (multi-stage async pipelines)
@@ -380,7 +380,7 @@ const client = new UluOpsClient({
   defaultProject: 'my-project',       // Default project for result submission
   debug: false,                       // Detailed execution logging (or ULUOPS_DEBUG)
   defaultThinkingBudget: 10000,       // Extended thinking budget (Anthropic + Google models)
-  contextBudget: 200000,              // Context window budget — forces wrap-up at 80%
+  contextBudget: 200000,              // Context window budget — forces wrap-up at 80%, Anthropic context management at 50%
   dashboardUrl: 'https://app.uluops.ai', // Dashboard link prefix for run URLs
 
   // Local Development
@@ -449,6 +449,8 @@ import type { AgentResult, ExecutionInput } from '@uluops/core/types';
 import { ExecutionError, ConfigurationError } from '@uluops/core/errors';
 ```
 
+> **Note:** The `/types` subpath exports consumer-facing types only. Internal registry configuration types (`CategoryConfig`, `CriteriaConfig`, `PhaseConfig`, etc.) are available via direct import from `@uluops/core/types/registry` if needed.
+
 ## Error Handling
 
 The SDK provides a structured error hierarchy:
@@ -458,7 +460,7 @@ The SDK provides a structured error hierarchy:
 | Error | Description |
 |-------|-------------|
 | `UluOpsError` | Base error class for all SDK errors |
-| `ExecutionError` | Agent/command execution failures |
+| `ExecutionError` | Agent/command execution failures (includes definition type mismatch) |
 | `PreflightError` | Preflight check failures |
 | `ConfigurationError` | Invalid configuration |
 | `ModelNotFoundError` | Model alias not found in registry |
