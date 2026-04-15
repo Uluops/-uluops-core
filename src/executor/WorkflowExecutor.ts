@@ -6,6 +6,7 @@ import type { CommandResult } from '../types/command.js';
 import type { ExecutionInput, Recommendation } from '../types/execution.js';
 import { WorkflowError } from '../errors/index.js';
 import { formatErrorMessage } from '../utils/formatError.js';
+import { DEFAULT_GATE_THRESHOLD } from '../constants.js';
 import { sumTokenMetrics } from '../utils/sumTokenMetrics.js';
 import { topoGroupLevels } from '../utils/topoSort.js';
 
@@ -322,7 +323,7 @@ export class WorkflowExecutor {
       name: phase.name,
       decision,
       commands: commandResults,
-      gateThreshold: phase.gate?.threshold ?? 70,
+      gateThreshold: phase.gate?.threshold ?? DEFAULT_GATE_THRESHOLD,
       score: aggregateScore,
       durationMs: Date.now() - phaseStart,
     };
@@ -395,7 +396,7 @@ export class WorkflowExecutor {
       name: phase.name,
       decision: 'blocked',
       commands: [],
-      gateThreshold: phase.gate?.threshold ?? 70,
+      gateThreshold: phase.gate?.threshold ?? DEFAULT_GATE_THRESHOLD,
       score: 0,
       durationMs: 0,
       ...(error ? { error: formatErrorMessage(error) } : {}),
@@ -408,7 +409,7 @@ export class WorkflowExecutor {
       name: phase.name,
       decision: 'skipped',
       commands: [],
-      gateThreshold: phase.gate?.threshold ?? 70,
+      gateThreshold: phase.gate?.threshold ?? DEFAULT_GATE_THRESHOLD,
       score: 0,
       durationMs: 0,
     };

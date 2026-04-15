@@ -8,6 +8,7 @@ import { formatErrorMessage } from '../utils/formatError.js';
 import type { ResolvedConfig, ResolvedAIConfig } from '../types/config.js';
 import type { ModelCatalog, ResolvedModel } from './ModelCatalog.js';
 import { TokenBudgetTracker } from './TokenBudgetTracker.js';
+import { DEFAULT_MAX_STEPS } from '../constants.js';
 import { executeShellAsString, executeShellAsOpenAIResult } from './ShellExecutor.js';
 import {
   SdkApiError,
@@ -206,7 +207,7 @@ export class AIProvider {
         ? this.buildBudgetPrepareStep(options.contextBudget)
         : undefined;
 
-      const maxSteps = options.maxSteps ?? 50;
+      const maxSteps = options.maxSteps ?? DEFAULT_MAX_STEPS;
 
       const result = await generateText({
         model: languageModel,
@@ -380,23 +381,25 @@ export class AIProvider {
    * Build top-level providerOptions for generateText().
    * Dispatches to provider-specific builders.
    */
+  /**
+   * Provider-specific option builders. New providers add an entry here
+   * instead of adding a new if-branch to buildProviderOptions.
+   */
+  private readonly providerOptionsBuilders: Record<
+    string,
+    (resolved: ResolvedModel, userOptions?: ProviderOptions) => ProviderOptions | undefined
+  > = {
+    anthropic: (r, o) => this.buildAnthropicOptions(r, o),
+    openai: (r, o) => this.buildOpenAIOptions(r, o),
+    google: (r, o) => this.buildGoogleOptions(r, o),
+  };
+
   private buildProviderOptions(
     resolved: ResolvedModel,
     userOptions?: ProviderOptions,
   ): ProviderOptions | undefined {
-    if (resolved.provider === 'anthropic') {
-      return this.buildAnthropicOptions(resolved, userOptions);
-    }
-
-    if (resolved.provider === 'openai') {
-      return this.buildOpenAIOptions(resolved, userOptions);
-    }
-
-    if (resolved.provider === 'google') {
-      return this.buildGoogleOptions(resolved, userOptions);
-    }
-
-    return userOptions;
+    const builder = this.providerOptionsBuilders[resolved.provider];
+    return builder ? builder(resolved, userOptions) : userOptions;
   }
 
   /**
@@ -421,16 +424,17 @@ export class AIProvider {
     }
 
     // Auto-inject context management to clear old tool uses when context grows large.
-    // Trigger at 100K tokens (~50% of Claude's 200K context) to leave room for the final
+    // Trigger at 50% of the configured context budget to leave room for the final
     // response. Keep the 5 most recent tool uses so the model retains working context.
     if (!('contextManagement' in anthropicOpts)) {
+      const contextTrigger = Math.round(this.config.contextBudget * 0.5);
       anthropicOpts = {
         ...anthropicOpts,
         contextManagement: {
           edits: [
             {
               type: 'clear_tool_uses_20250919',
-              trigger: { type: 'input_tokens', value: 100_000 },
+              trigger: { type: 'input_tokens', value: contextTrigger },
               keep: { type: 'tool_uses', value: 5 },
               clearToolInputs: true,
             },

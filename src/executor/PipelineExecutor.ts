@@ -27,7 +27,7 @@ export class PipelineExecutor {
    * Returns a PipelineHandle for monitoring progress and retrieving results.
    */
   async start(resolved: ResolvedDefinition, input: ExecutionInput): Promise<PipelineHandle> {
-    const def = resolved.definition as PipelineDefinition;
+    const def = this.assertPipelineDefinition(resolved);
     const pipelineId = `pipeline_${Date.now()}_${Math.random().toString(36).substring(2, 9)}`;
 
     const state: PipelineState = {
@@ -65,7 +65,7 @@ export class PipelineExecutor {
     input: ExecutionInput,
     state: PipelineState,
   ): Promise<void> {
-    const def = resolved.definition as PipelineDefinition;
+    const def = this.assertPipelineDefinition(resolved);
 
     try {
       for (let i = 0; i < def.pipeline.stages.length; i++) {
@@ -99,6 +99,15 @@ export class PipelineExecutor {
       state.status = 'failed';
       state.error = formatErrorMessage(error);
     }
+  }
+
+  private assertPipelineDefinition(resolved: ResolvedDefinition): PipelineDefinition {
+    if (resolved.type !== 'pipeline') {
+      throw new PipelineError(
+        `PipelineExecutor received a '${resolved.type}' definition (expected 'pipeline')`,
+      );
+    }
+    return resolved.definition as PipelineDefinition;
   }
 
   private async executeStage(stage: StageDefinition, input: ExecutionInput): Promise<StageResult> {

@@ -9,6 +9,7 @@ import {
   executorOutputSchema,
   genericOutputSchema,
 } from '../parser/outputSchemas.js';
+import { ExecutionError } from '../errors/index.js';
 import type { ResolvedConfig } from '../types/config.js';
 import type { ResolvedDefinition, ValidatorRuntime, ExecutorRuntime } from '../types/registry.js';
 import type { ExecutionInput, ExecutionOptions, ResolvedExecutionContext, Recommendation } from '../types/execution.js';
@@ -17,6 +18,7 @@ import type { AgentType } from '../types/execution.js';
 import type { ParsedOutput, ExtractionResult } from '../types/parser.js';
 import type { UsageMetrics } from '../types/ai.js';
 import type { Logger } from '@uluops/sdk-core';
+import { DEFAULT_PASS_THRESHOLD, DEFAULT_WARN_THRESHOLD, DEFAULT_MAX_STEPS } from '../constants.js';
 
 /**
  * Primary executor for single-agent runs.
@@ -58,7 +60,7 @@ export class AgentExecutor {
     this.logger.debug(`Context: model=${context.model}, maxSteps=${context.maxSteps}, temp=${context.temperature}, timeout=${context.timeoutMs}ms`);
 
     // 2. Determine if shell tool should be enabled (opt-in via agent tools list)
-    const runtime = resolved.runtime as ValidatorRuntime | ExecutorRuntime;
+    const runtime = this.assertAgentRuntime(resolved);
     const agentTools = runtime.interface?.tools;
     let additionalTools: ToolSet | undefined;
     if (agentTools?.includes('bash')) {
@@ -201,7 +203,7 @@ export class AgentExecutor {
     resolved: ResolvedDefinition,
     options?: ExecutionOptions,
   ): ResolvedExecutionContext {
-    const runtime = resolved.runtime as ValidatorRuntime | ExecutorRuntime;
+    const runtime = this.assertAgentRuntime(resolved);
     const defaults = runtime?.defaults;
 
     return {
@@ -209,7 +211,7 @@ export class AgentExecutor {
       maxTokens: options?.maxTokens ?? defaults?.maxTokens ?? 8192,
       timeoutMs: options?.timeoutMs ?? defaults?.timeout ?? this.config.timeout ?? 300_000,
       temperature: options?.temperature ?? defaults?.temperature ?? 0,
-      maxSteps: options?.maxSteps ?? 50,
+      maxSteps: options?.maxSteps ?? DEFAULT_MAX_STEPS,
       thresholds: this.resolveThresholds(
         options?.thresholds,
         defaults && 'thresholds' in defaults ? defaults.thresholds : undefined,
@@ -219,6 +221,13 @@ export class AgentExecutor {
     };
   }
 
+  private assertAgentRuntime(resolved: ResolvedDefinition): ValidatorRuntime | ExecutorRuntime {
+    if (resolved.type !== 'agent') {
+      throw new ExecutionError(`AgentExecutor received a '${resolved.type}' definition (expected 'agent')`);
+    }
+    return resolved.runtime as ValidatorRuntime | ExecutorRuntime;
+  }
+
   private resolveThresholds(
     optThresholds?: { pass?: number; warn?: number },
     defThresholds?: { pass?: number; warn?: number },
@@ -226,7 +235,7 @@ export class AgentExecutor {
     const pass = optThresholds?.pass ?? defThresholds?.pass;
     const warn = optThresholds?.warn ?? defThresholds?.warn;
     if (pass === undefined && warn === undefined) return undefined;
-    return { pass: pass ?? 75, warn: warn ?? 50 };
+    return { pass: pass ?? DEFAULT_PASS_THRESHOLD, warn: warn ?? DEFAULT_WARN_THRESHOLD };
   }
 
   /**
@@ -321,6 +330,10 @@ export class AgentExecutor {
       case 'explorer':
       case 'forecaster':
         return { schema: genericOutputSchema, name: 'AgentResult' };
+      default: {
+        const _exhaustive: never = agentType;
+        throw new Error(`Unknown agent type: ${_exhaustive}`);
+      }
     }
   }
 

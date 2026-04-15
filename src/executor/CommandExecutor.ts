@@ -6,8 +6,10 @@ import type { CommandDefinition } from '../types/command.js';
 import type { ExecutionInput, Recommendation } from '../types/execution.js';
 import type { CommandResult, CommandMetrics } from '../types/command.js';
 import type { AgentResult, ValidatorAgentResult } from '../types/agent.js';
+import { ExecutionError } from '../errors/index.js';
 import { parseRef } from '../utils/parseRef.js';
 import { sumTokenMetrics } from '../utils/sumTokenMetrics.js';
+import { DEFAULT_PASS_THRESHOLD, DEFAULT_WARN_THRESHOLD } from '../constants.js';
 
 /**
  * Executes command definitions.
@@ -29,6 +31,9 @@ export class CommandExecutor {
    */
   async execute(resolved: ResolvedDefinition, input: ExecutionInput): Promise<CommandResult> {
     const startTime = Date.now();
+    if (resolved.type !== 'command') {
+      throw new ExecutionError(`CommandExecutor received a '${resolved.type}' definition (expected 'command')`);
+    }
     const def = resolved.definition as CommandDefinition;
 
     // 1. Run preflight checks
@@ -214,8 +219,8 @@ export class CommandExecutor {
     }
 
     // Determine overall decision
-    const threshold = def.command.execution.thresholds?.pass ?? 70;
-    const warnThreshold = def.command.execution.thresholds?.warn ?? 50;
+    const threshold = def.command.execution.thresholds?.pass ?? DEFAULT_PASS_THRESHOLD;
+    const warnThreshold = def.command.execution.thresholds?.warn ?? DEFAULT_WARN_THRESHOLD;
     let decision: string;
 
     if (score !== undefined) {

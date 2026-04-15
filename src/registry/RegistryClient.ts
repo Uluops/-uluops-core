@@ -8,6 +8,7 @@ import type { AgentDefinition } from '../types/agent.js';
 import type { ResolvedDefinition, DefinitionSummary } from '../types/registry.js';
 import { ConfigurationError } from '../errors/index.js';
 import { formatErrorMessage } from '../utils/formatError.js';
+import { DEFAULT_PASS_THRESHOLD } from '../constants.js';
 import type { Logger } from '@uluops/sdk-core';
 
 /**
@@ -353,7 +354,7 @@ export class RegistryClient {
       const passThreshold = agent.decisions?.thresholds?.find(t => t.decision === 'positive');
       return {
         maxScore: agent.scoring.maxScore,
-        threshold: passThreshold?.min_score ?? 75,
+        threshold: passThreshold?.min_score ?? DEFAULT_PASS_THRESHOLD,
         categories: agent.scoring.categories.map(c => ({
           name: c.name,
           weight: c.weight,
