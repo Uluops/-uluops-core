@@ -14,6 +14,10 @@ export class ExecutionError extends UluOpsError {
     super(message, options);
     this.name = 'ExecutionError';
   }
+
+  override toJSON(): Record<string, unknown> {
+    return { ...super.toJSON(), ...(this.partialResult !== undefined ? { partialResult: this.partialResult } : {}) };
+  }
 }
 
 /** Thrown when a preflight check fails (e.g. missing env var, unavailable tool). */
@@ -27,6 +31,10 @@ export class PreflightError extends UluOpsError {
   ) {
     super(message);
     this.name = 'PreflightError';
+  }
+
+  override toJSON(): Record<string, unknown> {
+    return { ...super.toJSON(), check: this.check, ...(this.details ? { details: this.details } : {}) };
   }
 }
 
@@ -85,6 +93,10 @@ export class ValidationError extends UluOpsError {
     this.name = 'ValidationError';
     this.code = code ?? 'VALIDATION_ERROR';
   }
+
+  override toJSON(): Record<string, unknown> {
+    return { ...super.toJSON(), code: this.code };
+  }
 }
 
 /** Thrown when a workflow phase gate fails. Includes partial results for completed phases. */
@@ -98,6 +110,10 @@ export class WorkflowError extends UluOpsError {
     super(message);
     this.name = 'WorkflowError';
   }
+
+  override toJSON(): Record<string, unknown> {
+    return { ...super.toJSON(), context: this.context };
+  }
 }
 
 /** Thrown when a pipeline stage fails or a pipeline-level error occurs. */
@@ -106,10 +122,14 @@ export class PipelineError extends UluOpsError {
 
   constructor(
     message: string,
-    public readonly context?: { stageName?: string; stageIndex?: number },
+    public readonly context: { partialResult?: unknown; stageName?: string; stageIndex?: number },
   ) {
     super(message);
     this.name = 'PipelineError';
+  }
+
+  override toJSON(): Record<string, unknown> {
+    return { ...super.toJSON(), context: this.context };
   }
 }
 
@@ -122,6 +142,10 @@ export class ParseError extends UluOpsError {
     super(message);
     this.name = 'ParseError';
     this.contentPreview = contentPreview;
+  }
+
+  override toJSON(): Record<string, unknown> {
+    return { ...super.toJSON(), contentPreview: this.contentPreview };
   }
 }
 

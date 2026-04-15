@@ -29,4 +29,14 @@ export class UluOpsError extends Error {
     super(message, options);
     this.name = 'UluOpsError';
   }
+
+  /** Serialize error for network boundaries (thin-client, API responses). */
+  toJSON(): Record<string, unknown> {
+    return {
+      name: this.name,
+      code: this.code,
+      message: this.message,
+      ...(this.cause ? { cause: String(this.cause) } : {}),
+    };
+  }
 }

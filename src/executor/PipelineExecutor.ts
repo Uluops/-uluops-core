@@ -106,6 +106,7 @@ export class PipelineExecutor {
     if (resolved.type !== 'pipeline') {
       throw new PipelineError(
         `PipelineExecutor received a '${resolved.type}' definition (expected 'pipeline')`,
+        {},
       );
     }
     return resolved.definition as PipelineDefinition;
@@ -236,6 +237,7 @@ class PipelineHandle implements IPipelineHandle {
     if (this.state.status === 'failed') {
       throw new PipelineError(
         `Pipeline ${this.executionId} failed: ${this.state.error ?? 'Unknown error'}`,
+        { partialResult: result },
       );
     }
 
@@ -246,6 +248,7 @@ class PipelineHandle implements IPipelineHandle {
     if (this.isComplete()) {
       throw new PipelineError(
         `Pipeline ${this.executionId} is already complete (status: ${this.state.status})`,
+        {},
       );
     }
     this.state.status = 'cancelled';

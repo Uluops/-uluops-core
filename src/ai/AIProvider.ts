@@ -9,7 +9,7 @@ import type { ResolvedConfig, ResolvedAIConfig } from '../types/config.js';
 import type { ModelCatalog, ResolvedModel } from './ModelCatalog.js';
 import { TokenBudgetTracker } from './TokenBudgetTracker.js';
 import { DEFAULT_MAX_STEPS, ANTHROPIC_BASH_TOOL_VERSION, ANTHROPIC_CONTEXT_MANAGEMENT_TYPE, DEFAULT_DYNAMIC_PROVIDERS } from '../constants.js';
-import { executeShellAsString, executeShellAsOpenAIResult } from './ShellExecutor.js';
+import { executeShellAsString, executeShellAsOpenAIResult } from './shellExecutor.js';
 import {
   SdkApiError,
   RateLimitError,
