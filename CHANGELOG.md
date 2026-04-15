@@ -4,6 +4,25 @@ All notable changes to `@uluops/core` will be documented in this file.
 
 This project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.6.0] - 2026-04-15
+
+### Added
+- **`classifyDecision()` utility** — classifies agent decision strings into positive/negative/conditional/neutral categories with support for custom vocabulary maps via `buildVocabularyMap()`
+- **`DefinitionType` type guards** — `isAgentDef()`, `isCommandDef()`, `isWorkflowDef()`, `isPipelineDef()` for narrowing parsed definitions
+
+### Changed
+- **Naming alignment** — `validator` references renamed to `agent` throughout (executor, types, metrics) per name-game remediation
+- **`maxScore`/`maxPoints` unified** — consolidated duplicate scoring fields across agent result types
+- **`AIProvider.mapError` preserves original error cause** — mapped errors now set `.cause` to the original AI SDK error for debugging
+- **`AIProvider` provider name validation** — `additionalProviders` allowlist validates names against `^[a-z][a-z0-9-]{0,30}$` (CWE-829)
+- **Unsafe `Function` type replaced** — `createProviderShellTool` uses typed callable signature instead of bare `Function`
+
+### Fixed
+- **Null-safe priority handling** — `prioritizeRecommendations` no longer throws on undefined severity
+- **`PipelineError` serialization** — error now includes `pipelineName` in formatted output
+- **Symlink mismatch in tool handler** — path safety check resolves symlinks on macOS before comparison
+- **Zod/TypeScript schema sync** — compile-time check ensures Zod schemas stay aligned with TypeScript interfaces
+
 ## [0.5.0] - 2026-04-14
 
 ### Added

@@ -331,7 +331,8 @@ export class AIProvider {
   ): ToolSet | undefined {
     if (provider === 'anthropic' && this.anthropicInstance) {
       // Access bash tool by version constant (date-stamped, updated in constants.ts)
-      const bashTool = (this.anthropicInstance.tools as Record<string, Function>)[ANTHROPIC_BASH_TOOL_VERSION];
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any -- Anthropic provider tools are dynamically keyed by version constant; no public type exists
+      const bashTool = (this.anthropicInstance.tools as Record<string, (...args: any[]) => any>)[ANTHROPIC_BASH_TOOL_VERSION];
       if (!bashTool) {
         this.logger.warn(`Anthropic bash tool ${ANTHROPIC_BASH_TOOL_VERSION} not found on provider instance`);
         return undefined;
@@ -743,37 +744,43 @@ export class AIProvider {
   private mapError(error: unknown, timeoutMs?: number): Error {
     this.logger.error(`AI SDK error: ${formatErrorMessage(error)}`);
 
+    const cause = error instanceof Error ? error : undefined;
+
     if (isAPICallError(error)) {
       const status = error.statusCode ?? 0;
+      let mapped: Error;
 
       if (status === 429) {
-        return new RateLimitError(`Rate limit exceeded: ${error.message}`);
+        mapped = new RateLimitError(`Rate limit exceeded: ${error.message}`);
+      } else if (status === 401) {
+        mapped = new UnauthorizedError(`Authentication failed: ${error.message}`);
+      } else if (status === 403) {
+        mapped = new ForbiddenError(`Forbidden: ${error.message}`);
+      } else if (status >= 500) {
+        mapped = new ServiceUnavailableError(`Server error: ${error.message}`);
+      } else {
+        mapped = new SdkApiError(status, error.message);
       }
-      if (status === 401) {
-        return new UnauthorizedError(`Authentication failed: ${error.message}`);
-      }
-      if (status === 403) {
-        return new ForbiddenError(`Forbidden: ${error.message}`);
-      }
-      if (status >= 500) {
-        return new ServiceUnavailableError(`Server error: ${error.message}`);
-      }
-      return new SdkApiError(status, error.message);
+      mapped.cause = cause;
+      return mapped;
     }
 
     if (isRetryError(error)) {
-      return new SdkApiError(0, `Retries exhausted: ${error.message}`);
+      const mapped = new SdkApiError(0, `Retries exhausted: ${error.message}`);
+      mapped.cause = cause;
+      return mapped;
     }
 
     // Timeout (AbortError)
     if (error instanceof Error && error.name === 'AbortError') {
-      return new TimeoutError(timeoutMs ?? this.config.timeout);
+      const mapped = new TimeoutError(timeoutMs ?? this.config.timeout);
+      mapped.cause = cause;
+      return mapped;
     }
 
-    return new SdkApiError(
-      0,
-      formatErrorMessage(error),
-    );
+    const mapped = new SdkApiError(0, formatErrorMessage(error));
+    mapped.cause = cause;
+    return mapped;
   }
 }
 
