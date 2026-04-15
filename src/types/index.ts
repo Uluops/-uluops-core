@@ -86,10 +86,6 @@ export type {
 // Registry (consumer-facing types only; internal config types stay in registry.ts)
 export type {
   ResolvedDefinition,
-  ValidatorRuntime,
-  ExecutorRuntime,
-  WorkflowRuntime,
-  PipelineRuntime,
   DefinitionSummary,
   Reference,
 } from './registry.js';

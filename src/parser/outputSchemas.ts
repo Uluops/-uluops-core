@@ -69,8 +69,6 @@ export const agentOutputSchema = z.object({
     .describe('Generated artifacts (executor agents)'),
 });
 
-export type AgentOutput = z.infer<typeof agentOutputSchema>;
-
 /**
  * Compile-time check: issueSchema fields must be a superset of Issue fields.
  * If Issue gains a field not in issueSchema, this line will produce a type error,

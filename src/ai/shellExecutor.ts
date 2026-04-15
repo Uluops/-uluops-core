@@ -3,20 +3,20 @@ import { promisify } from 'util';
 
 const execAsync = promisify(exec);
 
-export interface ShellResult {
+interface ShellResult {
   stdout: string;
   stderr: string;
   timedOut: boolean;
   exitCode: number;
 }
 
-export interface OpenAIShellAction {
+interface OpenAIShellAction {
   commands: string[];
   timeoutMs?: number;
   maxOutputLength?: number;
 }
 
-export interface OpenAIShellOutput {
+interface OpenAIShellOutput {
   output: Array<{
     stdout: string;
     stderr: string;

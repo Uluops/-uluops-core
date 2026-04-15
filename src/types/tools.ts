@@ -1,17 +1,4 @@
 /**
- * Tool definition for LLM API
- */
-export interface Tool {
-  name: string;
-  description: string;
-  input_schema: {
-    type: 'object';
-    properties: Record<string, unknown>;
-    required?: string[];
-  };
-}
-
-/**
  * Tool use request from LLM
  */
 export interface ToolUseBlock {

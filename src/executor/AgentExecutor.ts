@@ -47,7 +47,7 @@ export class AgentExecutor {
    * @param resolved - Registry-resolved agent definition (must have `type: 'agent'`)
    * @param input - Execution input containing the target directory path and optional config
    * @param options - Runtime overrides for model, thresholds, temperature, timeout, etc.
-   * @returns Discriminated union: `ValidatorAgentResult` (score + categories) or `ExecutorAgentResult` (artifacts)
+   * @returns Universal `AgentResult` with score, categories, artifacts, and passthrough decision
    * @throws {ExecutionError} When the resolved definition is not an agent (type mismatch)
    * @throws {ConfigurationError} When AI provider cannot be initialized (missing API key, unknown provider)
    * @throws {ModelNotFoundError} When the model alias cannot be resolved via the model catalog
