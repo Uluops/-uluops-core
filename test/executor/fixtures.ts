@@ -27,7 +27,7 @@ export function makeValidatorResult(overrides?: Partial<ValidatorAgentResult>): 
     score: 85,
     maxScore: 100,
     recommendations: [
-      { validator: 'test-agent', title: 'Issue 1', priority: 'suggested' },
+      { agent: 'test-agent', title: 'Issue 1', priority: 'suggested' },
     ],
     durationMs: 1000,
     metrics: {
@@ -52,7 +52,7 @@ export function makeCommandResult(overrides?: Partial<CommandResult>): CommandRe
     score: 85,
     maxScore: 100,
     recommendations: [
-      { validator: 'test', title: 'Issue 1', priority: 'suggested' },
+      { agent: 'test', title: 'Issue 1', priority: 'suggested' },
     ],
     durationMs: 1000,
     metrics: {

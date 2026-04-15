@@ -1,9 +1,11 @@
 import { UluOpsError } from './UluOpsError.js';
 
-export { UluOpsError } from './UluOpsError.js';
+export { UluOpsError, UluOpsErrorCodes, type UluOpsErrorCode } from './UluOpsError.js';
 
 /** Thrown when agent/command/workflow execution fails. May include a partial result. */
 export class ExecutionError extends UluOpsError {
+  readonly code = 'EXECUTION_ERROR' as const;
+
   constructor(
     message: string,
     public readonly partialResult?: unknown,
@@ -16,6 +18,8 @@ export class ExecutionError extends UluOpsError {
 
 /** Thrown when a preflight check fails (e.g. missing env var, unavailable tool). */
 export class PreflightError extends UluOpsError {
+  readonly code = 'PREFLIGHT_ERROR' as const;
+
   constructor(
     message: string,
     public readonly check: string,
@@ -28,6 +32,8 @@ export class PreflightError extends UluOpsError {
 
 /** Thrown when the SDK is misconfigured (missing API key, invalid provider, etc.). */
 export class ConfigurationError extends UluOpsError {
+  readonly code = 'CONFIGURATION_ERROR' as const;
+
   constructor(message: string) {
     super(message);
     this.name = 'ConfigurationError';
@@ -36,6 +42,8 @@ export class ConfigurationError extends UluOpsError {
 
 /** Thrown when a model alias cannot be resolved via the registry model catalog. */
 export class ModelNotFoundError extends UluOpsError {
+  readonly code = 'MODEL_NOT_FOUND' as const;
+
   constructor(message: string) {
     super(message);
     this.name = 'ModelNotFoundError';
@@ -44,6 +52,8 @@ export class ModelNotFoundError extends UluOpsError {
 
 /** Thrown when a resolved model lacks a required capability (e.g. tools, vision, extendedThinking). */
 export class CapabilityError extends UluOpsError {
+  readonly code = 'CAPABILITY_ERROR' as const;
+
   constructor(message: string) {
     super(message);
     this.name = 'CapabilityError';
@@ -68,17 +78,19 @@ export type ValidationErrorCode = typeof ValidationErrorCodes[keyof typeof Valid
 
 /** Thrown when the validation service rejects a submission or returns an error. */
 export class ValidationError extends UluOpsError {
-  public readonly code?: ValidationErrorCode;
+  public readonly code: ValidationErrorCode;
 
   constructor(message: string, code?: ValidationErrorCode) {
     super(message);
     this.name = 'ValidationError';
-    this.code = code;
+    this.code = code ?? 'VALIDATION_ERROR';
   }
 }
 
 /** Thrown when a workflow phase gate fails. Includes partial results for completed phases. */
 export class WorkflowError extends UluOpsError {
+  readonly code = 'WORKFLOW_ERROR' as const;
+
   constructor(
     message: string,
     public readonly context: { partialResult: unknown },
@@ -90,7 +102,12 @@ export class WorkflowError extends UluOpsError {
 
 /** Thrown when a pipeline stage fails or a pipeline-level error occurs. */
 export class PipelineError extends UluOpsError {
-  constructor(message: string) {
+  readonly code = 'PIPELINE_ERROR' as const;
+
+  constructor(
+    message: string,
+    public readonly context?: { stageName?: string; stageIndex?: number },
+  ) {
     super(message);
     this.name = 'PipelineError';
   }
@@ -98,6 +115,7 @@ export class PipelineError extends UluOpsError {
 
 /** Thrown when structured output cannot be extracted from an LLM response. */
 export class ParseError extends UluOpsError {
+  readonly code = 'PARSE_ERROR' as const;
   readonly contentPreview: string;
 
   constructor(message: string, contentPreview: string) {

@@ -379,7 +379,7 @@ export class AgentExecutor {
       for (const finding of category.findings ?? []) {
         for (const issue of finding.issues ?? []) {
           recommendations.push({
-            validator: agentName,
+            agent: agentName,
             title: issue.title,
             priority: issue.priority,
             severity: issue.severity,

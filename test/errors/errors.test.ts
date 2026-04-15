@@ -98,9 +98,9 @@ describe('ValidationError', () => {
     expect(err.code).toBe('NOT_FOUND');
   });
 
-  it('code defaults to undefined', () => {
+  it('code defaults to VALIDATION_ERROR', () => {
     const err = new ValidationError('generic');
-    expect(err.code).toBeUndefined();
+    expect(err.code).toBe('VALIDATION_ERROR');
   });
 });
 

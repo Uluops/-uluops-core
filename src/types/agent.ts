@@ -9,6 +9,13 @@ import type { Finding, ArtifactResult } from './command.js';
  * Agent definition — the atomic validation/execution unit.
  * Matches the ADL v1.6.0 JSON schema structure.
  *
+ * NAMING CONVENTION: The ADL schema uses snake_case for YAML-native keys
+ * (knowledge_base, auto_fail, edge_cases) and camelCase for TypeScript-native
+ * keys added after the YAML schema was locked (displayName, agentType).
+ * This reflects an era boundary: original keys followed YAML convention,
+ * later keys followed TypeScript convention. New fields MUST use camelCase.
+ * Changing existing snake_case keys requires a breaking ADL schema migration.
+ *
  * Agents can be executed directly via `UluOpsClient.runAgent()` or wrapped
  * in a Command for preflight checks, multi-agent aggregation, and saved config.
  */

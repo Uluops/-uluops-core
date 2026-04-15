@@ -161,7 +161,7 @@ describe('AgentExecutor', () => {
       const result = await executor.execute(makeValidatorDef(), { target: tmpDir });
 
       expect(result.recommendations).toHaveLength(1);
-      expect(result.recommendations[0]!.validator).toBe('test-validator');
+      expect(result.recommendations[0]!.agent).toBe('test-validator');
       expect(result.recommendations[0]!.title).toBe('Long function');
       expect(result.recommendations[0]!.priority).toBe('suggested');
       expect(result.recommendations[0]!.filePath).toBe('src/index.ts');

@@ -193,8 +193,8 @@ export interface ResolvedExecutionContext {
  * Individual recommendation/issue
  */
 export interface Recommendation {
-  /** Source validator name */
-  validator?: string;
+  /** Source agent name */
+  agent?: string;
 
   /** Issue title */
   title: string;
@@ -233,7 +233,7 @@ export interface Recommendation {
   classificationConfidence?: 'high' | 'medium' | 'low';
 
   /** Who classified this issue */
-  classifiedBy?: 'validator' | 'classifier' | 'human';
+  classifiedBy?: 'agent' | 'classifier' | 'human';
 
   /** Secondary failure codes when multiple issues apply */
   secondaryFailureCodes?: string[];

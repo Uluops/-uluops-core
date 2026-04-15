@@ -23,6 +23,8 @@ export { TokenBudgetTracker } from './ai/TokenBudgetTracker.js';
 export { OutputExtractor } from './parser/OutputExtractor.js';
 export { ToolHandler } from './executor/ToolHandler.js';
 export { parseRef } from './utils/parseRef.js';
+export { classifyDecision } from './executor/classifyDecision.js';
+export type { DecisionCategory } from './executor/classifyDecision.js';
 export { STARTER_DEFINITIONS_DIR } from './constants.js';
 
 // ─── Types: Config ────────────────────────────────────────────────────────────
@@ -135,6 +137,8 @@ export type { Logger } from '@uluops/sdk-core';
 // ─── Errors: Core SDK ─────────────────────────────────────────────────────────
 export {
   UluOpsError,
+  UluOpsErrorCodes,
+  type UluOpsErrorCode,
   ExecutionError,
   PreflightError,
   ConfigurationError,

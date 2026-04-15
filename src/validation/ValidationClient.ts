@@ -154,8 +154,7 @@ export class ValidationClient {
         durationMs: result.metrics.durationMs,
       }],
       recommendations: result.recommendations.map(r => ({
-        agent: r.validator ?? 'unknown',
-        validator: r.validator ?? 'unknown',
+        agent: r.agent ?? 'unknown',
         title: r.title,
         priority: r.priority,
         severity: r.severity,

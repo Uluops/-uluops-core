@@ -8,6 +8,7 @@ import { PipelineError } from '../errors/index.js';
 import { parseRef } from '../utils/parseRef.js';
 import { formatErrorMessage } from '../utils/formatError.js';
 import { sumTokenMetrics } from '../utils/sumTokenMetrics.js';
+import { classifyDecision } from './classifyDecision.js';
 
 /**
  * Executes pipelines with multi-stage orchestration and async support.
@@ -287,14 +288,9 @@ class PipelineHandle implements IPipelineHandle {
         durationMs,
         model: 'mixed',
         stagesExecuted: this.state.stageResults.filter(s => s.status === 'completed').length,
-        stagesPassed: this.state.stageResults.filter(s => {
-          const d = s.result?.decision;
-          return d === 'PASS' || d === 'SHIP' || d === 'COMPLETE';
-        }).length,
-        stagesFailed: this.state.stageResults.filter(s => {
-          const d = s.result?.decision;
-          return d === 'FAIL' || d === 'BLOCK' || d === 'FAILED';
-        }).length,
+        stagesPassed: this.state.stageResults.filter(s => classifyDecision(s.result?.decision) === 'positive').length,
+        stagesFailed: this.state.stageResults.filter(s => classifyDecision(s.result?.decision) === 'negative').length,
+        stagesWarned: this.state.stageResults.filter(s => classifyDecision(s.result?.decision) === 'conditional').length,
         stagesSkipped: this.state.stageResults.filter(s => s.status === 'skipped').length,
       },
     };
@@ -304,16 +300,14 @@ class PipelineHandle implements IPipelineHandle {
     if (this.state.status === 'cancelled') return 'CANCELLED';
     if (this.state.status === 'failed') return 'FAIL';
 
-    const hasFailures = this.state.stageResults.some(s => {
-      const d = s.result?.decision;
-      return d === 'FAIL' || d === 'FAILED' || d === 'BLOCK';
-    });
+    const hasFailures = this.state.stageResults.some(s =>
+      classifyDecision(s.result?.decision) === 'negative',
+    );
     if (hasFailures) return 'FAIL';
 
-    const hasWarnings = this.state.stageResults.some(s => {
-      const d = s.result?.decision;
-      return d === 'WARN' || d === 'HOLD';
-    });
+    const hasWarnings = this.state.stageResults.some(s =>
+      classifyDecision(s.result?.decision) === 'conditional',
+    );
     if (hasWarnings) return 'WARN';
 
     return 'PASS';

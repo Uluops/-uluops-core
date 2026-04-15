@@ -433,7 +433,7 @@ describe('WorkflowExecutor', () => {
 
   describe('recommendation deduplication', () => {
     it('deduplicates recommendations by title+filePath+lineNumber', async () => {
-      const rec = { validator: 'test', title: 'Duplicate Issue', priority: 'suggested' as const, filePath: 'src/a.ts', lineNumber: 10 };
+      const rec = { agent: 'test', title: 'Duplicate Issue', priority: 'suggested' as const, filePath: 'src/a.ts', lineNumber: 10 };
       const results = [
         makeCommandResult({ recommendations: [rec, { ...rec }] }),
         makeCommandResult({ recommendations: [rec] }),

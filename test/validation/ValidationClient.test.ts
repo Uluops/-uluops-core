@@ -48,7 +48,7 @@ function makeResult(overrides?: Partial<ExecutionResult>): ExecutionResult {
     durationMs: 5000,
     recommendations: [
       {
-        validator: 'code-validator',
+        agent: 'code-validator',
         title: 'Add missing type annotation',
         priority: 'suggested',
         severity: 'medium',
@@ -155,7 +155,7 @@ describe('ValidationClient', () => {
       // Recommendations
       const recs = input.recommendations as Array<Record<string, unknown>>;
       expect(recs).toHaveLength(1);
-      expect(recs[0]!.validator).toBe('code-validator');
+      expect(recs[0]!.agent).toBe('code-validator');
       expect(recs[0]!.title).toBe('Add missing type annotation');
       expect(recs[0]!.priority).toBe('suggested');
       expect(recs[0]!.severity).toBe('medium');
@@ -202,7 +202,7 @@ describe('ValidationClient', () => {
 
       const input = mockSave.mock.calls[0]![0] as Record<string, unknown>;
       const recs = input.recommendations as Array<Record<string, unknown>>;
-      expect(recs[0]!.validator).toBe('unknown');
+      expect(recs[0]!.agent).toBe('unknown');
     });
   });
 

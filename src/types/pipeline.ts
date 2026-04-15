@@ -102,6 +102,9 @@ export interface PipelineMetrics extends ExecutionMetrics {
   /** Number of stages failed */
   stagesFailed: number;
 
+  /** Number of stages with conditional decisions (WARN, HOLD) */
+  stagesWarned: number;
+
   /** Number of stages skipped */
   stagesSkipped: number;
 }
