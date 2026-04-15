@@ -71,9 +71,9 @@ Definition authoring stays in `@uluops/definition-factory`. Analytics computatio
 
 ### AgentExecutor is the universal convergence point
 
-Every execution path in the system — whether entered via `runAgent()`, `runCommand()`, `runWorkflow()`, or `startPipeline()` — terminates in `AgentExecutor.execute()`. This is by design: the 4-layer hierarchy is a compression funnel. The consequence is that AgentExecutor's behavioral assumptions (output parsing strategies, token calculation logic, agentType discrimination) silently shape every result the system produces.
+Every execution path in the system — whether entered via `runAgent()`, `runCommand()`, `runWorkflow()`, or `startPipeline()` — terminates in `AgentExecutor.execute()`. This is by design: the 4-layer hierarchy is a compression funnel. The consequence is that AgentExecutor's behavioral assumptions (output parsing, token calculation, decision classification) silently shape every result the system produces.
 
-This was identified by all four agents in a fragility-map analysis as the primary risk concentration. The mitigation is a `never`-guarded exhaustiveness check on `AgentType` in `getOutputSchema()`, so adding a new agent type produces a compile error rather than silent fallthrough.
+All 6 agent types (validator, executor, analyst, generator, explorer, forecaster) use a single `agentOutputSchema` and produce a unified `AgentResult`. There is no type-specific schema routing or result discrimination — categories and artifacts are both optional on every result. Decisions pass through as-is from the LLM; `classifyDecision()` normalizes them via vocabulary maps built from agent definitions.
 
 ### ResolvedDefinition is a structural type, not a discriminated union
 
@@ -157,7 +157,7 @@ These are structural properties of the package's design that have been examined 
 | Tension | Status | Notes |
 |---|---|---|
 | **AgentExecutor convergence** | By design | All paths converge on AgentExecutor. This is the intended compression funnel, not accidental load concentration. Exhaustiveness guard mitigates the latent defect risk. |
-| **Decision vocabulary fragmentation** | By design | Four registers: validator (PASS/WARN/FAIL), executor (COMPLETE/PARTIAL/FAILED), phase (passed/warned/blocked/skipped/aborted), workflow (SHIP/HOLD/BLOCK). Each layer has different decision semantics — unifying them would lose information. Normalization via `classifyDecision()` — see [ADR-001](docs/adr/adr-001-decision-vocabulary.md). |
+| **Decision vocabulary fragmentation** | By design | Four registers: validator (PASS/WARN/FAIL), executor (COMPLETE/PARTIAL/FAILED), phase (passed/warned/blocked/skipped/aborted), workflow (SHIP/HOLD/BLOCK). Each layer has different decision semantics — unifying them would lose information. PARTIAL is classified as 'conditional' (not 'negative') because partial completion is incremental progress, not failure. Normalization via `classifyDecision()` — see [ADR-001](docs/adr/adr-001-decision-vocabulary.md). |
 | **Provider SDK undocumented contracts** | Accepted risk | `providerMetadata` shapes for usage extraction are cast through type assertions. Provider SDK updates may silently break usage metrics. Volatile identifiers extracted to constants; provider registry pattern limits blast radius. |
 | **Vercel AI SDK structural coupling** | Accepted dependency | Deep API surface dependency on `generateText`, `Output.object`, `stepCountIs`, `prepareStep`. The SDK is the strategic abstraction layer — the coupling is the investment. |
 | **Issue → Recommendation lossy mapping** | By design | `flattenRecommendations()` maps `Issue` to `Recommendation`, dropping fields that don't have counterparts. Full data remains available in `parsed.categories` for consumers who need it. |

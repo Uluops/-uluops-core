@@ -4,6 +4,33 @@ All notable changes to `@uluops/core` will be documented in this file.
 
 This project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.7.0] - 2026-04-15
+
+### Breaking Changes
+- **Unified output schema** — `validatorOutputSchema`, `executorOutputSchema`, and `genericOutputSchema` replaced by single `agentOutputSchema` with categories + artifacts for all 6 agent types
+- **Unified result type** — `ValidatorAgentResult` and `ExecutorAgentResult` removed; single `AgentResult` interface with `decision: string` passthrough, score, categories, and optional artifacts
+- **Decision passthrough** — `validatedDecision()` removed; LLM decisions pass through as-is. `classifyDecision()` with vocabulary maps handles normalization via `decisionCategory`
+
+### Changed
+- **PARTIAL reclassified as conditional** — `classifyDecision` and `buildVocabularyMap` now treat PARTIAL as 'conditional' (progress) instead of 'negative' (failure)
+- **Category extraction ungated** — `OutputExtractor` extracts categories for all agent types, not just validators
+- **Score aggregation generalized** — `CommandExecutor` aggregates scores from all scored agents, not just validators
+- **issueLine regex synced with LANG_MAP** — added PHP, C#, C++, C, Swift, Kotlin, SQL, Shell, SCSS, MJS, CJS to issue file path matching
+- **`AIProvider.mapError` preserves error cause** — mapped errors now set `.cause` to the original AI SDK error
+- **`AgentExecutor.execute()` refactored** — 158→40 lines via 7 extracted helpers
+- **`AIProvider.generate()` refactored** — 136→25 lines via 4 extracted helpers
+
+### Added
+- **Anthropic-first provider strategy** documented in SCOPE.md with extension points
+- **costUsd trace** documented in SCOPE.md (plumbed but blocked on registry pricing)
+- **Maintainers section** in README
+- **Advanced Exports** section in README documenting all 16 exported components
+
+### Fixed
+- **Filesystem paths stripped** from user-facing RegistryClient error messages
+- **`parseFloat` replaced with `Number()`** to reject partial numeric strings from LLM output
+- **CHANGELOG v0.6.0** entry added (was missing)
+
 ## [0.6.0] - 2026-04-15
 
 ### Added

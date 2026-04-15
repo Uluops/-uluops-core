@@ -44,10 +44,12 @@ export function classifyDecision(
   }
 
   // Core execution layer vocabularies (hardcoded — these are stable)
+  // PARTIAL is 'conditional' (not negative) — partial completion is progress,
+  // not failure. Downstream consumers can gate on decisionCategory if needed.
   switch (decision) {
     case 'PASS': case 'SHIP': case 'COMPLETE': return 'positive';
-    case 'FAIL': case 'FAILED': case 'BLOCK': case 'PARTIAL': return 'negative';
-    case 'WARN': case 'HOLD': return 'conditional';
+    case 'FAIL': case 'FAILED': case 'BLOCK': return 'negative';
+    case 'WARN': case 'HOLD': case 'PARTIAL': return 'conditional';
     default: return 'neutral';
   }
 }
@@ -75,7 +77,7 @@ export function buildVocabularyMap(definition: {
   if (cv) {
     if (cv.complete) map.set(cv.complete, 'positive');
     if (cv.failed) map.set(cv.failed, 'negative');
-    if (cv.partial) map.set(cv.partial, 'negative');
+    if (cv.partial) map.set(cv.partial, 'conditional');
   }
 
   return map.size > 0 ? map : undefined;

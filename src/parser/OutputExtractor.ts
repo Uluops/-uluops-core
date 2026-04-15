@@ -28,7 +28,8 @@ export class OutputExtractor {
     scoreFraction: /(?:score|points)\s*[:=]?\s*(\d+)\s*\/\s*(\d+)/i,
     maxScore: /(?:max(?:imum)?[\s_]?score|out[\s_]?of|total)\s*[:=]\s*(\d+)/i,
     // Issue line: "- description: file/path.ts:123 [CODE]"
-    issueLine: /^[\s]*[-•🟡🔴🟠🔵]\s+(.+?):\s+([\w/.-]+\.(?:ts|js|tsx|jsx|py|go|rs|java|rb|css|html|json|yaml|yml|toml|md)):(\d+)\s*(?:\[([^\]]+)\])?/gm,
+    // Extensions synced with LANG_MAP in ToolHandler.ts — if a language is detectable, issues should be parseable.
+    issueLine: /^[\s]*[-•🟡🔴🟠🔵]\s+(.+?):\s+([\w/.-]+\.(?:ts|tsx|js|jsx|mjs|cjs|py|go|rs|java|rb|php|cs|cpp|c|swift|kt|css|scss|html|json|yaml|yml|toml|md|sql|sh|bash)):(\d+)\s*(?:\[([^\]]+)\])?/gm,
   };
 
   /**

@@ -61,9 +61,10 @@ The `@uluops/core` SDK provides:
 - **4-Layer Execution Hierarchy** - Agent > Command > Workflow > Pipeline orchestration
 - **AI SDK v6 Integration** - Vercel AI SDK for LLM communication with automatic tool loops (`maxSteps`) and built-in retry
 - **Registry-Backed Model Resolution** - Model aliases resolved via UluOps Registry with provider metadata
-- **Multi-Provider AI** - Anthropic + OpenAI + Google bundled; Mistral, Cohere, and others supported via dynamic `@ai-sdk/*` import
+- **Multi-Provider AI** - Anthropic-first with deepest optimization (caching, context management, bash tools); OpenAI + Google bundled; Mistral, Cohere, and 10+ others via dynamic `@ai-sdk/*` import. See [SCOPE.md](SCOPE.md) for provider strategy.
 - **Filesystem Sandboxing** - ToolHandler restricts LLM file access to the target directory with symlink-aware path validation
 - **Content-Addressed Integrity** - SHA-256 hash verification on all definitions
+- **Universal Agent Output** - Single `agentOutputSchema` with categories + artifacts for all 6 agent types (validator, executor, analyst, generator, explorer, forecaster)
 - **Structured Output Extraction** - 4-strategy fallback: AI SDK structured output > JSON code fence > inline JSON > regex text parsing
 - **Validation Tracking** - Automatic result submission with issue correlation, regression detection, and analytics
 - **Local Development Support** - Load definitions from local YAML files with registry fallback
@@ -350,9 +351,9 @@ UluOpsClient (facade)
 
 | Level | Definition | Description |
 |-------|-----------|-------------|
-| Agent | ADL | Atomic unit: single LLM with filesystem tools |
+| Agent | ADL | Atomic unit: single LLM with filesystem tools. 6 types: validator, executor, analyst, generator, explorer, forecaster — all produce a universal `AgentResult` with score, categories, and optional artifacts |
 | Command | CDL | Wraps 1+ agents with preflight checks and aggregation |
-| Workflow | WDL | Sequences commands into phases with gates |
+| Workflow | WDL | Sequences commands into phases with quality gates (DAG-based parallel execution) |
 | Pipeline | PDL | Orchestrates workflows/commands across stages |
 
 ## Advanced Exports
@@ -422,15 +423,18 @@ const resolved = await catalog.resolve('sonnet', {
 ```typescript
 import { classifyDecision, buildVocabularyMap } from '@uluops/core';
 
-// Default vocabularies
-classifyDecision('PASS');    // → 'positive'
-classifyDecision('FAIL');    // → 'negative'
-classifyDecision('WARN');    // → 'conditional'
-classifyDecision('MAYBE');   // → 'neutral' (unknown)
+// Core vocabularies — covers all execution layers
+classifyDecision('PASS');     // → 'positive'
+classifyDecision('COMPLETE'); // → 'positive'
+classifyDecision('FAIL');     // → 'negative'
+classifyDecision('WARN');     // → 'conditional'
+classifyDecision('PARTIAL');  // → 'conditional' (progress, not failure)
+classifyDecision('MAYBE');    // → 'neutral' (unknown)
 
-// Custom vocabulary from agent definition
+// Custom vocabulary from agent definition — cognitive lens agents use these
 const vocab = buildVocabularyMap(agentDefinition);
-classifyDecision('SHIP', vocab); // → 'positive' (if SHIP is in positive vocabulary)
+classifyDecision('EXAMINED', vocab);  // → 'positive' (Socrates)
+classifyDecision('VITAL', vocab);     // → 'positive' (Nietzsche)
 ```
 
 ## Configuration
@@ -491,7 +495,7 @@ Full TypeScript support with exported types for all parameters and results:
 ```typescript
 import {
   UluOpsClient,
-  // Executor types
+  // Result types — AgentResult is universal for all 6 agent types
   type AgentResult,
   type CommandResult,
   type WorkflowResult,
@@ -505,6 +509,9 @@ import {
   type UluOpsConfig,
   type ExecutionInput,
   type ExecutionOptions,
+  // Decision classification
+  classifyDecision,
+  type DecisionCategory,
   // Usage metrics
   type UsageMetrics,
   // Error classes

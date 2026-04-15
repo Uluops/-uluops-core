@@ -10,7 +10,7 @@ describe('classifyDecision', () => {
       ['FAIL', 'negative'],
       ['FAILED', 'negative'],
       ['BLOCK', 'negative'],
-      ['PARTIAL', 'negative'],
+      ['PARTIAL', 'conditional'],
       ['WARN', 'conditional'],
       ['HOLD', 'conditional'],
     ] as const)('classifies %s as %s', (decision, expected) => {
@@ -127,7 +127,7 @@ describe('buildVocabularyMap', () => {
       });
       expect(map).toBeDefined();
       expect(map!.get('DONE')).toBe('positive');
-      expect(map!.get('HALF')).toBe('negative');
+      expect(map!.get('HALF')).toBe('conditional');
       expect(map!.get('BROKEN')).toBe('negative');
     });
   });

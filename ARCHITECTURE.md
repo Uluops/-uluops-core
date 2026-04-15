@@ -56,14 +56,12 @@ Every chain starts with `UluOpsClient.resolveByRef()`. This sub-chain is shared.
  1. Resolve definition (type='agent')                    → Definition Resolution
  2. AgentExecutor.execute(resolved, input, options)
  3. resolveContext() — merge options > agent defaults > config defaults
- 4. assertAgentRuntime() — type guard for ValidatorRuntime | ExecutorRuntime
+ 4. assertAgentRuntime() — type guard ensuring resolved.type is 'agent'
  5. [if agent has 'bash' tool] Resolve model → create provider shell tool
  6. Create ToolHandler + TokenBudgetTracker + ToolAdapter
  7. buildInitialMessage() — scan project structure via list_files tool
- 8. getOutputSchema(agentType) — select Zod schema:
-      validator → validatorOutputSchema
-      executor  → executorOutputSchema
-      analyst/generator/explorer/forecaster → genericOutputSchema
+ 8. Universal agentOutputSchema (Zod) — categories + artifacts, both nullable.
+      All 6 agent types use the same schema. No type-specific routing.
  9. AIProvider.generate():
 10.   ModelCatalog.resolve() — alias → registry API → ResolvedModel
 11.   ensureProvider() — bundled or dynamic import('@ai-sdk/<name>')
@@ -77,11 +75,13 @@ Every chain starts with `UluOpsClient.resolveByRef()`. This sub-chain is shared.
       a. Structured output present → mapStructuredOutput() (confidence: 1.0)
       b. Fallback → OutputExtractor.extractWithMetadata():
          JSON code fence (0.95) > inline JSON (0.7) > regex patterns (0.5)
+      Categories + artifacts extracted for all agent types (no type gating).
 16. flattenRecommendations() — categories → findings → issues → Recommendation[]
-17. calculateEffectiveTokens() — input + output + cache_creation + thinking
-18. Construct AgentResult (ValidatorAgentResult or ExecutorAgentResult)
-19. trackIfEnabled() → submit to tracker + record in registry
-20. Return AgentResult (with dashboardUrl attached)
+17. classifyAgentDecision() — vocabulary map from definition → DecisionCategory
+18. calculateEffectiveTokens() — input + output + cache_creation + thinking
+19. Construct AgentResult — universal type, decision passes through as-is
+20. trackIfEnabled() → submit to tracker + record in registry
+21. Return AgentResult (with dashboardUrl attached)
 ```
 
 ---
@@ -108,9 +108,9 @@ Every chain starts with `UluOpsClient.resolveByRef()`. This sub-chain is shared.
          [sequential (default) or parallel via Promise.allSettled]
          → each: registry.resolve → AgentExecutor.execute → collect results
          → aggregateResults():
-           Score aggregation: average | min | max | weighted_average
-           Decision: score >= pass → PASS; score >= warn → WARN; else FAIL
-           Executor: any FAILED → FAILED; any PARTIAL → PARTIAL; else COMPLETE
+           Score aggregation (all scored agents): average | min | max | weighted_average
+           Decision: score present → score >= pass → PASS; score >= warn → WARN; else FAIL
+           No scores → any FAILED → FAILED; any PARTIAL → PARTIAL; else COMPLETE
  6. trackIfEnabled()
  7. Return CommandResult
 ```
@@ -224,7 +224,7 @@ How the `name` and `version` fields on each result type are sourced:
 
 | Result Type | `name` Source | `version` Source |
 |-------------|--------------|-----------------|
-| `AgentResult` | `ResolvedDefinition.name` (registry name or filename) | `definition.agent.interface.version` or `'unknown'` |
+| `AgentResult` | `ResolvedDefinition.name` (registry name or filename) | `definition.agent.interface.version` or `'unknown'`. Universal type — all 6 agent types use the same result shape with score, categories, artifacts. |
 | `CommandResult` | `def.command.interface.name` (from YAML) | `def.command.interface.version` (from YAML) |
 | `WorkflowResult` | `def.workflow.interface.name` (from YAML) | `def.workflow.interface.version` (from YAML) |
 | `PipelineResult` | Generated `pipelineId` (`pipeline_<timestamp>_<random>`) | `def.pipeline.interface.version` (from YAML) |
