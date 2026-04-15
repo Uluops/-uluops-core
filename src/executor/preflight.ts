@@ -97,8 +97,9 @@ async function checkCommand(check: PreflightCheck): Promise<void> {
 
   // Reject interpreter-based code execution that bypasses the metacharacter filter.
   // Commands like `node -e "..."` or `python3 -c "..."` can execute arbitrary code
-  // without using any blocked metacharacters.
-  if (/\b(node|python[23]?|ruby|perl|php|lua|deno|bun)\s+(-e|--eval|-c)\b/.test(check.command)) {
+  // without using any blocked metacharacters. Includes shell interpreters (bash -c,
+  // sh -c, zsh -c) and text processing tools with eval capabilities (awk, sed).
+  if (/\b(bash|sh|zsh|dash|csh|fish|node|python[23]?|ruby|perl|php|lua|deno|bun|awk|gawk|mawk|nawk)\s+(-e|--eval|-c)\b/.test(check.command)) {
     throw new PreflightError(
       `Preflight command contains disallowed interpreter eval: ${check.command}`,
       'command',

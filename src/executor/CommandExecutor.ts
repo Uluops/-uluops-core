@@ -66,7 +66,7 @@ export class CommandExecutor {
     };
 
     const agentResults: AgentResult[] = def.command.execution.sequential === false
-      ? await Promise.all(agentRefs.map(executeAgent))
+      ? await this.executeParallel(agentRefs, executeAgent)
       : await this.executeSequentially(agentRefs, executeAgent);
 
     return this.aggregateResults(
@@ -86,6 +86,30 @@ export class CommandExecutor {
     for (const ref of refs) {
       results.push(await fn(ref));
     }
+    return results;
+  }
+
+  private async executeParallel(
+    refs: string[],
+    fn: (ref: string) => Promise<AgentResult>,
+  ): Promise<AgentResult[]> {
+    const settled = await Promise.allSettled(refs.map(fn));
+    const results: AgentResult[] = [];
+    const errors: string[] = [];
+
+    for (let i = 0; i < settled.length; i++) {
+      const outcome = settled[i]!;
+      if (outcome.status === 'fulfilled') {
+        results.push(outcome.value);
+      } else {
+        errors.push(outcome.reason instanceof Error ? outcome.reason.message : String(outcome.reason));
+      }
+    }
+
+    if (results.length === 0) {
+      throw new Error(`All parallel agents failed: ${errors.join('; ')}`);
+    }
+
     return results;
   }
 

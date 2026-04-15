@@ -657,6 +657,11 @@ describe('WorkflowExecutor', () => {
         expect(we.context!.partialResult!.name).toBe('test-workflow');
         expect(we.context!.partialResult!.type).toBe('workflow');
         expect(we.context!.partialResult!.definitionHash).toBe('sha256:wf');
+        expect(we.context!.partialResult!.phases).toBeDefined();
+        expect(Array.isArray(we.context!.partialResult!.phases)).toBe(true);
+        expect(we.context!.partialResult!.recommendations).toBeDefined();
+        expect(Array.isArray(we.context!.partialResult!.recommendations)).toBe(true);
+        expect(typeof we.context!.partialResult!.durationMs).toBe('number');
       }
     });
   });

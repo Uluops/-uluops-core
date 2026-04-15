@@ -135,6 +135,13 @@ export interface CommandMetricsSummary {
 }
 
 /**
+ * Workflow-level decision produced by aggregation.
+ * Defaults are SHIP/HOLD/BLOCK but workflow definitions can override via
+ * aggregation.decision mapping, so arbitrary strings are accepted.
+ */
+export type WorkflowDecision = 'SHIP' | 'HOLD' | 'BLOCK' | (string & {});
+
+/**
  * Result for a single phase
  */
 export interface PhaseResult {

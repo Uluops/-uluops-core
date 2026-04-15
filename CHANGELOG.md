@@ -20,6 +20,15 @@ This project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.htm
 - **`WorkflowRuntime.onFailure`** and **`PhaseConfig.gate.on_fail`** in registry types updated to match
 - **Phase execution model** — sequential `for...of` loop replaced with level-based DAG execution; phases without dependencies now run concurrently instead of sequentially
 
+## [0.4.0] - 2026-03-15
+
+### Added
+- **`'archived'` definition status** — `DefinitionStatus` union type extended with `'archived'` value for soft-deleted definitions
+
+### Changed
+- **`@uluops/ops-sdk`** bumped to `^1.1.0` — includes `status` → `decision` field rename on execution results
+- **`@uluops/sdk-core`** bumped to `^0.5.0` — updated HTTP infrastructure and error mapping
+
 ## [0.3.0] - 2026-02-25
 
 ### Added

@@ -1,7 +1,7 @@
 import type { CommandExecutor } from './CommandExecutor.js';
 import type { RegistryClient } from '../registry/RegistryClient.js';
 import type { ResolvedDefinition } from '../types/registry.js';
-import type { WorkflowDefinition, WorkflowResult, PhaseResult, PhaseDefinition } from '../types/workflow.js';
+import type { WorkflowDefinition, WorkflowResult, PhaseResult, PhaseDefinition, WorkflowDecision } from '../types/workflow.js';
 import type { CommandResult } from '../types/command.js';
 import type { ExecutionInput, Recommendation } from '../types/execution.js';
 import { WorkflowError } from '../errors/index.js';
@@ -38,13 +38,7 @@ export class WorkflowExecutor {
    */
   async execute(resolved: ResolvedDefinition, input: ExecutionInput): Promise<WorkflowResult> {
     const startTime = Date.now();
-    if (resolved.type !== 'workflow') {
-      throw new WorkflowError(
-        `WorkflowExecutor received a '${resolved.type}' definition (expected 'workflow')`,
-        { partialResult: undefined },
-      );
-    }
-    const def = resolved.definition as WorkflowDefinition;
+    const def = this.assertWorkflowDefinition(resolved);
     const phaseResults: PhaseResult[] = [];
     const allRecommendations: Recommendation[] = [];
     const completedPhases = new Map<string, PhaseResult>();
@@ -258,7 +252,8 @@ export class WorkflowExecutor {
         } else {
           const errorMsg = outcome.reason instanceof Error ? outcome.reason.message : String(outcome.reason);
           errors.push(errorMsg);
-          // Failed commands contribute a zero-score result so they penalize the aggregate
+          // Failed commands contribute a zero-score result so they penalize the aggregate.
+          // Error context is preserved in recommendations so it surfaces in the phase result.
           commandResults.push({
             type: 'command',
             name: phase.commands[j]!,
@@ -268,7 +263,12 @@ export class WorkflowExecutor {
             decision: 'FAIL',
             score: 0,
             maxScore: 100,
-            recommendations: [],
+            recommendations: [{
+              title: `Command execution failed: ${phase.commands[j]!}`,
+              description: errorMsg,
+              severity: 'critical',
+              failureCode: 'PRA-FRA/C',
+            }],
             durationMs: 0,
             metrics: { inputTokens: 0, outputTokens: 0, totalEffectiveTokens: 0, durationMs: 0, model: 'unknown', toolCalls: 0 },
           } as CommandResult);
@@ -307,7 +307,7 @@ export class WorkflowExecutor {
     return this.commandExecutor.execute(resolved, input);
   }
 
-  private aggregatePhaseScore(results: CommandResult[], method: string): number {
+  private aggregatePhaseScore(results: CommandResult[], method: 'average' | 'min' | 'max'): number {
     if (results.length === 0) return 0;
     const scores = results.map(r => r.score ?? 0);
 
@@ -333,7 +333,7 @@ export class WorkflowExecutor {
   private aggregate(
     config: WorkflowDefinition['workflow']['aggregation'],
     phases: PhaseResult[],
-  ): { decision: string; score: number } {
+  ): { decision: WorkflowDecision; score: number } {
     const weights = config?.score?.weights ?? {};
     let totalWeight = 0;
     let weightedScore = 0;
@@ -351,7 +351,7 @@ export class WorkflowExecutor {
     const hasWarned = phases.some(p => p.decision === 'warned');
     const hasAborted = phases.some(p => p.decision === 'aborted');
 
-    let decision: string;
+    let decision: WorkflowDecision;
     if (hasBlocked || hasAborted) {
       decision = config?.decision?.BLOCK ?? 'BLOCK';
     } else if (hasWarned) {
@@ -417,6 +417,16 @@ export class WorkflowExecutor {
       seen.add(key);
       return true;
     });
+  }
+
+  private assertWorkflowDefinition(resolved: ResolvedDefinition): WorkflowDefinition {
+    if (resolved.type !== 'workflow') {
+      throw new WorkflowError(
+        `WorkflowExecutor received a '${resolved.type}' definition (expected 'workflow')`,
+        { partialResult: undefined },
+      );
+    }
+    return resolved.definition as WorkflowDefinition;
   }
 
   private buildPartialResult(
