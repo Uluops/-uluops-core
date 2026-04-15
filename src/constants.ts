@@ -30,6 +30,18 @@ export const DEFAULT_GATE_THRESHOLD = 70;
 /** Default maximum tool loop steps for agent execution. */
 export const DEFAULT_MAX_STEPS = 50;
 
+/** Default maximum output tokens per LLM generation call.
+ * 8192 matches Anthropic's default. Override per-agent via definition defaults.maxTokens
+ * or per-call via ExecutionOptions.maxTokens. */
+export const DEFAULT_MAX_TOKENS = 8192;
+
+/** Number of recent tool uses retained during Anthropic context management.
+ * When context management clears old tool uses to stay within budget,
+ * this many recent tool uses are kept. Recency-based heuristic — most recent
+ * tool results are usually the most relevant to the current analysis step.
+ * Higher values preserve more context but consume more of the budget. */
+export const ANTHROPIC_CONTEXT_KEEP_TOOL_USES = 5;
+
 // ─── Anthropic API Identifiers ─────────────────────────────────────────────
 // Date-stamped identifiers from Anthropic's API. These are volatile and will
 // need updating when Anthropic ships successor versions. Centralized here so

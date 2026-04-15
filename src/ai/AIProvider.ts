@@ -8,7 +8,7 @@ import { formatErrorMessage } from '../utils/formatError.js';
 import type { ResolvedConfig, ResolvedAIConfig } from '../types/config.js';
 import type { ModelCatalog, ResolvedModel } from './ModelCatalog.js';
 import { TokenBudgetTracker } from './TokenBudgetTracker.js';
-import { DEFAULT_MAX_STEPS, ANTHROPIC_BASH_TOOL_VERSION, ANTHROPIC_CONTEXT_MANAGEMENT_TYPE, DEFAULT_DYNAMIC_PROVIDERS } from '../constants.js';
+import { DEFAULT_MAX_STEPS, DEFAULT_MAX_TOKENS, ANTHROPIC_BASH_TOOL_VERSION, ANTHROPIC_CONTEXT_MANAGEMENT_TYPE, ANTHROPIC_CONTEXT_KEEP_TOOL_USES, DEFAULT_DYNAMIC_PROVIDERS } from '../constants.js';
 import { executeShellAsString, executeShellAsOpenAIResult } from './shellExecutor.js';
 import {
   SdkApiError,
@@ -204,7 +204,7 @@ export class AIProvider {
     if (options.tools) {
       this.logger.debug(`Tools: ${Object.keys(options.tools).join(', ')}`);
     }
-    this.logger.debug(`Config: maxTokens=${options.maxTokens ?? 8192}, maxSteps=${options.maxSteps ?? 50}, temp=${options.temperature ?? 0}`);
+    this.logger.debug(`Config: maxTokens=${options.maxTokens ?? DEFAULT_MAX_TOKENS}, maxSteps=${options.maxSteps ?? DEFAULT_MAX_STEPS}, temp=${options.temperature ?? 0}`);
 
     if (options.output && !useStructuredOutput) {
       this.logger.info(
@@ -235,7 +235,7 @@ export class AIProvider {
       system,
       prompt: options.prompt,
       tools: options.tools,
-      maxOutputTokens: options.maxTokens ?? 8192,
+      maxOutputTokens: options.maxTokens ?? DEFAULT_MAX_TOKENS,
       stopWhen: stepCountIs(maxSteps + (useStructuredOutput ? 2 : 0)),
       temperature: options.temperature ?? 0,
       abortSignal: options.timeoutMs
@@ -474,7 +474,7 @@ export class AIProvider {
             {
               type: ANTHROPIC_CONTEXT_MANAGEMENT_TYPE,
               trigger: { type: 'input_tokens', value: contextTrigger },
-              keep: { type: 'tool_uses', value: 5 },
+              keep: { type: 'tool_uses', value: ANTHROPIC_CONTEXT_KEEP_TOOL_USES },
               clearToolInputs: true,
             },
           ],

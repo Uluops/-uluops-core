@@ -20,15 +20,17 @@ The four-register decision vocabulary is intentional. Each execution layer uses 
 The `classifyDecision()` helper in `src/executor/classifyDecision.ts` is the canonical normalizer. It maps any decision string to a `DecisionCategory`:
 
 - **positive:** `PASS`, `SHIP`, `COMPLETE`
-- **negative:** `FAIL`, `FAILED`, `BLOCK`, `PARTIAL`
-- **conditional:** `WARN`, `HOLD`
+- **negative:** `FAIL`, `FAILED`, `BLOCK`
+- **conditional:** `WARN`, `HOLD`, `PARTIAL` (partial completion is progress, not failure)
 - **neutral:** unknown/undefined values
 
 Both `computeDecision()` and stage counting metrics in `PipelineExecutor` use this helper to ensure symmetric logic.
 
 ## Adding New Decision Values
 
-New decision values (e.g., from custom agent `decisions` sections) MUST be registered in the `classifyDecision` switch statement. Without registration, they route to `neutral` and will not be counted in pipeline metrics.
+Custom decision values from agent definitions (e.g., `EXAMINED`/`UNEXAMINED`, `VITAL`/`DECADENT`) are resolved automatically via `buildVocabularyMap()`, which reads the agent's `decisions.vocabulary` or `completion.vocabulary` fields. No switch statement modification needed.
+
+The hardcoded core vocabularies (PASS/FAIL/SHIP/BLOCK/etc.) in the switch statement are a fallback for decisions without a vocabulary map. They cover the four execution layers above and should rarely need updating.
 
 ## Background
 

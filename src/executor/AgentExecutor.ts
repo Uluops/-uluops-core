@@ -15,7 +15,7 @@ import type { AgentType } from '../types/execution.js';
 import type { ParsedOutput, ExtractionResult } from '../types/parser.js';
 import type { UsageMetrics } from '../types/ai.js';
 import type { Logger } from '@uluops/sdk-core';
-import { DEFAULT_PASS_THRESHOLD, DEFAULT_WARN_THRESHOLD, DEFAULT_MAX_STEPS, DEFAULT_MODEL_ALIAS } from '../constants.js';
+import { DEFAULT_PASS_THRESHOLD, DEFAULT_WARN_THRESHOLD, DEFAULT_MAX_STEPS, DEFAULT_MAX_TOKENS, DEFAULT_MODEL_ALIAS } from '../constants.js';
 
 /**
  * Primary executor for single-agent runs.
@@ -270,7 +270,7 @@ export class AgentExecutor {
 
     return {
       model: options?.model ?? defaults?.model ?? this.config.ai.modelOverride ?? DEFAULT_MODEL_ALIAS,
-      maxTokens: options?.maxTokens ?? defaults?.maxTokens ?? 8192,
+      maxTokens: options?.maxTokens ?? defaults?.maxTokens ?? DEFAULT_MAX_TOKENS,
       timeoutMs: options?.timeoutMs ?? defaults?.timeout ?? this.config.timeout ?? 300_000,
       temperature: options?.temperature ?? defaults?.temperature ?? 0,
       maxSteps: options?.maxSteps ?? DEFAULT_MAX_STEPS,
