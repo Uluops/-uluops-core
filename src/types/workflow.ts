@@ -122,7 +122,8 @@ export interface WorkflowMetrics extends ExecutionMetrics {
 }
 
 /**
- * Per-command metrics within a workflow
+ * Per-command metrics within a workflow.
+ * Flattened subset of CommandResult + CommandMetrics for workflow-level reporting.
  */
 export interface CommandMetricsSummary {
   name: string;
@@ -130,6 +131,9 @@ export interface CommandMetricsSummary {
   decision: string;
   inputTokens: number;
   outputTokens: number;
+  cacheCreationTokens?: number;
+  cacheReadTokens?: number;
+  totalEffectiveTokens?: number;
   durationMs: number;
   costUsd?: number;
 }

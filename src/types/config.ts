@@ -41,6 +41,13 @@ export interface AIConfig {
    * When set, overrides model selection from definition files.
    */
   modelOverride?: string;
+
+  /**
+   * Additional provider names to allow for dynamic import beyond the built-in set
+   * (anthropic, openai, google, mistral, cohere, groq, xai, deepseek).
+   * Each name must have a corresponding `@ai-sdk/<name>` package installed.
+   */
+  additionalProviders?: string[];
 }
 
 /**
@@ -50,6 +57,7 @@ export interface ResolvedAIConfig {
   providers: Record<string, { apiKey: string }>;
   defaultProvider: string;
   modelOverride?: string;
+  additionalProviders?: string[];
 }
 
 /**

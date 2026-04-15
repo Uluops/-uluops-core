@@ -8,7 +8,7 @@ import { formatErrorMessage } from '../utils/formatError.js';
 import type { ResolvedConfig, ResolvedAIConfig } from '../types/config.js';
 import type { ModelCatalog, ResolvedModel } from './ModelCatalog.js';
 import { TokenBudgetTracker } from './TokenBudgetTracker.js';
-import { DEFAULT_MAX_STEPS } from '../constants.js';
+import { DEFAULT_MAX_STEPS, ANTHROPIC_BASH_TOOL_VERSION, ANTHROPIC_CONTEXT_MANAGEMENT_TYPE, DEFAULT_DYNAMIC_PROVIDERS } from '../constants.js';
 import { executeShellAsString, executeShellAsOpenAIResult } from './ShellExecutor.js';
 import {
   SdkApiError,
@@ -121,10 +121,9 @@ export class AIProvider {
   /**
    * Allowlist of valid provider names for dynamic import.
    * Prevents path traversal via crafted provider strings (CWE-829).
+   * Built from defaults + any additional providers from config.
    */
-  private static readonly VALID_DYNAMIC_PROVIDERS = new Set([
-    'anthropic', 'openai', 'google', 'mistral', 'cohere', 'groq', 'xai', 'deepseek',
-  ]);
+  private validProviders: Set<string>;
 
   /** Initialized AI SDK provider factories, keyed by provider name */
   private providers = new Map<string, (modelId: string) => LanguageModel>();
@@ -144,6 +143,10 @@ export class AIProvider {
     private catalog: ModelCatalog,
     private logger: Logger,
   ) {
+    this.validProviders = new Set([
+      ...DEFAULT_DYNAMIC_PROVIDERS,
+      ...(config.ai.additionalProviders ?? []),
+    ]);
     this.initializeProviders(config.ai);
   }
 
@@ -323,9 +326,15 @@ export class AIProvider {
     timeoutMs = 30_000,
   ): ToolSet | undefined {
     if (provider === 'anthropic' && this.anthropicInstance) {
+      // Access bash tool by version constant (date-stamped, updated in constants.ts)
+      const bashTool = (this.anthropicInstance.tools as Record<string, Function>)[ANTHROPIC_BASH_TOOL_VERSION];
+      if (!bashTool) {
+        this.logger.warn(`Anthropic bash tool ${ANTHROPIC_BASH_TOOL_VERSION} not found on provider instance`);
+        return undefined;
+      }
       return {
-        bash: this.anthropicInstance.tools.bash_20250124({
-          execute: async ({ command }) => executeShellAsString(command, targetDir, timeoutMs),
+        bash: bashTool({
+          execute: async ({ command }: { command: string }) => executeShellAsString(command, targetDir, timeoutMs),
         }),
       };
     }
@@ -433,7 +442,7 @@ export class AIProvider {
         contextManagement: {
           edits: [
             {
-              type: 'clear_tool_uses_20250919',
+              type: ANTHROPIC_CONTEXT_MANAGEMENT_TYPE,
               trigger: { type: 'input_tokens', value: contextTrigger },
               keep: { type: 'tool_uses', value: 5 },
               clearToolInputs: true,
@@ -587,10 +596,10 @@ export class AIProvider {
       throw this.missingProviderError(providerName);
     }
 
-    if (!AIProvider.VALID_DYNAMIC_PROVIDERS.has(providerName)) {
+    if (!this.validProviders.has(providerName)) {
       throw new ConfigurationError(
         `Unknown AI provider: "${providerName}". ` +
-        `Valid providers: ${[...AIProvider.VALID_DYNAMIC_PROVIDERS].join(', ')}`,
+        `Valid providers: ${[...this.validProviders].join(', ')}`,
       );
     }
 
