@@ -8,7 +8,7 @@ import type { AgentDefinition } from '../types/agent.js';
 import type { ResolvedDefinition, DefinitionSummary } from '../types/registry.js';
 import { ConfigurationError } from '../errors/index.js';
 import { formatErrorMessage } from '../utils/formatError.js';
-import { DEFAULT_PASS_THRESHOLD } from '../constants.js';
+import { DEFAULT_PASS_THRESHOLD, DEFAULT_MODEL_ALIAS } from '../constants.js';
 import type { Logger } from '@uluops/sdk-core';
 
 /**
@@ -311,7 +311,7 @@ export class RegistryClient {
       return {
         prompt: rendered ?? yamlContent,
         defaults: {
-          model: agent.defaults?.model ?? 'sonnet',
+          model: agent.defaults?.model ?? DEFAULT_MODEL_ALIAS,
           timeout: agent.defaults?.timeout ?? 300_000,
           maxTokens: agent.defaults?.max_tokens,
           temperature: agent.defaults?.temperature,

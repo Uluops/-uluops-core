@@ -41,6 +41,9 @@ export const ANTHROPIC_CONTEXT_MANAGEMENT_TYPE = 'clear_tool_uses_20250919';
  * Prevents path traversal via crafted provider strings (CWE-829).
  * Users can extend this via config.ai.additionalProviders.
  */
+/** Default model alias when no model is specified in options or agent definition. */
+export const DEFAULT_MODEL_ALIAS = 'sonnet';
+
 export const DEFAULT_DYNAMIC_PROVIDERS = [
   'anthropic', 'openai', 'google', 'mistral', 'cohere', 'groq', 'xai', 'deepseek',
 ] as const;
