@@ -192,7 +192,7 @@ export class AgentExecutor {
         categories: parsed.categories?.map(c => ({
           name: c.name,
           score: c.score,
-          maxScore: c.maxPoints,
+          maxScore: c.maxScore,
           findings: c.findings,
         })),
         recommendations,
@@ -404,8 +404,8 @@ export class AgentExecutor {
           recommendations.push({
             agent: agentName,
             title: issue.title,
-            priority: issue.priority,
-            severity: issue.severity,
+            priority: issue.priority ?? 'suggested',
+            severity: issue.severity ?? 'medium',
             failureCode: issue.failureCode,
             filePath: issue.filePath,
             lineNumber: issue.lineNumber,

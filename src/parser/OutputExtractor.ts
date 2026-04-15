@@ -282,7 +282,7 @@ export class OutputExtractor {
         output.categories = [{
           name: 'Extracted Issues',
           score: output.score ?? 0,
-          maxPoints: output.maxScore ?? 100,
+          maxScore: output.maxScore ?? 100,
           findings: [{
             criterion: 'Text-extracted findings',
             pointsEarned: 0,
@@ -425,7 +425,7 @@ export class OutputExtractor {
       output.categories = [{
         name: 'Extracted Issues',
         score: output.score ?? 0,
-        maxPoints: output.maxScore ?? 100,
+        maxScore: output.maxScore ?? 100,
         findings: [issuesFinding],
       }];
     } else {
@@ -436,7 +436,7 @@ export class OutputExtractor {
         output.categories.push({
           name: 'Extracted Issues',
           score: output.score ?? 0,
-          maxPoints: output.maxScore ?? 100,
+          maxScore: output.maxScore ?? 100,
           findings: [issuesFinding],
         });
       }
@@ -588,7 +588,7 @@ export class OutputExtractor {
       const cats: ParsedCategory[] = [];
       for (const [name, value] of Object.entries(scores)) {
         if (typeof value === 'number' && name !== 'Total' && name !== 'total' && name !== 'pass_threshold') {
-          cats.push({ name, score: value, maxPoints: 100, findings: [] });
+          cats.push({ name, score: value, maxScore: 100, findings: [] });
         }
       }
       if (cats.length > 0) return cats;
@@ -605,14 +605,14 @@ export class OutputExtractor {
       const cats: ParsedCategory[] = [];
       for (const [name, value] of Object.entries(breakdown)) {
         if (typeof value === 'number') {
-          cats.push({ name, score: value, maxPoints: 100, findings: [] });
+          cats.push({ name, score: value, maxScore: 100, findings: [] });
         } else {
           // Handle { points: N, deductions: N } shape
           const rec = this.asRecord(value);
           if (rec && typeof rec['points'] === 'number') {
             const points = rec['points'] as number;
             const deductions = typeof rec['deductions'] === 'number' ? rec['deductions'] as number : 0;
-            cats.push({ name, score: points - deductions, maxPoints: 100, findings: [] });
+            cats.push({ name, score: points - deductions, maxScore: 100, findings: [] });
           }
         }
       }
@@ -629,7 +629,7 @@ export class OutputExtractor {
           cats.push({
             name,
             score: rec['score'],
-            maxPoints: 100,
+            maxScore: 100,
             findings: this.parseIssues(
               Array.isArray(rec['issues']) ? rec['issues'] : [],
             ).map(issue => ({
@@ -726,7 +726,7 @@ export class OutputExtractor {
       .map(item => ({
         name: String(item['name'] ?? item['category'] ?? 'Unknown'),
         score: Number(item['score'] ?? item['points'] ?? 0),
-        maxPoints: Number(item['maxPoints'] ?? item['max_points'] ?? item['total'] ?? 100),
+        maxScore: Number(item['maxScore'] ?? item['maxPoints'] ?? item['max_points'] ?? item['total'] ?? 100),
         findings: this.parseFindings(
           Array.isArray(item['findings']) ? item['findings'] : [],
         ),
@@ -741,7 +741,7 @@ export class OutputExtractor {
       .map(item => ({
         criterion: String(item['criterion'] ?? item['name'] ?? 'Unknown'),
         pointsEarned: Number(item['pointsEarned'] ?? item['points_earned'] ?? item['score'] ?? 0),
-        pointsPossible: Number(item['pointsPossible'] ?? item['points_possible'] ?? item['maxPoints'] ?? 0),
+        pointsPossible: Number(item['pointsPossible'] ?? item['points_possible'] ?? item['maxScore'] ?? item['maxPoints'] ?? 0),
         issues: this.parseIssues(
           Array.isArray(item['issues']) ? item['issues'] : [],
         ),

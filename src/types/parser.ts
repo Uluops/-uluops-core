@@ -37,7 +37,7 @@ export interface ParsedCategory {
   score: number;
 
   /** Maximum points possible */
-  maxPoints: number;
+  maxScore: number;
 
   /** Findings within this category */
   findings: ParsedFinding[];

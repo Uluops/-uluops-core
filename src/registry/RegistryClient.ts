@@ -263,7 +263,7 @@ export class RegistryClient {
    * Full schema validation is registry-side; this prevents totally wrong YAML.
    */
   private castDefinition(parsed: Record<string, unknown>): ResolvedDefinition['definition'] {
-    const knownTopKeys = ['agent', 'command', 'workflow', 'pipeline'] as const;
+    const knownTopKeys = ['agent', 'command', 'workflow', 'pipeline'] as const satisfies readonly DefinitionType[];
     const topKey = knownTopKeys.find(k => k in parsed);
     if (!topKey) {
       throw new ConfigurationError(

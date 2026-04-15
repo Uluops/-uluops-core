@@ -156,7 +156,7 @@ export class CommandExecutor {
         categories: agentResult.categories?.map(c => ({
           name: c.name,
           score: c.score,
-          maxPoints: c.maxScore,
+          maxScore: c.maxScore,
           findings: c.findings,
         })),
       };

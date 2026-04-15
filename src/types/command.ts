@@ -139,8 +139,8 @@ export interface CategoryResult {
   /** Points earned */
   score: number;
 
-  /** Maximum points possible */
-  maxPoints: number;
+  /** Maximum score possible */
+  maxScore: number;
 
   /** Findings within category */
   findings: Finding[];

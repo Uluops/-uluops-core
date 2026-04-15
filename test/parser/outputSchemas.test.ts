@@ -12,7 +12,7 @@ describe('outputSchemas', () => {
         categories: [{
           name: 'Code Quality',
           score: 40,
-          maxPoints: 50,
+          maxScore: 50,
           findings: [{
             criterion: 'No lint errors',
             pointsEarned: 40,
@@ -64,7 +64,7 @@ describe('outputSchemas', () => {
         categories: [{
           name: 'Security',
           score: 10,
-          maxPoints: 50,
+          maxScore: 50,
           findings: [{
             criterion: 'No injection',
             pointsEarned: 10,
@@ -93,7 +93,7 @@ describe('outputSchemas', () => {
         categories: [{
           name: 'Test',
           score: 50,
-          maxPoints: 100,
+          maxScore: 100,
           findings: [{
             criterion: 'Coverage',
             pointsEarned: 50,

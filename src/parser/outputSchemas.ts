@@ -26,7 +26,7 @@ const issueSchema = z.object({
 const categorySchema = z.object({
   name: z.string().describe('Category name (e.g., "Code Quality", "Security")'),
   score: z.number().describe('Points earned in this category'),
-  maxPoints: z.number().describe('Maximum points possible'),
+  maxScore: z.number().describe('Maximum score possible'),
   findings: z.array(z.object({
     criterion: z.string().describe('What is being evaluated'),
     pointsEarned: z.number(),

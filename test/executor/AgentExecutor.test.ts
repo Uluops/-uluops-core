@@ -44,7 +44,7 @@ function mockAIProvider(overrides?: Partial<AIGenerateResult>): AIProvider {
           {
             name: 'Quality',
             score: 40,
-            maxPoints: 50,
+            maxScore: 50,
             findings: [
               {
                 criterion: 'Readability',

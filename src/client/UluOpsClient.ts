@@ -148,8 +148,10 @@ export class UluOpsClient {
       case 'pipeline':
         result = await this.pipelineExecutor.execute(resolved, input);
         break;
-      default:
-        throw new ConfigurationError(`Unknown definition type: ${resolved.type}`);
+      default: {
+        const _exhaustive: never = resolved.type;
+        throw new ConfigurationError(`Unknown definition type: ${_exhaustive}`);
+      }
     }
 
     await this.trackIfEnabled(result, resolved, resolved.type);
