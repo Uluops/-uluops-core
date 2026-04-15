@@ -71,9 +71,9 @@ export class ValidationClient {
     const response = await this.ops.runs.validate(input);
 
     return {
-      wouldCreate: response.wouldCreate,
-      wouldUpdate: response.wouldUpdate,
-      wouldRegress: response.wouldRegress,
+      wouldCreate: Boolean(response.wouldCreate),
+      wouldUpdate: Boolean(response.wouldUpdate),
+      wouldRegress: Boolean(response.wouldRegress),
       validationErrors: response.validationErrors,
     };
   }
@@ -98,12 +98,12 @@ export class ValidationClient {
       timestamp: r.timestamp,
       allGatesPassed: r.allGatesPassed,
       averageScore: r.averageScore ?? 0,
-      rawMarkdown: r.rawMarkdown ?? undefined,
+      rawMarkdown: (r as Record<string, unknown>).rawMarkdown as string ?? undefined,
       archivedAt: r.archivedAt ?? undefined,
       archiveReason: r.archiveReason ?? undefined,
-      idempotencyKey: r.idempotencyKey ?? undefined,
+      idempotencyKey: (r as Record<string, unknown>).idempotencyKey as string | undefined,
       createdAt: r.createdAt,
-      updatedAt: r.updatedAt,
+      updatedAt: (r as Record<string, unknown>).updatedAt as string ?? r.createdAt,
     }));
   }
 
