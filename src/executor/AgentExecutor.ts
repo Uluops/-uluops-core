@@ -94,15 +94,27 @@ export class AgentExecutor {
     const { parsed, extraction } = this.parseOutput(result, agentType);
     this.logExtraction(parsed, extraction);
 
-    // 4. Build result
+    // 4. Warn on low-confidence extraction — the fallback path may be unreliable
+    if (extraction.confidence < 0.7) {
+      this.logger.warn(
+        `Low extraction confidence (${extraction.confidence}) via ${extraction.method} — decision/score may be defaults, not agent output`,
+      );
+    }
+
+    // 5. Build result
     const recommendations = this.flattenRecommendations(parsed, resolved.name);
     this.logger.info(`Result: decision=${parsed.decision}, score=${parsed.score ?? 'N/A'}, recommendations=${recommendations.length}`);
 
     const durationMs = Date.now() - startTime;
     const metrics = this.buildMetrics(result, durationMs);
-    const decisionCategory = this.classifyAgentDecision(resolved, parsed.decision);
 
-    return this.buildResult(resolved, agentType, context, parsed, recommendations, durationMs, metrics, decisionCategory, rawText);
+    // Use extraction-aware decision: if the LLM produced no decision and extraction
+    // confidence is low, signal extraction failure rather than masquerading as FAIL.
+    const effectiveDecision = parsed.decision
+      ?? (extraction.confidence < 0.7 ? 'EXTRACTION_FAILED' : 'FAIL');
+    const decisionCategory = this.classifyAgentDecision(resolved, effectiveDecision);
+
+    return this.buildResult(resolved, agentType, context, parsed, effectiveDecision, extraction, recommendations, durationMs, metrics, decisionCategory, rawText);
   }
 
   /**
@@ -210,6 +222,8 @@ export class AgentExecutor {
     agentType: AgentType,
     context: ResolvedExecutionContext,
     parsed: ParsedOutput,
+    effectiveDecision: string,
+    extraction: ExtractionResult,
     recommendations: Recommendation[],
     durationMs: number,
     metrics: ExecutionMetrics,
@@ -222,7 +236,7 @@ export class AgentExecutor {
       name: resolved.name,
       version: resolved.version,
       definitionHash: resolved.hash,
-      decision: parsed.decision ?? 'FAIL',
+      decision: effectiveDecision,
       decisionCategory,
       score: parsed.score ?? 0,
       maxScore: parsed.maxScore ?? 100,
@@ -238,6 +252,8 @@ export class AgentExecutor {
       durationMs,
       metrics,
       rawOutput: rawText || undefined,
+      extractionMethod: extraction.method,
+      extractionConfidence: extraction.confidence,
     };
   }
 

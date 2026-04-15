@@ -442,7 +442,10 @@ export class WorkflowExecutor {
   private deduplicateRecommendations(recommendations: Recommendation[]): Recommendation[] {
     const seen = new Set<string>();
     return recommendations.filter(r => {
-      const key = `${r.title}|${r.filePath ?? ''}|${r.lineNumber ?? ''}`;
+      // Include agent name in key so cross-agent convergence is preserved.
+      // Two agents finding the same issue at the same location is evidence
+      // of convergence — collapsing it would destroy multi-lens signal.
+      const key = `${r.agent}|${r.title}|${r.filePath ?? ''}|${r.lineNumber ?? ''}`;
       if (seen.has(key)) return false;
       seen.add(key);
       return true;

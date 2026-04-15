@@ -448,6 +448,13 @@ interface AgentResultBase {
 
   /** Raw LLM output text (the agent's full report before parsing) */
   rawOutput?: string;
+
+  /** Output extraction method used (structured_output, json_code_fence, inline_json, structured_text) */
+  extractionMethod?: string;
+
+  /** Confidence in output extraction (0-1). 1.0 = structured output, 0.5 = regex fallback.
+   * Low confidence indicates the result may be unreliable — decision/score may be defaults. */
+  extractionConfidence?: number;
 }
 
 /**
