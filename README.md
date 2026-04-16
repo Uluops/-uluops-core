@@ -14,7 +14,9 @@ The foundational execution engine for UluOps. Orchestrates AI-powered code analy
 
 ## Quick Start
 
-Requires `ULUOPS_API_KEY` and at least one AI provider key (e.g. `ANTHROPIC_API_KEY`):
+Requires `ULUOPS_API_KEY` and at least one AI provider key (e.g. `ANTHROPIC_API_KEY`).
+
+Create `validate.ts` (ESM project with `"type": "module"` in package.json):
 
 ```typescript
 import { UluOpsClient } from '@uluops/core';
@@ -30,6 +32,12 @@ const result = await client.runAgent('code-validator', './src', {
 });
 
 console.log(`Score: ${result.score} | Decision: ${result.decision}`);
+```
+
+Run with [tsx](https://github.com/privatenumber/tsx) (no build step needed):
+
+```bash
+npx tsx validate.ts
 ```
 
 ## Table of Contents
@@ -73,7 +81,7 @@ The `@uluops/core` SDK provides:
 
 ## Installation
 
-Requires Node.js 18+.
+Requires Node.js 18+ and an ESM project (`"type": "module"` in package.json).
 
 ```bash
 npm install @uluops/core
