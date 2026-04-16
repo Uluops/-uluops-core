@@ -97,16 +97,17 @@ export class UluOpsClient {
    * Execute a saved command configuration.
    *
    * Uses model, thresholds, and aggregation from the command definition.
+   * Pass `overrides.model` to override the definition's default model at runtime.
    * Ideal for CI/CD pipelines and team-standardized validation.
    */
-  async runCommand(name: string, input: ExecutionInput): Promise<CommandResult> {
+  async runCommand(name: string, input: ExecutionInput, overrides?: { model?: string }): Promise<CommandResult> {
     const resolved = await this.resolveByRef(name, 'command');
 
     if (resolved.type !== 'command') {
       throw new ConfigurationError(`${name} is not a command (type: ${resolved.type}). Use runAgent() for agents or runWorkflow() for workflows.`);
     }
 
-    const result = await this.commandExecutor.execute(resolved, input);
+    const result = await this.commandExecutor.execute(resolved, input, overrides);
     await this.trackIfEnabled(result, resolved, 'command', undefined, input.target);
     return result;
   }

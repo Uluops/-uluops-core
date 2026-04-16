@@ -788,7 +788,7 @@ describe('UluOpsClient', () => {
       const result = await client.runCommand('validate', { target: '/tmp/test' });
 
       expect(mockRegistryResolve).toHaveBeenCalledWith('validate', undefined, 'command');
-      expect(mockCommandExecutorExecute).toHaveBeenCalledWith(resolved, { target: '/tmp/test' });
+      expect(mockCommandExecutorExecute).toHaveBeenCalledWith(resolved, { target: '/tmp/test' }, undefined);
       expect(result.type).toBe('command');
     });
 
@@ -983,6 +983,7 @@ describe('UluOpsClient', () => {
       expect(mockCommandExecutorExecute).toHaveBeenCalledWith(
         expect.anything(),
         { target: '/tmp/test', options: { strict: true } },
+        undefined,
       );
     });
 

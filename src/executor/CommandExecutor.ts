@@ -29,12 +29,19 @@ export class CommandExecutor {
   /**
    * Execute a command definition
    */
-  async execute(resolved: ResolvedDefinition, input: ExecutionInput): Promise<CommandResult> {
+  async execute(
+    resolved: ResolvedDefinition,
+    input: ExecutionInput,
+    overrides?: { model?: string },
+  ): Promise<CommandResult> {
     const startTime = Date.now();
     if (resolved.type !== 'command') {
       throw new ExecutionError(`CommandExecutor received a '${resolved.type}' definition (expected 'command')`);
     }
     const def = resolved.definition as CommandDefinition;
+
+    // Model resolution: operator override > CDL default
+    const model = overrides?.model ?? def.command.execution.model.default;
 
     // 1. Run preflight checks
     if (def.command.execution?.preflight) {
@@ -52,7 +59,7 @@ export class CommandExecutor {
       const agentResolved = await this.registry.resolve(name, version, 'agent');
 
       const agentResult = await this.agentExecutor.execute(agentResolved, input, {
-        model: def.command.execution.model.default,
+        model,
         timeoutMs: def.command.execution.timeout,
         thresholds: def.command.execution.thresholds,
       });
@@ -65,7 +72,7 @@ export class CommandExecutor {
       const [name, version] = parseRef(ref);
       const agentResolved = await this.registry.resolve(name, version, 'agent');
       return this.agentExecutor.execute(agentResolved, input, {
-        model: def.command.execution.model.default,
+        model,
         timeoutMs: def.command.execution.timeout,
       });
     };
