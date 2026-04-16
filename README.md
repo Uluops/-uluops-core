@@ -12,11 +12,22 @@
 
 The foundational execution engine for UluOps. Orchestrates AI-powered code analysis through a 4-layer execution hierarchy (Agent > Command > Workflow > Pipeline), manages LLM tool loops via Vercel AI SDK, and integrates with UluOps Registry and Validation services.
 
+## Prerequisites
+
+- **Node.js 18+** with an ESM project (`"type": "module"` in package.json)
+- **[tsx](https://github.com/privatenumber/tsx)** for running TypeScript examples: `npm install -D tsx`
+- **UluOps API key** — get one at [app.uluops.ai](https://app.uluops.ai), or use bundled starter agents offline (see below)
+- **AI provider key** — at least one of `ANTHROPIC_API_KEY`, `OPENAI_API_KEY`, or `GOOGLE_API_KEY`
+
+```bash
+npm install @uluops/core
+export ULUOPS_API_KEY=ulr_your_key_here
+export ANTHROPIC_API_KEY=your_anthropic_key  # or OPENAI_API_KEY
+```
+
 ## Quick Start
 
-Requires `ULUOPS_API_KEY` and at least one AI provider key (e.g. `ANTHROPIC_API_KEY`).
-
-Create `validate.ts` (ESM project with `"type": "module"` in package.json):
+Create `validate.ts`:
 
 ```typescript
 import { UluOpsClient } from '@uluops/core';
@@ -34,11 +45,27 @@ const result = await client.runAgent('code-validator', './src', {
 console.log(`Score: ${result.score} | Decision: ${result.decision}`);
 ```
 
-Run with [tsx](https://github.com/privatenumber/tsx) (no build step needed):
-
 ```bash
 npx tsx validate.ts
 ```
+
+### Offline Quick Start (No API Key)
+
+Use the bundled starter agents without registry access:
+
+```typescript
+import { UluOpsClient, STARTER_DEFINITIONS_DIR } from '@uluops/core';
+
+const client = new UluOpsClient({
+  localDefinitions: STARTER_DEFINITIONS_DIR,
+  trackingEnabled: false,
+});
+
+const result = await client.runAgent('code-validator', './src');
+console.log(`Score: ${result.score} | Decision: ${result.decision}`);
+```
+
+This still requires an AI provider key but no UluOps API key or network access to the registry.
 
 ## Table of Contents
 
@@ -81,26 +108,11 @@ The `@uluops/core` SDK provides:
 
 ## Installation
 
-Requires Node.js 18+ and an ESM project (`"type": "module"` in package.json).
-
 ```bash
 npm install @uluops/core
 ```
 
-### Bundled Starter Agents
-
-Get started without registry access using the bundled agent definitions:
-
-```typescript
-import { UluOpsClient, STARTER_DEFINITIONS_DIR } from '@uluops/core';
-
-const client = new UluOpsClient({
-  apiKey: process.env.ULUOPS_API_KEY,
-  localDefinitions: STARTER_DEFINITIONS_DIR,
-});
-```
-
-Includes: `code-validator`, `docs-validator`, `public-interface-validator`, `security-analyst`, `test-architect`.
+Bundled starter agents (no registry needed): `code-validator`, `docs-validator`, `public-interface-validator`, `security-analyst`, `test-architect`.
 
 ## Authentication
 
@@ -599,6 +611,29 @@ try {
 | `ServiceUnavailableError` | 503 service unavailable |
 | `NetworkError` | Connection failures |
 | `TimeoutError` | Request timeout |
+
+### Network Error Recovery
+
+```typescript
+import { NetworkError, TimeoutError, RateLimitError } from '@uluops/core';
+
+try {
+  const result = await client.runAgent('code-validator', './src');
+} catch (error) {
+  if (error instanceof TimeoutError) {
+    // Increase timeout: default is 300s, some large repos need more
+    const result = await client.runAgent('code-validator', './src', {
+      timeoutMs: 600_000,
+    });
+  } else if (error instanceof RateLimitError) {
+    // Back off and retry — the SDK does not auto-retry rate limits
+    await new Promise(r => setTimeout(r, 5000));
+  } else if (error instanceof NetworkError) {
+    // Check ULUOPS_REGISTRY_URL and ULUOPS_BASE_URL environment variables
+    console.error('Connection failed. Verify API URLs and network access.');
+  }
+}
+```
 
 ## Security
 

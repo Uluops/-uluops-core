@@ -2,6 +2,7 @@ import { tool, type ToolSet } from 'ai';
 import { z } from 'zod';
 import type { ToolHandler } from '../executor/ToolHandler.js';
 import type { TokenBudgetTracker } from './TokenBudgetTracker.js';
+import { ExecutionError } from '../errors/index.js';
 
 /**
  * Converts UluOps ToolHandler to AI SDK v6 tool format.
@@ -25,7 +26,7 @@ export class ToolAdapter {
       name,
       input,
     });
-    if (result.is_error) throw new Error(result.content);
+    if (result.is_error) throw new ExecutionError(`Tool "${name}" failed: ${result.content}`);
     return result.content;
   }
 

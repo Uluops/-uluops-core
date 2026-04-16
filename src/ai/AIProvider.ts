@@ -374,7 +374,7 @@ export class AIProvider {
       // eslint-disable-next-line @typescript-eslint/no-explicit-any -- Anthropic provider tools are dynamically keyed by version constant; no public type exists
       const bashTool = (this.anthropicInstance.tools as Record<string, (...args: any[]) => any>)[ANTHROPIC_BASH_TOOL_VERSION];
       if (!bashTool) {
-        throw new Error(
+        throw new ConfigurationError(
           `Anthropic bash tool ${ANTHROPIC_BASH_TOOL_VERSION} not found on provider instance. ` +
           `The @ai-sdk/anthropic package may need updating to support this tool version.`,
         );

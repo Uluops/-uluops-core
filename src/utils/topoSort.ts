@@ -6,6 +6,8 @@
  * Phases within the same level are independent and can run in parallel.
  */
 
+import { ConfigurationError } from '../errors/index.js';
+
 interface HasDependencies {
   id: string;
   depends_on?: string[];
@@ -33,8 +35,9 @@ export function topoGroupLevels<T extends HasDependencies>(phases: T[]): T[][] {
   for (const phase of phases) {
     for (const dep of phase.depends_on ?? []) {
       if (!phaseMap.has(dep)) {
-        throw new Error(
-          `Phase "${phase.id}" depends on "${dep}" which does not exist`,
+        throw new ConfigurationError(
+          `Phase "${phase.id}" depends on "${dep}" which does not exist. ` +
+          `Available phases: ${[...phaseMap.keys()].join(', ')}`,
         );
       }
     }
@@ -62,8 +65,9 @@ export function topoGroupLevels<T extends HasDependencies>(phases: T[]): T[][] {
       const remaining = phases
         .filter(p => !placed.has(p.id))
         .map(p => p.id);
-      throw new Error(
-        `Cycle detected in phase dependencies: ${remaining.join(', ')}`,
+      throw new ConfigurationError(
+        `Cycle detected in phase dependencies: ${remaining.join(', ')}. ` +
+        `Check depends_on fields for circular references.`,
       );
     }
 

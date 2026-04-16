@@ -25,8 +25,8 @@ describe('parseRef', () => {
       expect(parseRef('agent@2.0.0-beta.1')).toEqual(['agent', '2.0.0-beta.1']);
     });
 
-    it('handles non-semver version strings', () => {
-      expect(parseRef('agent@latest')).toEqual(['agent', 'latest']);
+    it('treats @latest as unversioned (resolves latest published)', () => {
+      expect(parseRef('agent@latest')).toEqual(['agent', undefined]);
     });
   });
 

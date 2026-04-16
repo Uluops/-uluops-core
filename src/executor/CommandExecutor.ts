@@ -112,7 +112,7 @@ export class CommandExecutor {
     }
 
     if (results.length === 0) {
-      throw new Error(`All parallel agents failed: ${errors.join('; ')}`);
+      throw new ExecutionError(`All parallel agents failed: ${errors.join('; ')}`);
     }
 
     return results;

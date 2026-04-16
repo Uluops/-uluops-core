@@ -305,7 +305,10 @@ export class WorkflowExecutor {
         }
       }
       if (errors.length > 0 && commandResults.length === errors.length) {
-        throw new Error(`All parallel commands in phase "${phase.name}" failed: ${errors.join('; ')}`);
+        throw new WorkflowError(
+          `All parallel commands in phase "${phase.name}" failed: ${errors.join('; ')}`,
+          { partialResult: commandResults },
+        );
       }
     } else {
       for (const cmdName of phase.commands) {
