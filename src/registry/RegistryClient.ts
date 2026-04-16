@@ -307,6 +307,10 @@ export class RegistryClient {
       this.normalizeCommandDefinition(section as Record<string, unknown>);
     }
 
+    if (topKey === 'workflow') {
+      this.normalizeWorkflowDefinition(section as Record<string, unknown>);
+    }
+
     return parsed as unknown as ResolvedDefinition['definition'];
   }
 
@@ -357,6 +361,50 @@ export class RegistryClient {
     if (overrides?.['threshold'] && !execution['thresholds']) {
       execution['thresholds'] = { pass: overrides['threshold'] };
       section['execution'] = execution;
+    }
+  }
+
+  /**
+   * Normalize WDL YAML structure to match WorkflowDefinition runtime shape.
+   *
+   * WDL v3 phases use a `steps` array with `{command: "name@version"}` entries,
+   * plus `condition` for skip logic and `gate.warn_threshold` for dual thresholds.
+   * The runtime PhaseDefinition expects:
+   *   - steps[].command → commands[]
+   *   - condition → skip_if (negated: condition means "run when true", skip_if means "skip when true")
+   *   - gate.on_fail → gate.on_fail (pass-through)
+   *   - gate.threshold → gate.threshold (pass-through)
+   *
+   * Mutates the section in place before it's cast to WorkflowDefinition.
+   */
+  private normalizeWorkflowDefinition(section: Record<string, unknown>): void {
+    const orchestration = section['orchestration'] as Record<string, unknown> | undefined;
+    if (!orchestration) return;
+
+    const phases = orchestration['phases'] as Array<Record<string, unknown>> | undefined;
+    if (!Array.isArray(phases)) return;
+
+    for (const phase of phases) {
+      // steps[].command → commands[]
+      if (!phase['commands'] && Array.isArray(phase['steps'])) {
+        const steps = phase['steps'] as Array<Record<string, unknown>>;
+        phase['commands'] = steps
+          .map(s => s['command'] as string)
+          .filter(Boolean);
+        delete phase['steps'];
+      }
+
+      // condition → skip_if (negated)
+      if (phase['condition'] && !phase['skip_if']) {
+        phase['skip_if'] = `NOT (${phase['condition']})`;
+        delete phase['condition'];
+      }
+
+      // Ensure gate.aggregate has a default
+      const gate = phase['gate'] as Record<string, unknown> | undefined;
+      if (gate && !gate['aggregate']) {
+        gate['aggregate'] = 'average';
+      }
     }
   }
 

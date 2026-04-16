@@ -93,7 +93,7 @@ describe('WorkflowExecutor', () => {
 
       await executor.execute(makeWorkflowDef(), { target: '/tmp/test' });
 
-      expect(registry.resolve).toHaveBeenCalledWith('code-validator');
+      expect(registry.resolve).toHaveBeenCalledWith('code-validator', undefined);
     });
   });
 

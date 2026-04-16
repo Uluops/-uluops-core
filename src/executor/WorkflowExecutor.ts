@@ -9,6 +9,7 @@ import { formatErrorMessage } from '../utils/formatError.js';
 import { DEFAULT_GATE_THRESHOLD } from '../constants.js';
 import { sumTokenMetrics } from '../utils/sumTokenMetrics.js';
 import { topoGroupLevels } from '../utils/topoSort.js';
+import { parseRef } from '../utils/parseRef.js';
 
 /**
  * Executes workflows as quality-gated directed acyclic graphs.
@@ -335,8 +336,9 @@ export class WorkflowExecutor {
     };
   }
 
-  private async executeCommand(cmdName: string, input: ExecutionInput): Promise<CommandResult> {
-    const resolved = await this.registry.resolve(cmdName);
+  private async executeCommand(cmdRef: string, input: ExecutionInput): Promise<CommandResult> {
+    const [name, version] = parseRef(cmdRef);
+    const resolved = await this.registry.resolve(name, version);
     return this.commandExecutor.execute(resolved, input);
   }
 
