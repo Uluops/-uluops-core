@@ -158,12 +158,10 @@ export class AgentExecutor {
    * Log raw LLM output for cross-model diagnosis.
    */
   private logRawOutput(rawText: string, finishReason: string): void {
+    // Log metadata only — raw text may contain secrets read from target project files.
+    // Full output is available in the AgentResult for callers who need it.
     this.logger.debug(`Raw output: ${rawText.length} chars, finishReason=${finishReason}`);
-    if (rawText.length > 0 && rawText.length <= 5000) {
-      this.logger.debug(`Raw output text:\n${rawText}`);
-    } else if (rawText.length > 5000) {
-      this.logger.debug(`Raw output (last 2000 chars):\n${rawText.slice(-2000)}`);
-    } else {
+    if (rawText.length === 0) {
       this.logger.warn('Empty output — model likely hit maxSteps while still calling tools');
     }
   }
