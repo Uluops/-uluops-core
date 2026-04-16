@@ -34,6 +34,9 @@ export interface ResolvedDefinition {
 
   /** Agent type (only for agents/commands) */
   agentType?: AgentType;
+
+  /** Degradation markers — tracks which fallback paths were taken during resolution */
+  degradations?: string[];
 }
 
 /**

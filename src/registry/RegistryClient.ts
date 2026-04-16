@@ -7,6 +7,7 @@ import type { ResolvedConfig } from '../types/config.js';
 import type { DefinitionType } from '../types/execution.js';
 import type { AgentDefinition } from '../types/agent.js';
 import type { ResolvedDefinition, DefinitionSummary } from '../types/registry.js';
+import { adl } from '@uluops/definition-factory';
 import { ConfigurationError } from '../errors/index.js';
 import { formatErrorMessage } from '../utils/formatError.js';
 import { DEFAULT_PASS_THRESHOLD, DEFAULT_MODEL_ALIAS } from '../constants.js';
@@ -167,6 +168,8 @@ export class RegistryClient {
       }
       this.logger.debug(`Resolved locally: ${name} @ ${candidate.path}`);
 
+      const { runtime, degradations } = await this.renderLocally(yamlContent, definition, candidate.type);
+
       return {
         type: candidate.type,
         name,
@@ -174,9 +177,10 @@ export class RegistryClient {
         hash: `sha256:${crypto.createHash('sha256').update(yamlContent).digest('hex')}`,
         yaml: yamlContent,
         definition: this.castDefinition(definition),
-        runtime: await this.renderLocally(yamlContent, definition, candidate.type),
+        runtime,
         domain: this.extractDomain(definition, candidate.type) as ResolvedDefinition['domain'],
         agentType: this.extractAgentType(definition, candidate.type),
+        degradations: degradations.length > 0 ? degradations : undefined,
       };
     }
 
@@ -302,57 +306,109 @@ export class RegistryClient {
   /**
    * Build runtime from local YAML definition.
    *
-   * Uses registry-sdk render.preview() to get the proper rendered markdown,
-   * falling back to YAML passthrough if the registry API is unavailable.
+   * Render priority for agents: local definition-factory → registry API → raw YAML.
+   * Commands/workflows/pipelines use registry API → raw YAML (CDL/WDL need resolvers).
+   * Returns both the runtime and any degradation markers.
    */
   private async renderLocally(
     yamlContent: string,
     definition: Record<string, unknown>,
     type: DefinitionType,
-  ): Promise<ResolvedDefinition['runtime']> {
-    // Try registry API render first (proper template-based rendering)
-    const rendered = await this.tryRenderViaAPI(type, yamlContent);
+  ): Promise<{ runtime: ResolvedDefinition['runtime']; degradations: string[] }> {
+    const degradations: string[] = [];
 
     if (type === 'agent') {
       const agent = definition['agent'] as AgentDefinition['agent'] | undefined;
-      if (!agent) return { prompt: '' } as ResolvedDefinition['runtime'];
+      if (!agent) return { runtime: { prompt: '' } as ResolvedDefinition['runtime'], degradations };
+
+      // Try local render first (definition-factory), then API, then raw YAML
+      const rendered = this.tryRenderLocalFactory(yamlContent, type, degradations)
+        ?? await this.tryRenderViaAPI(type, yamlContent, degradations);
+
+      if (!rendered) {
+        degradations.push('render:raw-yaml-fallback');
+      }
 
       return {
-        prompt: rendered ?? yamlContent,
-        defaults: {
-          model: agent.defaults?.model ?? DEFAULT_MODEL_ALIAS,
-          timeout: agent.defaults?.timeout ?? 300_000,
-          maxTokens: agent.defaults?.max_tokens,
-          temperature: agent.defaults?.temperature,
-        },
-        config: this.buildAgentConfig(agent),
-      } as ResolvedDefinition['runtime'];
+        runtime: {
+          prompt: rendered ?? yamlContent,
+          defaults: {
+            model: agent.defaults?.model ?? DEFAULT_MODEL_ALIAS,
+            timeout: agent.defaults?.timeout ?? 300_000,
+            maxTokens: agent.defaults?.max_tokens,
+            temperature: agent.defaults?.temperature,
+          },
+          config: this.buildAgentConfig(agent),
+        } as ResolvedDefinition['runtime'],
+        degradations,
+      };
     }
 
     if (type === 'command') {
+      // CDL needs a resolver for embedded agent refs — use API-first path
+      const rendered = await this.tryRenderViaAPI(type, yamlContent, degradations);
+
+      if (!rendered) {
+        degradations.push('render:raw-yaml-fallback');
+      }
+
       return {
-        prompt: rendered ?? yamlContent,
-      } as ResolvedDefinition['runtime'];
+        runtime: { prompt: rendered ?? yamlContent } as ResolvedDefinition['runtime'],
+        degradations,
+      };
     }
 
     // Workflow/pipeline definitions ARE the runtime — the parsed YAML structure
     // is used directly. Already validated by castDefinition() in resolveLocal().
-    // Double assertion: definition is Record<string, unknown> from YAML parse,
-    // but structurally conforms to WorkflowRuntime | PipelineRuntime post-validation.
-    return definition as unknown as ResolvedDefinition['runtime'];
+    return {
+      runtime: definition as unknown as ResolvedDefinition['runtime'],
+      degradations,
+    };
+  }
+
+  /**
+   * Try to render YAML locally using @uluops/definition-factory.
+   * Synchronous for ADL/PDL. Returns rendered markdown or null.
+   */
+  private tryRenderLocalFactory(
+    yamlContent: string,
+    type: DefinitionType,
+    degradations: string[],
+  ): string | null {
+    if (type !== 'agent') return null;
+
+    try {
+      const result = adl.generate(yamlContent, { skipValidation: true, renderProfile: 'uluops-full' });
+      if (result.success && result.content) {
+        this.logger.debug(`Render via local factory: ${result.content.length} chars`);
+        return result.content;
+      }
+      this.logger.warn(`Local factory render failed: ${result.error ?? 'no content'}`);
+      degradations.push('render:local-factory-failed');
+      return null;
+    } catch (error) {
+      this.logger.warn(`Local factory render error: ${formatErrorMessage(error)}`);
+      degradations.push('render:local-factory-failed');
+      return null;
+    }
   }
 
   /**
    * Try to render YAML via the registry API's render.preview() endpoint.
    * Returns the rendered markdown, or null if the API is unavailable.
    */
-  private async tryRenderViaAPI(type: DefinitionType, yamlContent: string): Promise<string | null> {
+  private async tryRenderViaAPI(
+    type: DefinitionType,
+    yamlContent: string,
+    degradations: string[],
+  ): Promise<string | null> {
     try {
-      const result = await this.sdk.render.preview(type as 'agent' | 'command' | 'workflow' | 'pipeline', { yaml: yamlContent });
+      const result = await this.sdk.render.preview(type as 'agent' | 'command' | 'workflow' | 'pipeline', { yaml: yamlContent, renderProfile: 'uluops-full' });
       this.logger.debug(`Render via API: ${result.markdown.length} chars`);
       return result.markdown;
     } catch (error) {
-      this.logger.warn(`Render API unavailable, falling back to raw YAML: ${formatErrorMessage(error)}`);
+      this.logger.warn(`Render API unavailable: ${formatErrorMessage(error)}`);
+      degradations.push('render:api-unavailable');
       return null;
     }
   }

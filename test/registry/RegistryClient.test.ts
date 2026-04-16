@@ -438,6 +438,7 @@ describe('RegistryClient', () => {
             ],
           },
           auto_fail: {
+            enabled: true,
             conditions: [
               { id: 'af1', display_id: 'AF-001', name: 'Security vulnerability', severity: 'critical', detection: { method: 'semantic' } },
             ],
@@ -451,7 +452,7 @@ describe('RegistryClient', () => {
       const result = await client.resolve('render-test');
 
       const runtime = result.runtime as { prompt: string; defaults: { model: string; timeout: number }; config: Record<string, unknown> };
-      // Prompt is YAML content (fallback when registry API unavailable)
+      // Prompt is rendered markdown via local definition-factory
       expect(runtime.prompt).toContain('strict TypeScript code validator');
       expect(runtime.prompt).toContain('PASS/FAIL decision');
       expect(runtime.prompt).toContain('Code Quality');
