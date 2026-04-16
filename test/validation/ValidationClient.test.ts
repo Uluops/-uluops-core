@@ -248,6 +248,22 @@ describe('ValidationClient', () => {
       }));
       expect(ship.allGatesPassed).toBe(true);
     });
+
+    it('uses decisionCategory for non-standard positive decisions', async () => {
+      const client = new ValidationClient({ ...baseConfig, trackingEnabled: false });
+
+      // Cognitive lens agents emit EXAMINED, VITAL, etc. — not PASS/SHIP
+      const examined = await client.submit(makeSubmission({
+        result: { ...makeResult({ decision: 'EXAMINED' }), decisionCategory: 'positive' as const },
+      }));
+      expect(examined.allGatesPassed).toBe(true);
+
+      // Negative category overrides even if decision string looks unfamiliar
+      const negative = await client.submit(makeSubmission({
+        result: { ...makeResult({ decision: 'UNEXAMINED' }), decisionCategory: 'negative' as const },
+      }));
+      expect(negative.allGatesPassed).toBe(false);
+    });
   });
 
   // ─────────────────────────────────────────────────────────────────────────────

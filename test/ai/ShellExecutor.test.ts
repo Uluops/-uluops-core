@@ -27,7 +27,7 @@ vi.mock('child_process', () => ({
   exec: execMock,
 }));
 
-const { runShellCommand, executeShellAsString, executeShellAsOpenAIResult } = await import('../../src/ai/ShellExecutor');
+const { runShellCommand, executeShellAsString, executeShellAsOpenAIResult } = await import('../../src/ai/shellExecutor');
 
 function setupExec(result: { stdout?: string; stderr?: string } | Error) {
   mockExecFn.mockImplementation((...args: unknown[]) => {

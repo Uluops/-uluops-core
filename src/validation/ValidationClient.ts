@@ -129,6 +129,18 @@ export class ValidationClient {
   // ─────────────────────────────────────────────────────────────────────────────
 
   /**
+   * Determine if a decision is positive using decisionCategory (agents) or raw string fallback.
+   * Resolves Aporia A3: cognitive lens agents with non-PASS positive decisions
+   * (EXAMINED, VITAL, FLOWING, etc.) now correctly report allGatesPassed: true.
+   */
+  private isPositiveDecision(result: ExecutionResult | AgentResult): boolean {
+    if ('decisionCategory' in result && result.decisionCategory) {
+      return result.decisionCategory === 'positive';
+    }
+    return result.decision === 'PASS' || result.decision === 'SHIP';
+  }
+
+  /**
    * Transform SDK RunSubmission to OpsClient SaveFeaturesListInput format
    */
   private transformToOpsInput(submission: RunSubmission): Parameters<OpsClient['runs']['save']>[0] {
@@ -175,14 +187,7 @@ export class ValidationClient {
       timestamp: new Date().toISOString(),
       rawMarkdown: submission.rawMarkdown,
       summary: {
-        // KNOWN TENSION (2026-04-16, Aporia A3): this gate check uses raw decision
-        // strings ('PASS', 'SHIP') while agents emit arbitrary vocabularies
-        // (EXAMINED, VITAL, FLOWING, etc.) normalized via decisionCategory. This
-        // means cognitive lens agents — which never emit 'PASS' — always show
-        // allGatesPassed: false even when their decision is positive. The correct
-        // fix is to gate on decisionCategory === 'positive', but that changes the
-        // tracker submission contract. Tracked as issue A3 in the tracker.
-        allGatesPassed: result.decision === 'PASS' || result.decision === 'SHIP',
+        allGatesPassed: this.isPositiveDecision(result),
         averageScore: result.score ?? 0,
       },
       definitionType: result.type,
@@ -201,7 +206,7 @@ export class ValidationClient {
       runNumber: 0,
       projectId: 'local',
       dashboardUrl: '',
-      allGatesPassed: submission.result.decision === 'PASS' || submission.result.decision === 'SHIP', // See Aporia A3 comment above
+      allGatesPassed: this.isPositiveDecision(submission.result),
       averageScore: submission.result.score ?? 0,
       correlation: {
         newIssues: submission.result.recommendations.length,
