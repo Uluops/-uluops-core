@@ -10,5 +10,7 @@
 export function parseRef(ref: string): [name: string, version: string | undefined] {
   const atIndex = ref.indexOf('@');
   if (atIndex === -1) return [ref, undefined];
-  return [ref.slice(0, atIndex), ref.slice(atIndex + 1) || undefined];
+  const version = ref.slice(atIndex + 1) || undefined;
+  // 'latest' is a tag, not a semver version — treat as unversioned (resolve latest published)
+  return [ref.slice(0, atIndex), version === 'latest' ? undefined : version];
 }
