@@ -27,6 +27,11 @@ const MAX_DIR_ENTRIES = 50;
 /**
  * Handles filesystem tool calls, fulfilling them against the local target directory.
  * All paths are sandboxed to the base path to prevent directory traversal.
+ *
+ * LOAD-BEARING (2026-04-16): despite its utility-style placement under executor/,
+ * this class is the effective security boundary for all agent filesystem access.
+ * File reads, directory listings, content searches, and path traversal prevention
+ * all converge here. Changes to sandboxing logic affect every agent type.
  */
 export class ToolHandler {
   private basePath: string;

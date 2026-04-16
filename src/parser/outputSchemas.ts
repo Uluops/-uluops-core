@@ -84,6 +84,12 @@ export const agentOutputSchema = z.object({
  *
  * Note: Zod uses nullable (T | null), Issue uses optional (T | undefined).
  * The null→undefined mapping happens in mapStructuredOutput/OutputExtractor.
+ *
+ * LOAD-BEARING TRIAD (2026-04-16): this check, the Issue type in command.ts,
+ * and AgentExecutor.flattenRecommendations() form a tight coupling triangle.
+ * A field change to any one silently alters recommendation shape across all
+ * agents. This compile-time guard catches field additions but not semantic
+ * drift (e.g., changing what a field means without changing its name).
  */
 type ZodIssue = z.infer<typeof issueSchema>;
 export type _AssertIssueFieldsCovered = {

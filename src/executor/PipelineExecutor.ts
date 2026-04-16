@@ -318,7 +318,13 @@ class PipelineHandle implements IPipelineHandle {
   }
 }
 
-/** Map internal PipelineState status to PipelineResult status (completed → complete). */
+/** Map internal PipelineState status to PipelineResult status (completed → complete).
+ *
+ * NAMING (2026-04-16): PipelineState uses 'completed' (past-tense, internal) while
+ * PipelineResult uses 'complete' (adjective, public contract). This inconsistency
+ * is cosmetic — the mapping is exhaustive and type-checked. Unifying would require
+ * changing either the internal state machine or the public result contract, both of
+ * which have downstream consumers. */
 function mapPipelineStatus(status: PipelineState['status']): PipelineResult['status'] {
   switch (status) {
     case 'completed': return 'complete';

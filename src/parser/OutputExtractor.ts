@@ -54,6 +54,18 @@ export class OutputExtractor {
   ): ExtractionResult {
     const warnings: string[] = [];
 
+    // ── Extraction strategies (ordered by confidence) ──────────────────────
+    // Confidence values are heuristics encoding relative trust in each method.
+    // They were calibrated against Claude's output patterns and may need
+    // recalibration as new models (GPT, Gemini) are added. The 0.7 threshold
+    // in AgentExecutor gates EXTRACTION_FAILED decisions — any strategy below
+    // that threshold produces results that won't be trusted as real decisions.
+    //
+    // Strategy 1: JSON code fence (0.95) — model explicitly wrapped output
+    // Strategy 2: Whole/inline JSON (0.9/0.75) — found parseable JSON in text
+    // Strategy 3: Structured text (0.5) — regex matched decision/score patterns
+    // Strategy 4: Fallback (0.0) — nothing found, emit ERROR/0 defaults
+
     // Strategy 1: Try JSON code fence (highest confidence)
     const fenceResult = this.extractFromCodeFence(content, options);
     if (fenceResult) {
