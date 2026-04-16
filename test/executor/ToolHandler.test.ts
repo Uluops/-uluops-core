@@ -88,10 +88,11 @@ describe('ToolHandler', () => {
       expect(lines.length).toBeLessThanOrEqual(3);
     });
 
-    it('returns empty for nonexistent directory', async () => {
+    it('returns error for nonexistent directory', async () => {
       const result = await handler.fulfill(makeToolUse('list_files', { path: 'nonexistent' }));
-      // glob returns empty array when cwd doesn't exist
-      expect(result.content).toBe('');
+      // Nonexistent paths fail closed (realpath check) — correct security behavior
+      expect(result.is_error).toBe(true);
+      expect(result.content).toContain('outside the target directory');
     });
   });
 
@@ -402,7 +403,8 @@ describe('ToolHandler', () => {
 
   describe('unknown tool', () => {
     it('returns error for unknown tool name', async () => {
-      const result = await handler.fulfill(makeToolUse('delete_file', { path: 'test.ts' }));
+      // Use an existing path so the path safety check passes and we reach the tool dispatch
+      const result = await handler.fulfill(makeToolUse('delete_file', { path: 'src/index.ts' }));
       expect(result.is_error).toBe(true);
       expect(result.content).toContain('Unknown tool');
     });

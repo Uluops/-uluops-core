@@ -55,7 +55,7 @@
     "@uluops/definition-factory": "file:../-uluops-definition-factory",
     "@uluops/ops-sdk": "file:../-uluops-ops-sdk",
     "@uluops/registry-sdk": "file:../-uluops-registry-sdk",
-    "@uluops/sdk-core": "^0.5.0",
+    "@uluops/sdk-core": "file:../-uluops-sdk-core",
     "ai": "^6.0.0",
     "glob": "^11.0.0",
     "yaml": "^2.7.0",
