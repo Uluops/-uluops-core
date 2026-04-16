@@ -64,7 +64,7 @@ export class RegistryClient {
       return cached;
     }
 
-    // Try local resolution if configured
+    // Try local resolution if configured (local takes priority over remote)
     if (this.config.localDefinitions) {
       const local = await this.resolveLocal(name, type);
       if (local) {
@@ -73,7 +73,7 @@ export class RegistryClient {
       }
     }
 
-    // Fall back to remote
+    // Resolve from remote registry
     const remote = await this.resolveRemote(name, version, type);
     this.cache.set(cacheKey, remote);
     return remote;

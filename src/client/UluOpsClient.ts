@@ -305,7 +305,7 @@ export class UluOpsClient {
     if (!apiKey.startsWith('ulr_')) {
       throw new ConfigurationError(
         `Invalid API key format: keys must begin with "ulr_". ` +
-        `Got: "${apiKey.substring(0, 4)}...". ` +
+        `Got: "[redacted]". ` +
         `Generate a valid key at https://app.uluops.ai.`,
       );
     }
