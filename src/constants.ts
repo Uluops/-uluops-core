@@ -10,6 +10,15 @@ const __dirname = fileURLToPath(new URL('.', import.meta.url));
 export const STARTER_DEFINITIONS_DIR = resolve(__dirname, '../definitions/starter');
 
 // ─── Threshold Defaults ────────────────────────────────────────────────────
+//
+// ASSUMPTION (2026-04-16): these thresholds assume a stable score distribution
+// across models and agent definitions. In practice, different models (Claude vs
+// GPT) score differently for the same codebase, and prompt changes (e.g., the
+// uluops-full render profile) shift score distributions. These constants are
+// fallbacks — agent definitions carry their own thresholds via decisions.thresholds,
+// and RAH provides runtime calibration. If you're seeing systematic pass/fail
+// drift after a model or prompt change, the fix is in the definition or RAH
+// calibration, not here.
 
 /**
  * Default pass threshold for agent/command scoring (0-100).

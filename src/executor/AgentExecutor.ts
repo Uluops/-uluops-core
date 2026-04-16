@@ -111,6 +111,16 @@ export class AgentExecutor {
     // Extraction-aware decision: low-confidence extractions (< 0.7) are unreliable
     // regardless of whether a decision string was parsed. A 0.5-confidence regex
     // match that found "PASS" in prose is not the same as a structured JSON PASS.
+    // ── Decision normalization ──────────────────────────────────────────────
+    // Agents emit native vocabulary (PASS, EXAMINED, VITAL, FLOWING, etc.).
+    // classifyAgentDecision() normalizes these to DecisionCategory (positive/
+    // negative/conditional/error) using the agent definition's vocabulary map.
+    //
+    // ASSUMPTION (2026-04-16): downstream consumers use `decisionCategory` for
+    // gate logic, not the raw `decision` string. If any consumer pattern-matches
+    // on raw decision strings, vocabulary drift across agent types will cause
+    // silent misclassification. ValidationClient.allGatesPassed is the known
+    // exception — it checks for literal 'PASS' | 'SHIP'. See issue A3 in tracker.
     const effectiveDecision = extraction.confidence < 0.7
       ? 'EXTRACTION_FAILED'
       : (parsed.decision ?? 'FAIL');

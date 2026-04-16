@@ -23,7 +23,13 @@ export interface PipelineDefinition {
     /** Trigger configuration (optional) */
     triggers?: TriggerDefinition[];
 
-    /** Pipeline-level settings */
+    /** Pipeline-level settings.
+     *
+     * DESIGN (2026-04-16): some fields here are schema-forward — they exist in the
+     * PDL spec and are preserved in types for definition round-tripping, but are not
+     * yet enacted by PipelineExecutor. This is intentional: the type system tracks
+     * the spec, the executor implements incrementally. Fields marked @reserved are
+     * the delta between spec completeness and runtime completeness. */
     settings?: {
       timeout?: number;
       retries?: number;

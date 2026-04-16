@@ -176,6 +176,12 @@ export class AIProvider {
     const languageModel = factory(resolved.providerModelId);
     const providerOptions = this.buildProviderOptions(resolved, options.providerOptions);
     const system = this.buildSystemMessage(resolved.provider, options.system);
+    // ASSUMPTION (2026-04-16): the model catalog's capability flags
+    // (structuredOutput, toolCalling, contextManagement) accurately reflect
+    // current provider behavior. Capability drift is external to this codebase —
+    // providers may change what their models support without notice. The catalog
+    // is the single point of truth; if a model starts failing structured output,
+    // update the catalog entry rather than adding provider-specific workarounds here.
     const useStructuredOutput = !!options.output && resolved.capabilities.structuredOutput;
 
     this.logPreGeneration(options, resolved, modelInput, useStructuredOutput);
