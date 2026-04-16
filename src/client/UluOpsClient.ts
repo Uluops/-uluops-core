@@ -393,6 +393,11 @@ export class UluOpsClient {
     const shouldTrack = options?.trackResults ?? this.config.trackingEnabled;
     if (!shouldTrack) return;
 
+    if (!this.config.apiKey) {
+      this.logger.debug('Tracking skipped: no UluOps API key configured. Set trackingEnabled: false to suppress this message.');
+      return;
+    }
+
     try {
       // SAFETY: AgentResult extends ExecutionResult structurally — both share
       // type, name, version, definitionHash, decision, score, durationMs, recommendations, metrics.
