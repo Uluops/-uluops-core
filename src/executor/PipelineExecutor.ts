@@ -82,9 +82,10 @@ export class PipelineExecutor {
           continue;
         }
 
-        // Evaluate skip condition
-        if (stage.skip_if && this.evaluateCondition(stage.skip_if, state.stageResults)) {
-          state.stageResults.push(this.createSkippedStage(stage, 'skip_if_true'));
+        // Evaluate execution condition (condition takes precedence over deprecated skip_if)
+        const skipCondition = stage.condition ?? stage.skip_if;
+        if (skipCondition && this.evaluateCondition(skipCondition, state.stageResults)) {
+          state.stageResults.push(this.createSkippedStage(stage, 'condition_met'));
           continue;
         }
 

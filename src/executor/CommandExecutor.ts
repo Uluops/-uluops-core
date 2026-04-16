@@ -189,6 +189,9 @@ export class CommandExecutor {
         case 'max':
           score = Math.max(...scores);
           break;
+        case 'sum':
+          score = scores.reduce((a, b) => a + b, 0);
+          break;
         case 'weighted_average': {
           const weights = aggregation.weights ?? {};
           let totalWeight = 0;

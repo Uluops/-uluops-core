@@ -188,7 +188,7 @@ describe('PipelineExecutor', () => {
 
       expect(result.stages[0]!.status).toBe('completed');
       expect(result.stages[1]!.status).toBe('skipped');
-      expect(result.stages[1]!.skipReason).toBe('skip_if_true');
+      expect(result.stages[1]!.skipReason).toBe('condition_met');
     });
 
     it('does not skip when condition evaluates to false', async () => {

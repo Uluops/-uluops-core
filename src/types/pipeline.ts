@@ -49,10 +49,10 @@ export interface StageDefinition {
   /** Stage dependencies */
   depends_on?: string[];
 
-  /** Execution condition. @reserved — typed for schema fidelity; use skip_if for current skip logic. */
+  /** Skip condition expression — stage is skipped when this evaluates to true. Takes precedence over skip_if. */
   condition?: string;
 
-  /** Skip condition (deprecated, use condition with negation) */
+  /** @deprecated Use condition instead. */
   skip_if?: string;
 
   /** Stage-specific options. @reserved — typed for schema fidelity; not yet passed to executors. */
