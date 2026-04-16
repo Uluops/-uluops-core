@@ -644,9 +644,9 @@ describe('UluOpsClient', () => {
 
       const result = await client.runAgent('code-validator', '/tmp/test');
 
-      // trackIfEnabled builds a slim ExecutionResult from AgentResult (no agentType, maxScore)
+      // trackIfEnabled infers project from target dir basename (not agent name)
       expect(mockValidationSubmit).toHaveBeenCalledWith({
-        project: 'code-validator',
+        project: 'test',
         workflowType: 'agent',
         result: expect.objectContaining({
           name: agentResult.name,
@@ -710,7 +710,7 @@ describe('UluOpsClient', () => {
       expect(submitCall.project).toBe('default-proj');
     });
 
-    it('falls back to resolved.name when no project specified', async () => {
+    it('falls back to target directory basename when no project specified', async () => {
       const client = new UluOpsClient({ apiKey: 'ulr_test-key', trackingEnabled: true });
       mockRegistryResolve.mockResolvedValue(makeResolvedDef('agent', 'my-agent'));
       mockAgentExecutorExecute.mockResolvedValue(makeAgentResult());
@@ -718,7 +718,7 @@ describe('UluOpsClient', () => {
       await client.runAgent('my-agent', '/tmp/test');
 
       const submitCall = mockValidationSubmit.mock.calls[0]![0] as Record<string, unknown>;
-      expect(submitCall.project).toBe('my-agent');
+      expect(submitCall.project).toBe('test');
     });
 
     it('records execution in registry after validation submit', async () => {
@@ -817,7 +817,7 @@ describe('UluOpsClient', () => {
       const result = await client.runCommand('validate', { target: '/tmp/test' });
 
       expect(mockValidationSubmit).toHaveBeenCalledWith({
-        project: 'validate',
+        project: 'test',
         workflowType: 'command',
         result: expect.objectContaining({ type: 'command' }),
       });
@@ -928,7 +928,7 @@ describe('UluOpsClient', () => {
       const result = await client.run('validate', { target: '/tmp/test' });
 
       expect(mockValidationSubmit).toHaveBeenCalledWith({
-        project: 'validate',
+        project: 'test',
         workflowType: 'command',
         result: expect.objectContaining({ type: 'command' }),
       });

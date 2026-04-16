@@ -1,3 +1,4 @@
+import * as path from 'node:path';
 import { RegistryClient } from '../registry/RegistryClient.js';
 import { ValidationClient } from '../validation/ValidationClient.js';
 import { AIProvider } from '../ai/AIProvider.js';
@@ -88,7 +89,7 @@ export class UluOpsClient {
     }
 
     const result = await this.agentExecutor.execute(resolved, { target }, options);
-    await this.trackIfEnabled(result, resolved, 'agent', options);
+    await this.trackIfEnabled(result, resolved, 'agent', options, target);
     return result;
   }
 
@@ -106,7 +107,7 @@ export class UluOpsClient {
     }
 
     const result = await this.commandExecutor.execute(resolved, input);
-    await this.trackIfEnabled(result, resolved, 'command');
+    await this.trackIfEnabled(result, resolved, 'command', undefined, input.target);
     return result;
   }
 
@@ -121,7 +122,7 @@ export class UluOpsClient {
     }
 
     const result = await this.workflowExecutor.execute(resolved, input);
-    await this.trackIfEnabled(result, resolved, 'workflow');
+    await this.trackIfEnabled(result, resolved, 'workflow', undefined, input.target);
     return result;
   }
 
@@ -154,7 +155,7 @@ export class UluOpsClient {
       }
     }
 
-    await this.trackIfEnabled(result, resolved, resolved.type);
+    await this.trackIfEnabled(result, resolved, resolved.type, undefined, input.target);
     return result;
   }
 
@@ -380,6 +381,7 @@ export class UluOpsClient {
     resolved: { type: string; name: string; version: string },
     workflowType: string,
     options?: { trackResults?: boolean; project?: string },
+    target?: string,
   ): Promise<void> {
     const shouldTrack = options?.trackResults ?? this.config.trackingEnabled;
     if (!shouldTrack) return;
@@ -399,8 +401,12 @@ export class UluOpsClient {
         recommendations: result.recommendations,
         metrics: result.metrics,
       };
+      // Project resolution: explicit option > config default > target dir basename > definition name.
+      // Without this, running `exec agent dx-validator ./my-project` would create a project
+      // named "dx-validator" instead of "my-project".
+      const inferredProject = target ? path.basename(path.resolve(target)) : resolved.name;
       const response = await this.validation.submit({
-        project: options?.project ?? this.config.defaultProject ?? resolved.name,
+        project: options?.project ?? this.config.defaultProject ?? inferredProject,
         workflowType,
         result: execResult,
       });
