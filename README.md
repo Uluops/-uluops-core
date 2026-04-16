@@ -51,6 +51,7 @@ console.log(`Score: ${result.score} | Decision: ${result.decision}`);
 - [Configuration](#configuration)
 - [TypeScript Support](#typescript-support)
 - [Error Handling](#error-handling)
+- [Security](#security)
 - [Dependencies](#dependencies)
 - [Development](#development)
 
@@ -466,6 +467,10 @@ const client = new UluOpsClient({
   contextBudget: 200000,              // Context window budget — forces wrap-up at 80%, Anthropic context management at 50%
   dashboardUrl: 'https://app.uluops.ai', // Dashboard link prefix for run URLs
 
+  // Security
+  allowedTools: ['bash'],             // Operator tool allowlist (or ULUOPS_ALLOWED_TOOLS)
+                                      // Default: all tools except 'bash' are allowed
+
   // Local Development
   localDefinitions: './definitions',  // Load YAML definitions from local dir
 });
@@ -486,6 +491,7 @@ const client = new UluOpsClient({
 | `ULUOPS_PROJECT` | Default project name | - |
 | `ULUOPS_LOCAL_DEFINITIONS` | Local definitions path | - |
 | `ULUOPS_DASHBOARD_URL` | Dashboard base URL for run links | `https://app.uluops.ai` |
+| `ULUOPS_ALLOWED_TOOLS` | Comma-separated tool allowlist (e.g., `bash`) | all except `bash` |
 | `ULUOPS_DEBUG` | Enable detailed execution logging | `false` |
 
 ## TypeScript Support
@@ -585,6 +591,39 @@ try {
 | `ServiceUnavailableError` | 503 service unavailable |
 | `NetworkError` | Connection failures |
 | `TimeoutError` | Request timeout |
+
+## Security
+
+### Tool Allowlist
+
+Agent definitions can request tools (e.g., `tools: ['bash']` in YAML), but the operator must explicitly permit them. This separates the trust boundary: **definition authors declare** what they need, **operators decide** what they permit.
+
+By default, all tools except `bash` are allowed. The `bash` tool passes LLM-generated command strings to `sh -c`, granting full host OS access scoped to the working directory. Only enable it in sandboxed environments (containers, CI).
+
+```typescript
+// Default: bash blocked even if definition requests it
+const client = new UluOpsClient({});
+
+// Explicit opt-in for containerized environments
+const client = new UluOpsClient({
+  allowedTools: ['bash'],
+});
+```
+
+Or via environment variable:
+
+```bash
+ULUOPS_ALLOWED_TOOLS=bash
+```
+
+### Filesystem Sandboxing
+
+The `ToolHandler` restricts LLM file operations to the target directory:
+
+- Path traversal prevention with separator-aware prefix matching
+- Symlink resolution via `fs.realpath()` to detect escape attempts
+- Fail-closed on filesystem errors (dangling symlinks, race conditions)
+- macOS `/tmp` → `/private/tmp` symlink handling
 
 ## Dependencies
 

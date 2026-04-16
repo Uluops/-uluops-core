@@ -137,6 +137,21 @@ export interface UluOpsConfig {
    * @default 200000
    */
   contextBudget?: number;
+
+  /**
+   * Operator-controlled tool allowlist. Definitions can request tools (e.g., `tools: ['bash']`
+   * in agent YAML), but the tool is only granted if it also appears in this allowlist.
+   *
+   * This separates the trust boundary: definition authors declare what they need,
+   * operators decide what they permit. Without this, the definition author
+   * controls both the request and the gate.
+   *
+   * When undefined, all tools EXCEPT 'bash' are allowed (safe default).
+   * Set explicitly to `['bash']` or `['bash', ...]` to permit shell access.
+   *
+   * @default undefined (bash blocked, all other tools allowed)
+   */
+  allowedTools?: string[];
 }
 
 /**
@@ -155,4 +170,5 @@ export interface ResolvedConfig {
   defaultThinkingBudget: number;
   debug: boolean;
   contextBudget: number;
+  allowedTools?: string[];
 }

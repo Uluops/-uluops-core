@@ -323,6 +323,7 @@ export class UluOpsClient {
       defaultThinkingBudget: config.defaultThinkingBudget ?? 10_000,
       debug: config.debug ?? (process.env['ULUOPS_DEBUG'] === 'true'),
       contextBudget: config.contextBudget ?? 200_000,
+      allowedTools: config.allowedTools ?? this.parseAllowedTools(process.env['ULUOPS_ALLOWED_TOOLS']),
     };
   }
 
@@ -332,6 +333,11 @@ export class UluOpsClient {
    * Default: Anthropic provider with ANTHROPIC_API_KEY env var.
    * Env var convention: <PROVIDER>_API_KEY (e.g., ANTHROPIC_API_KEY, OPENAI_API_KEY)
    */
+  private parseAllowedTools(envValue?: string): string[] | undefined {
+    if (!envValue) return undefined;
+    return envValue.split(',').map(t => t.trim()).filter(Boolean);
+  }
+
   private resolveAIConfig(ai?: AIConfig): ResolvedAIConfig {
     const providers: Record<string, { apiKey: string }> = {};
 

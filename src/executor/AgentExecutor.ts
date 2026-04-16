@@ -128,7 +128,7 @@ export class AgentExecutor {
   ) {
     const agentTools = runtime.interface?.tools;
     let additionalTools: ToolSet | undefined;
-    if (agentTools?.includes('bash')) {
+    if (agentTools?.includes('bash') && this.isToolAllowed('bash')) {
       const modelInput = options?.model ?? runtime.defaults?.model ?? this.config.ai.modelOverride ?? DEFAULT_MODEL_ALIAS;
       const resolvedModel = await this.aiProvider.resolveModel(modelInput);
       additionalTools = this.aiProvider.createProviderShellTool(resolvedModel.provider, input.target, context.timeoutMs);
@@ -139,6 +139,19 @@ export class AgentExecutor {
     const adapter = new ToolAdapter(toolHandler, additionalTools, budgetTracker);
 
     return { toolHandler, budgetTracker, adapter };
+  }
+
+  /**
+   * Check if the operator allows a tool. Definitions request tools, operators permit them.
+   * When allowedTools is undefined, all tools except 'bash' are allowed (safe default).
+   */
+  private isToolAllowed(tool: string): boolean {
+    const allowed = this.config.allowedTools;
+    if (allowed === undefined) {
+      // Safe default: bash requires explicit operator opt-in
+      return tool !== 'bash';
+    }
+    return allowed.includes(tool);
   }
 
   /**
