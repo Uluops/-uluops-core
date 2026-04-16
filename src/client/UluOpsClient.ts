@@ -297,14 +297,20 @@ export class UluOpsClient {
   private resolveConfig(config: UluOpsConfig): ResolvedConfig {
     const apiKey = config.apiKey ?? process.env['ULUOPS_API_KEY'] ?? process.env['ULU_API_KEY'];
 
-    if (!apiKey) {
+    // API key is optional when using local definitions with tracking disabled.
+    // Remote operations (registry resolve, validation submit) will fail at call
+    // time if no key is available — but local-only usage works without one.
+    const needsRemoteAccess = !config.localDefinitions || config.trackingEnabled !== false;
+    if (!apiKey && needsRemoteAccess) {
       throw new ConfigurationError(
-        'UluOps API key is required. Provide via config.apiKey, ULUOPS_API_KEY, or ULU_API_KEY environment variable. ' +
-        'Generate a key at https://app.uluops.ai.',
+        'UluOps API key is required for registry and tracking access. ' +
+        'Provide via config.apiKey, ULUOPS_API_KEY, or ULU_API_KEY environment variable. ' +
+        'Generate a key at https://app.uluops.ai. ' +
+        'For offline usage, set localDefinitions and trackingEnabled: false.',
       );
     }
 
-    if (!apiKey.startsWith('ulr_')) {
+    if (apiKey && !apiKey.startsWith('ulr_')) {
       throw new ConfigurationError(
         `Invalid API key format: keys must begin with "ulr_". ` +
         `Got: "[redacted]". ` +

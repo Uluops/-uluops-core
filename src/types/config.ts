@@ -171,7 +171,8 @@ export interface UluOpsConfig {
  * Validated configuration with defaults applied
  */
 export interface ResolvedConfig {
-  apiKey: string;
+  /** UluOps API key. Optional when using localDefinitions with trackingEnabled: false. */
+  apiKey?: string;
   ai: ResolvedAIConfig;
   registryUrl: string;
   validationUrl: string;
