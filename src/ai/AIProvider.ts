@@ -185,8 +185,11 @@ export class AIProvider {
     const useStructuredOutput = !!options.output && resolved.capabilities.structuredOutput;
 
     // Reasoning models (o1, o3, o4-mini, gpt-5.x) don't support temperature —
-    // strip it to suppress repeated AI SDK warnings.
-    if (resolved.capabilities.extendedThinking) {
+    // strip it to suppress repeated AI SDK warnings. Check both extendedThinking
+    // (SDK type) and reasoning (raw API field) since the registry may return either.
+    const isReasoning = resolved.capabilities.extendedThinking
+      || (resolved.capabilities as unknown as Record<string, unknown>)['reasoning'] === true;
+    if (isReasoning) {
       options.temperature = undefined;
     }
 
