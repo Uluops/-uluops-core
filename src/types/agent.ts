@@ -455,6 +455,9 @@ interface AgentResultBase {
   /** Confidence in output extraction (0-1). 1.0 = structured output, 0.5 = regex fallback.
    * Low confidence indicates the result may be unreliable — decision/score may be defaults. */
   extractionConfidence?: number;
+
+  /** Degradation markers from definition resolution (e.g., render fallback paths taken) */
+  degradations?: string[];
 }
 
 /**

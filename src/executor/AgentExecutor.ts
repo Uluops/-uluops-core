@@ -108,10 +108,12 @@ export class AgentExecutor {
     const durationMs = Date.now() - startTime;
     const metrics = this.buildMetrics(result, durationMs);
 
-    // Use extraction-aware decision: if the LLM produced no decision and extraction
-    // confidence is low, signal extraction failure rather than masquerading as FAIL.
-    const effectiveDecision = parsed.decision
-      ?? (extraction.confidence < 0.7 ? 'EXTRACTION_FAILED' : 'FAIL');
+    // Extraction-aware decision: low-confidence extractions (< 0.7) are unreliable
+    // regardless of whether a decision string was parsed. A 0.5-confidence regex
+    // match that found "PASS" in prose is not the same as a structured JSON PASS.
+    const effectiveDecision = extraction.confidence < 0.7
+      ? 'EXTRACTION_FAILED'
+      : (parsed.decision ?? 'FAIL');
     const decisionCategory = this.classifyAgentDecision(resolved, effectiveDecision);
 
     return this.buildResult(resolved, agentType, context, parsed, effectiveDecision, extraction, recommendations, durationMs, metrics, decisionCategory, rawText);
@@ -265,6 +267,7 @@ export class AgentExecutor {
       rawOutput: rawText || undefined,
       extractionMethod: extraction.method,
       extractionConfidence: extraction.confidence,
+      degradations: resolved.degradations,
     };
   }
 
