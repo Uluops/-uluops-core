@@ -161,6 +161,36 @@ describe('ToolHandler', () => {
       expect(result.is_error).toBeUndefined();
       expect(result.content).toBe('export const foo = 42;\n');
     });
+
+    it('blocks sibling directory with base path prefix (CWE-22 prefix collision)', async () => {
+      // Create a sibling directory whose name starts with the base dir name
+      // e.g., if base is /tmp/toolhandler-abc, create /tmp/toolhandler-abc-evil
+      const evilDir = tmpDir + '-evil';
+      await fs.mkdir(evilDir, { recursive: true });
+      await fs.writeFile(path.join(evilDir, 'stolen.txt'), 'sensitive data');
+
+      try {
+        // Construct a path that resolves to the evil sibling
+        const relativePath = path.relative(tmpDir, path.join(evilDir, 'stolen.txt'));
+        const result = await handler.fulfill(makeToolUse('read_file', { path: relativePath }));
+        expect(result.is_error).toBe(true);
+        expect(result.content).toContain('outside the target directory');
+      } finally {
+        await fs.rm(evilDir, { recursive: true, force: true });
+      }
+    });
+
+    it('fails closed when realpath target does not exist', async () => {
+      // Create a symlink pointing to a non-existent path within the logical base
+      // The logical check passes but realpath will throw — must fail closed
+      const danglingLink = path.join(tmpDir, 'dangling');
+      await fs.symlink(path.join(tmpDir, 'nonexistent-target'), danglingLink);
+
+      const result = await handler.fulfill(makeToolUse('read_file', { path: 'dangling' }));
+      // Should fail — either the path safety check rejects it (fail-closed)
+      // or the subsequent stat/read fails because the target doesn't exist
+      expect(result.is_error).toBe(true);
+    });
   });
 
   describe('read_file with line ranges', () => {

@@ -139,9 +139,10 @@ export class ToolHandler {
    * Uses fs.realpath() to follow symlinks and detect escape attempts.
    */
   private async isPathSafe(fullPath: string): Promise<boolean> {
-    // First check: logical path must be within base (catches ../.. traversal)
+    // First check: logical path must be within base (catches ../.. traversal).
+    // Append path.sep to prevent prefix collisions (e.g., /tmp/target-evil matching /tmp/target).
     const logicalPath = path.resolve(fullPath);
-    if (!logicalPath.startsWith(this.basePath)) return false;
+    if (logicalPath !== this.basePath && !logicalPath.startsWith(this.basePath + path.sep)) return false;
 
     // Second check: resolve symlinks to detect escape via symlink.
     // Compare against realpath-resolved base to handle platforms where
@@ -149,10 +150,10 @@ export class ToolHandler {
     try {
       const realPath = await fs.realpath(fullPath);
       const realBase = await this.getRealBasePath();
-      return realPath.startsWith(realBase);
+      return realPath === realBase || realPath.startsWith(realBase + path.sep);
     } catch {
-      // Path doesn't exist — logical check above is sufficient
-      return true;
+      // Path doesn't exist — fail closed to prevent TOCTOU symlink races
+      return false;
     }
   }
 
