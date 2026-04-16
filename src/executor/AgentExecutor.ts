@@ -430,10 +430,10 @@ export class AgentExecutor {
             title: issue.title,
             priority: issue.priority ?? 'suggested',
             severity: issue.severity ?? 'medium',
-            failureCode: issue.failureCode,
-            filePath: issue.filePath,
-            lineNumber: issue.lineNumber,
-            description: issue.description,
+            ...(issue.failureCode ? { failureCode: issue.failureCode } : {}),
+            ...(issue.filePath ? { filePath: issue.filePath } : {}),
+            ...(issue.lineNumber != null ? { lineNumber: issue.lineNumber } : {}),
+            ...(issue.description ? { description: issue.description } : {}),
           });
         }
       }

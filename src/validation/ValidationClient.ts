@@ -158,7 +158,7 @@ export class ValidationClient {
         title: r.title,
         priority: r.priority,
         severity: r.severity,
-        failureCode: r.failureCode,
+        failureCode: r.failureCode && /^(STR|SEM|PRA|EPI)-[A-Z]{3}\/[CHMLI]$/.test(r.failureCode) ? r.failureCode : undefined,
         failureDomain: r.failureDomain,
         failureMode: r.failureMode,
         category: r.category,
