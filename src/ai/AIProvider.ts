@@ -184,6 +184,12 @@ export class AIProvider {
     // update the catalog entry rather than adding provider-specific workarounds here.
     const useStructuredOutput = !!options.output && resolved.capabilities.structuredOutput;
 
+    // Reasoning models (o1, o3, o4-mini, gpt-5.x) don't support temperature —
+    // strip it to suppress repeated AI SDK warnings.
+    if (resolved.capabilities.extendedThinking) {
+      options.temperature = undefined;
+    }
+
     this.logPreGeneration(options, resolved, modelInput, useStructuredOutput);
 
     // 2. Execute LLM with tool loop
