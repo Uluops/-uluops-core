@@ -53,7 +53,7 @@
     "@ai-sdk/google": "^3.0.31",
     "@ai-sdk/openai": "^3.0.33",
     "@uluops/definition-factory": "file:../-uluops-definition-factory",
-    "@uluops/ops-sdk": "^1.1.0",
+    "@uluops/ops-sdk": "file:../-uluops-ops-sdk",
     "@uluops/registry-sdk": "file:../-uluops-registry-sdk",
     "@uluops/sdk-core": "^0.5.0",
     "ai": "^6.0.0",
