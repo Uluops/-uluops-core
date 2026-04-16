@@ -273,6 +273,7 @@ export class AgentExecutor {
       artifacts: parsed.artifacts,
       recommendations,
       durationMs,
+      summary: parsed.summary,
       metrics,
       rawOutput: rawText || undefined,
       extractionMethod: extraction.method,

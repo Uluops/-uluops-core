@@ -452,6 +452,10 @@ interface AgentResultBase {
   /** Output extraction method used (structured_output, json_code_fence, inline_json, structured_text) */
   extractionMethod?: string;
 
+  /** Brief human-readable summary of the result, as provided by the agent.
+   * Extracted from the LLM's structured output `summary` field. */
+  summary?: string;
+
   /** Confidence in output extraction (0-1). 1.0 = structured output, 0.5 = regex fallback.
    * Low confidence indicates the result may be unreliable — decision/score may be defaults. */
   extractionConfidence?: number;
