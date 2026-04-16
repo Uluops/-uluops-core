@@ -37,7 +37,7 @@ export class CommandExecutor {
     const def = resolved.definition as CommandDefinition;
 
     // 1. Run preflight checks
-    if (def.command.execution.preflight) {
+    if (def.command.execution?.preflight) {
       await runPreflightChecks(def.command.execution.preflight, input);
     }
 

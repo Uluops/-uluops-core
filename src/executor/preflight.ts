@@ -17,8 +17,22 @@ export async function runPreflightChecks(
   input: ExecutionInput,
 ): Promise<void> {
   for (const check of checks) {
-    await runSingleCheck(check, input);
+    // Substitute CDL template variables ($ARGUMENTS → target path)
+    const resolved = substituteCheckVars(check, input);
+    await runSingleCheck(resolved, input);
   }
+}
+
+/** Replace CDL template variables in preflight check fields. */
+function substituteCheckVars(check: PreflightCheck, input: ExecutionInput): PreflightCheck {
+  const sub = (s: string | undefined): string | undefined =>
+    s?.replace(/\$ARGUMENTS/g, input.target);
+  return {
+    ...check,
+    path: sub(check.path),
+    command: sub(check.command),
+    message: sub(check.message),
+  };
 }
 
 async function runSingleCheck(
@@ -27,6 +41,7 @@ async function runSingleCheck(
 ): Promise<void> {
   switch (check.check) {
     case 'file_exists':
+    case 'path_exists':
       return checkFileExists(check, input);
     case 'command':
       return checkCommand(check);

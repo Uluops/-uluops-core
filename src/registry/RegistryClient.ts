@@ -298,7 +298,66 @@ export class RegistryClient {
     // with a non-null object value. The intermediate `unknown` cast is
     // unavoidable: Record<string, unknown> lacks the index signature
     // required for direct assignment to the typed definition union.
+
+    // Normalize CDL YAML structure → CommandDefinition runtime shape.
+    // CDL uses invokes.agent/agents, top-level preflight/postflight, and
+    // overrides.threshold — the runtime expects agents[], execution.preflight,
+    // execution.postflight, and execution.thresholds.pass.
+    if (topKey === 'command') {
+      this.normalizeCommandDefinition(section as Record<string, unknown>);
+    }
+
     return parsed as unknown as ResolvedDefinition['definition'];
+  }
+
+  /**
+   * Normalize CDL YAML structure to match CommandDefinition runtime shape.
+   *
+   * CDL YAML uses a more ergonomic authoring format that differs from the
+   * runtime type contract:
+   *   - invokes.agent (string) or invokes.agents (string[]) → agents[]
+   *   - top-level preflight → execution.preflight
+   *   - top-level postflight → execution.postflight
+   *   - overrides.threshold (number) → execution.thresholds.pass
+   *
+   * Mutates the section in place before it's cast to CommandDefinition.
+   */
+  private normalizeCommandDefinition(section: Record<string, unknown>): void {
+    // invokes.agent / invokes.agents → agents[]
+    if (!section['agents']) {
+      const invokes = section['invokes'] as Record<string, unknown> | undefined;
+      if (invokes) {
+        const agent = invokes['agent'];
+        const agents = invokes['agents'];
+        if (Array.isArray(agents)) {
+          section['agents'] = agents;
+        } else if (typeof agent === 'string') {
+          section['agents'] = [agent];
+        }
+      }
+    }
+
+    // top-level preflight → execution.preflight
+    // CDL preflight is { banner?, checks: PreflightCheck[] } — runtime expects PreflightCheck[]
+    const execution = (section['execution'] ?? {}) as Record<string, unknown>;
+    if (section['preflight'] && !execution['preflight']) {
+      const preflight = section['preflight'] as Record<string, unknown>;
+      execution['preflight'] = Array.isArray(preflight['checks']) ? preflight['checks'] : preflight;
+      section['execution'] = execution;
+    }
+
+    // top-level postflight → execution.postflight
+    if (section['postflight'] && !execution['postflight']) {
+      execution['postflight'] = section['postflight'];
+      section['execution'] = execution;
+    }
+
+    // overrides.threshold → execution.thresholds.pass
+    const overrides = section['overrides'] as Record<string, unknown> | undefined;
+    if (overrides?.['threshold'] && !execution['thresholds']) {
+      execution['thresholds'] = { pass: overrides['threshold'] };
+      section['execution'] = execution;
+    }
   }
 
   /**

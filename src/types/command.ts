@@ -73,7 +73,7 @@ export interface CommandDefinition {
  */
 export interface PreflightCheck {
   /** Check type */
-  check: 'file_exists' | 'command' | 'env_var' | 'git_clean';
+  check: 'file_exists' | 'path_exists' | 'command' | 'env_var' | 'git_clean';
 
   /** Path for file_exists check */
   path?: string;
