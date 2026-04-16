@@ -140,6 +140,7 @@ export class ValidationClient {
       idempotencyKey: submission.idempotencyKey,
       agents: [{
         name: result.name,
+        definitionVersion: result.version !== 'unknown' ? result.version : undefined,
         score: result.score ?? 0,
         maxScore: 100,
         decision: result.decision,
