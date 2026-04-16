@@ -364,18 +364,41 @@ export class WorkflowExecutor {
     config: WorkflowDefinition['workflow']['aggregation'],
     phases: PhaseResult[],
   ): { decision: WorkflowDecision; score: number } {
-    const weights = config?.score?.weights ?? {};
-    let totalWeight = 0;
-    let weightedScore = 0;
+    const scorable = phases.filter(
+      p => p.decision !== 'skipped' && p.decision !== 'aborted',
+    );
+    const scores = scorable.map(p => p.score);
+    const method = config?.score?.method ?? 'weighted_average';
 
-    for (const phase of phases) {
-      if (phase.decision === 'skipped' || phase.decision === 'aborted') continue;
-      const weight = weights[phase.id] ?? 1;
-      totalWeight += weight;
-      weightedScore += phase.score * weight;
+    let score: number;
+    switch (method) {
+      case 'min':
+        score = scores.length > 0 ? Math.min(...scores) : 0;
+        break;
+      case 'max':
+        score = scores.length > 0 ? Math.max(...scores) : 0;
+        break;
+      case 'sum':
+        score = scores.reduce((a, b) => a + b, 0);
+        break;
+      case 'weighted_average': {
+        const weights = config?.score?.weights ?? {};
+        let totalWeight = 0;
+        let weightedSum = 0;
+        for (const phase of scorable) {
+          const w = weights[phase.id] ?? 1;
+          totalWeight += w;
+          weightedSum += phase.score * w;
+        }
+        score = totalWeight > 0 ? Math.round(weightedSum / totalWeight) : 0;
+        break;
+      }
+      case 'average':
+      default:
+        score = scores.length > 0
+          ? Math.round(scores.reduce((a, b) => a + b, 0) / scores.length)
+          : 0;
     }
-
-    const score = totalWeight > 0 ? Math.round(weightedScore / totalWeight) : 0;
 
     const hasBlocked = phases.some(p => p.decision === 'blocked');
     const hasWarned = phases.some(p => p.decision === 'warned');

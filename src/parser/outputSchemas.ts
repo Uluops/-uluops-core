@@ -53,6 +53,14 @@ const artifactSchema = z.object({
  *
  * Categories and artifacts are both nullable — validators and analysts
  * produce categories; executors produce artifacts; some agents produce both.
+ *
+ * DESIGN TRADE-OFF (2026-04-16): one universal schema is intentionally lossy.
+ * It erases distinctions between agent families (a validator's score categories
+ * vs an executor's task artifacts vs a forecaster's scenario analysis) in
+ * exchange for a uniform pipeline. The alternative — per-agentType schemas —
+ * would be more faithful but would fork the extraction, tracking, and
+ * aggregation paths. The loss is acceptable because downstream processing
+ * (tracker, analytics, RAH) already branches on agentType when it matters.
  */
 export const agentOutputSchema = z.object({
   decision: z.string()

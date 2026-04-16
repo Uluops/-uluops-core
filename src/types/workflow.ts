@@ -28,7 +28,11 @@ export interface WorkflowDefinition {
       max_parallel?: number;
     };
 
-    /** Result aggregation */
+    /** Result aggregation.
+     *
+     * All declared methods are enacted by WorkflowExecutor.aggregate() (fixed
+     * 2026-04-16 — previously only weighted_average was implemented regardless
+     * of method). CommandExecutor.aggregateResults() was fixed in 25b434a. */
     aggregation: {
       /** Score aggregation */
       score: {

@@ -134,6 +134,13 @@ export interface UluOpsConfig {
    * Context window budget in tokens for agent execution.
    * When usage exceeds 80%, the agent is forced to produce output instead of calling more tools.
    * Also enables Anthropic context management (auto-clearing old tool uses at 50%).
+   *
+   * ASSUMPTION (2026-04-16): 200k tokens is sufficient for typical project scans.
+   * Large repositories or verbose tool traces may force early wrap-up or partial
+   * context retention, degrading analysis quality without hard failure. Context
+   * management emits warnings when clearing old tool uses — monitor these to
+   * detect when the budget is routinely exhausted.
+   *
    * @default 200000
    */
   contextBudget?: number;
@@ -145,6 +152,12 @@ export interface UluOpsConfig {
    * This separates the trust boundary: definition authors declare what they need,
    * operators decide what they permit. Without this, the definition author
    * controls both the request and the gate.
+   *
+   * SECURITY BOUNDARY (2026-04-16): this is the real trust boundary for tool access.
+   * Definition tool requests are advisory — they express what the agent needs, not
+   * what it's allowed. Operators who assume requested tools are automatically safe
+   * may inadvertently grant shell access. The safe default (bash blocked) exists
+   * precisely because this assumption is easy to make.
    *
    * When undefined, all tools EXCEPT 'bash' are allowed (safe default).
    * Set explicitly to `['bash']` or `['bash', ...]` to permit shell access.

@@ -274,6 +274,12 @@ export class RegistryClient {
    * Cast parsed YAML to typed definition with structural validation.
    * Verifies a known top-level key exists and its value is a non-null object.
    * Full schema validation is registry-side; this prevents totally wrong YAML.
+   *
+   * DESIGN (2026-04-16): this is intentionally shallow. For local definitions,
+   * tryRenderLocalFactory() provides deeper validation via adl.generate() which
+   * parses, transforms, and renders the YAML. For remote definitions, the registry
+   * API enforces full schema validation at publish time. This guard catches only
+   * completely wrong files (e.g., a docker-compose.yaml in the agents/ directory).
    */
   private castDefinition(parsed: Record<string, unknown>): ResolvedDefinition['definition'] {
     const knownTopKeys = ['agent', 'command', 'workflow', 'pipeline'] as const satisfies readonly DefinitionType[];
