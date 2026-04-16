@@ -1,5 +1,6 @@
 import * as fs from 'node:fs/promises';
 import * as path from 'node:path';
+import * as crypto from 'node:crypto';
 import * as yaml from 'yaml';
 import { RegistryClient as RegistrySdk } from '@uluops/registry-sdk';
 import type { ResolvedConfig } from '../types/config.js';
@@ -42,11 +43,19 @@ export class RegistryClient {
    * Resolve a definition by name and optional type.
    * Priority: cache → local files → remote API
    */
+  /** Safe definition name pattern — alphanumeric, hyphens, underscores, dots, forward slashes */
+  private static readonly SAFE_NAME_PATTERN = /^[a-zA-Z0-9][a-zA-Z0-9._\-/]*$/;
+
   async resolve(
     name: string,
     version?: string,
     type?: DefinitionType,
   ): Promise<ResolvedDefinition> {
+    // Validate name to prevent path traversal (CWE-22) before filesystem or API use
+    if (!RegistryClient.SAFE_NAME_PATTERN.test(name) || name.includes('..')) {
+      throw new ConfigurationError(`Invalid definition name: "${name}". Names must be alphanumeric with hyphens, underscores, dots, or forward slashes.`);
+    }
+
     const cacheKey = `${type ?? 'any'}:${name}@${version ?? 'latest'}`;
 
     const cached = this.cache.get(cacheKey);
@@ -162,7 +171,7 @@ export class RegistryClient {
         type: candidate.type,
         name,
         version: this.extractVersion(definition, candidate.type),
-        hash: '',
+        hash: `sha256:${crypto.createHash('sha256').update(yamlContent).digest('hex')}`,
         yaml: yamlContent,
         definition: this.castDefinition(definition),
         runtime: await this.renderLocally(yamlContent, definition, candidate.type),

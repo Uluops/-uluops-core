@@ -5,7 +5,7 @@
 # @uluops/core
 
 [![npm version](https://img.shields.io/npm/v/@uluops/core.svg)](https://www.npmjs.com/package/@uluops/core)
-[![License](https://img.shields.io/badge/License-Proprietary-red.svg)](LICENSE)
+[![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](LICENSE)
 [![Node.js Version](https://img.shields.io/node/v/@uluops/core)](https://nodejs.org)
 [![TypeScript](https://img.shields.io/badge/TypeScript-5.7+-blue.svg)](https://www.typescriptlang.org/)
 [![Tests](https://img.shields.io/badge/tests-passing-brightgreen)](test/)
@@ -672,4 +672,4 @@ npm run build
 
 ## License
 
-Proprietary — Copyright (c) 2026 Uluops. See [LICENSE](LICENSE) for details.
+MIT — Copyright (c) 2026 Uluops. See [LICENSE](LICENSE) for details.

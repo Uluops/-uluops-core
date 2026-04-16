@@ -259,6 +259,12 @@ export class ToolHandler {
       return { tool_use_id: id, content: `Error: regex pattern too long (${opts.pattern.length} chars, max 200)` };
     }
 
+    // Reject patterns with nested quantifiers that cause catastrophic backtracking (CWE-1333).
+    // Matches: (x+)+, (x*)+, (x+)*, (x{n,})+, ([...]+)+ and similar nested repetition.
+    if (/(\([^)]*[+*][^)]*\))[+*]|\(\?:[^)]*[+*][^)]*\)[+*]/.test(opts.pattern)) {
+      return { tool_use_id: id, content: 'Error: regex pattern contains nested quantifiers which may cause catastrophic backtracking' };
+    }
+
     let regex: RegExp;
     try {
       regex = new RegExp(opts.pattern, 'gi');

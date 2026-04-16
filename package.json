@@ -43,7 +43,7 @@
     "ai"
   ],
   "author": "Uluops <engineering@uluops.com>",
-  "license": "SEE LICENSE IN LICENSE",
+  "license": "MIT",
   "repository": {
     "type": "git",
     "url": "git+https://github.com/Uluops/uluops-core.git"

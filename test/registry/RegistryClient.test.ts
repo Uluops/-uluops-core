@@ -93,7 +93,7 @@ describe('RegistryClient', () => {
       expect(result.type).toBe('agent');
       expect(result.name).toBe('test-validator');
       expect(result.version).toBe('1.0.0');
-      expect(result.hash).toBe('');
+      expect(result.hash).toMatch(/^sha256:[a-f0-9]{64}$/);
       expect(result.yaml).toBe(agentYaml);
       expect(result.domain).toBe('software');
       expect(result.agentType).toBe('validator');
