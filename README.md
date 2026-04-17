@@ -379,7 +379,7 @@ UluOpsClient (facade)
 
 ## Advanced Exports
 
-All internal components are exported for direct use when `UluOpsClient` is too opinionated. Import from the package root:
+All internal components are exported for direct use when `UluOpsClient` is too opinionated. Import from the package root (reference listing — import only what you need):
 
 ```typescript
 import {
@@ -636,7 +636,7 @@ try {
     // Back off and retry — the SDK does not auto-retry rate limits
     await new Promise(r => setTimeout(r, 5000));
   } else if (error instanceof NetworkError) {
-    // Check ULUOPS_REGISTRY_URL and ULUOPS_BASE_URL environment variables
+    // Check ULUOPS_REGISTRY_URL and ULUOPS_VALIDATION_URL environment variables
     console.error('Connection failed. Verify API URLs and network access.');
   }
 }

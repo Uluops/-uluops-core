@@ -58,7 +58,7 @@ export class PipelineExecutor {
    */
   async execute(resolved: ResolvedDefinition, input: ExecutionInput): Promise<PipelineResult> {
     const handle = await this.start(resolved, input);
-    return handle.wait(10); // Very short poll for sync mode
+    return handle.wait();
   }
 
   private async executeAsync(

@@ -602,10 +602,6 @@ export class AIProvider {
   }
 
   // ─────────────────────────────────────────────────────────────────────────
-  // Shell Command Execution (delegated to ShellExecutor)
-  // ─────────────────────────────────────────────────────────────────────────
-
-  // ─────────────────────────────────────────────────────────────────────────
   // Provider Management
   // ─────────────────────────────────────────────────────────────────────────
 
@@ -793,15 +789,23 @@ export class AIProvider {
       let mapped: Error;
 
       if (status === 429) {
-        mapped = new RateLimitError(`Rate limit exceeded: ${error.message}`);
+        mapped = new RateLimitError(
+          `Rate limit exceeded (HTTP 429). Back off and retry. Provider message: ${error.message}`,
+        );
       } else if (status === 401) {
-        mapped = new UnauthorizedError(`Authentication failed: ${error.message}`);
+        mapped = new UnauthorizedError(
+          `Authentication failed (HTTP 401). Check your provider API key. Provider message: ${error.message}`,
+        );
       } else if (status === 403) {
-        mapped = new ForbiddenError(`Forbidden: ${error.message}`);
+        mapped = new ForbiddenError(
+          `Forbidden (HTTP 403). Check API key permissions or billing status. Provider message: ${error.message}`,
+        );
       } else if (status >= 500) {
-        mapped = new ServiceUnavailableError(`Server error: ${error.message}`);
+        mapped = new ServiceUnavailableError(
+          `Provider server error (HTTP ${status}). This is typically transient — retry or check the provider's status page. Provider message: ${error.message}`,
+        );
       } else {
-        mapped = new SdkApiError(status, error.message);
+        mapped = new SdkApiError(status, `Provider returned HTTP ${status}: ${error.message}`);
       }
       mapped.cause = cause;
       return mapped;

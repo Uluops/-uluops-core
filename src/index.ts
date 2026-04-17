@@ -25,7 +25,14 @@ export { ToolHandler } from './executor/ToolHandler.js';
 export { parseRef } from './utils/parseRef.js';
 export { classifyDecision, buildVocabularyMap } from './executor/classifyDecision.js';
 export type { DecisionCategory, DecisionVocabularyMap } from './executor/classifyDecision.js';
-export { STARTER_DEFINITIONS_DIR } from './constants.js';
+export {
+  STARTER_DEFINITIONS_DIR,
+  DEFAULT_PASS_THRESHOLD,
+  DEFAULT_WARN_THRESHOLD,
+  DEFAULT_GATE_THRESHOLD,
+  DEFAULT_MAX_STEPS,
+  DEFAULT_MAX_TOKENS,
+} from './constants.js';
 
 // ─── Types: Config ────────────────────────────────────────────────────────────
 export type { UluOpsConfig, AIConfig, AIProviderCredentials, ResolvedConfig, ResolvedAIConfig } from './types/config.js';
