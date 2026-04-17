@@ -432,7 +432,7 @@ const result = await executor.execute(resolvedDefinition, {
 ```typescript
 import { ModelCatalog } from '@uluops/core';
 
-const catalog = new ModelCatalog(registrySdk, logger);
+const catalog = new ModelCatalog(registrySdk);
 const resolved = await catalog.resolve('sonnet', {
   requiredCapabilities: ['tools', 'extendedThinking'],
 });
@@ -561,7 +561,7 @@ import type { AgentResult, ExecutionInput } from '@uluops/core/types';
 import { ExecutionError, ConfigurationError } from '@uluops/core/errors';
 ```
 
-> **Note:** The `/types` subpath exports consumer-facing types only. Internal registry configuration types (`CategoryConfig`, `CriteriaConfig`, `PhaseConfig`, etc.) are available via the root import `@uluops/core`.
+> **Note:** The `/types` subpath exports consumer-facing types only. Internal registry configuration types (`CategoryConfig`, `CriteriaConfig`, `PhaseConfig`, etc.) are not part of the public API — use the YAML schema definitions as the authoritative reference for these structures.
 
 ## Error Handling
 

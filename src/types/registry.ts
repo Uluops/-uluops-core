@@ -23,8 +23,8 @@ export interface ResolvedDefinition {
   /** Raw YAML content */
   yaml: string;
 
-  /** Parsed definition */
-  definition: AgentDefinition | CommandDefinition | WorkflowDefinition | PipelineDefinition;
+  /** Parsed definition (Partial when no YAML available — use optional chaining) */
+  definition: AgentDefinition | CommandDefinition | WorkflowDefinition | PipelineDefinition | Partial<AgentDefinition>;
 
   /** Rendered runtime - type depends on agentType */
   runtime: ValidatorRuntime | ExecutorRuntime | WorkflowRuntime | PipelineRuntime;

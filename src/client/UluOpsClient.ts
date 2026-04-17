@@ -320,12 +320,29 @@ export class UluOpsClient {
       );
     }
 
+    const registryUrl = config.registryUrl ?? process.env['ULUOPS_REGISTRY_URL'] ?? 'https://api.uluops.ai/api/v1/registry';
+    const validationUrl = config.validationUrl ?? process.env['ULUOPS_VALIDATION_URL'] ?? 'https://api.uluops.ai/api/v1/ops';
+    const dashboardUrl = config.dashboardUrl ?? process.env['ULUOPS_DASHBOARD_URL'] ?? 'https://app.uluops.ai';
+
+    // Enforce HTTPS when a real API key is present to prevent credential exfiltration.
+    // Allow HTTP for local development (no key or test_ prefix).
+    if (apiKey && !apiKey.startsWith('test_')) {
+      for (const [label, url] of [['registryUrl', registryUrl], ['validationUrl', validationUrl]] as const) {
+        if (!url.startsWith('https://')) {
+          throw new ConfigurationError(
+            `${label} must use HTTPS when an API key is configured (got "${url}"). ` +
+            `Use HTTPS to prevent credential exposure, or omit the API key for local-only usage.`,
+          );
+        }
+      }
+    }
+
     return {
       apiKey,
       ai: this.resolveAIConfig(config.ai),
-      registryUrl: config.registryUrl ?? process.env['ULUOPS_REGISTRY_URL'] ?? 'https://api.uluops.ai/api/v1/registry',
-      validationUrl: config.validationUrl ?? process.env['ULUOPS_VALIDATION_URL'] ?? 'https://api.uluops.ai/api/v1/ops',
-      dashboardUrl: config.dashboardUrl ?? process.env['ULUOPS_DASHBOARD_URL'] ?? 'https://app.uluops.ai',
+      registryUrl,
+      validationUrl,
+      dashboardUrl,
       localDefinitions: config.localDefinitions ?? process.env['ULUOPS_LOCAL_DEFINITIONS'],
       trackingEnabled: config.trackingEnabled ?? (process.env['ULUOPS_TRACKING_ENABLED'] !== 'false'),
       timeout: config.timeout ?? DEFAULT_TIMEOUT_MS,

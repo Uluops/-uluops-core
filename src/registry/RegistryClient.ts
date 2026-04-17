@@ -416,10 +416,10 @@ export class RegistryClient {
 
   /**
    * Placeholder definition for render-only resolution (no YAML available).
-   * Downstream code reads definition fields via optional chaining.
+   * Returns a partial structure — downstream code MUST use optional chaining.
    */
-  private emptyDefinition(): ResolvedDefinition['definition'] {
-    return { agent: {} } as AgentDefinition;
+  private emptyDefinition(): Partial<AgentDefinition> {
+    return { agent: {} as Partial<AgentDefinition['agent']> } as Partial<AgentDefinition>;
   }
 
   /**

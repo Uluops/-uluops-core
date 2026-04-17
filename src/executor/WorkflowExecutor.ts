@@ -309,7 +309,7 @@ export class WorkflowExecutor {
               failureCode: 'PRA-FRA/C',
             }],
             durationMs: 0,
-            metrics: { inputTokens: 0, outputTokens: 0, totalEffectiveTokens: 0, durationMs: 0, model: 'unknown', toolCalls: 0 },
+            metrics: { inputTokens: 0, outputTokens: 0, totalEffectiveTokens: 0, durationMs: 0, model: 'unknown', toolCallCount: 0, toolCalls: 0 },
           } as CommandResult);
         }
       }
@@ -403,7 +403,7 @@ export class WorkflowExecutor {
       maxScore: agent.maxScore,
       recommendations: agent.recommendations,
       durationMs: agent.metrics.durationMs,
-      metrics: { ...agent.metrics, toolCalls: (agent.metrics as unknown as Record<string, unknown>)['toolCalls'] as number ?? 0 },
+      metrics: { ...agent.metrics, toolCalls: agent.metrics.toolCallCount ?? 0 },
     } as CommandResult;
   }
 

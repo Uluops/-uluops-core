@@ -114,7 +114,7 @@ export class ToolHandler {
 
         case 'get_directory_tree':
           return await this.getDirectoryTree(toolUse.id, fullPath, {
-            maxDepth: toNumber(input['max_depth']) ?? 3,
+            maxDepth: Math.min(toNumber(input['max_depth']) ?? 3, 10),
             includeSizes: input['include_sizes'] !== false,
           });
 
