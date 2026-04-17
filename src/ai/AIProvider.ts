@@ -182,7 +182,11 @@ export class AIProvider {
     // providers may change what their models support without notice. The catalog
     // is the single point of truth; if a model starts failing structured output,
     // update the catalog entry rather than adding provider-specific workarounds here.
-    const useStructuredOutput = !!options.output && resolved.capabilities.structuredOutput;
+    // Exception: Google models don't support structured output + tool use simultaneously
+    // (400: "Function calling with a response mime type: 'application/json' is unsupported").
+    const hasTools = !!options.tools && Object.keys(options.tools).length > 0;
+    const useStructuredOutput = !!options.output && resolved.capabilities.structuredOutput
+      && !(resolved.provider === 'google' && hasTools);
 
     // Reasoning models (o1, o3, o4-mini, gpt-5.x) don't support temperature —
     // strip it to suppress repeated AI SDK warnings. Check both extendedThinking
