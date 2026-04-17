@@ -10,8 +10,9 @@ import type {
 import { ParseError } from '../errors/index.js';
 
 /**
- * Extracts structured output from LLM responses using a 3-strategy fallback:
- * 1. JSON code fence (highest confidence)
+ * Extracts structured output from LLM responses using a 4-strategy fallback:
+ * 0. AI SDK structured output (highest confidence — schema-validated by the SDK)
+ * 1. JSON code fence
  * 2. Inline JSON detection
  * 3. Structured text pattern matching (lowest confidence)
  */
@@ -761,89 +762,10 @@ export class OutputExtractor {
   }
 
   private parseIssues(raw: unknown[]): Issue[] {
-    // Flatten grouped issues: [{severity: "CRITICAL", issues: [...]}, ...] → flat array
-    const flatItems: Record<string, unknown>[] = [];
-    for (const item of raw) {
-      if (typeof item !== 'object' || item === null) continue;
-      const rec = item as Record<string, unknown>;
-      if (Array.isArray(rec['issues'])) {
-        // This is a group — recurse into the nested issues array, inheriting severity
-        const groupSeverity = rec['severity'] as string | undefined;
-        for (const sub of rec['issues'] as unknown[]) {
-          if (typeof sub === 'object' && sub !== null) {
-            const subRec = sub as Record<string, unknown>;
-            if (groupSeverity && !subRec['severity']) subRec['severity'] = groupSeverity;
-            flatItems.push(subRec);
-          }
-        }
-      } else {
-        flatItems.push(rec);
-      }
-    }
-    return flatItems
+    return this.flattenGroupedIssues(raw)
       .map(item => {
-        // Resolve file path and line number from various shapes
-        let filePath = (item['filePath'] as string | undefined)
-          ?? (item['file_path'] as string | undefined)
-          ?? (item['file'] as string | undefined);
-        let lineNumber = typeof item['lineNumber'] === 'number'
-          ? item['lineNumber']
-          : typeof item['line_number'] === 'number'
-            ? item['line_number']
-            : typeof item['line'] === 'number'
-              ? item['line']
-              : typeof item['line_start'] === 'number'
-                ? item['line_start']
-                : undefined;
-
-        // Handle line as string: "24-50" or "24"
-        if (lineNumber === undefined && typeof item['line'] === 'string') {
-          const lineMatch = item['line'].match(/^(\d+)/);
-          if (lineMatch) lineNumber = parseInt(lineMatch[1]!, 10);
-        }
-        if (lineNumber === undefined && typeof item['line_number'] === 'string') {
-          const lineMatch = item['line_number'].match(/^(\d+)/);
-          if (lineMatch) lineNumber = parseInt(lineMatch[1]!, 10);
-        }
-        if (lineNumber === undefined && typeof item['lineNumber'] === 'string') {
-          const lineMatch = (item['lineNumber'] as string).match(/^(\d+)/);
-          if (lineMatch) lineNumber = parseInt(lineMatch[1]!, 10);
-        }
-
-        // Handle combined fields: "file_line" or "location" like "src/foo.ts:42-50"
-        for (const combinedKey of ['file_line', 'location']) {
-          if (!filePath && typeof item[combinedKey] === 'string') {
-            const flMatch = (item[combinedKey] as string).match(/^([\w/.@-]+\.\w+):(\d+)/);
-            if (flMatch) {
-              filePath = flMatch[1];
-              lineNumber = lineNumber ?? parseInt(flMatch[2]!, 10);
-            } else if (combinedKey === 'file_line') {
-              filePath = item[combinedKey] as string;
-            }
-          }
-        }
-
-        // Handle locations array: [{ file: "...", line_start: N }]
-        if (!filePath && Array.isArray(item['locations']) && item['locations'].length > 0) {
-          const loc = this.asRecord(item['locations'][0]);
-          if (loc) {
-            filePath = (loc['file'] as string | undefined) ?? (loc['filePath'] as string | undefined);
-            lineNumber = lineNumber ?? (typeof loc['line_start'] === 'number' ? loc['line_start'] : undefined);
-          }
-        }
-
-        // Resolve title: prefer explicit title/message, fall back to issue/summary/description/name
-        const hasExplicitTitle = item['title'] !== undefined || item['message'] !== undefined
-          || item['issue'] !== undefined || item['summary'] !== undefined;
-        const title = String(
-          item['title'] ?? item['message'] ?? item['issue'] ?? item['summary']
-          ?? item['name'] ?? item['description'] ?? 'Untitled Issue',
-        );
-        // For description: if title consumed 'description', use explanation/suggestion/recommendation instead
-        const detailsStr = typeof item['details'] === 'string' ? item['details'] : undefined;
-        const description = hasExplicitTitle
-          ? String(item['description'] ?? detailsStr ?? item['explanation'] ?? item['suggestion'] ?? item['recommendation'] ?? '')
-          : String(item['explanation'] ?? detailsStr ?? item['suggestion'] ?? item['recommendation'] ?? item['description'] ?? '');
+        const { filePath, lineNumber } = this.resolveFileLocation(item);
+        const { title, description } = this.resolveIssueText(item);
 
         return {
           title,
@@ -857,6 +779,88 @@ export class OutputExtractor {
           description,
         };
       });
+  }
+
+  /** Flatten grouped issues: [{severity: "CRITICAL", issues: [...]}, ...] → flat array */
+  private flattenGroupedIssues(raw: unknown[]): Record<string, unknown>[] {
+    const flatItems: Record<string, unknown>[] = [];
+    for (const item of raw) {
+      if (typeof item !== 'object' || item === null) continue;
+      const rec = item as Record<string, unknown>;
+      if (Array.isArray(rec['issues'])) {
+        const groupSeverity = rec['severity'] as string | undefined;
+        for (const sub of rec['issues'] as unknown[]) {
+          if (typeof sub === 'object' && sub !== null) {
+            const subRec = sub as Record<string, unknown>;
+            if (groupSeverity && !subRec['severity']) subRec['severity'] = groupSeverity;
+            flatItems.push(subRec);
+          }
+        }
+      } else {
+        flatItems.push(rec);
+      }
+    }
+    return flatItems;
+  }
+
+  /** Resolve file path and line number from various LLM output shapes */
+  private resolveFileLocation(item: Record<string, unknown>): { filePath?: string; lineNumber?: number } {
+    let filePath = (item['filePath'] as string | undefined)
+      ?? (item['file_path'] as string | undefined)
+      ?? (item['file'] as string | undefined);
+    let lineNumber = this.resolveLineNumber(item);
+
+    // Handle combined fields: "file_line" or "location" like "src/foo.ts:42-50"
+    for (const combinedKey of ['file_line', 'location']) {
+      if (!filePath && typeof item[combinedKey] === 'string') {
+        const flMatch = (item[combinedKey] as string).match(/^([\w/.@-]+\.\w+):(\d+)/);
+        if (flMatch) {
+          filePath = flMatch[1];
+          lineNumber = lineNumber ?? parseInt(flMatch[2]!, 10);
+        } else if (combinedKey === 'file_line') {
+          filePath = item[combinedKey] as string;
+        }
+      }
+    }
+
+    // Handle locations array: [{ file: "...", line_start: N }]
+    if (!filePath && Array.isArray(item['locations']) && item['locations'].length > 0) {
+      const loc = this.asRecord(item['locations'][0]);
+      if (loc) {
+        filePath = (loc['file'] as string | undefined) ?? (loc['filePath'] as string | undefined);
+        lineNumber = lineNumber ?? (typeof loc['line_start'] === 'number' ? loc['line_start'] : undefined);
+      }
+    }
+
+    return { filePath, lineNumber };
+  }
+
+  /** Resolve line number from numeric, string ("24-50"), or named fields */
+  private resolveLineNumber(item: Record<string, unknown>): number | undefined {
+    for (const key of ['lineNumber', 'line_number', 'line', 'line_start'] as const) {
+      const val = item[key];
+      if (typeof val === 'number') return val;
+      if (typeof val === 'string') {
+        const match = val.match(/^(\d+)/);
+        if (match) return parseInt(match[1]!, 10);
+      }
+    }
+    return undefined;
+  }
+
+  /** Resolve title and description from various naming conventions */
+  private resolveIssueText(item: Record<string, unknown>): { title: string; description: string } {
+    const hasExplicitTitle = item['title'] !== undefined || item['message'] !== undefined
+      || item['issue'] !== undefined || item['summary'] !== undefined;
+    const title = String(
+      item['title'] ?? item['message'] ?? item['issue'] ?? item['summary']
+      ?? item['name'] ?? item['description'] ?? 'Untitled Issue',
+    );
+    const detailsStr = typeof item['details'] === 'string' ? item['details'] : undefined;
+    const description = hasExplicitTitle
+      ? String(item['description'] ?? detailsStr ?? item['explanation'] ?? item['suggestion'] ?? item['recommendation'] ?? '')
+      : String(item['explanation'] ?? detailsStr ?? item['suggestion'] ?? item['recommendation'] ?? item['description'] ?? '');
+    return { title, description };
   }
 
   private parseArtifacts(raw: unknown[]): ArtifactResult[] {

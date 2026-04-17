@@ -256,19 +256,19 @@ export class WorkflowExecutor {
     const results: PhaseResult[] = new Array(phases.length);
     let nextIndex = 0;
 
-    async function runNext(executor: WorkflowExecutor): Promise<void> {
+    const runNext = async (): Promise<void> => {
       while (nextIndex < phases.length) {
         const idx = nextIndex++;
         const phase = phases[idx]!;
         try {
-          results[idx] = await executor.executePhase(phase, input);
+          results[idx] = await this.executePhase(phase, input);
         } catch (error) {
-          results[idx] = executor.createBlockedPhase(phase, error);
+          results[idx] = this.createBlockedPhase(phase, error);
         }
       }
-    }
+    };
 
-    const workers = Array.from({ length: Math.min(limit, phases.length) }, () => runNext(this));
+    const workers = Array.from({ length: Math.min(limit, phases.length) }, () => runNext());
     await Promise.all(workers);
     return results;
   }

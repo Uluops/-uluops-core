@@ -316,6 +316,31 @@ describe('PipelineExecutor', () => {
       expect(result.score).toBe(90); // avg of 80, 100
     });
 
+    it('computes average score across 3 stages with non-symmetric scores', async () => {
+      const cmdResults = [
+        makeCommandResult({ score: 70 }),
+        makeCommandResult({ score: 80 }),
+        makeCommandResult({ score: 90 }),
+      ];
+      const wfExec = makeWorkflowExecutor();
+      const cmdExec = makeCommandExecutor(cmdResults);
+      const registry = makeRegistry();
+      const executor = new PipelineExecutor(wfExec, cmdExec, registry);
+
+      const def = makePipelineDef({
+        stages: [
+          { id: 's1', name: 'S1', type: 'command', ref: 'a@1' },
+          { id: 's2', name: 'S2', type: 'command', ref: 'b@1' },
+          { id: 's3', name: 'S3', type: 'command', ref: 'c@1' },
+        ],
+      });
+
+      const result = await executor.execute(def, { target: '/tmp/test' });
+
+      expect(result.score).toBe(80); // avg of 70, 80, 90
+      expect(result.stages).toHaveLength(3);
+    });
+
     it('computes PASS decision when no failures', async () => {
       const wfExec = makeWorkflowExecutor();
       const cmdExec = makeCommandExecutor([makeCommandResult({ decision: 'PASS' })]);

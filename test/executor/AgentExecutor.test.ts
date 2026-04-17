@@ -218,6 +218,23 @@ describe('AgentExecutor', () => {
         expect(result.threshold).toBe(80);
       }
     });
+
+    it('propagates threshold from definition defaults when no options override', async () => {
+      const ai = mockAIProvider();
+      const executor = new AgentExecutor(baseConfig, ai, noopLogger);
+
+      const def = makeValidatorDef({
+        runtime: {
+          prompt: 'You are a test validator.',
+          defaults: { model: 'sonnet', timeout: 30000, thresholds: { pass: 70, warn: 50 } },
+          config: { maxScore: 100, threshold: 75, categories: [], outputSchema: 'json' },
+        } as ValidatorRuntime,
+      });
+
+      const result = await executor.execute(def, { target: tmpDir });
+
+      expect(result.threshold).toBe(70);
+    });
   });
 
   describe('executor execution', () => {

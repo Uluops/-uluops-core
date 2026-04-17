@@ -437,6 +437,13 @@ const resolved = await catalog.resolve('sonnet', {
   requiredCapabilities: ['tools', 'extendedThinking'],
 });
 // → { provider: 'anthropic', model: 'claude-sonnet-4-...' }
+
+// Enumerate available models and aliases
+const aliases = await catalog.listAliases();
+const premiumModels = await catalog.listModels({ tier: 'premium' });
+
+// Clear in-memory cache after registry admin syncs models
+catalog.refresh();
 ```
 
 ### Decision Classification
