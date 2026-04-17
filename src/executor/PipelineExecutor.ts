@@ -4,7 +4,7 @@ import type { WorkflowExecutor } from './WorkflowExecutor.js';
 import type { RegistryClient } from '../registry/RegistryClient.js';
 import type { ResolvedDefinition } from '../types/registry.js';
 import type { PipelineDefinition, StageDefinition, PipelineResult, StageResult, PipelineState, PipelineHandle as IPipelineHandle } from '../types/pipeline.js';
-import type { ExecutionInput } from '../types/execution.js';
+import type { ExecutionInput, ExecutionOptions } from '../types/execution.js';
 import type { AgentResult } from '../types/agent.js';
 import { PipelineError } from '../errors/index.js';
 import { parseRef } from '../utils/parseRef.js';
@@ -30,7 +30,7 @@ export class PipelineExecutor {
    * Start pipeline execution asynchronously.
    * Returns a PipelineHandle for monitoring progress and retrieving results.
    */
-  async start(resolved: ResolvedDefinition, input: ExecutionInput): Promise<PipelineHandle> {
+  async start(resolved: ResolvedDefinition, input: ExecutionInput, options?: ExecutionOptions): Promise<PipelineHandle> {
     const def = this.assertPipelineDefinition(resolved);
     const pipelineId = `pipeline_${Date.now()}_${Math.random().toString(36).substring(2, 9)}`;
 
@@ -45,7 +45,7 @@ export class PipelineExecutor {
     };
 
     // Start execution in background, capturing errors into state
-    const execution = this.executeAsync(resolved, input, state);
+    const execution = this.executeAsync(resolved, input, state, options);
     execution.catch((error) => {
       if (state.status === 'running') {
         state.status = 'failed';
@@ -59,8 +59,8 @@ export class PipelineExecutor {
   /**
    * Execute pipeline synchronously (blocking).
    */
-  async execute(resolved: ResolvedDefinition, input: ExecutionInput): Promise<PipelineResult> {
-    const handle = await this.start(resolved, input);
+  async execute(resolved: ResolvedDefinition, input: ExecutionInput, options?: ExecutionOptions): Promise<PipelineResult> {
+    const handle = await this.start(resolved, input, options);
     return handle.wait();
   }
 
@@ -68,6 +68,7 @@ export class PipelineExecutor {
     resolved: ResolvedDefinition,
     input: ExecutionInput,
     state: PipelineState,
+    options?: ExecutionOptions,
   ): Promise<void> {
     const def = this.assertPipelineDefinition(resolved);
 
@@ -93,7 +94,7 @@ export class PipelineExecutor {
         }
 
         // Execute stage
-        const stageResult = await this.executeStage(stage, input);
+        const stageResult = await this.executeStage(stage, input, options);
         state.stageResults.push(stageResult);
       }
 
@@ -116,13 +117,13 @@ export class PipelineExecutor {
     return resolved.definition as PipelineDefinition;
   }
 
-  private async executeStage(stage: StageDefinition, input: ExecutionInput): Promise<StageResult> {
+  private async executeStage(stage: StageDefinition, input: ExecutionInput, options?: ExecutionOptions): Promise<StageResult> {
     const startTime = Date.now();
 
     try {
       // Inline agents — PDL stages with agents[] run each agent directly in parallel
       if (stage.type === 'agents' && stage.agents) {
-        const agentResults = await this.executeInlineAgents(stage.agents, input);
+        const agentResults = await this.executeInlineAgents(stage.agents, input, options);
         const scores = agentResults.map(r => r.score ?? 0);
         const avgScore = scores.length > 0 ? scores.reduce((a, b) => a + b, 0) / scores.length : 0;
 
@@ -196,12 +197,13 @@ export class PipelineExecutor {
   private async executeInlineAgents(
     agents: Array<{ ref: string }>,
     input: ExecutionInput,
+    options?: ExecutionOptions,
   ): Promise<AgentResult[]> {
     const settled = await Promise.allSettled(
       agents.map(async (a) => {
         const [name, version] = parseRef(a.ref);
         const resolved = await this.registry.resolve(name, version, 'agent');
-        return this.agentExecutor.execute(resolved, input);
+        return this.agentExecutor.execute(resolved, input, options);
       }),
     );
 

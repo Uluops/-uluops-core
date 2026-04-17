@@ -149,7 +149,10 @@ export class UluOpsClient {
         result = await this.workflowExecutor.execute(resolved, input);
         break;
       case 'pipeline':
-        result = await this.pipelineExecutor.execute(resolved, input);
+        result = await this.pipelineExecutor.execute(resolved, input, {
+          timeoutMs: this.config.timeout,
+          model: this.config.ai.modelOverride,
+        });
         break;
       default: {
         const _exhaustive: never = resolved.type;
