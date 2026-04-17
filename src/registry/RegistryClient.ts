@@ -385,12 +385,18 @@ export class RegistryClient {
     if (!Array.isArray(phases)) return;
 
     for (const phase of phases) {
-      // steps[].command → commands[]
+      // steps[].command → commands[], steps[].agent → agentRefs[]
       if (!phase['commands'] && Array.isArray(phase['steps'])) {
         const steps = phase['steps'] as Array<Record<string, unknown>>;
         phase['commands'] = steps
           .map(s => s['command'] as string)
           .filter(Boolean);
+        const agents = steps
+          .map(s => s['agent'] as string)
+          .filter(Boolean);
+        if (agents.length > 0) {
+          phase['agentRefs'] = agents;
+        }
         delete phase['steps'];
       }
 

@@ -551,13 +551,14 @@ describe('UluOpsClient', () => {
       expect(args[1]).toHaveProperty('resolve'); // registry
     });
 
-    it('passes commandExecutor and registry to WorkflowExecutor', () => {
+    it('passes commandExecutor, registry, and agentExecutor to WorkflowExecutor', () => {
       new UluOpsClient({ apiKey: 'ulr_test-key' });
 
       const args = constructorArgs(WorkflowExecutor as unknown as ReturnType<typeof vi.fn>);
-      expect(args).toHaveLength(2);
+      expect(args).toHaveLength(3);
       expect(args[0]).toHaveProperty('execute'); // commandExecutor
       expect(args[1]).toHaveProperty('resolve'); // registry
+      expect(args[2]).toHaveProperty('execute'); // agentExecutor
     });
 
     it('passes workflowExecutor, commandExecutor, and registry to PipelineExecutor', () => {

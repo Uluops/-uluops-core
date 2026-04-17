@@ -1,8 +1,10 @@
+import type { AgentExecutor } from './AgentExecutor.js';
 import type { CommandExecutor } from './CommandExecutor.js';
 import type { RegistryClient } from '../registry/RegistryClient.js';
 import type { ResolvedDefinition } from '../types/registry.js';
 import type { WorkflowDefinition, WorkflowResult, PhaseResult, PhaseDefinition, WorkflowDecision } from '../types/workflow.js';
 import type { CommandResult } from '../types/command.js';
+import type { AgentResult } from '../types/agent.js';
 import type { ExecutionInput, Recommendation } from '../types/execution.js';
 import { WorkflowError } from '../errors/index.js';
 import { formatErrorMessage } from '../utils/formatError.js';
@@ -28,6 +30,7 @@ export class WorkflowExecutor {
   constructor(
     private commandExecutor: CommandExecutor,
     private registry: RegistryClient,
+    private agentExecutor?: AgentExecutor,
   ) {}
 
   /**
@@ -271,9 +274,16 @@ export class WorkflowExecutor {
     const phaseStart = Date.now();
     const commandResults: CommandResult[] = [];
 
+    // Collect all step executables: command refs + agent refs
+    type StepRef = { type: 'command' | 'agent'; ref: string };
+    const stepRefs: StepRef[] = [
+      ...phase.commands.map(ref => ({ type: 'command' as const, ref })),
+      ...(phase.agentRefs ?? []).map(ref => ({ type: 'agent' as const, ref })),
+    ];
+
     if (phase.parallel) {
       const settled = await Promise.allSettled(
-        phase.commands.map(cmdName => this.executeCommand(cmdName, input)),
+        stepRefs.map(step => this.executeStep(step.type, step.ref, input)),
       );
       const errors: string[] = [];
       for (let j = 0; j < settled.length; j++) {
@@ -283,11 +293,9 @@ export class WorkflowExecutor {
         } else {
           const errorMsg = outcome.reason instanceof Error ? outcome.reason.message : String(outcome.reason);
           errors.push(errorMsg);
-          // Failed commands contribute a zero-score result so they penalize the aggregate.
-          // Error context is preserved in recommendations so it surfaces in the phase result.
           commandResults.push({
             type: 'command',
-            name: phase.commands[j]!,
+            name: stepRefs[j]!.ref,
             version: '',
             definitionHash: '',
             agentType: 'validator',
@@ -295,7 +303,7 @@ export class WorkflowExecutor {
             score: 0,
             maxScore: 100,
             recommendations: [{
-              title: `Command execution failed: ${phase.commands[j]!}`,
+              title: `Step execution failed: ${stepRefs[j]!.ref}`,
               description: errorMsg,
               severity: 'critical',
               failureCode: 'PRA-FRA/C',
@@ -307,13 +315,13 @@ export class WorkflowExecutor {
       }
       if (errors.length > 0 && commandResults.length === errors.length) {
         throw new WorkflowError(
-          `All parallel commands in phase "${phase.name}" failed: ${errors.join('; ')}`,
+          `All steps in phase "${phase.name}" failed: ${errors.join('; ')}`,
           { partialResult: commandResults },
         );
       }
     } else {
-      for (const cmdName of phase.commands) {
-        const result = await this.executeCommand(cmdName, input);
+      for (const step of stepRefs) {
+        const result = await this.executeStep(step.type, step.ref, input);
         commandResults.push(result);
       }
     }
@@ -336,10 +344,67 @@ export class WorkflowExecutor {
     };
   }
 
-  private async executeCommand(cmdRef: string, input: ExecutionInput): Promise<CommandResult> {
-    const [name, version] = parseRef(cmdRef);
+  /**
+   * Execute a step by type. Agent refs are run directly via AgentExecutor
+   * (wrapped as CommandResult). Command refs go through CommandExecutor,
+   * with automatic fallback to AgentExecutor when a command ref resolves
+   * to an agent definition (common in WDLs that use command: for agents).
+   */
+  private async executeStep(type: 'command' | 'agent', ref: string, input: ExecutionInput): Promise<CommandResult> {
+    const [name, version] = parseRef(ref);
+
+    if (type === 'agent') {
+      return this.executeAgentRef(name, version, ref, input);
+    }
+
+    // Command ref — resolve without type hint, then route by actual type
     const resolved = await this.registry.resolve(name, version);
+    if (resolved.type === 'agent') {
+      // WDL used command: but definition is actually an agent — route directly
+      return this.executeAgentDirect(resolved, input, ref);
+    }
     return this.commandExecutor.execute(resolved, input);
+  }
+
+  private async executeAgentRef(name: string, version: string | undefined, ref: string, input: ExecutionInput): Promise<CommandResult> {
+    if (!this.agentExecutor) {
+      throw new WorkflowError(
+        `Phase references agent "${ref}" but no AgentExecutor is available`,
+        { partialResult: undefined },
+      );
+    }
+    const resolved = await this.registry.resolve(name, version, 'agent');
+    return this.executeAgentDirect(resolved, input, ref);
+  }
+
+  private async executeAgentDirect(resolved: ResolvedDefinition, input: ExecutionInput, ref: string): Promise<CommandResult> {
+    if (!this.agentExecutor) {
+      throw new WorkflowError(
+        `Phase references agent "${ref}" but no AgentExecutor is available`,
+        { partialResult: undefined },
+      );
+    }
+    const agentResult = await this.agentExecutor.execute(resolved, input);
+    return this.wrapAgentResult(agentResult, resolved);
+  }
+
+  /**
+   * Wrap an AgentResult as a CommandResult for uniform phase aggregation.
+   */
+  private wrapAgentResult(agent: AgentResult, resolved: ResolvedDefinition): CommandResult {
+    return {
+      type: 'command',
+      name: agent.name,
+      version: resolved.version,
+      definitionHash: resolved.hash,
+      agentType: (resolved.agentType ?? 'analyst') as CommandResult['agentType'],
+      decision: agent.decision,
+      score: agent.score,
+      maxScore: agent.maxScore,
+      recommendations: agent.recommendations,
+      durationMs: agent.metrics.durationMs,
+      metrics: { ...agent.metrics, toolCalls: (agent.metrics as unknown as Record<string, unknown>)['toolCalls'] as number ?? 0 },
+    } as CommandResult;
   }
 
   private aggregatePhaseScore(results: CommandResult[], method: 'average' | 'min' | 'max'): number {
@@ -462,8 +527,24 @@ export class WorkflowExecutor {
     input: ExecutionInput,
     _phases: PhaseResult[],
   ): boolean {
-    const match = condition.match(/\{\{\s*input\.(\w+)\s*\}\}/);
-    if (match?.[1]) return Boolean(input.options?.[match[1]]);
+    // Handle NOT(...) wrapper (produced by WDL condition → skip_if normalization)
+    const notMatch = condition.match(/^NOT\s*\((.+)\)$/);
+    if (notMatch?.[1]) {
+      return !this.evaluateCondition(notMatch[1].trim(), input, _phases);
+    }
+
+    // {{ input.X }} — template-style references
+    const templateMatch = condition.match(/\{\{\s*input\.(\w+)\s*\}\}/);
+    if (templateMatch?.[1]) return Boolean(input.options?.[templateMatch[1]]);
+
+    // arguments.X — WDL-style references (underscore-normalized: with_hume → with-hume)
+    const argMatch = condition.match(/^arguments\.(\w+)$/);
+    if (argMatch?.[1]) {
+      const key = argMatch[1];
+      // Try exact key first, then hyphenated variant (with_hume → with-hume)
+      return Boolean(input.options?.[key] ?? input.options?.[key.replace(/_/g, '-')]);
+    }
+
     return false;
   }
 

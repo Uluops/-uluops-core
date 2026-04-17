@@ -61,7 +61,7 @@ export class UluOpsClient {
 
     this.agentExecutor = new AgentExecutor(this.config, aiProvider, logger);
     this.commandExecutor = new CommandExecutor(this.agentExecutor, this.registry);
-    this.workflowExecutor = new WorkflowExecutor(this.commandExecutor, this.registry);
+    this.workflowExecutor = new WorkflowExecutor(this.commandExecutor, this.registry, this.agentExecutor);
     this.pipelineExecutor = new PipelineExecutor(
       this.workflowExecutor,
       this.commandExecutor,
@@ -123,7 +123,7 @@ export class UluOpsClient {
     }
 
     const result = await this.workflowExecutor.execute(resolved, input);
-    await this.trackIfEnabled(result, resolved, 'workflow', undefined, input.target);
+    await this.trackIfEnabled(result, resolved, result.name, undefined, input.target);
     return result;
   }
 
@@ -156,7 +156,9 @@ export class UluOpsClient {
       }
     }
 
-    await this.trackIfEnabled(result, resolved, resolved.type, undefined, input.target);
+    // For workflows, use the workflow name as workflowType (not the literal 'workflow')
+    const workflowType = resolved.type === 'workflow' ? result.name : resolved.type;
+    await this.trackIfEnabled(result, resolved, workflowType, undefined, input.target);
     return result;
   }
 
@@ -399,20 +401,6 @@ export class UluOpsClient {
     }
 
     try {
-      // SAFETY: AgentResult extends ExecutionResult structurally — both share
-      // type, name, version, definitionHash, decision, score, durationMs, recommendations, metrics.
-      // AgentResult adds agentType, maxScore, categories which the validation API ignores.
-      const execResult: ExecutionResult = {
-        type: result.type as ExecutionResult['type'],
-        name: result.name,
-        version: result.version,
-        definitionHash: result.definitionHash,
-        decision: result.decision,
-        score: result.score,
-        durationMs: result.durationMs,
-        recommendations: result.recommendations,
-        metrics: result.metrics,
-      };
       // Project resolution: explicit option > config default > target dir basename > definition name.
       // Without this, running `exec agent dx-validator ./my-project` would create a project
       // named "dx-validator" instead of "my-project".
@@ -420,7 +408,8 @@ export class UluOpsClient {
       const response = await this.validation.submit({
         project: options?.project ?? this.config.defaultProject ?? inferredProject,
         workflowType,
-        result: execResult,
+        // Pass original result — WorkflowResult.phases needed for per-agent decomposition
+        result,
       });
       // Attach dashboard URL to original result for caller convenience
       result.dashboardUrl = response.dashboardUrl;

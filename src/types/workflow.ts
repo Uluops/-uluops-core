@@ -63,6 +63,9 @@ export interface PhaseDefinition {
   /** Commands to execute in this phase (refs in name@version format) */
   commands: string[];
 
+  /** Agent refs to execute directly (refs in name@version format, from WDL steps[].agent) */
+  agentRefs?: string[];
+
   /** Execute commands in parallel */
   parallel?: boolean;
 

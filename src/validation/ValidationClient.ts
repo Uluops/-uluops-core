@@ -2,6 +2,8 @@ import { OpsClient } from '@uluops/ops-sdk';
 import type { ResolvedConfig } from '../types/config.js';
 import type { ExecutionResult } from '../types/execution.js';
 import type { AgentResult } from '../types/agent.js';
+import type { WorkflowResult } from '../types/workflow.js';
+import type { CommandResult } from '../types/command.js';
 import type { RunSubmission, RunSubmissionResponse, RunHistoryEntry, ValidationQueryOptions } from '../types/validation.js';
 
 /**
@@ -146,27 +148,16 @@ export class ValidationClient {
   private transformToOpsInput(submission: RunSubmission): Parameters<OpsClient['runs']['save']>[0] {
     const { result } = submission;
 
+    // Workflow/pipeline results: decompose phases into per-agent entries
+    const agents = this.isWorkflowResult(result)
+      ? this.extractWorkflowAgents(result)
+      : [this.resultToAgent(result)];
+
     return {
       project: submission.project,
       workflowType: submission.workflowType,
       idempotencyKey: submission.idempotencyKey,
-      agents: [{
-        name: result.name,
-        definitionVersion: result.version !== 'unknown' ? result.version : undefined,
-        score: result.score ?? 0,
-        maxScore: 100,
-        decision: result.decision,
-        summary: 'summary' in result ? result.summary : undefined,
-        model: result.metrics.model,
-        tokens: {
-          inputTokens: result.metrics.inputTokens,
-          outputTokens: result.metrics.outputTokens,
-          cacheCreationTokens: result.metrics.cacheCreationTokens,
-          cacheReadTokens: result.metrics.cacheReadTokens,
-          totalEffectiveTokens: result.metrics.totalEffectiveTokens,
-        },
-        durationMs: result.metrics.durationMs,
-      }],
+      agents,
       recommendations: result.recommendations.map(r => ({
         agent: r.agent ?? 'unknown',
         title: r.title,
@@ -194,6 +185,81 @@ export class ValidationClient {
       definitionName: result.name,
       definitionVersion: result.version !== 'unknown' ? result.version : undefined,
       definitionHash: result.definitionHash?.replace(/^sha256:/, ''),
+    };
+  }
+
+  /**
+   * Check if a result is a WorkflowResult with decomposable phases.
+   */
+  private isWorkflowResult(result: ExecutionResult | AgentResult): result is WorkflowResult {
+    return result.type === 'workflow' && 'phases' in result && Array.isArray((result as WorkflowResult).phases);
+  }
+
+  /**
+   * Extract individual agent entries from workflow phases.
+   * Each command result within a phase becomes its own agent entry.
+   */
+  private extractWorkflowAgents(result: WorkflowResult): ReturnType<typeof this.resultToAgent>[] {
+    const agents: ReturnType<typeof this.resultToAgent>[] = [];
+
+    for (const phase of result.phases) {
+      if (phase.decision === 'skipped' || phase.decision === 'aborted') continue;
+      for (const cmd of phase.commands) {
+        agents.push(this.commandToAgent(cmd));
+      }
+    }
+
+    // Fallback: if no agents were extracted (all phases skipped), create a single entry
+    if (agents.length === 0) {
+      agents.push(this.resultToAgent(result));
+    }
+
+    return agents;
+  }
+
+  /**
+   * Convert a single ExecutionResult or AgentResult into an agent tracker entry.
+   */
+  private resultToAgent(result: ExecutionResult | AgentResult) {
+    return {
+      name: result.name,
+      definitionVersion: result.version !== 'unknown' ? result.version : undefined,
+      score: result.score ?? 0,
+      maxScore: 100,
+      decision: result.decision,
+      summary: 'summary' in result ? (result as AgentResult).summary : undefined,
+      model: result.metrics.model,
+      tokens: {
+        inputTokens: result.metrics.inputTokens,
+        outputTokens: result.metrics.outputTokens,
+        cacheCreationTokens: result.metrics.cacheCreationTokens,
+        cacheReadTokens: result.metrics.cacheReadTokens,
+        totalEffectiveTokens: result.metrics.totalEffectiveTokens,
+      },
+      durationMs: result.metrics.durationMs,
+    };
+  }
+
+  /**
+   * Convert a CommandResult into an agent tracker entry.
+   */
+  private commandToAgent(cmd: CommandResult) {
+    return {
+      name: cmd.name,
+      definitionVersion: cmd.version !== 'unknown' ? cmd.version : undefined,
+      score: cmd.score ?? 0,
+      maxScore: cmd.maxScore ?? 100,
+      decision: cmd.decision,
+      summary: undefined as string | undefined,
+      model: cmd.metrics.model,
+      tokens: {
+        inputTokens: cmd.metrics.inputTokens,
+        outputTokens: cmd.metrics.outputTokens,
+        cacheCreationTokens: cmd.metrics.cacheCreationTokens,
+        cacheReadTokens: cmd.metrics.cacheReadTokens,
+        totalEffectiveTokens: cmd.metrics.totalEffectiveTokens,
+      },
+      durationMs: cmd.metrics.durationMs,
     };
   }
 
