@@ -47,10 +47,13 @@ export interface StageDefinition {
   name: string;
 
   /** Explicit type of the referenced definition */
-  type: 'workflow' | 'command';
+  type: 'workflow' | 'command' | 'agents';
 
   /** Reference to command or workflow (name@version format) */
-  ref: string;
+  ref?: string;
+
+  /** Inline agent refs — PDL stages can list agents directly instead of ref */
+  agents?: Array<{ ref: string }>;
 
   /** Stage dependencies */
   depends_on?: string[];

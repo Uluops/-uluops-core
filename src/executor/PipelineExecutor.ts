@@ -1,9 +1,11 @@
+import type { AgentExecutor } from './AgentExecutor.js';
 import type { CommandExecutor } from './CommandExecutor.js';
 import type { WorkflowExecutor } from './WorkflowExecutor.js';
 import type { RegistryClient } from '../registry/RegistryClient.js';
 import type { ResolvedDefinition } from '../types/registry.js';
 import type { PipelineDefinition, StageDefinition, PipelineResult, StageResult, PipelineState, PipelineHandle as IPipelineHandle } from '../types/pipeline.js';
 import type { ExecutionInput } from '../types/execution.js';
+import type { AgentResult } from '../types/agent.js';
 import { PipelineError } from '../errors/index.js';
 import { parseRef } from '../utils/parseRef.js';
 import { formatErrorMessage } from '../utils/formatError.js';
@@ -20,6 +22,7 @@ export class PipelineExecutor {
   constructor(
     private workflowExecutor: WorkflowExecutor,
     private commandExecutor: CommandExecutor,
+    private agentExecutor: AgentExecutor,
     private registry: RegistryClient,
   ) {}
 
@@ -114,11 +117,46 @@ export class PipelineExecutor {
   }
 
   private async executeStage(stage: StageDefinition, input: ExecutionInput): Promise<StageResult> {
-    const [refName, refVersion] = parseRef(stage.ref);
-    const resolved = await this.registry.resolve(refName, refVersion, stage.type);
     const startTime = Date.now();
 
     try {
+      // Inline agents — PDL stages with agents[] run each agent directly in parallel
+      if (stage.type === 'agents' && stage.agents) {
+        const agentResults = await this.executeInlineAgents(stage.agents, input);
+        const scores = agentResults.map(r => r.score ?? 0);
+        const avgScore = scores.length > 0 ? scores.reduce((a, b) => a + b, 0) / scores.length : 0;
+
+        return {
+          id: stage.id,
+          name: stage.name,
+          type: 'command' as const,
+          status: 'completed',
+          result: {
+            type: 'command',
+            name: stage.name,
+            version: '1.0.0',
+            definitionHash: '',
+            agentType: 'analyst',
+            decision: agentResults.every(r => r.decision !== 'FAIL') ? 'PASS' : 'FAIL',
+            score: Math.round(avgScore),
+            maxScore: 100,
+            recommendations: agentResults.flatMap(r => r.recommendations),
+            durationMs: Date.now() - startTime,
+            metrics: {
+              ...sumTokenMetrics(agentResults.map(r => r.metrics)),
+              durationMs: Date.now() - startTime,
+              model: 'mixed',
+              toolCalls: agentResults.reduce((sum, r) => sum + (r.metrics.toolCallCount ?? 0), 0),
+            },
+          },
+          durationMs: Date.now() - startTime,
+        };
+      }
+
+      // Standard ref-based stages
+      const [refName, refVersion] = parseRef(stage.ref!);
+      const resolved = await this.registry.resolve(refName, refVersion, stage.type as 'command' | 'workflow');
+
       if (stage.type === 'workflow') {
         const result = await this.workflowExecutor.execute(resolved, input);
         return {
@@ -144,12 +182,36 @@ export class PipelineExecutor {
       return {
         id: stage.id,
         name: stage.name,
-        type: stage.type,
+        type: stage.type === 'agents' ? 'command' : stage.type,
         status: 'failed',
         skipReason: formatErrorMessage(error),
         durationMs: Date.now() - startTime,
       };
     }
+  }
+
+  /**
+   * Execute inline agent refs in parallel, resolving each from the registry.
+   */
+  private async executeInlineAgents(
+    agents: Array<{ ref: string }>,
+    input: ExecutionInput,
+  ): Promise<AgentResult[]> {
+    const settled = await Promise.allSettled(
+      agents.map(async (a) => {
+        const [name, version] = parseRef(a.ref);
+        const resolved = await this.registry.resolve(name, version, 'agent');
+        return this.agentExecutor.execute(resolved, input);
+      }),
+    );
+
+    const results: AgentResult[] = [];
+    for (const outcome of settled) {
+      if (outcome.status === 'fulfilled') {
+        results.push(outcome.value);
+      }
+    }
+    return results;
   }
 
   private checkStageDependencies(deps: string[] | undefined, results: StageResult[]): boolean {
@@ -199,7 +261,7 @@ export class PipelineExecutor {
     return {
       id: stage.id,
       name: stage.name,
-      type: stage.type,
+      type: stage.type === 'agents' ? 'command' : stage.type,
       status: 'skipped',
       skipReason: reason,
       durationMs: 0,

@@ -3,6 +3,7 @@ import { PipelineExecutor } from '../../src/executor/PipelineExecutor.js';
 import type { ResolvedDefinition } from '../../src/types/registry.js';
 import type { PipelineDefinition } from '../../src/types/pipeline.js';
 import { PipelineError } from '../../src/errors/index.js';
+import type { AgentExecutor } from '../../src/executor/AgentExecutor.js';
 import {
   makeCommandResult,
   makeWorkflowResult,
@@ -10,6 +11,8 @@ import {
   makeCommandExecutor,
   makeRegistry,
 } from './fixtures.js';
+
+const agentExec = {} as AgentExecutor;
 
 function makePipelineDef(overrides?: Partial<PipelineDefinition['pipeline']>): ResolvedDefinition {
   return {
@@ -49,7 +52,7 @@ describe('PipelineExecutor', () => {
       const wfExec = makeWorkflowExecutor();
       const cmdExec = makeCommandExecutor([makeCommandResult({ score: 85 })]);
       const registry = makeRegistry();
-      const executor = new PipelineExecutor(wfExec, cmdExec, registry);
+      const executor = new PipelineExecutor(wfExec, cmdExec, agentExec, registry);
 
       const result = await executor.execute(
         makePipelineDef(),
@@ -67,7 +70,7 @@ describe('PipelineExecutor', () => {
       const wfExec = makeWorkflowExecutor([makeWorkflowResult({ score: 92 })]);
       const cmdExec = makeCommandExecutor();
       const registry = makeRegistry();
-      const executor = new PipelineExecutor(wfExec, cmdExec, registry);
+      const executor = new PipelineExecutor(wfExec, cmdExec, agentExec, registry);
 
       const def = makePipelineDef({
         stages: [
@@ -86,7 +89,7 @@ describe('PipelineExecutor', () => {
       const wfExec = makeWorkflowExecutor();
       const cmdExec = makeCommandExecutor();
       const registry = makeRegistry();
-      const executor = new PipelineExecutor(wfExec, cmdExec, registry);
+      const executor = new PipelineExecutor(wfExec, cmdExec, agentExec, registry);
 
       await executor.execute(makePipelineDef(), { target: '/tmp/test' });
 
@@ -103,7 +106,7 @@ describe('PipelineExecutor', () => {
       const wfExec = makeWorkflowExecutor();
       const cmdExec = makeCommandExecutor(cmdResults);
       const registry = makeRegistry();
-      const executor = new PipelineExecutor(wfExec, cmdExec, registry);
+      const executor = new PipelineExecutor(wfExec, cmdExec, agentExec, registry);
 
       const def = makePipelineDef({
         stages: [
@@ -128,7 +131,7 @@ describe('PipelineExecutor', () => {
       } as unknown as CommandExecutor;
       const wfExec = makeWorkflowExecutor();
       const registry = makeRegistry();
-      const executor = new PipelineExecutor(wfExec, cmdExec, registry);
+      const executor = new PipelineExecutor(wfExec, cmdExec, agentExec, registry);
 
       const def = makePipelineDef({
         stages: [
@@ -152,7 +155,7 @@ describe('PipelineExecutor', () => {
       const wfExec = makeWorkflowExecutor();
       const cmdExec = makeCommandExecutor(cmdResults);
       const registry = makeRegistry();
-      const executor = new PipelineExecutor(wfExec, cmdExec, registry);
+      const executor = new PipelineExecutor(wfExec, cmdExec, agentExec, registry);
 
       const def = makePipelineDef({
         stages: [
@@ -175,7 +178,7 @@ describe('PipelineExecutor', () => {
         makeCommandResult({ name: 'cmd-a', score: 80, decision: 'PASS' }),
       ]);
       const registry = makeRegistry();
-      const executor = new PipelineExecutor(wfExec, cmdExec, registry);
+      const executor = new PipelineExecutor(wfExec, cmdExec, agentExec, registry);
 
       const def = makePipelineDef({
         stages: [
@@ -199,7 +202,7 @@ describe('PipelineExecutor', () => {
       const wfExec = makeWorkflowExecutor();
       const cmdExec = makeCommandExecutor(cmdResults);
       const registry = makeRegistry();
-      const executor = new PipelineExecutor(wfExec, cmdExec, registry);
+      const executor = new PipelineExecutor(wfExec, cmdExec, agentExec, registry);
 
       const def = makePipelineDef({
         stages: [
@@ -220,7 +223,7 @@ describe('PipelineExecutor', () => {
       const wfExec = makeWorkflowExecutor();
       const cmdExec = makeCommandExecutor([makeCommandResult()]);
       const registry = makeRegistry();
-      const executor = new PipelineExecutor(wfExec, cmdExec, registry);
+      const executor = new PipelineExecutor(wfExec, cmdExec, agentExec, registry);
 
       const handle = await executor.start(makePipelineDef(), { target: '/tmp/test' });
 
@@ -234,7 +237,7 @@ describe('PipelineExecutor', () => {
       const wfExec = makeWorkflowExecutor();
       const cmdExec = makeCommandExecutor([makeCommandResult({ score: 85 })]);
       const registry = makeRegistry();
-      const executor = new PipelineExecutor(wfExec, cmdExec, registry);
+      const executor = new PipelineExecutor(wfExec, cmdExec, agentExec, registry);
 
       const handle = await executor.start(makePipelineDef(), { target: '/tmp/test' });
       const result = await handle.wait(10);
@@ -253,7 +256,7 @@ describe('PipelineExecutor', () => {
       } as unknown as CommandExecutor;
       const wfExec = makeWorkflowExecutor();
       const registry = makeRegistry();
-      const executor = new PipelineExecutor(wfExec, cmdExec, registry);
+      const executor = new PipelineExecutor(wfExec, cmdExec, agentExec, registry);
 
       const def = makePipelineDef({
         stages: [
@@ -284,7 +287,7 @@ describe('PipelineExecutor', () => {
       const wfExec = makeWorkflowExecutor();
       const cmdExec = makeCommandExecutor([makeCommandResult()]);
       const registry = makeRegistry();
-      const executor = new PipelineExecutor(wfExec, cmdExec, registry);
+      const executor = new PipelineExecutor(wfExec, cmdExec, agentExec, registry);
 
       const handle = await executor.start(makePipelineDef(), { target: '/tmp/test' });
       await handle.wait(10);
@@ -302,7 +305,7 @@ describe('PipelineExecutor', () => {
       const wfExec = makeWorkflowExecutor();
       const cmdExec = makeCommandExecutor(cmdResults);
       const registry = makeRegistry();
-      const executor = new PipelineExecutor(wfExec, cmdExec, registry);
+      const executor = new PipelineExecutor(wfExec, cmdExec, agentExec, registry);
 
       const def = makePipelineDef({
         stages: [
@@ -325,7 +328,7 @@ describe('PipelineExecutor', () => {
       const wfExec = makeWorkflowExecutor();
       const cmdExec = makeCommandExecutor(cmdResults);
       const registry = makeRegistry();
-      const executor = new PipelineExecutor(wfExec, cmdExec, registry);
+      const executor = new PipelineExecutor(wfExec, cmdExec, agentExec, registry);
 
       const def = makePipelineDef({
         stages: [
@@ -345,7 +348,7 @@ describe('PipelineExecutor', () => {
       const wfExec = makeWorkflowExecutor();
       const cmdExec = makeCommandExecutor([makeCommandResult({ decision: 'PASS' })]);
       const registry = makeRegistry();
-      const executor = new PipelineExecutor(wfExec, cmdExec, registry);
+      const executor = new PipelineExecutor(wfExec, cmdExec, agentExec, registry);
 
       const result = await executor.execute(makePipelineDef(), { target: '/tmp/test' });
 
@@ -359,7 +362,7 @@ describe('PipelineExecutor', () => {
       const wfExec = makeWorkflowExecutor();
       const cmdExec = makeCommandExecutor(cmdResults);
       const registry = makeRegistry();
-      const executor = new PipelineExecutor(wfExec, cmdExec, registry);
+      const executor = new PipelineExecutor(wfExec, cmdExec, agentExec, registry);
 
       const result = await executor.execute(makePipelineDef(), { target: '/tmp/test' });
 
@@ -373,7 +376,7 @@ describe('PipelineExecutor', () => {
       const wfExec = makeWorkflowExecutor();
       const cmdExec = makeCommandExecutor(cmdResults);
       const registry = makeRegistry();
-      const executor = new PipelineExecutor(wfExec, cmdExec, registry);
+      const executor = new PipelineExecutor(wfExec, cmdExec, agentExec, registry);
 
       const result = await executor.execute(makePipelineDef(), { target: '/tmp/test' });
 
@@ -388,7 +391,7 @@ describe('PipelineExecutor', () => {
       const wfExec = makeWorkflowExecutor();
       const cmdExec = makeCommandExecutor(cmdResults);
       const registry = makeRegistry();
-      const executor = new PipelineExecutor(wfExec, cmdExec, registry);
+      const executor = new PipelineExecutor(wfExec, cmdExec, agentExec, registry);
 
       const def = makePipelineDef({
         stages: [
@@ -417,7 +420,7 @@ describe('PipelineExecutor', () => {
       const wfExec = makeWorkflowExecutor();
       const cmdExec = makeCommandExecutor(cmdResults);
       const registry = makeRegistry();
-      const executor = new PipelineExecutor(wfExec, cmdExec, registry);
+      const executor = new PipelineExecutor(wfExec, cmdExec, agentExec, registry);
 
       const def = makePipelineDef({
         stages: [
@@ -440,7 +443,7 @@ describe('PipelineExecutor', () => {
       const wfExec = makeWorkflowExecutor();
       const cmdExec = makeCommandExecutor(cmdResults);
       const registry = makeRegistry();
-      const executor = new PipelineExecutor(wfExec, cmdExec, registry);
+      const executor = new PipelineExecutor(wfExec, cmdExec, agentExec, registry);
 
       const def = makePipelineDef({
         stages: [
@@ -465,7 +468,7 @@ describe('PipelineExecutor', () => {
       } as unknown as CommandExecutor;
       const wfExec = makeWorkflowExecutor();
       const registry = makeRegistry();
-      const executor = new PipelineExecutor(wfExec, cmdExec, registry);
+      const executor = new PipelineExecutor(wfExec, cmdExec, agentExec, registry);
 
       const def = makePipelineDef({
         stages: [
@@ -481,18 +484,19 @@ describe('PipelineExecutor', () => {
       expect(result.stages[1]!.status).toBe('completed');
     });
 
-    it('handle.wait() throws PipelineError on overall failure', async () => {
-      // Simulate a pipeline where executeAsync itself throws (not a stage error)
+    it('records failed stage when registry is unavailable', async () => {
       const wfExec = makeWorkflowExecutor();
       const cmdExec = makeCommandExecutor();
       const registry = {
         resolve: vi.fn().mockRejectedValue(new Error('Registry unavailable')),
       } as unknown as RegistryClient;
-      const executor = new PipelineExecutor(wfExec, cmdExec, registry);
+      const executor = new PipelineExecutor(wfExec, cmdExec, agentExec, registry);
 
       const handle = await executor.start(makePipelineDef(), { target: '/tmp/test' });
+      const result = await handle.wait();
 
-      await expect(handle.wait(10)).rejects.toThrow(PipelineError);
+      expect(result.stages[0]!.status).toBe('failed');
+      expect(result.stages[0]!.skipReason).toContain('Registry unavailable');
     });
   });
 });

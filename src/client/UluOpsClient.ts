@@ -65,6 +65,7 @@ export class UluOpsClient {
     this.pipelineExecutor = new PipelineExecutor(
       this.workflowExecutor,
       this.commandExecutor,
+      this.agentExecutor,
       this.registry,
     );
   }
@@ -325,10 +326,14 @@ export class UluOpsClient {
     const dashboardUrl = config.dashboardUrl ?? process.env['ULUOPS_DASHBOARD_URL'] ?? 'https://app.uluops.ai';
 
     // Enforce HTTPS when a real API key is present to prevent credential exfiltration.
-    // Allow HTTP for local development (no key or test_ prefix).
+    // Allow HTTP for local development (no key, test_ prefix, or localhost/127.0.0.1).
+    const isLocalUrl = (url: string) => {
+      try { const u = new URL(url); return u.hostname === 'localhost' || u.hostname === '127.0.0.1'; }
+      catch { return false; }
+    };
     if (apiKey && !apiKey.startsWith('test_')) {
       for (const [label, url] of [['registryUrl', registryUrl], ['validationUrl', validationUrl]] as const) {
-        if (!url.startsWith('https://')) {
+        if (!url.startsWith('https://') && !isLocalUrl(url)) {
           throw new ConfigurationError(
             `${label} must use HTTPS when an API key is configured (got "${url}"). ` +
             `Use HTTPS to prevent credential exposure, or omit the API key for local-only usage.`,

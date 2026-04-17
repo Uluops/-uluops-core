@@ -311,6 +311,10 @@ export class RegistryClient {
       this.normalizeWorkflowDefinition(section as Record<string, unknown>);
     }
 
+    if (topKey === 'pipeline') {
+      this.normalizePipelineDefinition(section as Record<string, unknown>);
+    }
+
     return parsed as unknown as ResolvedDefinition['definition'];
   }
 
@@ -410,6 +414,29 @@ export class RegistryClient {
       const gate = phase['gate'] as Record<string, unknown> | undefined;
       if (gate && !gate['aggregate']) {
         gate['aggregate'] = 'average';
+      }
+    }
+  }
+
+  /**
+   * Normalize PDL YAML structure to match PipelineDefinition runtime shape.
+   *
+   * PDL YAML stages can use `agents:` arrays (inline agent refs) instead of
+   * a single `ref` + `type`. Stages with `agents:` get type='agents' and
+   * PipelineExecutor handles them by running each agent directly.
+   */
+  private normalizePipelineDefinition(section: Record<string, unknown>): void {
+    const stages = section['stages'] as Array<Record<string, unknown>> | undefined;
+    if (!Array.isArray(stages)) return;
+
+    for (const stage of stages) {
+      // Stages with agents[] but no ref/type get type='agents'
+      if (Array.isArray(stage['agents']) && !stage['ref'] && !stage['type']) {
+        stage['type'] = 'agents';
+      }
+      // Stages with explicit ref but no type default to 'command'
+      if (stage['ref'] && !stage['type']) {
+        stage['type'] = 'command';
       }
     }
   }
