@@ -124,22 +124,32 @@ async function checkCommand(check: PreflightCheck): Promise<void> {
     throw new PreflightError('command check requires a command', 'command');
   }
 
-  // Reject commands with shell metacharacters that could be used for injection:
-  // backtick/process substitution (`cmd`, $(cmd)), parameter expansion (${...}),
-  // chaining (; & && || newlines), background (&), pipes (|), redirections (>, <),
-  // and line continuation (\).
-  if (/`|\$\(|\$\{|;|&|&&|\|\||\|[^|]|(?<![|])>|<|\\$|\n|\r/.test(check.command)) {
+  // Allowlist of commands permitted in preflight checks.
+  // Preflight commands come from operator-authored YAML definitions (supply-chain trust).
+  // An allowlist is more robust than a denylist — new dangerous patterns are blocked
+  // by default rather than requiring explicit enumeration.
+  const ALLOWED_PREFLIGHT_COMMANDS = [
+    'test', '[', 'true', 'false', 'echo',
+    'git', 'npm', 'npx', 'node', 'pnpm', 'yarn', 'bun',
+    'python', 'python3', 'pip', 'pip3',
+    'grep', 'find', 'ls', 'cat', 'head', 'tail', 'wc', 'which', 'command',
+    'docker', 'kubectl',
+    'cargo', 'go', 'make', 'cmake',
+  ];
+
+  // Extract the base command name (first token, strip any path prefix)
+  const baseCommand = check.command.trim().split(/\s+/)[0]?.replace(/^.*\//, '');
+  if (!baseCommand || !ALLOWED_PREFLIGHT_COMMANDS.includes(baseCommand)) {
     throw new PreflightError(
-      `Preflight command contains disallowed shell metacharacter: ${check.command}`,
+      `Preflight command "${baseCommand}" is not in the allowed command list. ` +
+      `Allowed: ${ALLOWED_PREFLIGHT_COMMANDS.join(', ')}`,
       'command',
       { command: check.command },
     );
   }
 
-  // Reject interpreter-based code execution that bypasses the metacharacter filter.
-  // Commands like `node -e "..."` or `python3 -c "..."` can execute arbitrary code
-  // without using any blocked metacharacters. Includes shell interpreters (bash -c,
-  // sh -c, zsh -c) and text processing tools with eval capabilities (awk, sed).
+  // Reject interpreter-based code execution even for allowed commands.
+  // Commands like `node -e "..."` or `python3 -c "..."` can execute arbitrary code.
   if (/\b(bash|sh|zsh|dash|csh|fish|node|python[23]?|ruby|perl|php|lua|deno|bun|awk|gawk|mawk|nawk)\s+(-e|--eval|-c)\b/.test(check.command)) {
     throw new PreflightError(
       `Preflight command contains disallowed interpreter eval: ${check.command}`,

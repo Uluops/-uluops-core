@@ -497,7 +497,7 @@ export class RegistryClient {
     if (type !== 'agent') return null;
 
     try {
-      const result = adl.generate(yamlContent, { skipValidation: true, renderProfile: 'uluops-full' });
+      const result = adl.generate(yamlContent, { renderProfile: 'uluops-full' });
       if (result.success && result.content) {
         this.logger.debug(`Render via local factory: ${result.content.length} chars`);
         return result.content;

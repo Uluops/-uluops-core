@@ -13,6 +13,7 @@ import type { ExecutionInput, ExecutionOptions, ExecutionMetrics, ResolvedExecut
 import type { AgentResult } from '../types/agent.js';
 import type { AgentType } from '../types/execution.js';
 import type { ParsedOutput, ExtractionResult } from '../types/parser.js';
+import { mapCategory } from './mapCategory.js';
 import type { UsageMetrics } from '../types/ai.js';
 import type { Logger } from '@uluops/sdk-core';
 import { DEFAULT_PASS_THRESHOLD, DEFAULT_WARN_THRESHOLD, DEFAULT_MAX_STEPS, DEFAULT_MAX_TOKENS, DEFAULT_MODEL_ALIAS } from '../constants.js';
@@ -202,7 +203,6 @@ export class AgentExecutor {
     if (parsed.rawJson) {
       const keys = Object.keys(parsed.rawJson as Record<string, unknown>);
       this.logger.debug(`Raw JSON keys: [${keys.join(', ')}]`);
-      this.logger.debug(`Raw JSON sample: ${JSON.stringify(parsed.rawJson).slice(0, 1000)}`);
     }
     if (extraction.warnings.length > 0) {
       this.logger.warn(`Extraction warnings: ${extraction.warnings.join('; ')}`);
@@ -264,12 +264,7 @@ export class AgentExecutor {
       score: parsed.score ?? 0,
       maxScore: parsed.maxScore ?? 100,
       threshold: context.thresholds?.pass,
-      categories: parsed.categories?.map(c => ({
-        name: c.name,
-        score: c.score,
-        maxScore: c.maxScore,
-        findings: c.findings,
-      })),
+      categories: parsed.categories?.map(mapCategory),
       artifacts: parsed.artifacts,
       recommendations,
       durationMs,

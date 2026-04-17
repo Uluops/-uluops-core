@@ -94,12 +94,15 @@ export class WorkflowExecutor {
         ...tokenTotals,
         durationMs,
         model: 'mixed',
-        phasesExecuted: phaseResults.filter(p => p.decision !== 'skipped' && p.decision !== 'aborted').length,
-        phasesPassed: phaseResults.filter(p => p.decision === 'passed').length,
-        phasesWarned: phaseResults.filter(p => p.decision === 'warned').length,
-        phasesBlocked: phaseResults.filter(p => p.decision === 'blocked').length,
-        phasesSkipped: phaseResults.filter(p => p.decision === 'skipped').length,
-        phasesAborted: phaseResults.filter(p => p.decision === 'aborted').length,
+        ...phaseResults.reduce((acc, p) => {
+          if (p.decision !== 'skipped' && p.decision !== 'aborted') acc.phasesExecuted++;
+          if (p.decision === 'passed') acc.phasesPassed++;
+          if (p.decision === 'warned') acc.phasesWarned++;
+          if (p.decision === 'blocked') acc.phasesBlocked++;
+          if (p.decision === 'skipped') acc.phasesSkipped++;
+          if (p.decision === 'aborted') acc.phasesAborted++;
+          return acc;
+        }, { phasesExecuted: 0, phasesPassed: 0, phasesWarned: 0, phasesBlocked: 0, phasesSkipped: 0, phasesAborted: 0 }),
         commands: phaseResults.flatMap(p =>
           p.commands.map(c => ({
             name: c.name,
@@ -390,6 +393,8 @@ export class WorkflowExecutor {
 
   /**
    * Wrap an AgentResult as a CommandResult for uniform phase aggregation.
+   * Intentionally thinner than CommandExecutor.wrapAgentResult — omits threshold,
+   * categories, and artifacts which are not needed for phase-level aggregation.
    */
   private wrapAgentResult(agent: AgentResult, resolved: ResolvedDefinition): CommandResult {
     return {

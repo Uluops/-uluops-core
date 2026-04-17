@@ -219,20 +219,20 @@ export class ToolHandler {
     const capped = files.slice(0, opts.maxResults);
     const lines: string[] = [];
 
-    for (const file of capped) {
+    const entries = await Promise.all(capped.map(async (file) => {
       const filePath = path.join(dirPath, file);
       try {
         const stat = await fs.stat(filePath);
         const sizeStr = formatFileSize(stat.size);
         const lineCount = await countLines(filePath, stat.size);
-        lines.push(lineCount
+        return lineCount
           ? `${file} (${sizeStr}, ${lineCount} lines)`
-          : `${file} (${sizeStr})`
-        );
+          : `${file} (${sizeStr})`;
       } catch {
-        lines.push(file);
+        return file;
       }
-    }
+    }));
+    lines.push(...entries);
 
     if (totalFiles > opts.maxResults) {
       lines.push(`\n... and ${totalFiles - opts.maxResults} more files`);
@@ -486,17 +486,18 @@ export class ToolHandler {
     // Count files beyond the display cap (still accumulate stats)
     if (files.length > MAX_DIR_ENTRIES) {
       lines.push(`${indent}... and ${files.length - MAX_DIR_ENTRIES} more files`);
-      // Stat the remaining files for accurate parent totals
-      for (const file of files.slice(MAX_DIR_ENTRIES)) {
-        fileCount++;
-        if (includeSizes) {
+      const overflow = files.slice(MAX_DIR_ENTRIES);
+      fileCount += overflow.length;
+      if (includeSizes) {
+        const sizes = await Promise.all(overflow.map(async (file) => {
           try {
             const stat = await fs.stat(path.join(dirPath, String(file.name)));
-            totalSize += stat.size;
+            return stat.size;
           } catch {
-            // skip
+            return 0;
           }
-        }
+        }));
+        totalSize += sizes.reduce((a, b) => a + b, 0);
       }
     }
 

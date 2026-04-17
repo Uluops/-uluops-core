@@ -408,7 +408,7 @@ export class OutputExtractor {
     }
 
     // Resolve categories
-    output.categories = this.resolveCategories(obj, result, report);
+    output.categories = this.resolveCategories(obj, result, report, sources.validationSummary);
 
     // If no score found but categories exist, sum category scores
     if (output.score === undefined && output.categories && output.categories.length > 0) {
@@ -547,8 +547,8 @@ export class OutputExtractor {
       if (typeof scores['Total'] === 'number') return scores['Total'];
       if (typeof scores['total'] === 'number') return scores['total'];
     }
-    // Check breakdown with sub-scores sum (search wrapper objects too)
-    const wrapper = this.findWrapperWithScoreOrDecision(obj);
+    // Check breakdown with sub-scores sum (use cached wrapper from buildParseSources)
+    const wrapper = ctx.validationSummary;
     const breakdown = this.asRecord(obj['breakdown'])
       ?? this.asRecord(obj['score_breakdown'])
       ?? this.asRecord(wrapper?.['breakdown'])
@@ -584,6 +584,7 @@ export class OutputExtractor {
     obj: Record<string, unknown>,
     result?: Record<string, unknown>,
     report?: Record<string, unknown>,
+    cachedWrapper?: Record<string, unknown>,
   ): ParsedCategory[] | undefined {
     // Direct categories array
     for (const source of [obj, result, report]) {
@@ -607,7 +608,7 @@ export class OutputExtractor {
 
     // Breakdown object → synthetic categories
     // Search top-level breakdown, score_breakdown, and inside any wrapper object
-    const wrapper = this.findWrapperWithScoreOrDecision(obj);
+    const wrapper = cachedWrapper ?? this.findWrapperWithScoreOrDecision(obj);
     const breakdown = this.asRecord(obj['breakdown'])
       ?? this.asRecord(obj['score_breakdown'])
       ?? this.asRecord(wrapper?.['breakdown'])

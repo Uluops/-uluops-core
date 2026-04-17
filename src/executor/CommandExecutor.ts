@@ -10,6 +10,7 @@ import { ExecutionError } from '../errors/index.js';
 import { parseRef } from '../utils/parseRef.js';
 import { sumTokenMetrics } from '../utils/sumTokenMetrics.js';
 import { DEFAULT_PASS_THRESHOLD, DEFAULT_WARN_THRESHOLD } from '../constants.js';
+import { mapCategory } from './mapCategory.js';
 
 /**
  * Executes command definitions.
@@ -152,12 +153,7 @@ export class CommandExecutor {
       score: agentResult.score,
       maxScore: agentResult.maxScore,
       threshold: def.command.execution.thresholds?.pass,
-      categories: agentResult.categories?.map(c => ({
-        name: c.name,
-        score: c.score,
-        maxScore: c.maxScore,
-        findings: c.findings,
-      })),
+      categories: agentResult.categories?.map(mapCategory),
       artifacts: agentResult.artifacts,
       recommendations: agentResult.recommendations,
       durationMs,
