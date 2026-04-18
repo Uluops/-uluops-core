@@ -272,7 +272,7 @@ describe('AgentExecutor', () => {
 
       const generateCall = (ai.generate as ReturnType<typeof vi.fn>).mock.calls[0]![0] as Record<string, unknown>;
       expect(generateCall.model).toBe('sonnet');
-      expect(generateCall.maxTokens).toBe(8192);
+      expect(generateCall.maxTokens).toBe(16384);
       expect(generateCall.timeoutMs).toBe(30000);
     });
 

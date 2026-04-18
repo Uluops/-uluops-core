@@ -182,8 +182,9 @@ export class AIProvider {
     // providers may change what their models support without notice. The catalog
     // is the single point of truth; if a model starts failing structured output,
     // update the catalog entry rather than adding provider-specific workarounds here.
-    // Exception: Google models don't support structured output + tool use simultaneously
+    // Google models don't support structured output + tool use simultaneously
     // (400: "Function calling with a response mime type: 'application/json' is unsupported").
+    // Verified still broken as of @ai-sdk/google@3.0.31 + Gemini 2.5 Flash (2026-04-18).
     const hasTools = !!options.tools && Object.keys(options.tools).length > 0;
     const useStructuredOutput = !!options.output && resolved.capabilities.structuredOutput
       && !(resolved.provider === 'google' && hasTools);
