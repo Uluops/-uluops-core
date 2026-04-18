@@ -706,6 +706,45 @@ export class OutputExtractor {
       }
     }
 
+    if (issues.length > 0) return issues;
+
+    // Growth trajectory impediments (Gemini analyst shape:
+    // { growth_trajectory_assessment: [{ dimension, current_state, latent_capability, impediment }] })
+    // Also handles growth_trajectory (variant key).
+    const trajectory = (Array.isArray(obj['growth_trajectory_assessment']) ? obj['growth_trajectory_assessment']
+      : Array.isArray(obj['growth_trajectory']) ? obj['growth_trajectory']
+      : undefined) as Record<string, unknown>[] | undefined;
+    if (trajectory) {
+      for (const item of trajectory) {
+        if (typeof item !== 'object' || item === null) continue;
+        const impediment = item['impediment'] as string | undefined;
+        if (!impediment) continue;
+        issues.push({
+          title: `Growth impediment: ${String(item['dimension'] ?? 'Unknown')}`,
+          description: `Current: ${String(item['current_state'] ?? '')}. Impediment: ${impediment}`,
+          priority: 'backlog',
+          severity: 'info',
+        });
+      }
+    }
+
+    // Purpose conflicts (Gemini analyst shape: { purpose_coherence_assessment: { purpose_conflicts: "..." } })
+    // Also handles purpose_coherence (variant key).
+    const coherence = this.asRecord(obj['purpose_coherence_assessment'])
+      ?? this.asRecord(obj['purpose_coherence']);
+    if (coherence && typeof coherence['purpose_conflicts'] === 'string') {
+      const conflicts = coherence['purpose_conflicts'] as string;
+      const isSubstantive = !/no\s+(?:significant\s+|direct\s+|major\s+)?(?:purpose\s+)?conflicts\s+(?:were\s+)?(?:identified|found|detected|noted|observed)/i.test(conflicts);
+      if (isSubstantive) {
+        issues.push({
+          title: 'Purpose conflict identified',
+          description: conflicts,
+          priority: 'suggested',
+          severity: 'medium',
+        });
+      }
+    }
+
     return issues;
   }
 

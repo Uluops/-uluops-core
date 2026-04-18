@@ -1,0 +1,13 @@
+{
+  "agent": "standard-analyst",
+  "version": "1.3.1",
+  "decision": "COHERENT",
+  "recommendations": [],
+  "metrics": {
+    "durationMs": 53341,
+    "model": "google:gemini-2.5-flash",
+    "inputTokens": 24488,
+    "outputTokens": 10307,
+    "totalEffectiveTokens": 38735
+  }
+}
