@@ -7,7 +7,6 @@ import type { ResolvedConfig } from '../types/config.js';
 import type { DefinitionType } from '../types/execution.js';
 import type { AgentDefinition } from '../types/agent.js';
 import type { ResolvedDefinition, DefinitionSummary } from '../types/registry.js';
-import { adl } from '@uluops/definition-factory';
 import { ConfigurationError } from '../errors/index.js';
 import { formatErrorMessage } from '../utils/formatError.js';
 import { DEFAULT_PASS_THRESHOLD, DEFAULT_MODEL_ALIAS } from '../constants.js';
@@ -275,11 +274,10 @@ export class RegistryClient {
    * Verifies a known top-level key exists and its value is a non-null object.
    * Full schema validation is registry-side; this prevents totally wrong YAML.
    *
-   * DESIGN (2026-04-16): this is intentionally shallow. For local definitions,
-   * tryRenderLocalFactory() provides deeper validation via adl.generate() which
-   * parses, transforms, and renders the YAML. For remote definitions, the registry
-   * API enforces full schema validation at publish time. This guard catches only
-   * completely wrong files (e.g., a docker-compose.yaml in the agents/ directory).
+   * Intentionally shallow — rendering is performed via the registry API's
+   * render.preview() endpoint. Full schema validation happens registry-side at
+   * publish time. This guard catches only completely wrong files (e.g., a
+   * docker-compose.yaml in the agents/ directory).
    */
   private castDefinition(parsed: Record<string, unknown>): ResolvedDefinition['definition'] {
     const knownTopKeys = ['agent', 'command', 'workflow', 'pipeline'] as const satisfies readonly DefinitionType[];
@@ -467,9 +465,8 @@ export class RegistryClient {
       const agent = definition['agent'] as AgentDefinition['agent'] | undefined;
       if (!agent) return { runtime: { prompt: '' } as ResolvedDefinition['runtime'], degradations };
 
-      // Try local render first (definition-factory), then API, then raw YAML
-      const rendered = this.tryRenderLocalFactory(yamlContent, type, degradations)
-        ?? await this.tryRenderViaAPI(type, yamlContent, degradations);
+      // Render via registry API (definition-factory is server-side only)
+      const rendered = await this.tryRenderViaAPI(type, yamlContent, degradations);
 
       if (!rendered) {
         degradations.push('render:raw-yaml-fallback');
@@ -510,33 +507,6 @@ export class RegistryClient {
       runtime: definition as unknown as ResolvedDefinition['runtime'],
       degradations,
     };
-  }
-
-  /**
-   * Try to render YAML locally using @uluops/definition-factory.
-   * Synchronous for ADL/PDL. Returns rendered markdown or null.
-   */
-  private tryRenderLocalFactory(
-    yamlContent: string,
-    type: DefinitionType,
-    degradations: string[],
-  ): string | null {
-    if (type !== 'agent') return null;
-
-    try {
-      const result = adl.generate(yamlContent, { renderProfile: 'uluops-full' });
-      if (result.success && result.content) {
-        this.logger.debug(`Render via local factory: ${result.content.length} chars`);
-        return result.content;
-      }
-      this.logger.warn(`Local factory render failed: ${result.error ?? 'no content'}`);
-      degradations.push('render:local-factory-failed');
-      return null;
-    } catch (error) {
-      this.logger.warn(`Local factory render error: ${formatErrorMessage(error)}`);
-      degradations.push('render:local-factory-failed');
-      return null;
-    }
   }
 
   /**
