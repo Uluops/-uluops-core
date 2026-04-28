@@ -7,10 +7,11 @@ import type { ResolvedConfig } from '../types/config.js';
 import type { DefinitionType } from '../types/execution.js';
 import type { AgentDefinition } from '../types/agent.js';
 import type { ResolvedDefinition, DefinitionSummary } from '../types/registry.js';
-import { ConfigurationError } from '../errors/index.js';
+import { ConfigurationError, SubscriptionRequiredError } from '../errors/index.js';
 import { formatErrorMessage } from '../utils/formatError.js';
 import { DEFAULT_PASS_THRESHOLD, DEFAULT_MODEL_ALIAS } from '../constants.js';
 import type { Logger } from '@uluops/sdk-core';
+import { SdkApiError } from '@uluops/sdk-core/errors';
 
 /**
  * Definition resolver with local development fallback.
@@ -228,10 +229,26 @@ export class RegistryClient {
     }
 
     // Fetch definition with YAML and runtime
-    const def = await this.sdk.definitions.get(resolvedType, name, version, {
-      includeYaml: true,
-      includeRuntime: true,
-    });
+    let def;
+    try {
+      def = await this.sdk.definitions.get(resolvedType, name, version, {
+        includeYaml: true,
+        includeRuntime: true,
+      });
+    } catch (error) {
+      // 402 = content-gated by pro-handler; rethrow as typed SubscriptionRequiredError
+      if (error instanceof SdkApiError && error.statusCode === 402) {
+        const d = error.details ?? {};
+        throw new SubscriptionRequiredError(
+          error.message || `Definition "${name}" requires a higher subscription tier`,
+          (d.requiredTier as string) ?? 'unknown',
+          (d.currentTier as string) ?? 'unknown',
+          d.definition as { type: string; name: string; displayName?: string } | undefined,
+          d.upgradeUrl as string | undefined,
+        );
+      }
+      throw error;
+    }
 
     // Get rendered markdown
     const rendered = await this.sdk.render.get(resolvedType, name, def.version);
@@ -248,6 +265,7 @@ export class RegistryClient {
       runtime: { prompt: rendered.markdown } as ResolvedDefinition['runtime'],
       domain: (def.domain ?? 'general') as ResolvedDefinition['domain'],
       agentType: (def.agentType ?? undefined) as ResolvedDefinition['agentType'],
+      minSubscription: (def.minSubscription as ResolvedDefinition['minSubscription']) ?? undefined,
     };
   }
 
@@ -662,12 +680,14 @@ export class RegistryClient {
       domain: d.domain as DefinitionSummary['domain'],
       agentType: (d.agentType ?? undefined) as DefinitionSummary['agentType'],
       status: d.status as DefinitionSummary['status'],
+      minSubscription: (d.minSubscription as DefinitionSummary['minSubscription']) ?? undefined,
     }));
   }
 
   private extractSummary(def: Record<string, unknown>, type: DefinitionType, name: string): DefinitionSummary {
     const section = def[type] as Record<string, unknown> | undefined;
     const iface = (section?.interface ?? {}) as Record<string, unknown>;
+    const meta = (section?.meta ?? {}) as Record<string, unknown>;
     return {
       type,
       name: (iface.name as string) ?? name,
@@ -679,6 +699,7 @@ export class RegistryClient {
       agentType: type === 'agent' ? (iface.agentType as DefinitionSummary['agentType']) : undefined,
       status: 'draft',
       tags: iface.tags as string[] | undefined,
+      minSubscription: (meta.minSubscription as DefinitionSummary['minSubscription']) ?? undefined,
     };
   }
 }

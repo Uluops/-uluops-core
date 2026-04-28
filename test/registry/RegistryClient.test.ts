@@ -4,8 +4,10 @@ import * as path from 'node:path';
 import * as os from 'node:os';
 import * as yaml from 'yaml';
 import { RegistryClient } from '../../src/registry/RegistryClient.js';
+import { SubscriptionRequiredError } from '../../src/errors/index.js';
 import type { ResolvedConfig } from '../../src/types/config.js';
 import type { Logger } from '@uluops/sdk-core';
+import { SdkApiError } from '@uluops/sdk-core/errors';
 
 const noopLogger: Logger = { debug() {}, info() {}, warn() {}, error() {} };
 
@@ -321,6 +323,60 @@ describe('RegistryClient', () => {
       const client = new RegistryClient(baseConfig, noopLogger);
       await expect(client.resolve('ambiguous')).rejects.toThrow('Multiple definitions');
     });
+
+    it('maps minSubscription from remote definition', async () => {
+      const mocks = getMocks();
+      mocks.definitions.get.mockResolvedValueOnce({
+        name: 'gated-agent',
+        type: 'agent',
+        version: '1.0.0',
+        hash: 'sha256:abc',
+        yaml: yaml.stringify({ agent: { interface: { name: 'gated-agent', version: '1.0.0' } } }),
+        domain: 'software',
+        agentType: 'validator',
+        minSubscription: 'plus',
+      });
+      mocks.render.get.mockResolvedValueOnce({ markdown: 'prompt' });
+
+      const client = new RegistryClient(baseConfig, noopLogger);
+      const result = await client.resolve('gated-agent', undefined, 'agent');
+
+      expect(result.minSubscription).toBe('plus');
+    });
+
+    it('throws SubscriptionRequiredError on 402 from registry', async () => {
+      const mocks = getMocks();
+      const apiError = new SdkApiError(
+        402,
+        'This definition requires hobbyist tier or higher',
+        'SUBSCRIPTION_REQUIRED',
+        { currentTier: 'free', requiredTier: 'hobbyist', definition: { type: 'agent', name: 'socrates-explorer' }, upgradeUrl: 'https://example.com/upgrade' },
+      );
+      mocks.definitions.get.mockRejectedValueOnce(apiError);
+
+      const client = new RegistryClient(baseConfig, noopLogger);
+
+      try {
+        await client.resolve('socrates-explorer', undefined, 'agent');
+        expect.fail('should have thrown');
+      } catch (err) {
+        expect(err).toBeInstanceOf(SubscriptionRequiredError);
+        const subErr = err as SubscriptionRequiredError;
+        expect(subErr.requiredTier).toBe('hobbyist');
+        expect(subErr.currentTier).toBe('free');
+        expect(subErr.definition?.name).toBe('socrates-explorer');
+        expect(subErr.upgradeUrl).toBe('https://example.com/upgrade');
+      }
+    });
+
+    it('rethrows non-402 SdkApiError unchanged', async () => {
+      const mocks = getMocks();
+      const apiError = new SdkApiError(404, 'Not found', 'NOT_FOUND');
+      mocks.definitions.get.mockRejectedValueOnce(apiError);
+
+      const client = new RegistryClient(baseConfig, noopLogger);
+      await expect(client.resolve('missing', undefined, 'agent')).rejects.toBeInstanceOf(SdkApiError);
+    });
   });
 
   // ─────────────────────────────────────────────────────────────────────────────
@@ -370,6 +426,23 @@ describe('RegistryClient', () => {
       expect(overlap!.status).toBe('draft');
       // Remote-only should be included
       expect(results.find(r => r.name === 'remote-only')).toBeDefined();
+    });
+
+    it('maps minSubscription in remote list results', async () => {
+      const mocks = getMocks();
+      mocks.definitions.list.mockResolvedValueOnce({
+        definitions: [
+          { name: 'free-def', type: 'agent', version: '1.0.0', status: 'published', displayName: 'Free', description: 'test', domain: 'software', minSubscription: 'free' },
+          { name: 'pro-def', type: 'agent', version: '1.0.0', status: 'published', displayName: 'Pro', description: 'test', domain: 'software', minSubscription: 'pro' },
+        ],
+        total: 2,
+      });
+
+      const client = new RegistryClient(baseConfig, noopLogger);
+      const results = await client.list();
+
+      expect(results[0]!.minSubscription).toBe('free');
+      expect(results[1]!.minSubscription).toBe('pro');
     });
 
     it('filters by type', async () => {

@@ -186,6 +186,38 @@ describe('ValidationClient', () => {
       expect(agents[0]!.score).toBe(0);
     });
 
+    it('passes definitionMinSubscription when result has minSubscription', async () => {
+      mockSave.mockResolvedValueOnce({
+        run: { id: 'r', projectId: 'p', runNumber: 1, allGatesPassed: true, averageScore: 85 },
+        agents: [],
+        correlation: { newIssues: 0, recurringIssues: 0, regressions: 0 },
+        deduplicated: false,
+      });
+
+      const client = new ValidationClient(baseConfig);
+      await client.submit(makeSubmission({
+        result: makeResult({ minSubscription: 'plus' }),
+      }));
+
+      const input = mockSave.mock.calls[0]![0] as Record<string, unknown>;
+      expect(input.definitionMinSubscription).toBe('plus');
+    });
+
+    it('omits definitionMinSubscription when result has no minSubscription', async () => {
+      mockSave.mockResolvedValueOnce({
+        run: { id: 'r', projectId: 'p', runNumber: 1, allGatesPassed: true, averageScore: 85 },
+        agents: [],
+        correlation: { newIssues: 0, recurringIssues: 0, regressions: 0 },
+        deduplicated: false,
+      });
+
+      const client = new ValidationClient(baseConfig);
+      await client.submit(makeSubmission());
+
+      const input = mockSave.mock.calls[0]![0] as Record<string, unknown>;
+      expect(input.definitionMinSubscription).toBeUndefined();
+    });
+
     it('defaults validator name to "unknown" when not provided', async () => {
       mockSave.mockResolvedValueOnce({
         run: { id: 'r', projectId: 'p', runNumber: 1, allGatesPassed: true, averageScore: 90 },

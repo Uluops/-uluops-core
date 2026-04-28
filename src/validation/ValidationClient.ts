@@ -185,6 +185,7 @@ export class ValidationClient {
       definitionName: result.name,
       definitionVersion: result.version !== 'unknown' ? result.version : undefined,
       definitionHash: result.definitionHash?.replace(/^sha256:/, ''),
+      definitionMinSubscription: result.minSubscription,
     };
   }
 

@@ -259,6 +259,7 @@ export class AgentExecutor {
       name: resolved.name,
       version: resolved.version,
       definitionHash: resolved.hash,
+      minSubscription: resolved.minSubscription,
       decision: effectiveDecision,
       decisionCategory,
       score: parsed.score ?? 0,

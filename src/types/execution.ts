@@ -11,6 +11,12 @@
 export type DefinitionType = 'agent' | 'command' | 'workflow' | 'pipeline';
 
 /**
+ * Subscription tier for content gating.
+ * Mirrors @uluops/tier-gate SubscriptionTier without adding the dependency.
+ */
+export type SubscriptionTier = 'free' | 'hobbyist' | 'plus' | 'pro' | 'enterprise';
+
+/**
  * Execution type for multi-layer orchestration results.
  * Excludes 'agent' because agent results use the `AgentResult` type directly
  * (discriminated by `agentType`) rather than the `ExecutionResult` base.
@@ -66,6 +72,9 @@ export interface ExecutionResult {
 
   /** Definition hash for audit trail */
   definitionHash: string;
+
+  /** Minimum subscription tier required for this definition (from registry) */
+  minSubscription?: SubscriptionTier;
 
   /** Final decision */
   decision: string;

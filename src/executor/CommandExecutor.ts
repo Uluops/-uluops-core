@@ -3,7 +3,7 @@ import type { RegistryClient } from '../registry/RegistryClient.js';
 import { runPreflightChecks } from './preflight.js';
 import type { ResolvedDefinition } from '../types/registry.js';
 import type { CommandDefinition } from '../types/command.js';
-import type { ExecutionInput, Recommendation } from '../types/execution.js';
+import type { ExecutionInput, Recommendation, SubscriptionTier } from '../types/execution.js';
 import type { CommandResult, CommandMetrics } from '../types/command.js';
 import type { AgentResult } from '../types/agent.js';
 import { ExecutionError } from '../errors/index.js';
@@ -65,7 +65,7 @@ export class CommandExecutor {
         thresholds: def.command.execution.thresholds,
       });
 
-      return this.wrapAgentResult(agentResult, def, resolved.hash, startTime);
+      return this.wrapAgentResult(agentResult, def, resolved.hash, startTime, resolved.minSubscription);
     }
 
     // 4. Multi-agent: execute each and aggregate
@@ -88,6 +88,7 @@ export class CommandExecutor {
       resolved.hash,
       startTime,
       def.command.aggregation ?? { method: 'average' },
+      resolved.minSubscription,
     );
   }
 
@@ -134,6 +135,7 @@ export class CommandExecutor {
     def: CommandDefinition,
     hash: string,
     startTime: number,
+    minSubscription?: SubscriptionTier,
   ): CommandResult {
     const durationMs = Date.now() - startTime;
 
@@ -148,6 +150,7 @@ export class CommandExecutor {
       name: def.command.interface.name,
       version: def.command.interface.version,
       definitionHash: hash,
+      minSubscription,
       agentType: agentResult.agentType,
       decision: agentResult.decision,
       score: agentResult.score,
@@ -170,6 +173,7 @@ export class CommandExecutor {
     hash: string,
     startTime: number,
     aggregation: { method: string; weights?: Record<string, number> },
+    minSubscription?: SubscriptionTier,
   ): CommandResult {
     const durationMs = Date.now() - startTime;
 
@@ -244,6 +248,7 @@ export class CommandExecutor {
       name: def.command.interface.name,
       version: def.command.interface.version,
       definitionHash: hash,
+      minSubscription,
       agentType: results[0]?.agentType ?? 'validator',
       decision,
       score,

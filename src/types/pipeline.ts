@@ -1,4 +1,4 @@
-import type { ExecutionResult, ExecutionMetrics, Domain } from './execution.js';
+import type { ExecutionResult, ExecutionMetrics, Domain, SubscriptionTier } from './execution.js';
 import type { CommandResult } from './command.js';
 import type { WorkflowResult } from './workflow.js';
 
@@ -181,6 +181,9 @@ export interface PipelineState {
 
   /** Hash of the pipeline definition for audit trail */
   definitionHash: string;
+
+  /** Minimum subscription tier (from registry, for run submission) */
+  minSubscription?: SubscriptionTier;
 
   /** Current execution status */
   status: 'pending' | 'running' | 'completed' | 'failed' | 'cancelled';

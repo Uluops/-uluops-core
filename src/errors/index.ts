@@ -133,6 +133,54 @@ export class PipelineError extends UluOpsError {
   }
 }
 
+/**
+ * Thrown when a definition requires a higher subscription tier than the user has.
+ * The registry returned metadata but withheld content (yaml=null, proRestricted=true).
+ */
+export class SubscriptionRequiredError extends UluOpsError {
+  readonly code = 'SUBSCRIPTION_REQUIRED' as const;
+
+  private static readonly TIER_ORDER: Record<string, number> = {
+    free: 0, hobbyist: 1, plus: 2, pro: 3, enterprise: 4,
+  };
+
+  constructor(
+    message: string,
+    public readonly requiredTier: string,
+    public readonly currentTier: string,
+    public readonly definition?: { type: string; name: string; displayName?: string },
+    public readonly upgradeUrl?: string,
+  ) {
+    super(message);
+    this.name = 'SubscriptionRequiredError';
+  }
+
+  /** Tier comparison metadata for rendering upgrade prompts */
+  get tierComparison(): { current: string; required: string; gap: number } {
+    const currentOrder = SubscriptionRequiredError.TIER_ORDER[this.currentTier] ?? 0;
+    const requiredOrder = SubscriptionRequiredError.TIER_ORDER[this.requiredTier] ?? 0;
+    return { current: this.currentTier, required: this.requiredTier, gap: requiredOrder - currentOrder };
+  }
+
+  /** Upgrade URL with source tracking appended */
+  trackedUpgradeUrl(source: 'sdk' | 'mcp' | 'cli' | 'api'): string | undefined {
+    if (!this.upgradeUrl) return undefined;
+    const sep = this.upgradeUrl.includes('?') ? '&' : '?';
+    return `${this.upgradeUrl}${sep}source=${source}`;
+  }
+
+  override toJSON(): Record<string, unknown> {
+    return {
+      ...super.toJSON(),
+      requiredTier: this.requiredTier,
+      currentTier: this.currentTier,
+      tierComparison: this.tierComparison,
+      ...(this.definition ? { definition: this.definition } : {}),
+      ...(this.upgradeUrl ? { upgradeUrl: this.upgradeUrl } : {}),
+    };
+  }
+}
+
 /** Thrown when structured output cannot be extracted from an LLM response. */
 export class ParseError extends UluOpsError {
   readonly code = 'PARSE_ERROR' as const;

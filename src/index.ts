@@ -109,6 +109,7 @@ export type {
   ResolvedDefinition,
   DefinitionSummary,
   Reference,
+  SubscriptionTier,
 } from './types/registry.js';
 
 // ─── Types: Validation ────────────────────────────────────────────────────────
@@ -155,6 +156,7 @@ export {
   WorkflowError,
   PipelineError,
   ParseError,
+  SubscriptionRequiredError,
 } from './errors/index.js';
 
 // ─── Errors: Re-exported from @uluops/sdk-core ───────────────────────────────

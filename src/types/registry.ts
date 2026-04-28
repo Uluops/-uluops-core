@@ -1,8 +1,11 @@
-import type { DefinitionType, Domain, AgentType } from './execution.js';
+import type { DefinitionType, Domain, AgentType, SubscriptionTier } from './execution.js';
 import type { AgentDefinition } from './agent.js';
 import type { CommandDefinition } from './command.js';
 import type { WorkflowDefinition } from './workflow.js';
 import type { PipelineDefinition } from './pipeline.js';
+
+// Re-export SubscriptionTier — canonical definition is in execution.ts to avoid circular imports
+export type { SubscriptionTier } from './execution.js';
 
 /**
  * Resolved definition from registry
@@ -20,7 +23,7 @@ export interface ResolvedDefinition {
   /** SHA-256 hash of source YAML */
   hash: string;
 
-  /** Raw YAML content */
+  /** Raw YAML content (null when content-gated — check proRestricted) */
   yaml: string;
 
   /** Parsed definition (Partial when no YAML available — use optional chaining) */
@@ -34,6 +37,9 @@ export interface ResolvedDefinition {
 
   /** Agent type (only for agents/commands) */
   agentType?: AgentType;
+
+  /** Minimum subscription tier required to access this definition's content */
+  minSubscription?: SubscriptionTier;
 
   /** Degradation markers — tracks which fallback paths were taken during resolution */
   degradations?: string[];
@@ -244,6 +250,8 @@ export interface DefinitionSummary {
   agentType?: AgentType;
   status: 'draft' | 'published' | 'deprecated' | 'archived';
   tags?: string[];
+  /** Minimum subscription tier required to access this definition's content */
+  minSubscription?: SubscriptionTier;
 }
 
 /**

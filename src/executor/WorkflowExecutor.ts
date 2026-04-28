@@ -85,6 +85,7 @@ export class WorkflowExecutor {
       name: def.workflow.interface.name,
       version: def.workflow.interface.version,
       definitionHash: resolved.hash,
+      minSubscription: resolved.minSubscription,
       decision: aggregated.decision,
       score: aggregated.score,
       phases: phaseResults,

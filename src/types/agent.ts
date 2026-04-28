@@ -1,4 +1,4 @@
-import type { Domain, AgentType, ExecutionMetrics, Recommendation } from './execution.js';
+import type { Domain, AgentType, ExecutionMetrics, Recommendation, SubscriptionTier } from './execution.js';
 import type { Finding, ArtifactResult } from './command.js';
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -426,6 +426,9 @@ interface AgentResultBase {
 
   /** Content-addressed hash of the definition */
   definitionHash: string;
+
+  /** Minimum subscription tier required for this definition (from registry) */
+  minSubscription?: SubscriptionTier;
 
   /** Final decision */
   decision: string;
