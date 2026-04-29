@@ -169,6 +169,52 @@ describe('agentOutputSchema', () => {
     });
   });
 
+  describe('constraint rejection', () => {
+    it('rejects non-string decision', () => {
+      expect(() => agentOutputSchema.parse({
+        decision: 123,
+        score: 50,
+        maxScore: 100,
+        summary: null,
+        categories: null,
+        artifacts: null,
+      })).toThrow();
+    });
+
+    it('rejects non-number score', () => {
+      expect(() => agentOutputSchema.parse({
+        decision: 'PASS',
+        score: 'not-a-number',
+        maxScore: 100,
+        summary: null,
+        categories: null,
+        artifacts: null,
+      })).toThrow();
+    });
+
+    it('rejects malformed categories array', () => {
+      expect(() => agentOutputSchema.parse({
+        decision: 'PASS',
+        score: 80,
+        maxScore: 100,
+        summary: null,
+        categories: [{ wrong: 'shape' }],
+        artifacts: null,
+      })).toThrow();
+    });
+
+    it('rejects category with missing findings array', () => {
+      expect(() => agentOutputSchema.parse({
+        decision: 'PASS',
+        score: 80,
+        maxScore: 100,
+        summary: null,
+        categories: [{ name: 'Test', score: 80, maxScore: 100 }],
+        artifacts: null,
+      })).toThrow();
+    });
+  });
+
   describe('universal schema', () => {
     it('accepts custom decision vocabularies', () => {
       const result = agentOutputSchema.parse({

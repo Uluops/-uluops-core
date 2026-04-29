@@ -977,17 +977,12 @@ describe('WorkflowExecutor', () => {
       expect(result.decision).toBe('HOLD');  // warned → HOLD
     });
 
-    it('stop vs abort: stop allows same-level phases, abort is identical for sequential deps', async () => {
-      // This test verifies stop and abort diverge when phases are in the same level
-      // With three sequential levels: a -> b -> c, stop and abort behave identically
-      // The difference is visible when same-level phases exist (tested in stop/abort tests above)
-
-      // Sequential chain with stop
-      const cmdExecStop = makeNamedCommandExecutor({
+    it('stop: skips dependent phases in sequential chain when gate fails', async () => {
+      const cmdExec = makeNamedCommandExecutor({
         'cmd-a': { score: 40 },
         'cmd-b': { score: 90 },
       });
-      const defStop = makeWorkflowDef({
+      const def = makeWorkflowDef({
         orchestration: {
           phases: [
             { id: 'a', name: 'A', commands: ['cmd-a'], gate: { threshold: 70, aggregate: 'average', on_fail: 'stop' } },
@@ -996,14 +991,18 @@ describe('WorkflowExecutor', () => {
           on_failure: 'stop',
         },
       });
-      const resultStop = await new WorkflowExecutor(cmdExecStop, makeRegistry()).execute(defStop, { target: '/tmp/test' });
+      const result = await new WorkflowExecutor(cmdExec, makeRegistry()).execute(def, { target: '/tmp/test' });
 
-      // Sequential chain with abort
-      const cmdExecAbort = makeNamedCommandExecutor({
+      expect(result.phases.find(p => p.id === 'a')!.decision).toBe('blocked');
+      expect(result.phases.find(p => p.id === 'b')!.decision).toBe('skipped');
+    });
+
+    it('abort: behaves identically to stop for sequential dependency chains', async () => {
+      const cmdExec = makeNamedCommandExecutor({
         'cmd-a': { score: 40 },
         'cmd-b': { score: 90 },
       });
-      const defAbort = makeWorkflowDef({
+      const def = makeWorkflowDef({
         orchestration: {
           phases: [
             { id: 'a', name: 'A', commands: ['cmd-a'], gate: { threshold: 70, aggregate: 'average', on_fail: 'stop' } },
@@ -1012,10 +1011,10 @@ describe('WorkflowExecutor', () => {
           on_failure: 'abort',
         },
       });
-      const resultAbort = await new WorkflowExecutor(cmdExecAbort, makeRegistry()).execute(defAbort, { target: '/tmp/test' });
+      const result = await new WorkflowExecutor(cmdExec, makeRegistry()).execute(def, { target: '/tmp/test' });
 
-      // Both produce same result for linear chains
-      expect(resultStop.phases.map(p => p.decision)).toEqual(resultAbort.phases.map(p => p.decision));
+      expect(result.phases.find(p => p.id === 'a')!.decision).toBe('blocked');
+      expect(result.phases.find(p => p.id === 'b')!.decision).toBe('skipped');
     });
 
     it('gate on_fail: warn produces warned decision at phase level', async () => {

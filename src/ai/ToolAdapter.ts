@@ -4,6 +4,15 @@ import type { ToolHandler } from '../executor/ToolHandler.js';
 import type { TokenBudgetTracker } from './TokenBudgetTracker.js';
 import { ExecutionError } from '../errors/index.js';
 
+/** Strip undefined values from an object to avoid passing them as tool input. */
+function stripUndefined(obj: Record<string, unknown>): Record<string, unknown> {
+  const result: Record<string, unknown> = {};
+  for (const [key, value] of Object.entries(obj)) {
+    if (value !== undefined) result[key] = value;
+  }
+  return result;
+}
+
 /**
  * Converts UluOps ToolHandler to AI SDK v6 tool format.
  *
@@ -46,12 +55,7 @@ export class ToolAdapter {
           start_line: z.number().int().optional().describe('First line to read (1-based). Default: 1'),
           end_line: z.number().int().optional().describe('Last line to read (1-based). Default: end of file'),
         }),
-        execute: async ({ path, start_line, end_line }) =>
-          this.executeTool('read_file', {
-            path,
-            ...(start_line !== undefined ? { start_line } : {}),
-            ...(end_line !== undefined ? { end_line } : {}),
-          }),
+        execute: async (input) => this.executeTool('read_file', stripUndefined(input)),
       }),
 
       list_files: tool({
@@ -62,12 +66,7 @@ export class ToolAdapter {
           pattern: z.string().optional().describe('Glob pattern (e.g., "**/*.ts")'),
           max_results: z.number().int().optional().describe('Maximum files to return. Default: 200'),
         }),
-        execute: async ({ path, pattern, max_results }) =>
-          this.executeTool('list_files', {
-            path,
-            ...(pattern !== undefined ? { pattern } : {}),
-            ...(max_results !== undefined ? { max_results } : {}),
-          }),
+        execute: async (input) => this.executeTool('list_files', stripUndefined(input)),
       }),
 
       search_content: tool({
@@ -87,14 +86,7 @@ export class ToolAdapter {
             .optional()
             .describe('Lines of context before/after each match (0-5). Default: 0'),
         }),
-        execute: async ({ pattern, file_pattern, max_results, mode, context_lines }) =>
-          this.executeTool('search_content', {
-            pattern,
-            ...(file_pattern !== undefined ? { file_pattern } : {}),
-            ...(max_results !== undefined ? { max_results } : {}),
-            ...(mode !== undefined ? { mode } : {}),
-            ...(context_lines !== undefined ? { context_lines } : {}),
-          }),
+        execute: async (input) => this.executeTool('search_content', stripUndefined(input)),
       }),
 
       get_file_info: tool({
@@ -114,12 +106,7 @@ export class ToolAdapter {
           max_depth: z.number().int().optional().describe('Maximum depth to traverse. Default: 3'),
           include_sizes: z.boolean().optional().describe('Include file sizes. Default: true'),
         }),
-        execute: async ({ path, max_depth, include_sizes }) =>
-          this.executeTool('get_directory_tree', {
-            path,
-            ...(max_depth !== undefined ? { max_depth } : {}),
-            ...(include_sizes !== undefined ? { include_sizes } : {}),
-          }),
+        execute: async (input) => this.executeTool('get_directory_tree', stripUndefined(input)),
       }),
 
       get_symbols: tool({
@@ -129,11 +116,7 @@ export class ToolAdapter {
           path: z.string().describe('File path relative to target directory'),
           include_private: z.boolean().optional().describe('Include non-exported symbols. Default: false'),
         }),
-        execute: async ({ path, include_private }) =>
-          this.executeTool('get_symbols', {
-            path,
-            ...(include_private !== undefined ? { include_private } : {}),
-          }),
+        execute: async (input) => this.executeTool('get_symbols', stripUndefined(input)),
       }),
     };
 

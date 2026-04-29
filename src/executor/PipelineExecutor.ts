@@ -216,9 +216,27 @@ export class PipelineExecutor {
     );
 
     const results: AgentResult[] = [];
-    for (const outcome of settled) {
+    for (let i = 0; i < settled.length; i++) {
+      const outcome = settled[i]!;
       if (outcome.status === 'fulfilled') {
         results.push(outcome.value);
+      } else {
+        // Surface rejected inline agents as failed results instead of silently dropping them
+        const errorMsg = outcome.reason instanceof Error ? outcome.reason.message : String(outcome.reason);
+        results.push({
+          name: agents[i]?.ref ?? 'unknown',
+          agentType: 'validator',
+          decision: 'FAIL',
+          score: 0,
+          maxScore: 100,
+          recommendations: [{
+            title: `Inline agent failed: ${agents[i]?.ref ?? 'unknown'}`,
+            description: errorMsg,
+            severity: 'high',
+            failureCode: 'PRA-FRA/H',
+          }],
+          metrics: { inputTokens: 0, outputTokens: 0, totalEffectiveTokens: 0, durationMs: 0, model: 'unknown' },
+        } as AgentResult);
       }
     }
     return results;
@@ -364,13 +382,29 @@ class PipelineHandle implements IPipelineHandle {
         ),
         durationMs,
         model: 'mixed',
-        stagesExecuted: this.state.stageResults.filter(s => s.status === 'completed').length,
-        stagesPassed: this.state.stageResults.filter(s => classifyDecision(s.result?.decision) === 'positive').length,
-        stagesFailed: this.state.stageResults.filter(s => classifyDecision(s.result?.decision) === 'negative').length,
-        stagesWarned: this.state.stageResults.filter(s => classifyDecision(s.result?.decision) === 'conditional').length,
-        stagesSkipped: this.state.stageResults.filter(s => s.status === 'skipped').length,
+        ...this.computeStageMetrics(),
       },
     };
+  }
+
+  /** Single-pass stage metric computation (replaces five separate filter calls). */
+  private computeStageMetrics() {
+    let stagesExecuted = 0;
+    let stagesPassed = 0;
+    let stagesFailed = 0;
+    let stagesWarned = 0;
+    let stagesSkipped = 0;
+
+    for (const s of this.state.stageResults) {
+      if (s.status === 'skipped') { stagesSkipped++; continue; }
+      if (s.status === 'completed') stagesExecuted++;
+      const category = classifyDecision(s.result?.decision);
+      if (category === 'positive') stagesPassed++;
+      else if (category === 'negative') stagesFailed++;
+      else if (category === 'conditional') stagesWarned++;
+    }
+
+    return { stagesExecuted, stagesPassed, stagesFailed, stagesWarned, stagesSkipped };
   }
 
   private computeDecision(): string {

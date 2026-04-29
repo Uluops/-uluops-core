@@ -184,6 +184,9 @@ Execute saved command configurations. Uses model, thresholds, and aggregation fr
 ```typescript
 const result = await client.runCommand('validate', { target: './src' });
 
+// Override the definition's default model at runtime (e.g., for CI cost control)
+const fast = await client.runCommand('validate', { target: './src' }, { model: 'haiku' });
+
 console.log(`Score: ${result.score}`);
 console.log(`Categories:`, result.categories);
 ```
@@ -401,7 +404,7 @@ import {
 
   // Utilities
   OutputExtractor,     // 4-strategy LLM output parser (structured > JSON fence > inline > regex)
-  ToolHandler,         // Sandboxed filesystem tools (read, write, glob, grep, search)
+  ToolHandler,         // Sandboxed filesystem tools (read_file, list_files, search_content, get_file_info, get_directory_tree, get_symbols)
   parseRef,            // Parse "name@version" reference strings
   classifyDecision,    // Classify decision strings into positive/negative/conditional/neutral
   buildVocabularyMap,  // Build custom decision vocabulary from agent definitions
@@ -588,9 +591,10 @@ The SDK provides a structured error hierarchy:
 | `ValidationError` | `ValidationClient` methods | Validation service rejected a submission. Use `ValidationErrorCodes` to narrow by code |
 | `WorkflowError` | `WorkflowExecutor.execute()` | Phase gate failure. Check `error.context.partialResult` for completed phase results |
 | `PipelineError` | `PipelineExecutor.execute()` | Pipeline stage failure. Check `error.context` for stage name/index |
+| `SubscriptionRequiredError` | `RegistryClient.resolve()` | Definition requires a higher subscription tier. Check `error.requiredTier`, `error.currentTier`, and `error.upgradeUrl` for upgrade guidance |
 
 ```typescript
-import { ConfigurationError, ModelNotFoundError, ExecutionError } from '@uluops/core';
+import { ConfigurationError, ModelNotFoundError, ExecutionError, SubscriptionRequiredError } from '@uluops/core';
 
 try {
   const result = await client.runAgent('code-validator', './src');

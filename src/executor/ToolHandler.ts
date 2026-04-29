@@ -68,7 +68,9 @@ export class ToolHandler {
    * @returns Tool result with content or error
    */
   async fulfill(toolUse: ToolUseBlock): Promise<ToolResult> {
-    this.logger.debug(`Tool: ${toolUse.name}(${JSON.stringify(toolUse.input).substring(0, 200)})`);
+    // Log tool name and path only — full input may contain sensitive search patterns
+    // or file paths that reveal secrets in the target project (CWE-532)
+    this.logger.debug(`Tool: ${toolUse.name}(path=${String(toolUse.input['path'] || '.')})`);
 
     try {
       const relativePath = String(toolUse.input['path'] || '.');

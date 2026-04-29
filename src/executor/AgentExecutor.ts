@@ -401,24 +401,25 @@ export class AgentExecutor {
 
   /**
    * Map structured output to ParsedOutput.
+   * Validates via agentOutputSchema before mapping, ensuring the cast
+   * is backed by a runtime check (not just upstream Zod validation).
    * Null values from .nullable() fields are converted to undefined.
    */
   private mapStructuredOutput(output: unknown): ParsedOutput {
-    const o = output as {
-      decision: string;
-      score: number;
-      maxScore: number;
-      summary: string | null;
-      categories: Array<unknown> | null;
-      artifacts: Array<unknown> | null;
-    };
+    const parsed = agentOutputSchema.safeParse(output);
+    if (!parsed.success) {
+      throw new ExecutionError(
+        `Structured output failed schema validation: ${parsed.error.issues.map(i => i.message).join(', ')}`,
+      );
+    }
+    const o = parsed.data;
     return {
       decision: o.decision,
       score: o.score,
       maxScore: o.maxScore,
       summary: o.summary ?? undefined,
-      categories: o.categories as ParsedOutput['categories'] ?? undefined,
-      artifacts: o.artifacts as ParsedOutput['artifacts'] ?? undefined,
+      categories: (o.categories as unknown as ParsedOutput['categories']) ?? undefined,
+      artifacts: (o.artifacts as unknown as ParsedOutput['artifacts']) ?? undefined,
       rawJson: output,
     };
   }

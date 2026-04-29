@@ -83,11 +83,13 @@ export async function executeShellAsOpenAIResult(
   const timeoutMs = action.timeoutMs ?? defaultTimeoutMs;
   const results = [];
 
+  const maxLen = action.maxOutputLength;
+
   for (const command of action.commands) {
     const result = await runShellCommand(command, cwd, timeoutMs);
     results.push({
-      stdout: result.stdout,
-      stderr: result.stderr,
+      stdout: maxLen !== undefined ? result.stdout.substring(0, maxLen) : result.stdout,
+      stderr: maxLen !== undefined ? result.stderr.substring(0, maxLen) : result.stderr,
       outcome: result.timedOut
         ? { type: 'timeout' as const }
         : { type: 'exit' as const, exitCode: result.exitCode },
