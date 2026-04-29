@@ -4,26 +4,7 @@ import type { CommandExecutor } from '../../src/executor/CommandExecutor.js';
 import type { ResolvedDefinition } from '../../src/types/registry.js';
 import type { WorkflowDefinition } from '../../src/types/workflow.js';
 import { WorkflowError } from '../../src/errors/index.js';
-import { makeCommandResult, makeCommandExecutor, makeRegistry } from './fixtures.js';
-
-/**
- * Creates a CommandExecutor that dispatches results by command name.
- * Unlike the queue-based makeCommandExecutor, this returns deterministic
- * results regardless of execution order — essential for parallel tests.
- */
-function makeNamedCommandExecutor(
-  resultMap: Record<string, Partial<Parameters<typeof makeCommandResult>[0]>>,
-  opts?: { delayMs?: Record<string, number> },
-): CommandExecutor {
-  return {
-    execute: vi.fn().mockImplementation(async (resolved: ResolvedDefinition) => {
-      const delay = opts?.delayMs?.[resolved.name];
-      if (delay) await new Promise(r => setTimeout(r, delay));
-      const overrides = resultMap[resolved.name] ?? {};
-      return makeCommandResult({ name: resolved.name, ...overrides });
-    }),
-  } as unknown as CommandExecutor;
-}
+import { makeCommandResult, makeCommandExecutor, makeNamedCommandExecutor, makeRegistry } from './fixtures.js';
 
 function makeWorkflowDef(overrides?: Partial<WorkflowDefinition['workflow']>): ResolvedDefinition {
   return {

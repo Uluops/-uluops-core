@@ -147,6 +147,25 @@ export function makeWorkflowExecutor(results?: WorkflowResult[]): WorkflowExecut
   } as unknown as WorkflowExecutor;
 }
 
+/**
+ * Creates a CommandExecutor that dispatches results by command name.
+ * Unlike the queue-based makeCommandExecutor, this returns deterministic
+ * results regardless of execution order — essential for parallel tests.
+ */
+export function makeNamedCommandExecutor(
+  resultMap: Record<string, Partial<Parameters<typeof makeCommandResult>[0]>>,
+  opts?: { delayMs?: Record<string, number> },
+): CommandExecutor {
+  return {
+    execute: vi.fn().mockImplementation(async (resolved: ResolvedDefinition) => {
+      const delay = opts?.delayMs?.[resolved.name];
+      if (delay) await new Promise(r => setTimeout(r, delay));
+      const overrides = resultMap[resolved.name] ?? {};
+      return makeCommandResult({ name: resolved.name, ...overrides });
+    }),
+  } as unknown as CommandExecutor;
+}
+
 export function makeRegistry(resolutions?: Record<string, ResolvedDefinition>): RegistryClient {
   return {
     resolve: vi.fn().mockImplementation((name: string, version?: string, type?: string) => {

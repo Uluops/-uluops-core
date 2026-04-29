@@ -67,7 +67,7 @@ export class RegistryClient {
 
     // Try local resolution if configured (local takes priority over remote)
     if (this.config.localDefinitions) {
-      const local = await this.resolveLocal(name, type);
+      const local = await this.resolveLocal(name, type, this.config.localDefinitions);
       if (local) {
         this.cache.set(cacheKey, local);
         return local;
@@ -87,7 +87,7 @@ export class RegistryClient {
     const results: DefinitionSummary[] = [];
 
     if (this.config.localDefinitions) {
-      const local = await this.listLocal(filter);
+      const local = await this.listLocal(filter, this.config.localDefinitions);
       results.push(...local);
     }
 
@@ -129,8 +129,9 @@ export class RegistryClient {
   private async resolveLocal(
     name: string,
     type?: DefinitionType,
+    baseDir?: string,
   ): Promise<ResolvedDefinition | null> {
-    const baseDir = this.config.localDefinitions!;
+    if (!baseDir) return null;
 
     const allCandidates = [
       { path: path.join(baseDir, `${name}.agent.yaml`), type: 'agent' as DefinitionType },
@@ -652,9 +653,8 @@ export class RegistryClient {
   // Private: Listing
   // ─────────────────────────────────────────────────────────────────────────────
 
-  private async listLocal(filter?: { type?: DefinitionType; domain?: string }): Promise<DefinitionSummary[]> {
+  private async listLocal(filter: { type?: DefinitionType; domain?: string } | undefined, baseDir: string): Promise<DefinitionSummary[]> {
     const results: DefinitionSummary[] = [];
-    const baseDir = this.config.localDefinitions!;
     const seen = new Set<string>();
 
     const typeConfig: Record<DefinitionType, { ext: string; subdir: string }> = {

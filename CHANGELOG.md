@@ -44,7 +44,7 @@ This project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.htm
 - **`extractionConfidence` and `extractionMethod`** fields on `AgentResult` — surfaces how LLM output was parsed and how reliable the result is
 - **`EXTRACTION_FAILED` decision** — when extraction confidence is below 0.7, decision is `EXTRACTION_FAILED` instead of silently defaulting to `FAIL`
 - **Low-confidence extraction warning** — logged when fallback strategies produce results below 0.7 confidence
-- **`DEFAULT_MAX_TOKENS`** constant (8192) — centralized from two hardcoded callsites
+- **`DEFAULT_MAX_TOKENS`** constant (16384) — centralized from two hardcoded callsites
 - **`ANTHROPIC_CONTEXT_KEEP_TOOL_USES`** constant (5) — extracted magic number with documented rationale
 
 ### Changed

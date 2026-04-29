@@ -32,7 +32,7 @@ export class PipelineExecutor {
    */
   async start(resolved: ResolvedDefinition, input: ExecutionInput, options?: ExecutionOptions): Promise<PipelineHandle> {
     const def = this.assertPipelineDefinition(resolved);
-    const pipelineId = `pipeline_${Date.now()}_${Math.random().toString(36).substring(2, 9)}`;
+    const pipelineId = `pipeline_${Date.now()}_${crypto.randomUUID().substring(0, 8)}`;
 
     const state: PipelineState = {
       pipelineId,
@@ -128,6 +128,8 @@ export class PipelineExecutor {
         const scores = agentResults.map(r => r.score ?? 0);
         const avgScore = scores.length > 0 ? scores.reduce((a, b) => a + b, 0) / scores.length : 0;
 
+        const stageEnd = Date.now() - startTime;
+
         return {
           id: stage.id,
           name: stage.name,
@@ -143,15 +145,15 @@ export class PipelineExecutor {
             score: Math.round(avgScore),
             maxScore: 100,
             recommendations: agentResults.flatMap(r => r.recommendations),
-            durationMs: Date.now() - startTime,
+            durationMs: stageEnd,
             metrics: {
               ...sumTokenMetrics(agentResults.map(r => r.metrics)),
-              durationMs: Date.now() - startTime,
+              durationMs: stageEnd,
               model: 'mixed',
               toolCalls: agentResults.reduce((sum, r) => sum + (r.metrics.toolCallCount ?? 0), 0),
             },
           },
-          durationMs: Date.now() - startTime,
+          durationMs: stageEnd,
         };
       }
 

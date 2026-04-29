@@ -2,7 +2,7 @@ import { describe, it, expect, vi, beforeEach } from 'vitest';
 import { ModelCatalog } from '../../src/ai/ModelCatalog.js';
 import { ModelNotFoundError, CapabilityError } from '../../src/errors/index.js';
 import type { RegistryClient as RegistrySdk } from '@uluops/registry-sdk';
-import type { Model, AliasResolution, ModelCapabilities } from '@uluops/registry-sdk';
+import type { Model, AliasResolution } from '@uluops/registry-sdk';
 
 /** Simulate a 404 error from the registry SDK (has status property like ApiError) */
 function makeNotFoundError(message = 'Not found'): Error {

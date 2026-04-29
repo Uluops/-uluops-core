@@ -5,7 +5,7 @@ export default tseslint.config(
   {
     languageOptions: {
       parserOptions: {
-        projectService: true,
+        project: './tsconfig.eslint.json',
         tsconfigRootDir: import.meta.dirname,
       },
     },
@@ -15,6 +15,13 @@ export default tseslint.config(
     },
   },
   {
-    ignores: ['dist/', 'coverage/', '**/*.test.ts', 'vitest.config.ts'],
+    // Test files: relax no-explicit-any (mock-heavy code legitimately uses any)
+    files: ['test/**/*.ts'],
+    rules: {
+      '@typescript-eslint/no-explicit-any': 'off',
+    },
+  },
+  {
+    ignores: ['dist/', 'coverage/', 'vitest.config.ts'],
   },
 );
