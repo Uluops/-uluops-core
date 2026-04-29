@@ -154,7 +154,7 @@ describe('CommandExecutor', () => {
 
       const result = await executor.execute(cmdDef, { target: '/tmp/test' });
 
-      expect(result.score).toBe(87.5); // (100*3 + 50*1) / 4
+      expect(result.score).toBe(88); // round((100*3 + 50*1) / 4) = 87.5 → 88
       expect(result.decision).toBe('PASS');
     });
 

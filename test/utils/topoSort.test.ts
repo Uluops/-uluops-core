@@ -81,6 +81,27 @@ describe('topoGroupLevels', () => {
     expect(levels[2]!.map(p => p.id)).toEqual(['e']);
   });
 
+  it('does not place a phase until ALL dependencies are satisfied (catches every→some mutation)', () => {
+    // Phase 'd' depends on both 'b' and 'c'. If deps.every() were mutated to
+    // deps.some(), 'd' would be placed as soon as either 'b' or 'c' is placed
+    // (level 1) instead of waiting for both (level 2).
+    const phases: TestPhase[] = [
+      { id: 'a' },
+      { id: 'b', depends_on: ['a'] },
+      { id: 'c', depends_on: ['a'] },
+      { id: 'd', depends_on: ['b', 'c'] },
+    ];
+    const levels = topoGroupLevels(phases);
+
+    // 'd' must NOT be in level 1 — it requires both 'b' and 'c'
+    const level1Ids = levels[1]!.map(p => p.id);
+    expect(level1Ids).not.toContain('d');
+
+    // 'd' must be in level 2
+    const level2Ids = levels[2]!.map(p => p.id);
+    expect(level2Ids).toContain('d');
+  });
+
   it('detects three-node cycle', () => {
     const phases: TestPhase[] = [
       { id: 'a', depends_on: ['c'] },

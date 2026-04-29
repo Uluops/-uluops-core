@@ -9,6 +9,7 @@ import type { ExecutionInput, Recommendation } from '../types/execution.js';
 import { WorkflowError } from '../errors/index.js';
 import { formatErrorMessage } from '../utils/formatError.js';
 import { DEFAULT_GATE_THRESHOLD } from '../constants.js';
+import { aggregateScores } from '../utils/aggregateScores.js';
 import { sumTokenMetrics } from '../utils/sumTokenMetrics.js';
 import { topoGroupLevels } from '../utils/topoSort.js';
 import { parseRef } from '../utils/parseRef.js';
@@ -443,38 +444,13 @@ export class WorkflowExecutor {
     const scorable = phases.filter(
       p => p.decision !== 'skipped' && p.decision !== 'aborted',
     );
-    const scores = scorable.map(p => p.score);
     const method = config?.score?.method ?? 'weighted_average';
 
-    let score: number;
-    switch (method) {
-      case 'min':
-        score = scores.length > 0 ? Math.min(...scores) : 0;
-        break;
-      case 'max':
-        score = scores.length > 0 ? Math.max(...scores) : 0;
-        break;
-      case 'sum':
-        score = scores.reduce((a, b) => a + b, 0);
-        break;
-      case 'weighted_average': {
-        const weights = config?.score?.weights ?? {};
-        let totalWeight = 0;
-        let weightedSum = 0;
-        for (const phase of scorable) {
-          const w = weights[phase.id] ?? 1;
-          totalWeight += w;
-          weightedSum += phase.score * w;
-        }
-        score = totalWeight > 0 ? Math.round(weightedSum / totalWeight) : 0;
-        break;
-      }
-      case 'average':
-      default:
-        score = scores.length > 0
-          ? Math.round(scores.reduce((a, b) => a + b, 0) / scores.length)
-          : 0;
-    }
+    const score = aggregateScores(
+      scorable.map(p => ({ key: p.id, score: p.score })),
+      method,
+      config?.score?.weights,
+    );
 
     const hasBlocked = phases.some(p => p.decision === 'blocked');
     const hasWarned = phases.some(p => p.decision === 'warned');

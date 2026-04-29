@@ -156,7 +156,14 @@ export class PipelineExecutor {
       }
 
       // Standard ref-based stages
-      const [refName, refVersion] = parseRef(stage.ref!);
+      if (!stage.ref) {
+        throw new PipelineError(
+          `Stage "${stage.id}" has type "${stage.type}" but no ref. ` +
+          `Non-inline stages must specify a ref (e.g., "agent-name@latest").`,
+          {},
+        );
+      }
+      const [refName, refVersion] = parseRef(stage.ref);
       const resolved = await this.registry.resolve(refName, refVersion, stage.type as 'command' | 'workflow');
 
       if (stage.type === 'workflow') {

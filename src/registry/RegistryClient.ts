@@ -325,10 +325,12 @@ export class RegistryClient {
 
     if (topKey === 'workflow') {
       this.normalizeWorkflowDefinition(section as Record<string, unknown>);
+      this.validateWorkflowStructure(section as Record<string, unknown>);
     }
 
     if (topKey === 'pipeline') {
       this.normalizePipelineDefinition(section as Record<string, unknown>);
+      this.validatePipelineStructure(section as Record<string, unknown>);
     }
 
     return parsed as unknown as ResolvedDefinition['definition'];
@@ -454,6 +456,40 @@ export class RegistryClient {
       if (stage['ref'] && !stage['type']) {
         stage['type'] = 'command';
       }
+    }
+  }
+
+  /**
+   * Structural guard for workflow definitions.
+   * Verifies orchestration.phases exists and is an array before the double
+   * assertion to ResolvedDefinition['definition']. WorkflowExecutor accesses
+   * def.workflow.orchestration.phases directly — a malformed YAML that passes
+   * the top-key check but lacks these nested fields would crash at runtime.
+   */
+  private validateWorkflowStructure(section: Record<string, unknown>): void {
+    const orchestration = section['orchestration'] as Record<string, unknown> | undefined;
+    if (!orchestration || typeof orchestration !== 'object') {
+      throw new ConfigurationError(
+        'Invalid workflow definition: missing "orchestration" section',
+      );
+    }
+    if (!Array.isArray(orchestration['phases'])) {
+      throw new ConfigurationError(
+        'Invalid workflow definition: "orchestration.phases" must be an array',
+      );
+    }
+  }
+
+  /**
+   * Structural guard for pipeline definitions.
+   * Verifies stages exists and is an array. PipelineExecutor iterates
+   * def.pipeline.stages directly — missing field would crash at runtime.
+   */
+  private validatePipelineStructure(section: Record<string, unknown>): void {
+    if (!Array.isArray(section['stages'])) {
+      throw new ConfigurationError(
+        'Invalid pipeline definition: "stages" must be an array',
+      );
     }
   }
 

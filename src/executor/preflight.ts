@@ -23,15 +23,27 @@ export async function runPreflightChecks(
   }
 }
 
+/**
+ * Shell-quote a string for safe embedding in sh -c commands.
+ * Wraps in single quotes and escapes any embedded single quotes.
+ */
+function shellQuote(s: string): string {
+  return "'" + s.replace(/'/g, "'\\''") + "'";
+}
+
 /** Replace CDL template variables in preflight check fields. */
 function substituteCheckVars(check: PreflightCheck, input: ExecutionInput): PreflightCheck {
-  const sub = (s: string | undefined): string | undefined =>
+  // Shell-quote the target for command substitution to prevent CWE-78.
+  // Path/message fields use the raw value (not shell-interpreted).
+  const subRaw = (s: string | undefined): string | undefined =>
     s?.replace(/\$ARGUMENTS/g, input.target);
+  const subShell = (s: string | undefined): string | undefined =>
+    s?.replace(/\$ARGUMENTS/g, shellQuote(input.target));
   return {
     ...check,
-    path: sub(check.path),
-    command: sub(check.command),
-    message: sub(check.message),
+    path: subRaw(check.path),
+    command: subShell(check.command),
+    message: subRaw(check.message),
   };
 }
 
@@ -153,6 +165,20 @@ async function checkCommand(check: PreflightCheck): Promise<void> {
   if (/\b(bash|sh|zsh|dash|csh|fish|node|python[23]?|ruby|perl|php|lua|deno|bun|awk|gawk|mawk|nawk)\s+(-e|--eval|-c)\b/.test(check.command)) {
     throw new PreflightError(
       `Preflight command contains disallowed interpreter eval: ${check.command}`,
+      'command',
+      { command: check.command },
+    );
+  }
+
+  // Reject shell chaining metacharacters that bypass the base-command allowlist.
+  // The allowlist checks only the first token; operators like ; && || and
+  // command substitution $() or backticks allow arbitrary second commands.
+  // Single-quoted strings from shellQuote($ARGUMENTS) are safe — the
+  // rejection targets unquoted metacharacters in the original command template.
+  if (/[;|&`]|\$\(/.test(check.command.replace(/'[^']*'/g, ''))) {
+    throw new PreflightError(
+      `Preflight command contains disallowed shell metacharacters. ` +
+      `Commands must be simple (no chaining with ; && || or command substitution).`,
       'command',
       { command: check.command },
     );

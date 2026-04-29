@@ -11,6 +11,7 @@ import { parseRef } from '../utils/parseRef.js';
 import { sumTokenMetrics } from '../utils/sumTokenMetrics.js';
 import { DEFAULT_PASS_THRESHOLD, DEFAULT_WARN_THRESHOLD } from '../constants.js';
 import { mapCategory } from './mapCategory.js';
+import { aggregateScores } from '../utils/aggregateScores.js';
 
 /**
  * Executes command definitions.
@@ -187,34 +188,11 @@ export class CommandExecutor {
     let maxScore: number | undefined;
 
     if (scoredResults.length > 0) {
-      const scores = scoredResults.map(r => r.score);
-
-      switch (aggregation.method) {
-        case 'min':
-          score = Math.min(...scores);
-          break;
-        case 'max':
-          score = Math.max(...scores);
-          break;
-        case 'sum':
-          score = scores.reduce((a, b) => a + b, 0);
-          break;
-        case 'weighted_average': {
-          const weights = aggregation.weights ?? {};
-          let totalWeight = 0;
-          let weightedSum = 0;
-          for (const r of scoredResults) {
-            const w = weights[r.name] ?? 1;
-            totalWeight += w;
-            weightedSum += r.score * w;
-          }
-          score = totalWeight > 0 ? weightedSum / totalWeight : 0;
-          break;
-        }
-        case 'average':
-        default:
-          score = scores.reduce((a, b) => a + b, 0) / scores.length;
-      }
+      score = aggregateScores(
+        scoredResults.map(r => ({ key: r.name, score: r.score })),
+        aggregation.method,
+        aggregation.weights,
+      );
 
       maxScore = Math.max(...scoredResults.map(r => r.maxScore ?? 100));
     }
