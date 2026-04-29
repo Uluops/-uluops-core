@@ -9,6 +9,17 @@ import type {
 } from '../types/parser.js';
 import { ParseError } from '../errors/index.js';
 
+/** Resolved source objects from common nesting patterns in LLM output JSON. */
+interface ParseSources {
+  obj: Record<string, unknown>;
+  result: Record<string, unknown> | undefined;
+  summary: Record<string, unknown> | undefined;
+  report: Record<string, unknown> | undefined;
+  reportResults: Record<string, unknown> | undefined;
+  reportSummary: Record<string, unknown> | undefined;
+  validationSummary: Record<string, unknown> | undefined;
+}
+
 /**
  * Extracts structured output from LLM responses using a 4-strategy fallback:
  * 0. AI SDK structured output (highest confidence — schema-validated by the SDK)
@@ -350,8 +361,8 @@ export class OutputExtractor {
     return 'medium';
   }
 
-  /** Resolved source objects from common nesting patterns. Reduces parameter passing across resolve methods. */
-  private buildParseSources(obj: Record<string, unknown>) {
+  /** Build resolved source objects from common nesting patterns. Reduces parameter passing across resolve methods. */
+  private buildParseSources(obj: Record<string, unknown>): ParseSources {
     const result = this.asRecord(obj['result']);
     const summary = this.asRecord(obj['summary']) ?? this.asRecord(result?.['summary']);
     const report = this.asRecord(obj['report']);
@@ -393,7 +404,7 @@ export class OutputExtractor {
 
   private resolveAgentFields(
     output: ParsedOutput,
-    sources: ReturnType<OutputExtractor['buildParseSources']>,
+    sources: ParseSources,
   ): void {
     const { obj, result, summary, report } = sources;
 
@@ -422,7 +433,7 @@ export class OutputExtractor {
 
   private attachFlatIssues(
     output: ParsedOutput,
-    sources: ReturnType<OutputExtractor['buildParseSources']>,
+    sources: ParseSources,
   ): void {
     const flatIssues = this.resolveIssuesFlat(sources.obj, sources.result, sources.report, sources.validationSummary);
     if (flatIssues.length === 0) return;
@@ -483,7 +494,7 @@ export class OutputExtractor {
   }
 
   private resolveDecisionField(
-    ctx: ReturnType<OutputExtractor['buildParseSources']>,
+    ctx: ParseSources,
   ): string {
     const { obj } = ctx;
     const sources = [ctx.obj, ctx.summary, ctx.result, ctx.report, ctx.reportResults, ctx.reportSummary, ctx.validationSummary];
@@ -520,7 +531,7 @@ export class OutputExtractor {
   }
 
   private resolveScoreField(
-    ctx: ReturnType<OutputExtractor['buildParseSources']>,
+    ctx: ParseSources,
   ): number | string | undefined {
     const { obj } = ctx;
     const sources = [ctx.obj, ctx.summary, ctx.result, ctx.report, ctx.reportResults, ctx.reportSummary, ctx.validationSummary];

@@ -375,9 +375,9 @@ export class AIProvider {
     timeoutMs = 30_000,
   ): ToolSet | undefined {
     if (provider === 'anthropic' && this.anthropicInstance) {
-      // Access bash tool by version constant (date-stamped, updated in constants.ts)
-      // eslint-disable-next-line @typescript-eslint/no-explicit-any -- Anthropic provider tools are dynamically keyed by version constant; no public type exists
-      const bashTool = (this.anthropicInstance.tools as Record<string, (...args: any[]) => any>)[ANTHROPIC_BASH_TOOL_VERSION];
+      // Access bash tool by typed version constant (date-stamped, updated in constants.ts).
+      // Direct property access uses the SDK's own ProviderToolFactory type — no any needed.
+      const bashTool = this.anthropicInstance.tools[ANTHROPIC_BASH_TOOL_VERSION];
       if (!bashTool) {
         throw new ConfigurationError(
           `Anthropic bash tool ${ANTHROPIC_BASH_TOOL_VERSION} not found on provider instance. ` +
@@ -386,7 +386,7 @@ export class AIProvider {
       }
       return {
         bash: bashTool({
-          execute: async ({ command }: { command: string }) => executeShellAsString(command, targetDir, timeoutMs),
+          execute: async ({ command }) => executeShellAsString(command, targetDir, timeoutMs),
         }),
       };
     }
