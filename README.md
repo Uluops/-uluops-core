@@ -103,6 +103,7 @@ The `@uluops/core` SDK provides:
 - **Universal Agent Output** - Single `agentOutputSchema` with categories + artifacts for all 6 agent types (validator, executor, analyst, generator, explorer, forecaster)
 - **Structured Output Extraction** - 4-strategy fallback: AI SDK structured output > JSON code fence > inline JSON > regex text parsing
 - **Validation Tracking** - Automatic result submission with issue correlation, regression detection, and analytics
+- **Analysis Summary Extraction** - Automatic extraction of category scores, system metrics, epistemic assessments, and exploration maps from agent results at submission time
 - **Local Development Support** - Load definitions from local YAML files with registry fallback
 - **Bundled Starter Agents** - 5 built-in agents for immediate use without registry access
 
@@ -368,6 +369,7 @@ UluOpsClient (facade)
   |
   +-- RegistryClient       (definition resolution + hash verification)
   +-- ValidationClient     (result submission + history)
+  |     +-- AnalysisSummaryExtractor (auto-extract analysis from AgentResult)
   +-- ModelCatalog         (registry-backed model alias resolution)
 ```
 
@@ -401,6 +403,9 @@ import {
   ModelCatalog,        // Registry-backed model alias → provider/model resolution
   ToolAdapter,         // Converts ToolHandler tools to AI SDK ToolSet format
   TokenBudgetTracker,  // Tracks token consumption against configurable budgets
+
+  // Analysis
+  AnalysisSummaryExtractor, // Auto-extract analysisSummary + analysisRecords from agent results
 
   // Utilities
   OutputExtractor,     // 4-strategy LLM output parser (structured > JSON fence > inline > regex)
