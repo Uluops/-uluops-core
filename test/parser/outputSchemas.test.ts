@@ -1,6 +1,13 @@
 import { describe, it, expect } from 'vitest';
 import { agentOutputSchema } from '../../src/parser/outputSchemas';
 
+/** Base valid output — all nullable analysis fields set to null */
+const baseOutput = {
+  explorationMaps: null,
+  epistemicAssessment: null,
+  auditImplications: null,
+};
+
 describe('agentOutputSchema', () => {
   describe('categories', () => {
     it('accepts valid output with categories', () => {
@@ -21,6 +28,7 @@ describe('agentOutputSchema', () => {
           }],
         }],
         artifacts: null,
+        ...baseOutput,
       };
       expect(agentOutputSchema.parse(valid)).toEqual(valid);
     });
@@ -33,6 +41,7 @@ describe('agentOutputSchema', () => {
         summary: null,
         categories: null,
         artifacts: null,
+        ...baseOutput,
       });
       expect(result.categories).toBeNull();
     });
@@ -63,6 +72,7 @@ describe('agentOutputSchema', () => {
           }],
         }],
         artifacts: null,
+        ...baseOutput,
       });
       expect(result.categories![0].findings[0].issues[0].title).toBe('SQL injection found');
     });
@@ -93,6 +103,7 @@ describe('agentOutputSchema', () => {
           }],
         }],
         artifacts: null,
+        ...baseOutput,
       })).toThrow();
     });
   });
@@ -110,6 +121,7 @@ describe('agentOutputSchema', () => {
           path: '/tmp/report.md',
           content: '# Report',
         }],
+        ...baseOutput,
       };
       expect(agentOutputSchema.parse(valid)).toEqual(valid);
     });
@@ -122,6 +134,7 @@ describe('agentOutputSchema', () => {
         summary: null,
         categories: null,
         artifacts: null,
+        ...baseOutput,
       });
       expect(result.artifacts).toBeNull();
     });
@@ -134,6 +147,7 @@ describe('agentOutputSchema', () => {
         summary: 'Done',
         categories: null,
         artifacts: [{ type: 'report', path: null, content: null }],
+        ...baseOutput,
       });
       expect(result.artifacts![0].type).toBe('report');
     });
@@ -148,6 +162,7 @@ describe('agentOutputSchema', () => {
         summary: null,
         categories: null,
         artifacts: null,
+        ...baseOutput,
       })).toThrow();
     });
 
@@ -159,6 +174,7 @@ describe('agentOutputSchema', () => {
         summary: null,
         categories: null,
         artifacts: null,
+        ...baseOutput,
       })).toThrow();
     });
 
@@ -178,6 +194,7 @@ describe('agentOutputSchema', () => {
         summary: null,
         categories: null,
         artifacts: null,
+        ...baseOutput,
       })).toThrow();
     });
 
@@ -189,6 +206,7 @@ describe('agentOutputSchema', () => {
         summary: null,
         categories: null,
         artifacts: null,
+        ...baseOutput,
       })).toThrow();
     });
 
@@ -200,6 +218,7 @@ describe('agentOutputSchema', () => {
         summary: null,
         categories: [{ wrong: 'shape' }],
         artifacts: null,
+        ...baseOutput,
       })).toThrow();
     });
 
@@ -211,6 +230,7 @@ describe('agentOutputSchema', () => {
         summary: null,
         categories: [{ name: 'Test', score: 80, maxScore: 100 }],
         artifacts: null,
+        ...baseOutput,
       })).toThrow();
     });
   });
@@ -224,6 +244,7 @@ describe('agentOutputSchema', () => {
         summary: 'Socratic examination complete',
         categories: null,
         artifacts: null,
+        ...baseOutput,
       });
       expect(result.decision).toBe('EXAMINED');
     });
@@ -250,9 +271,110 @@ describe('agentOutputSchema', () => {
           path: '/tmp/analysis.md',
           content: '# Analysis Report',
         }],
+        ...baseOutput,
       });
       expect(result.categories).toHaveLength(1);
       expect(result.artifacts).toHaveLength(1);
+    });
+  });
+
+  describe('analysis extension fields', () => {
+    it('accepts exploration maps from explorer agents', () => {
+      const result = agentOutputSchema.parse({
+        decision: 'EXPLORED',
+        score: 0,
+        maxScore: 100,
+        summary: 'Structural mapping complete',
+        categories: null,
+        artifacts: null,
+        epistemicAssessment: null,
+        auditImplications: null,
+        explorationMaps: [{
+          metadata: {
+            explorerName: 'bateson-explorer',
+            framework: 'logical-levels',
+            artifactPath: null,
+          },
+          sections: [{
+            type: 'topology',
+            label: 'Level Map',
+            summary: 'Four distinct communication levels identified',
+            entries: [
+              { key: 'entity:code', value: 'Level 1 — implementation layer' },
+              { key: 'entity:docs', value: 'Level 2 — documentation layer' },
+              { key: 'rel:code→docs', value: 'describes' },
+            ],
+          }],
+        }],
+      });
+      expect(result.explorationMaps).toHaveLength(1);
+      expect(result.explorationMaps![0].metadata.explorerName).toBe('bateson-explorer');
+      expect(result.explorationMaps![0].sections[0].type).toBe('topology');
+    });
+
+    it('accepts epistemic assessment from cognitive lens agents', () => {
+      const result = agentOutputSchema.parse({
+        decision: 'EXAMINED',
+        score: 72,
+        maxScore: 100,
+        summary: 'Epistemic audit complete',
+        categories: null,
+        artifacts: null,
+        explorationMaps: null,
+        auditImplications: null,
+        epistemicAssessment: {
+          confidence: 'high',
+          groundingRatio: 0.85,
+          keyUncertainties: ['Coverage of private modules unknown'],
+          methodology: 'Epictetan impression analysis',
+        },
+      });
+      expect(result.epistemicAssessment!.confidence).toBe('high');
+      expect(result.epistemicAssessment!.groundingRatio).toBe(0.85);
+    });
+
+    it('accepts audit implications from forecaster agents', () => {
+      const result = agentOutputSchema.parse({
+        decision: 'HIGH_CONFIDENCE',
+        score: 65,
+        maxScore: 100,
+        summary: 'Trajectory projection complete',
+        categories: null,
+        artifacts: null,
+        explorationMaps: null,
+        epistemicAssessment: null,
+        auditImplications: [
+          'Temporal decay risk in auth module within 6 months',
+          'Naming drift accelerating — 3 conventions competing',
+          'Dual-database pattern creating growing operational burden',
+        ],
+      });
+      expect(result.auditImplications).toHaveLength(3);
+    });
+
+    it('accepts all analysis fields together', () => {
+      const result = agentOutputSchema.parse({
+        decision: 'EXPLORED',
+        score: 78,
+        maxScore: 100,
+        summary: 'Full analysis',
+        categories: null,
+        artifacts: null,
+        explorationMaps: [{
+          metadata: { explorerName: 'test', framework: 'test', artifactPath: null },
+          sections: [],
+        }],
+        epistemicAssessment: {
+          confidence: 'medium',
+          groundingRatio: null,
+          keyUncertainties: null,
+          methodology: null,
+        },
+        auditImplications: ['Risk identified'],
+      });
+      expect(result.explorationMaps).toHaveLength(1);
+      expect(result.epistemicAssessment!.confidence).toBe('medium');
+      expect(result.auditImplications).toHaveLength(1);
     });
   });
 });
