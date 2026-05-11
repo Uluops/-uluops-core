@@ -15,7 +15,7 @@ import type { AgentResult } from '../types/agent.js';
 import type { CommandResult } from '../types/command.js';
 import type { WorkflowResult } from '../types/workflow.js';
 import type { PipelineHandle } from '../types/pipeline.js';
-import type { DefinitionSummary } from '../types/registry.js';
+import type { DefinitionSummary, ResolvedDefinition } from '../types/registry.js';
 import type { DefinitionType } from '../types/execution.js';
 import { parseRef } from '../utils/parseRef.js';
 import type { RunSubmissionResponse, RunHistoryEntry, ValidationQueryOptions } from '../types/validation.js';
@@ -412,7 +412,7 @@ export class UluOpsClient {
 
   private async trackIfEnabled(
     result: ExecutionResult | AgentResult,
-    resolved: { type: string; name: string; version: string },
+    resolved: ResolvedDefinition,
     workflowType: string,
     options?: { trackResults?: boolean; project?: string },
     target?: string,
@@ -435,6 +435,7 @@ export class UluOpsClient {
         workflowType,
         // Pass original result — WorkflowResult.phases needed for per-agent decomposition
         result,
+        resolvedDefinition: resolved,
       });
       // Attach dashboard URL to original result for caller convenience
       result.dashboardUrl = response.dashboardUrl;

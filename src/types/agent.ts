@@ -465,6 +465,12 @@ interface AgentResultBase {
 
   /** Degradation markers from definition resolution (e.g., render fallback paths taken) */
   degradations?: string[];
+
+  /** Full parsed JSON from LLM output (pre-Zod-strip).
+   * Contains fields beyond agentOutputSchema — epistemicAssessment, explorationMaps,
+   * auditImplications — used by AnalysisSummaryExtractor at submission time.
+   * Internal: not part of the public API surface. */
+  rawJson?: unknown;
 }
 
 /**

@@ -19,6 +19,9 @@ export type { ResolvedModel, ResolveOptions } from './ai/ModelCatalog.js';
 export { ToolAdapter } from './ai/ToolAdapter.js';
 export { TokenBudgetTracker } from './ai/TokenBudgetTracker.js';
 
+// ─── Analysis ────────────────────────────────────────────────────────────────
+export { AnalysisSummaryExtractor, type AnalysisExtractionResult } from './analysis/index.js';
+
 // ─── Utilities ────────────────────────────────────────────────────────────────
 export { OutputExtractor } from './parser/OutputExtractor.js';
 export { ToolHandler } from './executor/ToolHandler.js';

@@ -275,6 +275,7 @@ export class AgentExecutor {
       extractionMethod: extraction.method,
       extractionConfidence: extraction.confidence,
       degradations: resolved.degradations,
+      rawJson: parsed.rawJson,
     };
   }
 

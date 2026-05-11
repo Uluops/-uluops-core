@@ -1,5 +1,6 @@
 import type { ExecutionResult, Recommendation } from './execution.js';
 import type { AgentResult } from './agent.js';
+import type { ResolvedDefinition } from './registry.js';
 
 /**
  * SDK's high-level run submission input
@@ -19,6 +20,10 @@ export interface RunSubmission {
 
   /** Optional raw markdown output */
   rawMarkdown?: string;
+
+  /** Resolved definition — enables analysis summary extraction at submission time.
+   * Passed through from UluOpsClient.trackIfEnabled() when available. */
+  resolvedDefinition?: ResolvedDefinition;
 }
 
 /**

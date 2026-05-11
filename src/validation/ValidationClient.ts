@@ -5,6 +5,7 @@ import type { AgentResult } from '../types/agent.js';
 import type { WorkflowResult } from '../types/workflow.js';
 import type { CommandResult } from '../types/command.js';
 import type { RunSubmission, RunSubmissionResponse, RunHistoryEntry, ValidationQueryOptions } from '../types/validation.js';
+import { AnalysisSummaryExtractor } from '../analysis/AnalysisSummaryExtractor.js';
 
 /**
  * Thin wrapper around @uluops/ops-sdk for execution result submission.
@@ -153,6 +154,17 @@ export class ValidationClient {
       ? this.extractWorkflowAgents(result)
       : [this.resultToAgent(result)];
 
+    // Extract analysis summary and records when definition is available and result is an agent
+    let analysisSummary: ReturnType<AnalysisSummaryExtractor['extract']>['summary'] | undefined;
+    let analysisRecords: ReturnType<AnalysisSummaryExtractor['extract']>['records'] | undefined;
+
+    if (submission.resolvedDefinition && this.isAgentResult(result)) {
+      const extractor = new AnalysisSummaryExtractor();
+      const analysis = extractor.extract(result as AgentResult, submission.resolvedDefinition);
+      analysisSummary = analysis.summary;
+      analysisRecords = analysis.records.length > 0 ? analysis.records : undefined;
+    }
+
     return {
       project: submission.project,
       workflowType: submission.workflowType,
@@ -186,7 +198,16 @@ export class ValidationClient {
       definitionVersion: result.version !== 'unknown' ? result.version : undefined,
       definitionHash: result.definitionHash?.replace(/^sha256:/, ''),
       definitionMinSubscription: result.minSubscription,
+      analysisSummary,
+      analysisRecords,
     };
+  }
+
+  /**
+   * Check if a result is an AgentResult (type === 'agent').
+   */
+  private isAgentResult(result: ExecutionResult | AgentResult): result is AgentResult {
+    return result.type === 'agent';
   }
 
   /**

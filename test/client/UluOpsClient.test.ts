@@ -647,7 +647,7 @@ describe('UluOpsClient', () => {
       const result = await client.runAgent('code-validator', '/tmp/test');
 
       // trackIfEnabled infers project from target dir basename (not agent name)
-      expect(mockValidationSubmit).toHaveBeenCalledWith({
+      expect(mockValidationSubmit).toHaveBeenCalledWith(expect.objectContaining({
         project: 'test',
         workflowType: 'agent',
         result: expect.objectContaining({
@@ -656,7 +656,8 @@ describe('UluOpsClient', () => {
           score: agentResult.score,
           metrics: agentResult.metrics,
         }),
-      });
+        resolvedDefinition: expect.any(Object),
+      }));
       expect(result.dashboardUrl).toBe('https://app.uluops.ai/runs/run-123');
     });
 
@@ -818,11 +819,12 @@ describe('UluOpsClient', () => {
 
       const result = await client.runCommand('validate', { target: '/tmp/test' });
 
-      expect(mockValidationSubmit).toHaveBeenCalledWith({
+      expect(mockValidationSubmit).toHaveBeenCalledWith(expect.objectContaining({
         project: 'test',
         workflowType: 'command',
         result: expect.objectContaining({ type: 'command' }),
-      });
+        resolvedDefinition: expect.any(Object),
+      }));
       expect(result.dashboardUrl).toBe('https://app.uluops.ai/runs/run-123');
     });
   });
@@ -929,11 +931,12 @@ describe('UluOpsClient', () => {
 
       const result = await client.run('validate', { target: '/tmp/test' });
 
-      expect(mockValidationSubmit).toHaveBeenCalledWith({
+      expect(mockValidationSubmit).toHaveBeenCalledWith(expect.objectContaining({
         project: 'test',
         workflowType: 'command',
         result: expect.objectContaining({ type: 'command' }),
-      });
+        resolvedDefinition: expect.any(Object),
+      }));
       expect(result.dashboardUrl).toBe('https://app.uluops.ai/runs/run-123');
     });
   });
