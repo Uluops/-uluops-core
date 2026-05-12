@@ -7,6 +7,7 @@ describe('classifyDecision', () => {
       ['PASS', 'positive'],
       ['SHIP', 'positive'],
       ['COMPLETE', 'positive'],
+      ['EXPLORED', 'positive'],
       ['FAIL', 'negative'],
       ['FAILED', 'negative'],
       ['BLOCK', 'negative'],

@@ -388,6 +388,53 @@ describe('AnalysisSummaryExtractor', () => {
       expect(records[2].recordType).toBe('inquiry_question');
       expect(records[2].title).toBe('Q1');
     });
+
+    it('uses Tier 2 structured records from rawJson.analysisRecords', () => {
+      const result = makeAgentResult({
+        recommendations: [],
+        rawJson: {
+          analysisRecords: [
+            {
+              recordType: 'commitment',
+              recordId: 'R-1',
+              title: 'Test commitment',
+              classification: 'PROMISING',
+              severity: null,
+              data: [{ key: 'status', value: 'confirmed' }],
+            },
+          ],
+        },
+      });
+      const resolved = makeResolvedDefinition();
+      const { records } = extractor.extract(result, resolved);
+
+      expect(records).toHaveLength(1);
+      expect(records[0].recordType).toBe('commitment');
+      expect(records[0].recordId).toBe('R-1');
+      expect(records[0].title).toBe('Test commitment');
+      expect(records[0].data).toEqual({ status: 'confirmed' });
+    });
+
+    it('populates domainMetrics from rawJson when no analysis block', () => {
+      const result = makeAgentResult({
+        rawJson: {
+          domainMetrics: [
+            { key: 'atomsFound', value: '42' },
+            { key: 'decompositionFit', value: 'HIGH' },
+          ],
+        },
+      });
+      const resolved = makeResolvedDefinition();
+      const { summary } = extractor.extract(result, resolved);
+
+      // Numeric strings converted to numbers; enum strings preserved
+      expect(summary.systemMetrics).toMatchObject({
+        atomsFound: 42,
+        decompositionFit: 'HIGH',
+        // Execution metrics still present
+        inputTokens: 500,
+      });
+    });
   });
 
   describe('analysis block from rawOutput JSON fence', () => {
