@@ -156,8 +156,8 @@ export class ValidationClient {
       : [this.resultToAgent(result)];
 
     // Extract analysis summary and records when definition is available and result is an agent
-    let analysisSummary: ReturnType<AnalysisSummaryExtractor['extract']>['summary'] | undefined;
-    let analysisRecords: ReturnType<AnalysisSummaryExtractor['extract']>['records'] | undefined;
+    let analysisSummary: import('@uluops/ops-sdk').AnalysisSummaryInput | undefined;
+    let analysisRecords: import('@uluops/ops-sdk').AnalysisRecordInput[] | undefined;
 
     if (submission.resolvedDefinition && this.isAgentResult(result)) {
       const analysis = this.analysisExtractor.extract(result as AgentResult, submission.resolvedDefinition);

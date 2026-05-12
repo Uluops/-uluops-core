@@ -221,7 +221,8 @@ export class AnalysisSummaryExtractor {
     if (analysisBlock?.epistemic_assessment) {
       return analysisBlock.epistemic_assessment;
     }
-    return this.extractJsonField(rawJson, 'epistemicAssessment', 'epistemic_assessment') as Record<string, unknown> | null;
+    const raw = this.extractJsonField(rawJson, 'epistemicAssessment', 'epistemic_assessment');
+    return raw && typeof raw === 'object' && !Array.isArray(raw) ? raw as Record<string, unknown> : null;
   }
 
   // ─── Audit Implications ─────────────────────────────────────────────────
@@ -236,7 +237,8 @@ export class AnalysisSummaryExtractor {
     if (analysisBlock?.audit_implications && Array.isArray(analysisBlock.audit_implications)) {
       return analysisBlock.audit_implications;
     }
-    return this.extractJsonField(rawJson, 'auditImplications', 'audit_implications') as string[] | null;
+    const raw = this.extractJsonField(rawJson, 'auditImplications', 'audit_implications');
+    return Array.isArray(raw) ? raw as string[] : null;
   }
 
   // ─── Exploration Maps ──────────────────────────────────────────────────
