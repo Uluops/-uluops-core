@@ -65,7 +65,7 @@ export interface ResolvedAIConfig {
  */
 export interface UluOpsConfig {
   /**
-   * UluOps platform API key for registry and validation services.
+   * UluOps platform API key for registry and submission services.
    * Falls back to ULUOPS_API_KEY or ULU_API_KEY env var.
    * This key authenticates against UluOps services only, NOT AI providers.
    */
@@ -86,10 +86,10 @@ export interface UluOpsConfig {
   registryUrl?: string;
 
   /**
-   * Base URL for uluops-validation-api
+   * Base URL for uluops submission API
    * @default "https://api.uluops.ai/api/v1/ops"
    */
-  validationUrl?: string;
+  submissionUrl?: string;
 
   /**
    * Base URL for dashboard links
@@ -105,7 +105,7 @@ export interface UluOpsConfig {
   localDefinitions?: string;
 
   /**
-   * Enable result submission to validation service
+   * Enable result submission to tracking service
    * @default true
    */
   trackingEnabled?: boolean;
@@ -113,7 +113,7 @@ export interface UluOpsConfig {
   /** Request timeout in ms (default: 300000) */
   timeout?: number;
 
-  /** Default project name for validation service */
+  /** Default project name for submission service */
   defaultProject?: string;
 
   /**
@@ -175,7 +175,7 @@ export interface ResolvedConfig {
   apiKey?: string;
   ai: ResolvedAIConfig;
   registryUrl: string;
-  validationUrl: string;
+  submissionUrl: string;
   dashboardUrl: string;
   localDefinitions?: string;
   trackingEnabled: boolean;

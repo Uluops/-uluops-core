@@ -90,12 +90,12 @@ export type {
   Reference,
 } from './registry.js';
 
-// Validation (public contract types only; internal wire types kept in validation.ts)
+// Submission (public contract types only; internal wire types kept in submission.ts)
 export type {
   RunSubmission,
   RunSubmissionResponse,
   FingerprintedRecommendation,
   RegressionInfo,
-  ValidationQueryOptions,
+  SubmissionQueryOptions,
   RunHistoryEntry,
-} from './validation.js';
+} from './submission.js';

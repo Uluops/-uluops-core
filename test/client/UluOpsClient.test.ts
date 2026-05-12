@@ -11,8 +11,8 @@ const mockRegistrySdk = {
   models: { resolveAlias: vi.fn(), get: vi.fn(), list: vi.fn() },
   executions: { record: mockExecutionsRecord },
 };
-const mockValidationSubmit = vi.fn();
-const mockValidationGetHistory = vi.fn();
+const mockSubmissionSubmit = vi.fn();
+const mockSubmissionGetHistory = vi.fn();
 const mockAgentExecutorExecute = vi.fn();
 const mockCommandExecutorExecute = vi.fn();
 const mockWorkflowExecutorExecute = vi.fn();
@@ -36,10 +36,10 @@ vi.mock('../../src/registry/RegistryClient.js', () => ({
   })),
 }));
 
-vi.mock('../../src/validation/ValidationClient.js', () => ({
-  ValidationClient: vi.fn(() => ({
-    submit: mockValidationSubmit,
-    getHistory: mockValidationGetHistory,
+vi.mock('../../src/submission/SubmissionClient.js', () => ({
+  SubmissionClient: vi.fn(() => ({
+    submit: mockSubmissionSubmit,
+    getHistory: mockSubmissionGetHistory,
   })),
 }));
 
@@ -80,7 +80,7 @@ vi.mock('../../src/executor/PipelineExecutor.js', () => ({
 
 import { UluOpsClient } from '../../src/client/UluOpsClient.js';
 import { RegistryClient } from '../../src/registry/RegistryClient.js';
-import { ValidationClient } from '../../src/validation/ValidationClient.js';
+import { SubmissionClient } from '../../src/submission/SubmissionClient.js';
 import { ModelCatalog } from '../../src/ai/ModelCatalog.js';
 import { AIProvider } from '../../src/ai/AIProvider.js';
 import { AgentExecutor } from '../../src/executor/AgentExecutor.js';
@@ -208,14 +208,14 @@ describe('UluOpsClient', () => {
   const savedEnv: Record<string, string | undefined> = {};
   const envVars = [
     'ULUOPS_API_KEY', 'ULU_API_KEY', 'ULUOPS_REGISTRY_URL',
-    'ULUOPS_VALIDATION_URL', 'ULUOPS_DASHBOARD_URL', 'ULUOPS_LOCAL_DEFINITIONS',
+    'ULUOPS_SUBMISSION_URL', 'ULUOPS_DASHBOARD_URL', 'ULUOPS_LOCAL_DEFINITIONS',
     'ULUOPS_TRACKING_ENABLED', 'ULUOPS_PROJECT', 'ULUOPS_DEBUG',
     'ANTHROPIC_API_KEY',
   ];
 
   beforeEach(() => {
     vi.clearAllMocks();
-    mockValidationSubmit.mockResolvedValue(makeSubmissionResponse());
+    mockSubmissionSubmit.mockResolvedValue(makeSubmissionResponse());
 
     // Snapshot env vars
     for (const key of envVars) {
@@ -291,27 +291,27 @@ describe('UluOpsClient', () => {
 
     it('reads URL overrides from env vars', () => {
       process.env['ULUOPS_REGISTRY_URL'] = 'https://custom-registry/api';
-      process.env['ULUOPS_VALIDATION_URL'] = 'https://custom-ops/api';
+      process.env['ULUOPS_SUBMISSION_URL'] = 'https://custom-ops/api';
       process.env['ULUOPS_DASHBOARD_URL'] = 'https://custom-dash';
 
       new UluOpsClient({ apiKey: 'ulr_test-key' });
 
       const config = constructorArgs(RegistryClient as unknown as ReturnType<typeof vi.fn>)[0] as Record<string, unknown>;
       expect(config.registryUrl).toBe('https://custom-registry/api');
-      expect(config.validationUrl).toBe('https://custom-ops/api');
+      expect(config.submissionUrl).toBe('https://custom-ops/api');
       expect(config.dashboardUrl).toBe('https://custom-dash');
     });
 
     it('uses production defaults when no URL env vars set', () => {
       delete process.env['ULUOPS_REGISTRY_URL'];
-      delete process.env['ULUOPS_VALIDATION_URL'];
+      delete process.env['ULUOPS_SUBMISSION_URL'];
       delete process.env['ULUOPS_DASHBOARD_URL'];
 
       new UluOpsClient({ apiKey: 'ulr_test-key' });
 
       const config = constructorArgs(RegistryClient as unknown as ReturnType<typeof vi.fn>)[0] as Record<string, unknown>;
       expect(config.registryUrl).toBe('https://api.uluops.ai/api/v1/registry');
-      expect(config.validationUrl).toBe('https://api.uluops.ai/api/v1/ops');
+      expect(config.submissionUrl).toBe('https://api.uluops.ai/api/v1/ops');
       expect(config.dashboardUrl).toBe('https://app.uluops.ai');
     });
 
@@ -508,10 +508,10 @@ describe('UluOpsClient', () => {
       expect(args[1]).toBe(mockLogger);
     });
 
-    it('passes resolved config to ValidationClient', () => {
+    it('passes resolved config to SubmissionClient', () => {
       new UluOpsClient({ apiKey: 'ulr_test-key' });
 
-      const args = constructorArgs(ValidationClient as unknown as ReturnType<typeof vi.fn>);
+      const args = constructorArgs(SubmissionClient as unknown as ReturnType<typeof vi.fn>);
       expect(args[0]).toHaveProperty('apiKey', 'ulr_test-key');
     });
 
@@ -638,7 +638,7 @@ describe('UluOpsClient', () => {
   // ─── runAgent tracking ───────────────────────────────────────────────────
 
   describe('runAgent tracking', () => {
-    it('submits to validation when trackingEnabled=true', async () => {
+    it('submits to submission service when trackingEnabled=true', async () => {
       const client = new UluOpsClient({ apiKey: 'ulr_test-key', trackingEnabled: true });
       mockRegistryResolve.mockResolvedValue(makeResolvedDef('agent', 'code-validator'));
       const agentResult = makeAgentResult();
@@ -648,7 +648,7 @@ describe('UluOpsClient', () => {
 
       // trackIfEnabled infers project from target dir basename (not agent name)
       // workflowType uses definition name (not generic 'agent') for single-agent runs
-      expect(mockValidationSubmit).toHaveBeenCalledWith(expect.objectContaining({
+      expect(mockSubmissionSubmit).toHaveBeenCalledWith(expect.objectContaining({
         project: 'test',
         workflowType: 'code-validator',
         result: expect.objectContaining({
@@ -669,7 +669,7 @@ describe('UluOpsClient', () => {
 
       await client.runAgent('code-validator', '/tmp/test');
 
-      expect(mockValidationSubmit).not.toHaveBeenCalled();
+      expect(mockSubmissionSubmit).not.toHaveBeenCalled();
     });
 
     it('options.trackResults=true overrides config trackingEnabled=false', async () => {
@@ -679,7 +679,7 @@ describe('UluOpsClient', () => {
 
       await client.runAgent('code-validator', '/tmp/test', { trackResults: true });
 
-      expect(mockValidationSubmit).toHaveBeenCalled();
+      expect(mockSubmissionSubmit).toHaveBeenCalled();
     });
 
     it('options.trackResults=false overrides config trackingEnabled=true', async () => {
@@ -689,7 +689,7 @@ describe('UluOpsClient', () => {
 
       await client.runAgent('code-validator', '/tmp/test', { trackResults: false });
 
-      expect(mockValidationSubmit).not.toHaveBeenCalled();
+      expect(mockSubmissionSubmit).not.toHaveBeenCalled();
     });
 
     it('uses options.project when provided', async () => {
@@ -699,7 +699,7 @@ describe('UluOpsClient', () => {
 
       await client.runAgent('code-validator', '/tmp/test', { project: 'custom-project' });
 
-      const submitCall = mockValidationSubmit.mock.calls[0]![0] as Record<string, unknown>;
+      const submitCall = mockSubmissionSubmit.mock.calls[0]![0] as Record<string, unknown>;
       expect(submitCall.project).toBe('custom-project');
     });
 
@@ -710,7 +710,7 @@ describe('UluOpsClient', () => {
 
       await client.runAgent('code-validator', '/tmp/test');
 
-      const submitCall = mockValidationSubmit.mock.calls[0]![0] as Record<string, unknown>;
+      const submitCall = mockSubmissionSubmit.mock.calls[0]![0] as Record<string, unknown>;
       expect(submitCall.project).toBe('default-proj');
     });
 
@@ -721,11 +721,11 @@ describe('UluOpsClient', () => {
 
       await client.runAgent('my-agent', '/tmp/test');
 
-      const submitCall = mockValidationSubmit.mock.calls[0]![0] as Record<string, unknown>;
+      const submitCall = mockSubmissionSubmit.mock.calls[0]![0] as Record<string, unknown>;
       expect(submitCall.project).toBe('test');
     });
 
-    it('records execution in registry after validation submit', async () => {
+    it('records execution in registry after submission', async () => {
       const client = new UluOpsClient({ apiKey: 'ulr_test-key', trackingEnabled: true });
       mockRegistryResolve.mockResolvedValue(makeResolvedDef('agent', 'code-validator'));
       mockAgentExecutorExecute.mockResolvedValue(makeAgentResult());
@@ -813,14 +813,14 @@ describe('UluOpsClient', () => {
       await expect(client.runCommand('code-validator', { target: '/tmp' })).rejects.toThrow('not a command');
     });
 
-    it('submits to validation when tracking enabled', async () => {
+    it('submits to submission service when tracking enabled', async () => {
       const client = new UluOpsClient({ apiKey: 'ulr_test-key', trackingEnabled: true });
       mockRegistryResolve.mockResolvedValue(makeResolvedDef('command', 'validate'));
       mockCommandExecutorExecute.mockResolvedValue(makeCommandResult());
 
       const result = await client.runCommand('validate', { target: '/tmp/test' });
 
-      expect(mockValidationSubmit).toHaveBeenCalledWith(expect.objectContaining({
+      expect(mockSubmissionSubmit).toHaveBeenCalledWith(expect.objectContaining({
         project: 'test',
         workflowType: 'validate',
         result: expect.objectContaining({ type: 'command' }),
@@ -925,14 +925,14 @@ describe('UluOpsClient', () => {
       expect(mockRegistryResolve).toHaveBeenCalledWith('validate', '1.0.0');
     });
 
-    it('submits to validation when tracking enabled', async () => {
+    it('submits to submission service when tracking enabled', async () => {
       const client = new UluOpsClient({ apiKey: 'ulr_test-key', trackingEnabled: true });
       mockRegistryResolve.mockResolvedValue(makeResolvedDef('command', 'validate'));
       mockCommandExecutorExecute.mockResolvedValue(makeCommandResult());
 
       const result = await client.run('validate', { target: '/tmp/test' });
 
-      expect(mockValidationSubmit).toHaveBeenCalledWith(expect.objectContaining({
+      expect(mockSubmissionSubmit).toHaveBeenCalledWith(expect.objectContaining({
         project: 'test',
         workflowType: 'validate',
         result: expect.objectContaining({ type: 'command' }),
@@ -1095,36 +1095,36 @@ describe('UluOpsClient', () => {
     });
   });
 
-  // ─── Validation Delegation ───────────────────────────────────────────────
+  // ─── Submission Delegation ──────────────────────────────────────────────
 
-  describe('validation delegation', () => {
-    it('getHistory() passes project and options to ValidationClient', async () => {
+  describe('submission delegation', () => {
+    it('getHistory() passes project and options to SubmissionClient', async () => {
       const client = new UluOpsClient({ apiKey: 'ulr_test-key' });
-      mockValidationGetHistory.mockResolvedValue([]);
+      mockSubmissionGetHistory.mockResolvedValue([]);
 
       const result = await client.getHistory('my-project', { workflowType: 'ship', limit: 5 });
 
-      expect(mockValidationGetHistory).toHaveBeenCalledWith('my-project', { workflowType: 'ship', limit: 5 });
+      expect(mockSubmissionGetHistory).toHaveBeenCalledWith('my-project', { workflowType: 'ship', limit: 5 });
       expect(result).toEqual([]);
     });
 
     it('getHistory() passes undefined options when not provided', async () => {
       const client = new UluOpsClient({ apiKey: 'ulr_test-key' });
-      mockValidationGetHistory.mockResolvedValue([]);
+      mockSubmissionGetHistory.mockResolvedValue([]);
 
       await client.getHistory('my-project');
 
-      expect(mockValidationGetHistory).toHaveBeenCalledWith('my-project', undefined);
+      expect(mockSubmissionGetHistory).toHaveBeenCalledWith('my-project', undefined);
     });
 
-    it('submitResults() delegates to validation.submit', async () => {
+    it('submitResults() delegates to submission.submit', async () => {
       const client = new UluOpsClient({ apiKey: 'ulr_test-key' });
-      mockValidationSubmit.mockResolvedValue(makeSubmissionResponse());
+      mockSubmissionSubmit.mockResolvedValue(makeSubmissionResponse());
       const cmdResult = makeCommandResult();
 
       const response = await client.submitResults('my-project', 'command', cmdResult);
 
-      expect(mockValidationSubmit).toHaveBeenCalledWith({
+      expect(mockSubmissionSubmit).toHaveBeenCalledWith({
         project: 'my-project',
         workflowType: 'command',
         result: cmdResult,

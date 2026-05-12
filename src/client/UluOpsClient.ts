@@ -1,6 +1,6 @@
 import * as path from 'node:path';
 import { RegistryClient } from '../registry/RegistryClient.js';
-import { ValidationClient } from '../validation/ValidationClient.js';
+import { SubmissionClient } from '../submission/SubmissionClient.js';
 import { AIProvider } from '../ai/AIProvider.js';
 import { ModelCatalog } from '../ai/ModelCatalog.js';
 import { AgentExecutor } from '../executor/AgentExecutor.js';
@@ -18,7 +18,7 @@ import type { PipelineHandle } from '../types/pipeline.js';
 import type { DefinitionSummary, ResolvedDefinition } from '../types/registry.js';
 import type { DefinitionType } from '../types/execution.js';
 import { parseRef } from '../utils/parseRef.js';
-import type { RunSubmissionResponse, RunHistoryEntry, ValidationQueryOptions } from '../types/validation.js';
+import type { RunSubmissionResponse, RunHistoryEntry, SubmissionQueryOptions } from '../types/submission.js';
 
 /** Default request timeout: 5 minutes. Allows for model cold-start + multi-step tool loops in agent execution. */
 const DEFAULT_TIMEOUT_MS = 300_000;
@@ -26,7 +26,7 @@ const DEFAULT_TIMEOUT_MS = 300_000;
 /**
  * Unified UluOps SDK client.
  *
- * Wires together registry, validation, AI, and execution layers.
+ * Wires together registry, submission, AI, and execution layers.
  * Provides type-safe methods for each execution type plus auto-routing.
  *
  * Execution methods:
@@ -38,7 +38,7 @@ const DEFAULT_TIMEOUT_MS = 300_000;
  */
 export class UluOpsClient {
   private registry: RegistryClient;
-  private validation: ValidationClient;
+  private submission: SubmissionClient;
   private agentExecutor: AgentExecutor;
   private commandExecutor: CommandExecutor;
   private workflowExecutor: WorkflowExecutor;
@@ -53,7 +53,7 @@ export class UluOpsClient {
     const logger = this.logger;
 
     this.registry = new RegistryClient(this.config, logger);
-    this.validation = new ValidationClient(this.config);
+    this.submission = new SubmissionClient(this.config);
 
     // ModelCatalog resolves aliases via registry (no auto-sync; cache cleared via refresh())
     const modelCatalog = new ModelCatalog(this.registry.registrySdk);
@@ -263,37 +263,37 @@ export class UluOpsClient {
     };
   }
 
-  // ─── Validation Service Delegation ──────────────────────────────────────
+  // ─── Submission Service Delegation ──────────────────────────────────────
 
-  /** Query validation run history for a project. */
+  /** Query run history for a project. */
   async getHistory(
     project: string,
-    options?: ValidationQueryOptions,
+    options?: SubmissionQueryOptions,
   ): Promise<RunHistoryEntry[]> {
-    return this.validation.getHistory(project, options);
+    return this.submission.getHistory(project, options);
   }
 
-  /** Get details for a specific validation run by ID. */
+  /** Get details for a specific run by ID. */
   async getRun(runId: string): Promise<RunSubmissionResponse> {
-    return this.validation.getRun(runId);
+    return this.submission.getRun(runId);
   }
 
   /** Preview what a submission would do without saving (dry run). */
-  async validateRun(
+  async previewSubmission(
     project: string,
     workflowType: string,
     result: ExecutionResult,
   ): Promise<{ wouldCreate: boolean; wouldUpdate: boolean; wouldRegress: boolean; validationErrors: string[] }> {
-    return this.validation.validateRun(project, workflowType, result);
+    return this.submission.previewSubmission(project, workflowType, result);
   }
 
-  /** Manually submit execution results to the validation service. */
+  /** Manually submit execution results to the submission service. */
   async submitResults(
     project: string,
     workflowType: string,
     result: ExecutionResult,
   ): Promise<RunSubmissionResponse> {
-    return this.validation.submit({ project, workflowType, result });
+    return this.submission.submit({ project, workflowType, result });
   }
 
   // ─── Private Helpers ────────────────────────────────────────────────────
@@ -302,7 +302,7 @@ export class UluOpsClient {
     const apiKey = config.apiKey ?? process.env['ULUOPS_API_KEY'] ?? process.env['ULU_API_KEY'];
 
     // API key is optional when using local definitions with tracking disabled.
-    // Remote operations (registry resolve, validation submit) will fail at call
+    // Remote operations (registry resolve, submission) will fail at call
     // time if no key is available — but local-only usage works without one.
     const needsRemoteAccess = !config.localDefinitions || config.trackingEnabled !== false;
     if (!apiKey && needsRemoteAccess) {
@@ -323,7 +323,7 @@ export class UluOpsClient {
     }
 
     const registryUrl = config.registryUrl ?? process.env['ULUOPS_REGISTRY_URL'] ?? 'https://api.uluops.ai/api/v1/registry';
-    const validationUrl = config.validationUrl ?? process.env['ULUOPS_VALIDATION_URL'] ?? 'https://api.uluops.ai/api/v1/ops';
+    const submissionUrl = config.submissionUrl ?? process.env['ULUOPS_SUBMISSION_URL'] ?? 'https://api.uluops.ai/api/v1/ops';
     const dashboardUrl = config.dashboardUrl ?? process.env['ULUOPS_DASHBOARD_URL'] ?? 'https://app.uluops.ai';
 
     // Enforce HTTPS when a real API key is present to prevent credential exfiltration.
@@ -333,7 +333,7 @@ export class UluOpsClient {
       catch { return false; }
     };
     if (apiKey && !apiKey.startsWith('test_')) {
-      for (const [label, url] of [['registryUrl', registryUrl], ['validationUrl', validationUrl]] as const) {
+      for (const [label, url] of [['registryUrl', registryUrl], ['submissionUrl', submissionUrl]] as const) {
         if (!url.startsWith('https://') && !isLocalUrl(url)) {
           throw new ConfigurationError(
             `${label} must use HTTPS when an API key is configured (got "${url}"). ` +
@@ -347,7 +347,7 @@ export class UluOpsClient {
       apiKey,
       ai: this.resolveAIConfig(config.ai),
       registryUrl,
-      validationUrl,
+      submissionUrl,
       dashboardUrl,
       localDefinitions: config.localDefinitions ?? process.env['ULUOPS_LOCAL_DEFINITIONS'],
       trackingEnabled: config.trackingEnabled ?? (process.env['ULUOPS_TRACKING_ENABLED'] !== 'false'),
@@ -428,7 +428,7 @@ export class UluOpsClient {
       // Without this, running `exec agent dx-validator ./my-project` would create a project
       // named "dx-validator" instead of "my-project".
       const inferredProject = target ? path.basename(path.resolve(target)) : resolved.name;
-      const response = await this.validation.submit({
+      const response = await this.submission.submit({
         project: options?.project ?? this.config.defaultProject ?? inferredProject,
         workflowType,
         // Pass original result — WorkflowResult.phases needed for per-agent decomposition

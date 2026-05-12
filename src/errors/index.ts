@@ -69,10 +69,10 @@ export class CapabilityError extends UluOpsError {
 }
 
 /**
- * Error codes for validation service errors
+ * Error codes for submission service errors
  */
-export const ValidationErrorCodes = {
-  VALIDATION_ERROR: 'VALIDATION_ERROR',
+export const SubmissionErrorCodes = {
+  SUBMISSION_ERROR: 'SUBMISSION_ERROR',
   NOT_FOUND: 'NOT_FOUND',
   CONFLICT: 'CONFLICT',
   RATE_LIMITED: 'RATE_LIMITED',
@@ -82,16 +82,16 @@ export const ValidationErrorCodes = {
   FORBIDDEN: 'FORBIDDEN',
 } as const;
 
-export type ValidationErrorCode = typeof ValidationErrorCodes[keyof typeof ValidationErrorCodes];
+export type SubmissionErrorCode = typeof SubmissionErrorCodes[keyof typeof SubmissionErrorCodes];
 
-/** Thrown when the validation service rejects a submission or returns an error. */
-export class ValidationError extends UluOpsError {
-  public readonly code: ValidationErrorCode;
+/** Thrown when the submission service rejects a submission or returns an error. */
+export class SubmissionError extends UluOpsError {
+  public readonly code: SubmissionErrorCode;
 
-  constructor(message: string, code?: ValidationErrorCode) {
+  constructor(message: string, code?: SubmissionErrorCode) {
     super(message);
-    this.name = 'ValidationError';
-    this.code = code ?? 'VALIDATION_ERROR';
+    this.name = 'SubmissionError';
+    this.code = code ?? 'SUBMISSION_ERROR';
   }
 
   override toJSON(): Record<string, unknown> {

@@ -9,7 +9,7 @@ export { PipelineExecutor } from './executor/PipelineExecutor.js';
 
 // ─── Service Clients ──────────────────────────────────────────────────────────
 export { RegistryClient } from './registry/RegistryClient.js';
-export { ValidationClient } from './validation/ValidationClient.js';
+export { SubmissionClient } from './submission/SubmissionClient.js';
 
 // ─── AI SDK Integration ───────────────────────────────────────────────────────
 export { AIProvider } from './ai/AIProvider.js';
@@ -115,15 +115,15 @@ export type {
   SubscriptionTier,
 } from './types/registry.js';
 
-// ─── Types: Validation ────────────────────────────────────────────────────────
+// ─── Types: Submission ───────────────────────────────────────────────────────
 export type {
   RunSubmission,
   RunSubmissionResponse,
   RunHistoryEntry,
-  ValidationQueryOptions,
+  SubmissionQueryOptions,
   FingerprintedRecommendation,
   RegressionInfo,
-} from './types/validation.js';
+} from './types/submission.js';
 
 // ─── Types: Parser ────────────────────────────────────────────────────────────
 export type {
@@ -153,9 +153,9 @@ export {
   ConfigurationError,
   ModelNotFoundError,
   CapabilityError,
-  ValidationError,
-  ValidationErrorCodes,
-  type ValidationErrorCode,
+  SubmissionError,
+  SubmissionErrorCodes,
+  type SubmissionErrorCode,
   WorkflowError,
   PipelineError,
   ParseError,

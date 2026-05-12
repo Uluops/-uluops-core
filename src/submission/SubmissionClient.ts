@@ -4,7 +4,7 @@ import type { ExecutionResult, ExecutionMetrics } from '../types/execution.js';
 import type { AgentResult } from '../types/agent.js';
 import type { WorkflowResult } from '../types/workflow.js';
 import type { CommandResult } from '../types/command.js';
-import type { RunSubmission, RunSubmissionResponse, RunHistoryEntry, ValidationQueryOptions } from '../types/validation.js';
+import type { RunSubmission, RunSubmissionResponse, RunHistoryEntry, SubmissionQueryOptions } from '../types/submission.js';
 import { AnalysisSummaryExtractor } from '../analysis/AnalysisSummaryExtractor.js';
 
 /**
@@ -17,20 +17,20 @@ import { AnalysisSummaryExtractor } from '../analysis/AnalysisSummaryExtractor.j
  * For full issue management, analytics, and taxonomy operations,
  * use `@uluops/ops-sdk` directly.
  */
-export class ValidationClient {
+export class SubmissionClient {
   private ops: OpsClient;
   private readonly analysisExtractor = new AnalysisSummaryExtractor();
 
   constructor(private config: ResolvedConfig) {
     this.ops = new OpsClient({
       apiKey: config.apiKey,
-      baseUrl: config.validationUrl,
+      baseUrl: config.submissionUrl,
       timeout: config.timeout,
     });
   }
 
   /**
-   * Submit execution results to validation service
+   * Submit execution results to submission service
    */
   async submit(submission: RunSubmission): Promise<RunSubmissionResponse> {
     if (!this.config.trackingEnabled) {
@@ -61,7 +61,7 @@ export class ValidationClient {
    *
    * Accepts individual parameters matching the public UluOpsClient API.
    */
-  async validateRun(
+  async previewSubmission(
     project: string,
     workflowType: string,
     result: ExecutionResult | AgentResult,
@@ -87,7 +87,7 @@ export class ValidationClient {
    */
   async getHistory(
     project: string,
-    options?: Omit<ValidationQueryOptions, 'project'>,
+    options?: Omit<SubmissionQueryOptions, 'project'>,
   ): Promise<RunHistoryEntry[]> {
     const runs = await this.ops.runs.listByProject(project, {
       workflowType: options?.workflowType,

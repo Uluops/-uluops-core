@@ -29,7 +29,7 @@ export interface RunSubmission {
 /**
  * SDK's high-level response after submission.
  *
- * Correlation contains issue counts from the Validation API.
+ * Correlation contains issue counts from the Submission API.
  * For full issue details (CorrelatedIssue arrays), use `@uluops/ops-sdk` directly.
  */
 export interface RunSubmissionResponse {
@@ -45,13 +45,13 @@ export interface RunSubmissionResponse {
   /** Dashboard URL for this run */
   dashboardUrl: string;
 
-  /** Whether all validation gates passed */
+  /** Whether all gates passed */
   allGatesPassed: boolean;
 
   /** Average score across validators */
   averageScore: number;
 
-  /** Issue correlation counts from validation API */
+  /** Issue correlation counts from submission API */
   correlation: {
     newIssues: number;
     recurringIssues: number;
@@ -63,7 +63,7 @@ export interface RunSubmissionResponse {
 }
 
 /**
- * Recommendation with fingerprint from validation service
+ * Recommendation with fingerprint from submission service
  */
 export interface FingerprintedRecommendation extends Recommendation {
   /** Stable fingerprint for correlation */
@@ -94,9 +94,9 @@ export interface RegressionInfo {
 }
 
 /**
- * Query options for validation service run history
+ * Query options for submission service run history
  */
-export interface ValidationQueryOptions {
+export interface SubmissionQueryOptions {
   /** Filter by project */
   project?: string;
 
@@ -108,7 +108,7 @@ export interface ValidationQueryOptions {
 }
 
 /**
- * Run history entry - matches Validation API Run model
+ * Run history entry - matches Submission API Run model
  */
 export interface RunHistoryEntry {
   /** Run UUID */
@@ -126,7 +126,7 @@ export interface RunHistoryEntry {
   /** Run timestamp */
   timestamp: string;
 
-  /** Whether all validation gates passed */
+  /** Whether all gates passed */
   allGatesPassed: boolean;
 
   /** Average score across validators */

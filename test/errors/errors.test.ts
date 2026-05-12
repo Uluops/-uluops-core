@@ -6,8 +6,8 @@ import {
   ConfigurationError,
   ModelNotFoundError,
   CapabilityError,
-  ValidationError,
-  ValidationErrorCodes,
+  SubmissionError,
+  SubmissionErrorCodes,
   WorkflowError,
   PipelineError,
   ParseError,
@@ -35,7 +35,7 @@ describe('Error hierarchy', () => {
       new ConfigurationError('c'),
       new ModelNotFoundError('m'),
       new CapabilityError('cap'),
-      new ValidationError('v'),
+      new SubmissionError('v'),
       new WorkflowError('w', { partialResult: null }),
       new PipelineError('pipe'),
       new ParseError('parse', 'preview'),
@@ -54,7 +54,7 @@ describe('Error hierarchy', () => {
     expect(new ConfigurationError('c').name).toBe('ConfigurationError');
     expect(new ModelNotFoundError('m').name).toBe('ModelNotFoundError');
     expect(new CapabilityError('cap').name).toBe('CapabilityError');
-    expect(new ValidationError('v').name).toBe('ValidationError');
+    expect(new SubmissionError('v').name).toBe('SubmissionError');
     expect(new WorkflowError('w', { partialResult: null }).name).toBe('WorkflowError');
     expect(new PipelineError('pipe').name).toBe('PipelineError');
     expect(new ParseError('parse', 'p').name).toBe('ParseError');
@@ -95,15 +95,15 @@ describe('PreflightError', () => {
   });
 });
 
-describe('ValidationError', () => {
+describe('SubmissionError', () => {
   it('exposes code', () => {
-    const err = new ValidationError('not found', ValidationErrorCodes.NOT_FOUND);
+    const err = new SubmissionError('not found', SubmissionErrorCodes.NOT_FOUND);
     expect(err.code).toBe('NOT_FOUND');
   });
 
-  it('code defaults to VALIDATION_ERROR', () => {
-    const err = new ValidationError('generic');
-    expect(err.code).toBe('VALIDATION_ERROR');
+  it('code defaults to SUBMISSION_ERROR', () => {
+    const err = new SubmissionError('generic');
+    expect(err.code).toBe('SUBMISSION_ERROR');
   });
 });
 

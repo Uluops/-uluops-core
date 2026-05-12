@@ -1,7 +1,7 @@
 import { describe, it, expect, beforeEach, vi } from 'vitest';
-import { ValidationClient } from '../../src/validation/ValidationClient.js';
+import { SubmissionClient } from '../../src/submission/SubmissionClient.js';
 import type { ResolvedConfig } from '../../src/types/config.js';
-import type { RunSubmission } from '../../src/types/validation.js';
+import type { RunSubmission } from '../../src/types/submission.js';
 import type { ExecutionResult } from '../../src/types/execution.js';
 
 // Mock the ops SDK
@@ -28,7 +28,7 @@ const baseConfig: ResolvedConfig = {
     defaultProvider: 'anthropic',
   },
   registryUrl: 'https://registry.example.com/api',
-  validationUrl: 'https://ops.example.com/api',
+  submissionUrl: 'https://ops.example.com/api',
   dashboardUrl: 'https://app.example.com',
   trackingEnabled: true,
   timeout: 30000,
@@ -79,7 +79,7 @@ function makeSubmission(overrides?: Partial<RunSubmission>): RunSubmission {
   };
 }
 
-describe('ValidationClient', () => {
+describe('SubmissionClient', () => {
   beforeEach(() => {
     vi.clearAllMocks();
   });
@@ -104,7 +104,7 @@ describe('ValidationClient', () => {
         deduplicated: false,
       });
 
-      const client = new ValidationClient(baseConfig);
+      const client = new SubmissionClient(baseConfig);
       const response = await client.submit(makeSubmission());
 
       expect(response.runId).toBe('run-123');
@@ -124,7 +124,7 @@ describe('ValidationClient', () => {
         deduplicated: false,
       });
 
-      const client = new ValidationClient(baseConfig);
+      const client = new SubmissionClient(baseConfig);
       await client.submit(makeSubmission({
         idempotencyKey: 'idem-key',
         rawMarkdown: '# Report',
@@ -176,7 +176,7 @@ describe('ValidationClient', () => {
         deduplicated: false,
       });
 
-      const client = new ValidationClient(baseConfig);
+      const client = new SubmissionClient(baseConfig);
       await client.submit(makeSubmission({
         result: makeResult({ score: undefined }),
       }));
@@ -194,7 +194,7 @@ describe('ValidationClient', () => {
         deduplicated: false,
       });
 
-      const client = new ValidationClient(baseConfig);
+      const client = new SubmissionClient(baseConfig);
       await client.submit(makeSubmission({
         result: makeResult({ minSubscription: 'plus' }),
       }));
@@ -211,7 +211,7 @@ describe('ValidationClient', () => {
         deduplicated: false,
       });
 
-      const client = new ValidationClient(baseConfig);
+      const client = new SubmissionClient(baseConfig);
       await client.submit(makeSubmission());
 
       const input = mockSave.mock.calls[0]![0] as Record<string, unknown>;
@@ -229,7 +229,7 @@ describe('ValidationClient', () => {
       const result = makeResult();
       result.recommendations = [{ title: 'no validator', priority: 'backlog' }];
 
-      const client = new ValidationClient(baseConfig);
+      const client = new SubmissionClient(baseConfig);
       await client.submit(makeSubmission({ result }));
 
       const input = mockSave.mock.calls[0]![0] as Record<string, unknown>;
@@ -244,7 +244,7 @@ describe('ValidationClient', () => {
 
   describe('submit (tracking disabled)', () => {
     it('returns local response without calling API', async () => {
-      const client = new ValidationClient({ ...baseConfig, trackingEnabled: false });
+      const client = new SubmissionClient({ ...baseConfig, trackingEnabled: false });
       const response = await client.submit(makeSubmission());
 
       expect(mockSave).not.toHaveBeenCalled();
@@ -258,7 +258,7 @@ describe('ValidationClient', () => {
     });
 
     it('calculates allGatesPassed from decision', async () => {
-      const client = new ValidationClient({ ...baseConfig, trackingEnabled: false });
+      const client = new SubmissionClient({ ...baseConfig, trackingEnabled: false });
 
       const fail = await client.submit(makeSubmission({
         result: makeResult({ decision: 'FAIL' }),
@@ -282,7 +282,7 @@ describe('ValidationClient', () => {
     });
 
     it('uses decisionCategory for non-standard positive decisions', async () => {
-      const client = new ValidationClient({ ...baseConfig, trackingEnabled: false });
+      const client = new SubmissionClient({ ...baseConfig, trackingEnabled: false });
 
       // Cognitive lens agents emit EXAMINED, VITAL, etc. — not PASS/SHIP
       const examined = await client.submit(makeSubmission({
@@ -299,10 +299,10 @@ describe('ValidationClient', () => {
   });
 
   // ─────────────────────────────────────────────────────────────────────────────
-  // validateRun()
+  // previewSubmission()
   // ─────────────────────────────────────────────────────────────────────────────
 
-  describe('validateRun', () => {
+  describe('previewSubmission', () => {
     it('previews submission without saving', async () => {
       mockValidate.mockResolvedValueOnce({
         wouldCreate: true,
@@ -312,9 +312,9 @@ describe('ValidationClient', () => {
         preview: { newIssues: 1, recurringIssues: 0, regressions: 0 },
       });
 
-      const client = new ValidationClient(baseConfig);
+      const client = new SubmissionClient(baseConfig);
       const sub = makeSubmission();
-      const result = await client.validateRun(sub.project, sub.workflowType, sub.result);
+      const result = await client.previewSubmission(sub.project, sub.workflowType, sub.result);
 
       expect(result.wouldCreate).toBe(true);
       expect(result.wouldUpdate).toBe(false);
@@ -332,9 +332,9 @@ describe('ValidationClient', () => {
         preview: { newIssues: 0, recurringIssues: 0, regressions: 0 },
       });
 
-      const client = new ValidationClient(baseConfig);
+      const client = new SubmissionClient(baseConfig);
       const sub = makeSubmission();
-      const result = await client.validateRun(sub.project, sub.workflowType, sub.result);
+      const result = await client.previewSubmission(sub.project, sub.workflowType, sub.result);
 
       expect(result.validationErrors).toEqual(['Project not found', 'Invalid workflow type']);
     });
@@ -364,7 +364,7 @@ describe('ValidationClient', () => {
         },
       ]);
 
-      const client = new ValidationClient(baseConfig);
+      const client = new SubmissionClient(baseConfig);
       const history = await client.getHistory('test-project', { workflowType: 'ship', limit: 10 });
 
       expect(history).toHaveLength(1);
@@ -400,7 +400,7 @@ describe('ValidationClient', () => {
         },
       ]);
 
-      const client = new ValidationClient(baseConfig);
+      const client = new SubmissionClient(baseConfig);
       const history = await client.getHistory('test-project');
 
       expect(history[0]!.averageScore).toBe(0); // null → 0
@@ -429,7 +429,7 @@ describe('ValidationClient', () => {
         updatedAt: '2026-02-08T12:00:00Z',
       });
 
-      const client = new ValidationClient(baseConfig);
+      const client = new SubmissionClient(baseConfig);
       const result = await client.getRun('run-xyz');
 
       expect(result.runId).toBe('run-xyz');
