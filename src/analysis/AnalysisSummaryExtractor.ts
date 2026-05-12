@@ -1,3 +1,4 @@
+import { createHash } from 'node:crypto';
 import type { AnalysisSummaryInput, AnalysisRecordInput, CategoryScore, ExplorationMap } from '@uluops/ops-sdk';
 import type { AgentResult } from '../types/agent.js';
 import type { ResolvedDefinition } from '../types/registry.js';
@@ -121,24 +122,70 @@ export class AnalysisSummaryExtractor {
   }
 
   /**
-   * Extract exploration maps from rawJson with structural validation.
+   * Extract exploration maps from rawJson, reshaping LLM output to API format.
+   *
+   * The LLM produces sections with {type, label, summary, entries: [{key, value}]}
+   * (OpenAI strict mode compatible). The API expects per-type fields like
+   * {type: 'inventory', items: [...]} or {type: 'topology', entities: [...], relationships: [...]}.
+   * This method bridges the two formats.
    */
   private extractExplorationMaps(rawJson: unknown): ExplorationMap[] | null {
     const raw = this.extractJsonField(rawJson, 'explorationMaps', 'exploration_maps');
     if (!Array.isArray(raw)) return null;
 
-    // Light validation: each entry must have metadata and sections
-    const valid = raw.filter(
-      (entry: unknown): entry is ExplorationMap =>
-        typeof entry === 'object' &&
-        entry !== null &&
-        'metadata' in entry &&
-        'sections' in entry &&
-        typeof (entry as Record<string, unknown>).metadata === 'object' &&
-        Array.isArray((entry as Record<string, unknown>).sections),
-    );
+    const maps: ExplorationMap[] = [];
+    for (const entry of raw) {
+      if (!entry || typeof entry !== 'object' || !('metadata' in entry) || !('sections' in entry)) continue;
+      const e = entry as Record<string, unknown>;
+      if (typeof e.metadata !== 'object' || !Array.isArray(e.sections)) continue;
 
-    return valid.length > 0 ? valid : null;
+      const sections = (e.sections as Array<Record<string, unknown>>).map(s => this.reshapeSection(s));
+      maps.push({
+        metadata: e.metadata as ExplorationMap['metadata'],
+        sections: sections as ExplorationMap['sections'],
+      });
+    }
+
+    return maps.length > 0 ? maps : null;
+  }
+
+  /**
+   * Reshape a section from LLM format (entries) to API format (typed fields).
+   * If the section already has typed fields (e.g., items, entities), pass through as-is.
+   */
+  private reshapeSection(section: Record<string, unknown>): Record<string, unknown> {
+    const type = section.type as string;
+    const base = { type, label: section.label, summary: section.summary };
+
+    // If section already has typed fields (not entries-based), pass through
+    if (!('entries' in section)) return section;
+
+    const entries = section.entries as Array<{ key: string; value: string }> | undefined;
+    if (!entries || !Array.isArray(entries)) return section;
+
+    // Reshape entries into typed fields based on section type
+    const items = entries.map(e => ({ key: e.key, value: e.value }));
+
+    switch (type) {
+      case 'inventory':
+        return { ...base, items, gaps: [] };
+      case 'topology':
+        return { ...base, entities: items, relationships: [] };
+      case 'landscape':
+        return { ...base, dimensions: items.map(i => i.key), findings: items };
+      case 'classification':
+        return { ...base, hierarchy: items };
+      case 'mapping':
+        return { ...base, translations: items };
+      case 'synthesis':
+        return { ...base, patterns: items };
+      case 'limitation':
+        return { ...base, blindSpots: items };
+      case 'agenda':
+        return { ...base, questions: items };
+      default:
+        return section;
+    }
   }
 
   /**
@@ -147,8 +194,8 @@ export class AnalysisSummaryExtractor {
   private buildAnalysisRecords(result: AgentResult): AnalysisRecordInput[] {
     return result.recommendations.map(rec => ({
       agentName: result.name,
-      recordType: rec.failureDomain ?? 'finding',
-      recordId: rec.failureCode ?? this.truncateId(`${result.name}/${rec.title}`),
+      recordType: rec.failureDomain ?? 'evidence_finding',
+      recordId: this.safeRecordId(rec.failureCode, `${result.name}/${rec.title}`),
       title: rec.title,
       classification: rec.failureCode ?? null,
       severity: rec.severity ?? null,
@@ -189,9 +236,11 @@ export class AnalysisSummaryExtractor {
   }
 
   /**
-   * Truncate a string to max 20 chars for recordId.
+   * Produce a recordId that fits within the 20-char SDK limit.
+   * Uses failureCode if present and <=20 chars, otherwise hashes.
    */
-  private truncateId(input: string): string {
-    return input.length <= 20 ? input : input.substring(0, 20);
+  private safeRecordId(failureCode: string | undefined, fallbackInput: string): string {
+    if (failureCode && failureCode.length <= 20) return failureCode;
+    return 'r-' + createHash('sha256').update(failureCode ?? fallbackInput).digest('hex').substring(0, 16);
   }
 }

@@ -340,8 +340,8 @@ describe('AnalysisSummaryExtractor', () => {
         },
       });
 
-      expect(records[1].recordType).toBe('finding');
-      expect(records[1].recordId).toBe('test-validator/Unuse');
+      expect(records[1].recordType).toBe('evidence_finding');
+      expect(records[1].recordId).toMatch(/^r-[0-9a-f]{16}$/);
     });
 
     it('returns empty array when no recommendations', () => {
