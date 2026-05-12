@@ -19,6 +19,7 @@ import { AnalysisSummaryExtractor } from '../analysis/AnalysisSummaryExtractor.j
  */
 export class ValidationClient {
   private ops: OpsClient;
+  private readonly analysisExtractor = new AnalysisSummaryExtractor();
 
   constructor(private config: ResolvedConfig) {
     this.ops = new OpsClient({
@@ -159,8 +160,7 @@ export class ValidationClient {
     let analysisRecords: ReturnType<AnalysisSummaryExtractor['extract']>['records'] | undefined;
 
     if (submission.resolvedDefinition && this.isAgentResult(result)) {
-      const extractor = new AnalysisSummaryExtractor();
-      const analysis = extractor.extract(result as AgentResult, submission.resolvedDefinition);
+      const analysis = this.analysisExtractor.extract(result as AgentResult, submission.resolvedDefinition);
       analysisSummary = analysis.summary;
       analysisRecords = analysis.records.length > 0 ? analysis.records : undefined;
     }

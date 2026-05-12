@@ -87,7 +87,8 @@ export class AnalysisSummaryExtractor {
     if (!jsonMatch) return null;
 
     try {
-      const data = JSON.parse(jsonMatch[1]);
+      // jsonMatch[1] is always defined when the regex matches (capture group 1)
+      const data = JSON.parse(jsonMatch[1]!);
       const analysis = data?.analysis;
       if (!analysis || typeof analysis !== 'object') return null;
       return analysis as AgentAnalysisBlock;
@@ -260,7 +261,8 @@ export class AnalysisSummaryExtractor {
       const sections = (e.sections as Array<Record<string, unknown>>).map(s => this.reshapeSection(s));
       maps.push({
         metadata: e.metadata as ExplorationMap['metadata'],
-        sections: sections as ExplorationMap['sections'],
+        // Safe: reshapeSection guarantees required discriminant fields per section type
+        sections: sections as unknown as ExplorationMap['sections'],
       });
     }
 
