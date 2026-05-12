@@ -6,6 +6,8 @@ const baseOutput = {
   explorationMaps: null,
   epistemicAssessment: null,
   auditImplications: null,
+  analysisRecords: null,
+  domainMetrics: null,
 };
 
 describe('agentOutputSchema', () => {
@@ -289,6 +291,8 @@ describe('agentOutputSchema', () => {
         artifacts: null,
         epistemicAssessment: null,
         auditImplications: null,
+        analysisRecords: null,
+        domainMetrics: null,
         explorationMaps: [{
           metadata: {
             explorerName: 'bateson-explorer',
@@ -322,6 +326,8 @@ describe('agentOutputSchema', () => {
         artifacts: null,
         explorationMaps: null,
         auditImplications: null,
+        analysisRecords: null,
+        domainMetrics: null,
         epistemicAssessment: {
           confidence: 'high',
           groundingRatio: 0.85,
@@ -343,6 +349,8 @@ describe('agentOutputSchema', () => {
         artifacts: null,
         explorationMaps: null,
         epistemicAssessment: null,
+        analysisRecords: null,
+        domainMetrics: null,
         auditImplications: [
           'Temporal decay risk in auth module within 6 months',
           'Naming drift accelerating — 3 conventions competing',
@@ -371,10 +379,26 @@ describe('agentOutputSchema', () => {
           methodology: null,
         },
         auditImplications: ['Risk identified'],
+        analysisRecords: [{
+          recordType: 'commitment',
+          recordId: 'R-1',
+          title: 'Test commitment',
+          classification: 'PROMISING',
+          severity: null,
+          data: [{ key: 'status', value: 'confirmed' }],
+        }],
+        domainMetrics: [
+          { key: 'atomsIdentified', value: '20' },
+          { key: 'decompositionFit', value: 'HIGH' },
+        ],
       });
       expect(result.explorationMaps).toHaveLength(1);
       expect(result.epistemicAssessment!.confidence).toBe('medium');
       expect(result.auditImplications).toHaveLength(1);
+      expect(result.analysisRecords).toHaveLength(1);
+      expect(result.analysisRecords![0].recordType).toBe('commitment');
+      expect(result.domainMetrics).toHaveLength(2);
+      expect(result.domainMetrics![0].key).toBe('atomsIdentified');
     });
   });
 });

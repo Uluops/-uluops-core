@@ -151,12 +151,11 @@ export class AnalysisSummaryExtractor {
   // ─── System Metrics ─────────────────────────────────────────────────────
 
   /**
-   * Build system metrics by merging domain metrics (from analysis block)
-   * with execution metrics (from AgentResult.metrics).
+   * Build system metrics by merging domain metrics with execution metrics.
    *
-   * Domain metrics (e.g., "Promising: 3", "Candidates Identified: 5") take
-   * precedence — they're what the dashboard displays. Execution metrics
-   * (tokens, duration, model) are always included.
+   * Priority: analysis block system_metrics > structured output domainMetrics > execution metrics only.
+   * Domain metrics (e.g., "Promising: 3", "Candidates Identified: 5") are what the
+   * dashboard displays. Execution metrics (tokens, duration, model) always included.
    */
   private buildSystemMetrics(result: AgentResult, analysisBlock: AgentAnalysisBlock | null): Record<string, unknown> {
     const executionMetrics: Record<string, unknown> = {
@@ -174,12 +173,38 @@ export class AnalysisSummaryExtractor {
       extractionMethod: result.extractionMethod,
     };
 
+    // Prefer analysis block domain metrics (from JSON code fence)
     if (analysisBlock?.system_metrics && typeof analysisBlock.system_metrics === 'object') {
-      // Domain metrics first, execution metrics as fallback/supplement
       return { ...executionMetrics, ...analysisBlock.system_metrics };
     }
 
+    // Fall back to structured output domainMetrics (from agentOutputSchema)
+    const domainMetrics = this.extractDomainMetrics(result.rawJson);
+    if (domainMetrics) {
+      return { ...executionMetrics, ...domainMetrics };
+    }
+
     return executionMetrics;
+  }
+
+  /**
+   * Extract domain metrics from structured output's domainMetrics array.
+   * Converts [{key, value}] entries to a flat Record<string, unknown>.
+   */
+  private extractDomainMetrics(rawJson: unknown): Record<string, unknown> | null {
+    const raw = this.extractJsonField(rawJson, 'domainMetrics', 'domain_metrics');
+    if (!Array.isArray(raw) || raw.length === 0) return null;
+
+    const metrics: Record<string, unknown> = {};
+    for (const entry of raw) {
+      if (entry && typeof entry === 'object' && 'key' in entry && 'value' in entry) {
+        const { key, value } = entry as { key: string; value: string };
+        // Parse numeric strings back to numbers
+        const num = Number(value);
+        metrics[key] = isNaN(num) ? value : num;
+      }
+    }
+    return Object.keys(metrics).length > 0 ? metrics : null;
   }
 
   // ─── Epistemic Assessment ───────────────────────────────────────────────
@@ -282,18 +307,16 @@ export class AnalysisSummaryExtractor {
   // ─── Analysis Records ──────────────────────────────────────────────────
 
   /**
-   * Build analysis records: prefer agent-produced records (from analysis block),
-   * fall back to auto-generated records from recommendations.
-   *
-   * Agent-produced records have meaningful types (commitment, inquiry_question,
-   * evidence_claim) and IDs (R-1, IQ-1, EC-5). Auto-generated records use
-   * evidence_finding and hash-based IDs.
+   * Build analysis records with 3-tier precedence:
+   * 1. Analysis block records (from JSON code fence — richest: typed, meaningful IDs)
+   * 2. Structured output analysisRecords (from agentOutputSchema — typed, meaningful IDs)
+   * 3. Auto-generated from recommendations (fallback — evidence_finding, hash IDs)
    */
   private buildAnalysisRecords(
     result: AgentResult,
     analysisBlock: AgentAnalysisBlock | null,
   ): AnalysisRecordInput[] {
-    // Prefer agent-produced records when available
+    // Tier 1: analysis block records (JSON code fence)
     if (analysisBlock?.records && Array.isArray(analysisBlock.records) && analysisBlock.records.length > 0) {
       return analysisBlock.records.map(rec => ({
         ...rec,
@@ -301,7 +324,13 @@ export class AnalysisSummaryExtractor {
       }));
     }
 
-    // Fall back to auto-generated from recommendations
+    // Tier 2: structured output analysisRecords
+    const structuredRecords = this.extractStructuredRecords(result.rawJson, result.name);
+    if (structuredRecords.length > 0) {
+      return structuredRecords;
+    }
+
+    // Tier 3: auto-generated from recommendations
     return result.recommendations.map(rec => ({
       agentName: result.name,
       recordType: rec.failureDomain ?? 'evidence_finding',
@@ -322,6 +351,34 @@ export class AnalysisSummaryExtractor {
         taxonomyVersion: rec.taxonomyVersion,
       },
     }));
+  }
+
+  /**
+   * Extract analysis records from structured output's analysisRecords array.
+   * Converts entries-based data [{key, value}] to the API's Record<string, unknown> format.
+   */
+  private extractStructuredRecords(rawJson: unknown, agentName: string): AnalysisRecordInput[] {
+    const raw = this.extractJsonField(rawJson, 'analysisRecords', 'analysis_records');
+    if (!Array.isArray(raw) || raw.length === 0) return [];
+
+    return raw.filter((r): r is Record<string, unknown> =>
+      r && typeof r === 'object' && 'recordType' in r && 'recordId' in r && 'title' in r,
+    ).map(r => {
+      // Convert entries-based data to flat record
+      const dataEntries = Array.isArray(r.data)
+        ? Object.fromEntries((r.data as Array<{ key: string; value: string }>).map(e => [e.key, e.value]))
+        : (r.data as Record<string, unknown>) ?? {};
+
+      return {
+        agentName,
+        recordType: String(r.recordType),
+        recordId: this.safeRecordId(String(r.recordId), `${agentName}/${r.title}`),
+        title: String(r.title),
+        classification: r.classification ? String(r.classification) : null,
+        severity: r.severity ? String(r.severity) : null,
+        data: dataEntries,
+      };
+    });
   }
 
   // ─── Helpers ────────────────────────────────────────────────────────────

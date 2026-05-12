@@ -110,6 +110,40 @@ const auditImplicationSchema = z.string()
   .describe('A forward-looking implication or trajectory projection from the analysis');
 
 /**
+ * Analysis record — typed finding from cognitive lens, explorer, or forecaster agents.
+ *
+ * Uses key-value entries for data (OpenAI strict mode compatible) instead of
+ * z.record(). The AnalysisSummaryExtractor converts entries to the API's
+ * Record<string, unknown> data format.
+ */
+const analysisRecordSchema = z.object({
+  recordType: z.string()
+    .describe('Record type matching the agent\'s domain vocabulary (e.g., commitment, inquiry_question, evidence_claim, convention, tension, decay_vector, reification_candidate)'),
+  recordId: z.string()
+    .describe('Short unique ID within this run (e.g., R-1, IQ-2, EC-3). Max 20 characters.'),
+  title: z.string()
+    .describe('Human-readable title of the finding'),
+  classification: z.string().nullable()
+    .describe('Classification label (e.g., PROMISING, SPECULATIVE, INTERPRETED-OPAQUE, FACTUAL)'),
+  severity: z.string().nullable()
+    .describe('Severity or significance level (e.g., critical, high, medium, low, info)'),
+  data: z.array(explorationEntrySchema)
+    .describe('Structured data as key-value entries. Keys vary by record type — include relevant fields like status, evidence, filePath, lineNumber, description, rationale.'),
+});
+
+/**
+ * Domain metric — agent-specific quantitative measurement.
+ *
+ * Uses key-value pairs instead of z.record() for OpenAI strict mode compatibility.
+ * The AnalysisSummaryExtractor converts these to the API's systemMetrics format,
+ * merged with execution metrics (tokens, duration, model).
+ */
+const domainMetricSchema = z.object({
+  key: z.string().describe('Metric key matching the agent definition\'s metrics vocabulary (e.g., atomsIdentified, candidatesIdentified, feedbackLoopsIdentified)'),
+  value: z.string().describe('Metric value (stringified number or enum)'),
+});
+
+/**
  * Universal agent output schema — used by all 6 agent types.
  *
  * Decision is z.string() (not an enum) because agents use diverse
@@ -146,6 +180,10 @@ export const agentOutputSchema = z.object({
     .describe('Epistemic confidence and grounding assessment from cognitive lens agents. Null for validators/executors.'),
   auditImplications: z.array(auditImplicationSchema).nullable()
     .describe('Forward-looking trajectory projections and audit implications from analyst/forecaster agents. Null for validators/executors.'),
+  analysisRecords: z.array(analysisRecordSchema).nullable()
+    .describe('Typed analysis records — structured findings with domain-specific record types (commitment, inquiry_question, evidence_claim, convention, tension, reification_candidate, etc.) and meaningful IDs (R-1, IQ-2, EC-3). Null for validators/executors.'),
+  domainMetrics: z.array(domainMetricSchema).nullable()
+    .describe('Agent-specific quantitative metrics as defined in the agent\'s metrics vocabulary (e.g., atomsIdentified:20, candidatesIdentified:5). Null when no domain metrics are applicable.'),
 });
 
 /**
