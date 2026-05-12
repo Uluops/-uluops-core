@@ -351,6 +351,43 @@ describe('AnalysisSummaryExtractor', () => {
 
       expect(records).toEqual([]);
     });
+
+    it('derives records from exploration maps when no explicit records or recommendations', () => {
+      const result = makeAgentResult({
+        recommendations: [],
+        rawJson: {
+          explorationMaps: [{
+            metadata: { explorerName: 'democritus-explorer', framework: 'reductive-decomposition' },
+            sections: [
+              {
+                type: 'inventory',
+                label: 'Atomic inventory',
+                entries: [
+                  { key: 'A1: UluOpsClient', value: 'Primary facade' },
+                  { key: 'A2: RegistryClient', value: 'Definition resolution' },
+                ],
+              },
+              {
+                type: 'agenda',
+                label: 'Inquiry questions',
+                entries: [
+                  { key: 'Q1', value: 'Is the output schema truly universal?' },
+                ],
+              },
+            ],
+          }],
+        },
+      });
+      const resolved = makeResolvedDefinition();
+      const { records } = extractor.extract(result, resolved);
+
+      expect(records).toHaveLength(3);
+      expect(records[0].recordType).toBe('evidence_finding');
+      expect(records[0].title).toBe('A1: UluOpsClient');
+      expect(records[0].data).toMatchObject({ sectionType: 'inventory', content: 'Primary facade' });
+      expect(records[2].recordType).toBe('inquiry_question');
+      expect(records[2].title).toBe('Q1');
+    });
   });
 
   describe('analysis block from rawOutput JSON fence', () => {

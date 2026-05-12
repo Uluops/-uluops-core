@@ -307,10 +307,11 @@ export class AnalysisSummaryExtractor {
   // ─── Analysis Records ──────────────────────────────────────────────────
 
   /**
-   * Build analysis records with 3-tier precedence:
+   * Build analysis records with 4-tier precedence:
    * 1. Analysis block records (from JSON code fence — richest: typed, meaningful IDs)
    * 2. Structured output analysisRecords (from agentOutputSchema — typed, meaningful IDs)
-   * 3. Auto-generated from recommendations (fallback — evidence_finding, hash IDs)
+   * 3. Derived from exploration maps (inventory items, agenda questions, etc.)
+   * 4. Auto-generated from recommendations (fallback — evidence_finding, hash IDs)
    */
   private buildAnalysisRecords(
     result: AgentResult,
@@ -330,7 +331,13 @@ export class AnalysisSummaryExtractor {
       return structuredRecords;
     }
 
-    // Tier 3: auto-generated from recommendations
+    // Tier 3: derived from exploration maps
+    const mapRecords = this.deriveRecordsFromExplorationMaps(result.rawJson, result.name);
+    if (mapRecords.length > 0) {
+      return mapRecords;
+    }
+
+    // Tier 4: auto-generated from recommendations
     return result.recommendations.map(rec => ({
       agentName: result.name,
       recordType: rec.failureDomain ?? 'evidence_finding',
@@ -379,6 +386,123 @@ export class AnalysisSummaryExtractor {
         data: dataEntries,
       };
     });
+  }
+
+  /**
+   * Derive analysis records from exploration map sections.
+   *
+   * Maps section types to record types:
+   * - inventory items → record type from section label context
+   * - agenda questions → inquiry_question
+   * - limitation blind spots → limitation
+   * - synthesis patterns → evidence_finding
+   * - mapping translations → evidence_finding
+   * - topology entities → evidence_finding
+   *
+   * Capped at 100 records to avoid overwhelming the tracker.
+   */
+  private deriveRecordsFromExplorationMaps(rawJson: unknown, agentName: string): AnalysisRecordInput[] {
+    const raw = this.extractJsonField(rawJson, 'explorationMaps', 'exploration_maps');
+    if (!Array.isArray(raw) || raw.length === 0) return [];
+
+    const records: AnalysisRecordInput[] = [];
+    let counter = 0;
+
+    for (const map of raw) {
+      if (!map || typeof map !== 'object' || !('sections' in map)) continue;
+      const sections = (map as Record<string, unknown>).sections;
+      if (!Array.isArray(sections)) continue;
+
+      for (const section of sections) {
+        if (!section || typeof section !== 'object') continue;
+        const s = section as Record<string, unknown>;
+        const type = s.type as string;
+        const items = this.getSectionItems(s);
+        if (!items || items.length === 0) continue;
+
+        const recordType = this.sectionTypeToRecordType(type);
+        const prefix = this.sectionTypeToPrefix(type);
+
+        for (const item of items) {
+          counter++;
+          if (counter > 100) break;
+
+          const key = typeof item === 'object' && item !== null && 'key' in item
+            ? String((item as Record<string, unknown>).key)
+            : `${prefix}-${counter}`;
+          const value = typeof item === 'object' && item !== null && 'value' in item
+            ? String((item as Record<string, unknown>).value)
+            : typeof item === 'string' ? item : JSON.stringify(item);
+
+          records.push({
+            agentName,
+            recordType,
+            recordId: this.safeRecordId(undefined, `${agentName}/${key}`),
+            title: key.length > 200 ? key.substring(0, 200) : key,
+            classification: null,
+            severity: null,
+            data: {
+              sectionType: type,
+              sectionLabel: s.label,
+              content: value.length > 2000 ? value.substring(0, 2000) : value,
+            },
+          });
+        }
+        if (counter > 100) break;
+      }
+      if (counter > 100) break;
+    }
+
+    return records;
+  }
+
+  /**
+   * Get the list of items from a section based on its type.
+   * Handles both entries-based format and typed field format.
+   */
+  private getSectionItems(section: Record<string, unknown>): unknown[] | null {
+    // Entries-based format (from structured output)
+    if (Array.isArray(section.entries) && section.entries.length > 0) return section.entries;
+    // Typed field formats (from reshaped or JSON fence)
+    if (Array.isArray(section.items)) return section.items;
+    if (Array.isArray(section.questions)) return section.questions;
+    if (Array.isArray(section.blindSpots)) return section.blindSpots;
+    if (Array.isArray(section.patterns)) return section.patterns;
+    if (Array.isArray(section.translations)) return section.translations;
+    if (Array.isArray(section.entities)) return section.entities;
+    if (Array.isArray(section.hierarchy)) return section.hierarchy;
+    if (Array.isArray(section.findings)) return section.findings;
+    return null;
+  }
+
+  /** Map exploration section type to analysis record type. */
+  private sectionTypeToRecordType(sectionType: string): string {
+    switch (sectionType) {
+      case 'agenda': return 'inquiry_question';
+      case 'limitation': return 'limitation';
+      case 'inventory': return 'evidence_finding';
+      case 'topology': return 'evidence_finding';
+      case 'landscape': return 'evidence_finding';
+      case 'classification': return 'evidence_finding';
+      case 'mapping': return 'evidence_finding';
+      case 'synthesis': return 'evidence_finding';
+      default: return 'evidence_finding';
+    }
+  }
+
+  /** Map exploration section type to record ID prefix. */
+  private sectionTypeToPrefix(sectionType: string): string {
+    switch (sectionType) {
+      case 'agenda': return 'IQ';
+      case 'limitation': return 'LM';
+      case 'inventory': return 'INV';
+      case 'topology': return 'TOP';
+      case 'landscape': return 'LSC';
+      case 'classification': return 'CLS';
+      case 'mapping': return 'MAP';
+      case 'synthesis': return 'SYN';
+      default: return 'REC';
+    }
   }
 
   // ─── Helpers ────────────────────────────────────────────────────────────
