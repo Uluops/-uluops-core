@@ -475,11 +475,15 @@ export class AnalysisSummaryExtractor {
     return null;
   }
 
-  /** Map exploration section type to analysis record type. */
+  /**
+   * Map exploration section type to a valid analysis record type.
+   * Must match the API's record type enum — see ops-uluops-api
+   * AnalysisRecordType for the full list.
+   */
   private sectionTypeToRecordType(sectionType: string): string {
     switch (sectionType) {
       case 'agenda': return 'inquiry_question';
-      case 'limitation': return 'limitation';
+      case 'limitation': return 'evidence_finding';
       case 'inventory': return 'evidence_finding';
       case 'topology': return 'evidence_finding';
       case 'landscape': return 'evidence_finding';
