@@ -90,7 +90,7 @@ export class UluOpsClient {
     }
 
     const result = await this.agentExecutor.execute(resolved, { target }, options);
-    await this.trackIfEnabled(result, resolved, 'agent', options, target);
+    await this.trackIfEnabled(result, resolved, resolved.name, options, target);
     return result;
   }
 
@@ -109,7 +109,7 @@ export class UluOpsClient {
     }
 
     const result = await this.commandExecutor.execute(resolved, input, overrides);
-    await this.trackIfEnabled(result, resolved, 'command', undefined, input.target);
+    await this.trackIfEnabled(result, resolved, resolved.name, undefined, input.target);
     return result;
   }
 
@@ -160,9 +160,7 @@ export class UluOpsClient {
       }
     }
 
-    // For workflows, use the workflow name as workflowType (not the literal 'workflow')
-    const workflowType = resolved.type === 'workflow' ? result.name : resolved.type;
-    await this.trackIfEnabled(result, resolved, workflowType, undefined, input.target);
+    await this.trackIfEnabled(result, resolved, resolved.name, undefined, input.target);
     return result;
   }
 

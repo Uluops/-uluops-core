@@ -647,9 +647,10 @@ describe('UluOpsClient', () => {
       const result = await client.runAgent('code-validator', '/tmp/test');
 
       // trackIfEnabled infers project from target dir basename (not agent name)
+      // workflowType uses definition name (not generic 'agent') for single-agent runs
       expect(mockValidationSubmit).toHaveBeenCalledWith(expect.objectContaining({
         project: 'test',
-        workflowType: 'agent',
+        workflowType: 'code-validator',
         result: expect.objectContaining({
           name: agentResult.name,
           decision: agentResult.decision,
@@ -821,7 +822,7 @@ describe('UluOpsClient', () => {
 
       expect(mockValidationSubmit).toHaveBeenCalledWith(expect.objectContaining({
         project: 'test',
-        workflowType: 'command',
+        workflowType: 'validate',
         result: expect.objectContaining({ type: 'command' }),
         resolvedDefinition: expect.any(Object),
       }));
@@ -933,7 +934,7 @@ describe('UluOpsClient', () => {
 
       expect(mockValidationSubmit).toHaveBeenCalledWith(expect.objectContaining({
         project: 'test',
-        workflowType: 'command',
+        workflowType: 'validate',
         result: expect.objectContaining({ type: 'command' }),
         resolvedDefinition: expect.any(Object),
       }));
