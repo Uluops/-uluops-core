@@ -1,6 +1,6 @@
-import { OpsClient } from '@uluops/ops-sdk';
+import { OpsClient, type AnalysisSummaryInput, type AnalysisRecordInput } from '@uluops/ops-sdk';
 import type { ResolvedConfig } from '../types/config.js';
-import type { ExecutionResult } from '../types/execution.js';
+import type { ExecutionResult, ExecutionMetrics } from '../types/execution.js';
 import type { AgentResult } from '../types/agent.js';
 import type { WorkflowResult } from '../types/workflow.js';
 import type { CommandResult } from '../types/command.js';
@@ -156,8 +156,8 @@ export class ValidationClient {
       : [this.resultToAgent(result)];
 
     // Extract analysis summary and records when definition is available and result is an agent
-    let analysisSummary: import('@uluops/ops-sdk').AnalysisSummaryInput | undefined;
-    let analysisRecords: import('@uluops/ops-sdk').AnalysisRecordInput[] | undefined;
+    let analysisSummary: AnalysisSummaryInput | undefined;
+    let analysisRecords: AnalysisRecordInput[] | undefined;
 
     if (submission.resolvedDefinition && this.isAgentResult(result)) {
       const analysis = this.analysisExtractor.extract(result as AgentResult, submission.resolvedDefinition);
@@ -251,13 +251,7 @@ export class ValidationClient {
       decision: result.decision,
       summary: 'summary' in result ? (result as AgentResult).summary : undefined,
       model: result.metrics.model,
-      tokens: {
-        inputTokens: result.metrics.inputTokens,
-        outputTokens: result.metrics.outputTokens,
-        cacheCreationTokens: result.metrics.cacheCreationTokens,
-        cacheReadTokens: result.metrics.cacheReadTokens,
-        totalEffectiveTokens: result.metrics.totalEffectiveTokens,
-      },
+      tokens: this.extractTokens(result.metrics),
       durationMs: result.metrics.durationMs,
     };
   }
@@ -274,14 +268,20 @@ export class ValidationClient {
       decision: cmd.decision,
       summary: undefined as string | undefined,
       model: cmd.metrics.model,
-      tokens: {
-        inputTokens: cmd.metrics.inputTokens,
-        outputTokens: cmd.metrics.outputTokens,
-        cacheCreationTokens: cmd.metrics.cacheCreationTokens,
-        cacheReadTokens: cmd.metrics.cacheReadTokens,
-        totalEffectiveTokens: cmd.metrics.totalEffectiveTokens,
-      },
+      tokens: this.extractTokens(cmd.metrics),
       durationMs: cmd.metrics.durationMs,
+    };
+  }
+
+  /** Extract token metrics into the tracker's expected shape. */
+  private extractTokens(metrics: ExecutionMetrics) {
+    return {
+      inputTokens: metrics.inputTokens,
+      outputTokens: metrics.outputTokens,
+      cacheCreationTokens: metrics.cacheCreationTokens,
+      cacheReadTokens: metrics.cacheReadTokens,
+      thinkingTokens: metrics.thinkingTokens,
+      totalEffectiveTokens: metrics.totalEffectiveTokens,
     };
   }
 

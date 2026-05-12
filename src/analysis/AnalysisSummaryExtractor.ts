@@ -1,8 +1,7 @@
 import { createHash } from 'node:crypto';
 import type { AnalysisSummaryInput, AnalysisRecordInput, CategoryScore, ExplorationMap } from '@uluops/ops-sdk';
-import type { AgentResult } from '../types/agent.js';
+import type { AgentResult, AgentDefinition } from '../types/agent.js';
 import type { ResolvedDefinition } from '../types/registry.js';
-import type { AgentDefinition } from '../types/agent.js';
 
 /**
  * Result of analysis extraction from an agent execution.
@@ -480,37 +479,28 @@ export class AnalysisSummaryExtractor {
   }
 
   /**
-   * Map exploration section type to a valid analysis record type.
-   * Must match the API's record type enum — see ops-uluops-api
-   * AnalysisRecordType for the full list.
+   * Section type → record type + ID prefix.
+   * Record types must match the API's AnalysisRecordType enum.
    */
+  private static readonly SECTION_TYPE_CONFIG: Record<string, { recordType: string; prefix: string }> = {
+    agenda:         { recordType: 'inquiry_question', prefix: 'IQ' },
+    limitation:     { recordType: 'evidence_finding', prefix: 'LM' },
+    inventory:      { recordType: 'evidence_finding', prefix: 'INV' },
+    topology:       { recordType: 'evidence_finding', prefix: 'TOP' },
+    landscape:      { recordType: 'evidence_finding', prefix: 'LSC' },
+    classification: { recordType: 'evidence_finding', prefix: 'CLS' },
+    mapping:        { recordType: 'evidence_finding', prefix: 'MAP' },
+    synthesis:      { recordType: 'evidence_finding', prefix: 'SYN' },
+  };
+
+  private static readonly DEFAULT_SECTION_CONFIG = { recordType: 'evidence_finding', prefix: 'REC' };
+
   private sectionTypeToRecordType(sectionType: string): string {
-    switch (sectionType) {
-      case 'agenda': return 'inquiry_question';
-      case 'limitation': return 'evidence_finding';
-      case 'inventory': return 'evidence_finding';
-      case 'topology': return 'evidence_finding';
-      case 'landscape': return 'evidence_finding';
-      case 'classification': return 'evidence_finding';
-      case 'mapping': return 'evidence_finding';
-      case 'synthesis': return 'evidence_finding';
-      default: return 'evidence_finding';
-    }
+    return (AnalysisSummaryExtractor.SECTION_TYPE_CONFIG[sectionType] ?? AnalysisSummaryExtractor.DEFAULT_SECTION_CONFIG).recordType;
   }
 
-  /** Map exploration section type to record ID prefix. */
   private sectionTypeToPrefix(sectionType: string): string {
-    switch (sectionType) {
-      case 'agenda': return 'IQ';
-      case 'limitation': return 'LM';
-      case 'inventory': return 'INV';
-      case 'topology': return 'TOP';
-      case 'landscape': return 'LSC';
-      case 'classification': return 'CLS';
-      case 'mapping': return 'MAP';
-      case 'synthesis': return 'SYN';
-      default: return 'REC';
-    }
+    return (AnalysisSummaryExtractor.SECTION_TYPE_CONFIG[sectionType] ?? AnalysisSummaryExtractor.DEFAULT_SECTION_CONFIG).prefix;
   }
 
   // ─── Helpers ────────────────────────────────────────────────────────────
