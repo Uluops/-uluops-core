@@ -1,9 +1,10 @@
 /**
  * Canonical decision register normalization.
  *
- * The system uses four decision vocabularies across its execution layers:
+ * The system uses five decision vocabularies across its execution layers:
  * - Validators: PASS / WARN / FAIL
  * - Executors:  COMPLETE / PARTIAL / FAILED
+ * - Explorers:  EXPLORED (always positive — discovery, not gating)
  * - Workflows:  SHIP / HOLD / BLOCK
  * - Phases:     passed / warned / blocked / skipped / aborted
  *
@@ -47,7 +48,7 @@ export function classifyDecision(
   // PARTIAL is 'conditional' (not negative) — partial completion is progress,
   // not failure. Downstream consumers can gate on decisionCategory if needed.
   switch (decision) {
-    case 'PASS': case 'SHIP': case 'COMPLETE': return 'positive';
+    case 'PASS': case 'SHIP': case 'COMPLETE': case 'EXPLORED': return 'positive';
     case 'FAIL': case 'FAILED': case 'BLOCK': return 'negative';
     case 'WARN': case 'HOLD': case 'PARTIAL': return 'conditional';
     default: return 'neutral';
