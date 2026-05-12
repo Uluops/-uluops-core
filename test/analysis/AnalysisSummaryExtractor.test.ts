@@ -150,9 +150,9 @@ describe('AnalysisSummaryExtractor', () => {
       const { summary } = extractor.extract(result, resolved);
 
       expect(summary.categoryScores).toEqual([
-        { name: 'Code Quality', weight: 40, score: 88 },
-        { name: 'Security', weight: 30, score: 83 },
-        { name: 'Performance', weight: 30, score: 83 },
+        { name: 'Code Quality', weight: 40, score: 35 },
+        { name: 'Security', weight: 30, score: 25 },
+        { name: 'Performance', weight: 30, score: 25 },
       ]);
     });
 
@@ -350,6 +350,123 @@ describe('AnalysisSummaryExtractor', () => {
       const { records } = extractor.extract(result, resolved);
 
       expect(records).toEqual([]);
+    });
+  });
+
+  describe('analysis block from rawOutput JSON fence', () => {
+    const jsonFence = (analysis: Record<string, unknown>) =>
+      `# Report\n\nSome markdown...\n\n\`\`\`json\n${JSON.stringify({
+        agent: { name: 'test-validator' },
+        result: { score: 82, decision: 'FACTUAL' },
+        categories: [],
+        analysis,
+      })}\n\`\`\`\n\nMore text.`;
+
+    it('uses domain system_metrics from analysis block, merged with execution metrics', () => {
+      const result = makeAgentResult({
+        rawOutput: jsonFence({
+          system_metrics: {
+            alignmentLevel: 'substantially aligned',
+            statedClassificationsCount: 6,
+            alignedClassificationsCount: 4,
+          },
+        }),
+      });
+      const resolved = makeResolvedDefinition();
+      const { summary } = extractor.extract(result, resolved);
+
+      // Domain metrics override execution metrics
+      expect(summary.systemMetrics).toMatchObject({
+        alignmentLevel: 'substantially aligned',
+        statedClassificationsCount: 6,
+        // Execution metrics still present
+        inputTokens: 500,
+        model: 'claude-sonnet-4-5-20250929',
+      });
+    });
+
+    it('uses agent-produced records over auto-generated', () => {
+      const result = makeAgentResult({
+        rawOutput: jsonFence({
+          records: [
+            { recordType: 'commitment', recordId: 'R-1', title: 'Issue.timesSeen reified', data: { status: 'PROMISING' } },
+            { recordType: 'inquiry_question', recordId: 'IQ-1', title: 'Can timesSeen be derived?', data: { priority: 'high' } },
+          ],
+        }),
+        recommendations: [
+          { agent: 'test-validator', title: 'Ignored recommendation', priority: 'suggested' },
+        ],
+      });
+      const resolved = makeResolvedDefinition();
+      const { records } = extractor.extract(result, resolved);
+
+      expect(records).toHaveLength(2);
+      expect(records[0].recordType).toBe('commitment');
+      expect(records[0].recordId).toBe('R-1');
+      expect(records[0].agentName).toBe('test-validator');
+      expect(records[1].recordType).toBe('inquiry_question');
+      expect(records[1].recordId).toBe('IQ-1');
+    });
+
+    it('uses agent epistemic_assessment over structured output', () => {
+      const result = makeAgentResult({
+        rawOutput: jsonFence({
+          epistemic_assessment: {
+            fsRiskOverall: 'LOW',
+            fs1InterpretationPurism: 'LOW',
+            fs2SurfaceParsing: 'LOW',
+          },
+        }),
+        rawJson: {
+          epistemicAssessment: { confidence: 'high', groundingRatio: 0.9, keyUncertainties: null, methodology: null },
+        },
+      });
+      const resolved = makeResolvedDefinition();
+      const { summary } = extractor.extract(result, resolved);
+
+      // Analysis block wins over structured output
+      expect(summary.epistemicAssessment).toEqual({
+        fsRiskOverall: 'LOW',
+        fs1InterpretationPurism: 'LOW',
+        fs2SurfaceParsing: 'LOW',
+      });
+    });
+
+    it('uses category_scores from analysis block when present', () => {
+      const result = makeAgentResult({
+        rawOutput: jsonFence({
+          category_scores: [
+            { name: 'Impression Inventory', weight: 20, score: 17 },
+            { name: 'Fact/Judgment Separation', weight: 30, score: 25 },
+          ],
+        }),
+        categories: [
+          { name: 'Code Quality', score: 35, maxScore: 40, findings: [] },
+        ],
+      });
+      const resolved = makeResolvedDefinition();
+      const { summary } = extractor.extract(result, resolved);
+
+      // Analysis block scores used instead of auto-computed
+      expect(summary.categoryScores).toEqual([
+        { name: 'Impression Inventory', weight: 20, score: 17 },
+        { name: 'Fact/Judgment Separation', weight: 30, score: 25 },
+      ]);
+    });
+
+    it('falls back to structured output when no analysis block', () => {
+      const result = makeAgentResult({
+        rawOutput: '# Just markdown, no JSON fence',
+        rawJson: {
+          epistemicAssessment: { confidence: 'medium', groundingRatio: 0.7, keyUncertainties: null, methodology: null },
+        },
+      });
+      const resolved = makeResolvedDefinition();
+      const { summary } = extractor.extract(result, resolved);
+
+      expect(summary.epistemicAssessment).toEqual({
+        confidence: 'medium', groundingRatio: 0.7, keyUncertainties: null, methodology: null,
+      });
     });
   });
 });
