@@ -3,6 +3,7 @@ import * as path from 'node:path';
 import * as crypto from 'node:crypto';
 import * as yaml from 'yaml';
 import { RegistryClient as RegistrySdk } from '@uluops/registry-sdk';
+import { normalizeDefinition, DefinitionValidationError } from '@uluops/registry-sdk/normalization';
 import type { ResolvedConfig } from '../types/config.js';
 import type { DefinitionType } from '../types/execution.js';
 import type { AgentDefinition } from '../types/agent.js';
@@ -177,7 +178,7 @@ export class RegistryClient {
         version: this.extractVersion(definition, candidate.type),
         hash: `sha256:${crypto.createHash('sha256').update(yamlContent).digest('hex')}`,
         yaml: yamlContent,
-        definition: this.castDefinition(definition),
+        definition: this.normalizeOrThrow(definition),
         runtime,
         domain: this.extractDomain(definition, candidate.type) as ResolvedDefinition['domain'],
         agentType: this.extractAgentType(definition, candidate.type),
@@ -261,7 +262,7 @@ export class RegistryClient {
       hash: def.hash,
       yaml: def.yaml ?? '',
       definition: def.yaml
-        ? this.castDefinition(this.safeParseYaml(def.yaml, name))
+        ? this.normalizeOrThrow(this.safeParseYaml(def.yaml, name))
         : this.emptyDefinition(),
       runtime: { prompt: rendered.markdown } as ResolvedDefinition['runtime'],
       domain: (def.domain ?? 'general') as ResolvedDefinition['domain'],
@@ -289,208 +290,20 @@ export class RegistryClient {
   // ─────────────────────────────────────────────────────────────────────────────
 
   /**
-   * Cast parsed YAML to typed definition with structural validation.
-   * Verifies a known top-level key exists and its value is a non-null object.
-   * Full schema validation is registry-side; this prevents totally wrong YAML.
+   * Normalize a parsed definition via @uluops/registry-sdk/normalization,
+   * mapping SDK errors to core's ConfigurationError.
    *
-   * Intentionally shallow — rendering is performed via the registry API's
-   * render.preview() endpoint. Full schema validation happens registry-side at
-   * publish time. This guard catches only completely wrong files (e.g., a
-   * docker-compose.yaml in the agents/ directory).
+   * @see ADR-003 in @uluops/registry-sdk for design rationale.
    */
-  private castDefinition(parsed: Record<string, unknown>): ResolvedDefinition['definition'] {
-    const knownTopKeys = ['agent', 'command', 'workflow', 'pipeline'] as const satisfies readonly DefinitionType[];
-    const topKey = knownTopKeys.find(k => k in parsed);
-    if (!topKey) {
-      throw new ConfigurationError(
-        `Invalid definition: expected a top-level key of ${knownTopKeys.join(', ')}, ` +
-        `found: ${Object.keys(parsed).join(', ')}`,
-      );
-    }
-    const section = parsed[topKey];
-    if (typeof section !== 'object' || section === null) {
-      throw new ConfigurationError(`Invalid definition: "${topKey}" must be an object`);
-    }
-    // Structural guard confirms top-level key is a known definition type
-    // with a non-null object value. The intermediate `unknown` cast is
-    // unavoidable: Record<string, unknown> lacks the index signature
-    // required for direct assignment to the typed definition union.
-
-    // Normalize CDL YAML structure → CommandDefinition runtime shape.
-    // CDL uses invokes.agent/agents, top-level preflight/postflight, and
-    // overrides.threshold — the runtime expects agents[], execution.preflight,
-    // execution.postflight, and execution.thresholds.pass.
-    if (topKey === 'command') {
-      this.normalizeCommandDefinition(section as Record<string, unknown>);
-    }
-
-    if (topKey === 'workflow') {
-      this.normalizeWorkflowDefinition(section as Record<string, unknown>);
-      this.validateWorkflowStructure(section as Record<string, unknown>);
-    }
-
-    if (topKey === 'pipeline') {
-      this.normalizePipelineDefinition(section as Record<string, unknown>);
-      this.validatePipelineStructure(section as Record<string, unknown>);
-    }
-
-    return parsed as unknown as ResolvedDefinition['definition'];
-  }
-
-  /**
-   * Normalize CDL YAML structure to match CommandDefinition runtime shape.
-   *
-   * CDL YAML uses a more ergonomic authoring format that differs from the
-   * runtime type contract:
-   *   - invokes.agent (string) or invokes.agents (string[]) → agents[]
-   *   - top-level preflight → execution.preflight
-   *   - top-level postflight → execution.postflight
-   *   - overrides.threshold (number) → execution.thresholds.pass
-   *
-   * Mutates the section in place before it's cast to CommandDefinition.
-   */
-  private normalizeCommandDefinition(section: Record<string, unknown>): void {
-    // invokes.agent / invokes.agents → agents[]
-    if (!section['agents']) {
-      const invokes = section['invokes'] as Record<string, unknown> | undefined;
-      if (invokes) {
-        const agent = invokes['agent'];
-        const agents = invokes['agents'];
-        if (Array.isArray(agents)) {
-          section['agents'] = agents;
-        } else if (typeof agent === 'string') {
-          section['agents'] = [agent];
-        }
+  private normalizeOrThrow(parsed: Record<string, unknown>): ResolvedDefinition['definition'] {
+    try {
+      const { definition } = normalizeDefinition(parsed);
+      return definition as unknown as ResolvedDefinition['definition'];
+    } catch (error) {
+      if (error instanceof DefinitionValidationError) {
+        throw new ConfigurationError(error.message);
       }
-    }
-
-    // top-level preflight → execution.preflight
-    // CDL preflight is { banner?, checks: PreflightCheck[] } — runtime expects PreflightCheck[]
-    const execution = (section['execution'] ?? {}) as Record<string, unknown>;
-    if (section['preflight'] && !execution['preflight']) {
-      const preflight = section['preflight'] as Record<string, unknown>;
-      execution['preflight'] = Array.isArray(preflight['checks']) ? preflight['checks'] : preflight;
-      section['execution'] = execution;
-    }
-
-    // top-level postflight → execution.postflight
-    if (section['postflight'] && !execution['postflight']) {
-      execution['postflight'] = section['postflight'];
-      section['execution'] = execution;
-    }
-
-    // overrides.threshold → execution.thresholds.pass
-    const overrides = section['overrides'] as Record<string, unknown> | undefined;
-    if (overrides?.['threshold'] && !execution['thresholds']) {
-      execution['thresholds'] = { pass: overrides['threshold'] };
-      section['execution'] = execution;
-    }
-  }
-
-  /**
-   * Normalize WDL YAML structure to match WorkflowDefinition runtime shape.
-   *
-   * WDL v3 phases use a `steps` array with `{command: "name@version"}` entries,
-   * plus `condition` for skip logic and `gate.warn_threshold` for dual thresholds.
-   * The runtime PhaseDefinition expects:
-   *   - steps[].command → commands[]
-   *   - condition → skip_if (negated: condition means "run when true", skip_if means "skip when true")
-   *   - gate.on_fail → gate.on_fail (pass-through)
-   *   - gate.threshold → gate.threshold (pass-through)
-   *
-   * Mutates the section in place before it's cast to WorkflowDefinition.
-   */
-  private normalizeWorkflowDefinition(section: Record<string, unknown>): void {
-    const orchestration = section['orchestration'] as Record<string, unknown> | undefined;
-    if (!orchestration) return;
-
-    const phases = orchestration['phases'] as Array<Record<string, unknown>> | undefined;
-    if (!Array.isArray(phases)) return;
-
-    for (const phase of phases) {
-      // steps[].command → commands[], steps[].agent → agentRefs[]
-      if (!phase['commands'] && Array.isArray(phase['steps'])) {
-        const steps = phase['steps'] as Array<Record<string, unknown>>;
-        phase['commands'] = steps
-          .map(s => s['command'] as string)
-          .filter(Boolean);
-        const agents = steps
-          .map(s => s['agent'] as string)
-          .filter(Boolean);
-        if (agents.length > 0) {
-          phase['agentRefs'] = agents;
-        }
-        delete phase['steps'];
-      }
-
-      // condition → skip_if (negated)
-      if (phase['condition'] && !phase['skip_if']) {
-        phase['skip_if'] = `NOT (${phase['condition']})`;
-        delete phase['condition'];
-      }
-
-      // Ensure gate.aggregate has a default
-      const gate = phase['gate'] as Record<string, unknown> | undefined;
-      if (gate && !gate['aggregate']) {
-        gate['aggregate'] = 'average';
-      }
-    }
-  }
-
-  /**
-   * Normalize PDL YAML structure to match PipelineDefinition runtime shape.
-   *
-   * PDL YAML stages can use `agents:` arrays (inline agent refs) instead of
-   * a single `ref` + `type`. Stages with `agents:` get type='agents' and
-   * PipelineExecutor handles them by running each agent directly.
-   */
-  private normalizePipelineDefinition(section: Record<string, unknown>): void {
-    const stages = section['stages'] as Array<Record<string, unknown>> | undefined;
-    if (!Array.isArray(stages)) return;
-
-    for (const stage of stages) {
-      // Stages with agents[] but no ref/type get type='agents'
-      if (Array.isArray(stage['agents']) && !stage['ref'] && !stage['type']) {
-        stage['type'] = 'agents';
-      }
-      // Stages with explicit ref but no type default to 'command'
-      if (stage['ref'] && !stage['type']) {
-        stage['type'] = 'command';
-      }
-    }
-  }
-
-  /**
-   * Structural guard for workflow definitions.
-   * Verifies orchestration.phases exists and is an array before the double
-   * assertion to ResolvedDefinition['definition']. WorkflowExecutor accesses
-   * def.workflow.orchestration.phases directly — a malformed YAML that passes
-   * the top-key check but lacks these nested fields would crash at runtime.
-   */
-  private validateWorkflowStructure(section: Record<string, unknown>): void {
-    const orchestration = section['orchestration'] as Record<string, unknown> | undefined;
-    if (!orchestration || typeof orchestration !== 'object') {
-      throw new ConfigurationError(
-        'Invalid workflow definition: missing "orchestration" section',
-      );
-    }
-    if (!Array.isArray(orchestration['phases'])) {
-      throw new ConfigurationError(
-        'Invalid workflow definition: "orchestration.phases" must be an array',
-      );
-    }
-  }
-
-  /**
-   * Structural guard for pipeline definitions.
-   * Verifies stages exists and is an array. PipelineExecutor iterates
-   * def.pipeline.stages directly — missing field would crash at runtime.
-   */
-  private validatePipelineStructure(section: Record<string, unknown>): void {
-    if (!Array.isArray(section['stages'])) {
-      throw new ConfigurationError(
-        'Invalid pipeline definition: "stages" must be an array',
-      );
+      throw error;
     }
   }
 
