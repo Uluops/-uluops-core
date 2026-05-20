@@ -102,12 +102,12 @@ export class SubmissionClient {
       timestamp: r.timestamp,
       allGatesPassed: r.allGatesPassed,
       averageScore: r.averageScore ?? 0,
-      rawMarkdown: (r as Record<string, unknown>).rawMarkdown as string ?? undefined,
+      rawMarkdown: r.rawMarkdown ?? undefined,
       archivedAt: r.archivedAt ?? undefined,
       archiveReason: r.archiveReason ?? undefined,
-      idempotencyKey: (r as Record<string, unknown>).idempotencyKey as string | undefined,
+      idempotencyKey: r.idempotencyKey ?? undefined,
       createdAt: r.createdAt,
-      updatedAt: (r as Record<string, unknown>).updatedAt as string ?? r.createdAt,
+      updatedAt: r.updatedAt ?? r.createdAt,
     }));
   }
 
