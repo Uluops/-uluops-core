@@ -562,6 +562,7 @@ import {
   ModelNotFoundError,
   // Error code narrowing
   SubmissionErrorCodes,
+  UluOpsErrorCodes,
 } from '@uluops/core';
 ```
 
@@ -587,7 +588,7 @@ The SDK provides a structured error hierarchy:
 
 | Error | Thrown by | Description |
 |-------|----------|-------------|
-| `UluOpsError` | _(base class)_ | Base error class for all SDK errors |
+| `UluOpsError` | _(base class)_ | Base error class for all SDK errors. Use `UluOpsErrorCodes` for exhaustive code narrowing |
 | `ConfigurationError` | `UluOpsClient` constructor, `RegistryClient.resolve()`, `AIProvider.ensureProvider()` | Missing API key, invalid provider config, definition not found in registry, invalid definition format |
 | `ModelNotFoundError` | `ModelCatalog.resolve()` | Model alias not found in registry catalog |
 | `CapabilityError` | `ModelCatalog.resolve()` | Resolved model lacks a required capability (e.g. tools, vision, extendedThinking) |

@@ -88,6 +88,7 @@ export type {
   ResolvedDefinition,
   DefinitionSummary,
   Reference,
+  SubscriptionTier,
 } from './registry.js';
 
 // Submission (public contract types only; internal wire types kept in submission.ts)

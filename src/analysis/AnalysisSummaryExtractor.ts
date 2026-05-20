@@ -41,6 +41,18 @@ interface AgentAnalysisBlock {
  *    model. Always included in systemMetrics alongside domain metrics.
  */
 export class AnalysisSummaryExtractor {
+  /**
+   * Extract analysis summary and records from an agent result and its definition.
+   *
+   * Combines three data sources: the LLM's JSON analysis block (from raw output),
+   * the agent definition (scoring weights, decision vocabulary), and execution
+   * metrics (tokens, duration, model). Returns a structured summary for tracker
+   * persistence and analysis records for per-finding storage.
+   *
+   * @param result - The completed agent result with parsed output and metrics
+   * @param resolved - The resolved definition providing scoring weights and vocabulary
+   * @returns Summary and records ready for tracker submission
+   */
   extract(result: AgentResult, resolved: ResolvedDefinition): AnalysisExtractionResult {
     const analysisBlock = this.parseAnalysisBlock(result.rawOutput);
 
@@ -86,7 +98,11 @@ export class AnalysisSummaryExtractor {
     if (!jsonMatch) return null;
 
     try {
-      // jsonMatch[1] is always defined when the regex matches (capture group 1)
+      // jsonMatch[1] is always defined when the regex matches (capture group 1).
+      // The parsed JSON is not schema-validated here — the analysis block is best-effort
+      // extraction from LLM output. Downstream consumers (tracker API, SubmissionClient)
+      // validate the shape before persistence. Invalid fields are silently dropped by the
+      // typed extraction methods (extractCategoryScores, extractExplorationMaps, etc.).
       const data = JSON.parse(jsonMatch[1]!);
       const analysis = data?.analysis;
       if (!analysis || typeof analysis !== 'object') return null;

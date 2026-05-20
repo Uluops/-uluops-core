@@ -272,7 +272,7 @@ export class AgentExecutor {
       durationMs,
       summary: parsed.summary,
       metrics,
-      rawOutput: rawText || undefined,
+      rawOutput: rawText ? (rawText.length > 32_768 ? rawText.substring(0, 32_768) : rawText) : undefined,
       extractionMethod: extraction.method,
       extractionConfidence: extraction.confidence,
       degradations: resolved.degradations,

@@ -273,10 +273,17 @@ export class ToolHandler {
       return { tool_use_id: id, content: `Error: regex pattern too long (${opts.pattern.length} chars, max 200)` };
     }
 
-    // Reject patterns with nested quantifiers that cause catastrophic backtracking (CWE-1333).
-    // Matches: (x+)+, (x*)+, (x+)*, (x{n,})+, ([...]+)+ and similar nested repetition.
+    // Reject patterns with nested quantifiers or alternation explosions that cause
+    // catastrophic backtracking (CWE-1333).
+    // Nested quantifiers: (x+)+, (x*)+, (x+)*, (x{n,})+, ([...]+)+
+    // Alternation explosion: (a|aa)+, (a|a?)+  — overlapping alternation under quantifier
     if (/(\([^)]*[+*][^)]*\))[+*]|\(\?:[^)]*[+*][^)]*\)[+*]/.test(opts.pattern)) {
       return { tool_use_id: id, content: 'Error: regex pattern contains nested quantifiers which may cause catastrophic backtracking' };
+    }
+    // Detect overlapping alternation under quantifier: (alt1|alt2)+ where alternatives overlap.
+    // Conservative heuristic: any group with alternation followed by a quantifier.
+    if (/\([^)]*\|[^)]*\)[+*{]/.test(opts.pattern)) {
+      return { tool_use_id: id, content: 'Error: regex pattern contains alternation under quantifier which may cause catastrophic backtracking' };
     }
 
     let regex: RegExp;
