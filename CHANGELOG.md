@@ -4,6 +4,12 @@ All notable changes to `@uluops/core` will be documented in this file.
 
 This project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.10.1] - 2026-05-19
+
+### Changed
+
+- **Definition normalization delegated to `@uluops/registry-sdk/normalization`** — replaced 6 private methods in `RegistryClient.ts` (`castDefinition`, `normalizeCommandDefinition`, `normalizeWorkflowDefinition`, `normalizePipelineDefinition`, `validateWorkflowStructure`, `validatePipelineStructure`) with the SDK's canonical `normalizeDefinition()`. Net reduction of 188 lines. Behavior unchanged — the SDK normalizers produce identical output with the added guarantee of immutability (structuredClone). See [ADR-003](https://github.com/Uluops/-uluops-registry-sdk/blob/main/docs/adr/ADR-003-definition-normalization.md) in registry-sdk.
+
 ## [0.10.0] - 2026-05-11
 
 ### Added

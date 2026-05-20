@@ -395,7 +395,7 @@ import {
   PipelineExecutor,    // Multi-stage async pipelines
 
   // Service clients — talk to UluOps APIs directly
-  RegistryClient,      // Definition resolution, local/remote with hash verification
+  RegistryClient,      // Definition resolution, local/remote (normalization via @uluops/registry-sdk/normalization)
   ValidationClient,    // Run submission, history queries, regression detection
 
   // AI layer — provider management and model resolution
@@ -689,7 +689,7 @@ The `ToolHandler` restricts LLM file operations to the target directory:
 | Package | Purpose |
 |---------|---------|
 | `@uluops/sdk-core` | Shared HTTP infrastructure (HttpClient, errors, auth) |
-| `@uluops/registry-sdk` | Registry API client for definitions and models |
+| `@uluops/registry-sdk` | Registry API client for definitions, models, and definition normalization (`/normalization`) |
 | `@uluops/ops-sdk` | Validation tracking API client |
 | `ai` | Vercel AI SDK v6 - LLM communication and tool loops |
 | `@ai-sdk/anthropic` | Anthropic provider for AI SDK |
@@ -726,7 +726,7 @@ npm run build
 
 ## Maintainers
 
-- **Alex Self** ([@aself](https://github.com/aself)) — architecture, execution engine, AI integration
+- **Alex Self** ([@aself101](https://github.com/aself101)) — architecture, execution engine, AI integration
 - **Claude** (Anthropic) — implementation, validation, documentation
 
 ## License
