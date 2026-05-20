@@ -4,6 +4,36 @@ All notable changes to `@uluops/core` will be documented in this file.
 
 This project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.11.1] - 2026-05-20
+
+### Security
+
+- **Preflight newline injection prevention** — metacharacter regex now rejects `\n` and `\r` in command strings, which `sh -c` treats as command separators (CWE-78). Added 7 tests covering all metacharacter types.
+- **Shell command audit logging** — `runShellCommand` now logs every invocation (command string truncated at 200 chars, output intentionally omitted to avoid secret leakage). Wired through AIProvider for both Anthropic and OpenAI shell tool paths.
+- **Preflight TOCTOU window reduction** — replaced sequential `fs.access()` + `fs.realpath()` with `fs.lstat()` + `fs.realpath()` in a single try block, narrowing the race window for symlink swap attacks (CWE-367).
+- **brace-expansion DoS fix** — updated brace-expansion to >=5.0.6 via `npm audit fix` (GHSA-jxxr-4gwj-5jf2, CVSS 6.5). LLM-emitted glob patterns could previously trigger large numeric range expansion.
+- **Line-range read_file size guard** — `ToolHandler.readFile()` now enforces `MAX_FILE_SIZE` (1MB) in line-range mode, preventing OOM when an LLM requests lines from oversized files.
+
+### Added
+
+- **`maxRetries` config option** — exposed on `UluOpsConfig` and `AIGenerateOptions`, passed through to the AI SDK's `generateText()`. The SDK handles 429/503 retries with exponential backoff and Retry-After header support. Default: 2 (3 total attempts).
+- **`clearCache()` on UluOpsClient** — delegates to `RegistryClient.clearCache()` for invalidating the definition resolution cache in long-lived processes.
+- **`trackingFailed` field on results** — `AgentResult` and `ExecutionResult` now include a `trackingFailed?: boolean` flag, set when tracking submission fails. Callers can detect silent tracking loss instead of checking for undefined `dashboardUrl`.
+
+### Changed
+
+- **`trackIfEnabled()` decomposed** — extracted `recordExecutions()` private method, separating submission orchestration from execution recording logic.
+- **Exploration map section filtering** — `AnalysisSummaryExtractor.extractExplorationMaps()` now filters sections against known types (`inventory`, `topology`, etc.) before `reshapeSection`, eliminating untyped pass-through to the double assertion.
+
+### Fixed
+
+- **README stale naming corrections** — `ValidationClient` → `SubmissionClient`, `validateRun` → `previewSubmission`, `validationUrl` → `submissionUrl`, `ULUOPS_VALIDATION_URL` → `ULUOPS_SUBMISSION_URL`, `ValidationErrorCodes` → `SubmissionErrorCodes` across architecture diagram, advanced exports, config example, env var table, and error table.
+- **README `additionalProviders`** — added to Configuration example (was documented in Overview but absent from the config block).
+
+### Documentation
+
+- **wrapAgentResult divergence documented** — added rationale in `CommandExecutor.wrapAgentResult` explaining why three sites (CommandExecutor, WorkflowExecutor, PipelineExecutor) intentionally diverge and why a shared helper would add complexity without value.
+
 ## [0.11.0] - 2026-05-20
 
 ### Added
