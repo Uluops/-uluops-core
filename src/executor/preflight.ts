@@ -89,19 +89,12 @@ async function checkFileExists(
     );
   }
 
+  // Use lstat + realpath in a single try block to minimize TOCTOU window.
+  // lstat checks existence without following symlinks; realpath then resolves
+  // the final target. Both must succeed and the resolved path must stay within
+  // the target directory.
   try {
-    await fs.access(fullPath);
-  } catch {
-    throw new PreflightError(
-      check.message ?? `Required file not found: ${check.path}`,
-      'file_exists',
-      { path: check.path },
-    );
-  }
-
-  // Symlink check — resolve real paths to detect escape via symlink.
-  // Must run after access check so realpath has a valid target.
-  try {
+    await fs.lstat(fullPath);
     const realTarget = await fs.realpath(targetRoot);
     const realFull = await fs.realpath(fullPath);
     if (!realFull.startsWith(realTarget + path.sep) && realFull !== realTarget) {
@@ -113,9 +106,12 @@ async function checkFileExists(
     }
   } catch (error) {
     if (error instanceof PreflightError) throw error;
-    // realpath failure on target root itself is unexpected — re-throw
+    // lstat ENOENT → file not found; realpath failure → dangling symlink or race
+    const isNotFound = error instanceof Error && 'code' in error && (error as NodeJS.ErrnoException).code === 'ENOENT';
     throw new PreflightError(
-      `Failed to resolve real path: ${error instanceof Error ? error.message : 'unknown'}`,
+      isNotFound
+        ? (check.message ?? `Required file not found: ${check.path}`)
+        : `Failed to resolve real path: ${error instanceof Error ? error.message : 'unknown'}`,
       'file_exists',
       { path: check.path },
     );
@@ -173,9 +169,10 @@ async function checkCommand(check: PreflightCheck): Promise<void> {
   // Reject shell chaining metacharacters that bypass the base-command allowlist.
   // The allowlist checks only the first token; operators like ; && || and
   // command substitution $() or backticks allow arbitrary second commands.
+  // Newlines (\n, \r) are also rejected — sh -c treats them as command separators.
   // Single-quoted strings from shellQuote($ARGUMENTS) are safe — the
   // rejection targets unquoted metacharacters in the original command template.
-  if (/[;|&`]|\$\(/.test(check.command.replace(/'[^']*'/g, ''))) {
+  if (/[;|&`\n\r]|\$\(/.test(check.command.replace(/'[^']*'/g, ''))) {
     throw new PreflightError(
       `Preflight command contains disallowed shell metacharacters. ` +
       `Commands must be simple (no chaining with ; && || or command substitution).`,

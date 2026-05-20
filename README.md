@@ -309,7 +309,7 @@ console.log(`Run #${response.runNumber}: ${response.dashboardUrl}`);
 console.log(`New issues: ${response.correlation.newIssues}, Regressions: ${response.correlation.regressions}`);
 
 // Dry run: preview what a submission would do without saving
-const preview = await client.validateRun('my-project', 'post-implementation', result);
+const preview = await client.previewSubmission('my-project', 'post-implementation', result);
 if (preview.validationErrors.length > 0) {
   console.error('Validation errors:', preview.validationErrors);
 }
@@ -368,7 +368,7 @@ UluOpsClient (facade)
   |     +-- CommandExecutor
   |
   +-- RegistryClient       (definition resolution + hash verification)
-  +-- ValidationClient     (result submission + history)
+  +-- SubmissionClient     (result submission + history)
   |     +-- AnalysisSummaryExtractor (auto-extract analysis from AgentResult)
   +-- ModelCatalog         (registry-backed model alias resolution)
 ```
@@ -396,7 +396,7 @@ import {
 
   // Service clients — talk to UluOps APIs directly
   RegistryClient,      // Definition resolution, local/remote (normalization via @uluops/registry-sdk/normalization)
-  ValidationClient,    // Run submission, history queries, regression detection
+  SubmissionClient,    // Run submission, history queries, regression detection
 
   // AI layer — provider management and model resolution
   AIProvider,          // AI SDK v6 wrapper with provider registry and error mapping
@@ -491,7 +491,7 @@ const client = new UluOpsClient({
 
   // Service URLs
   registryUrl: 'https://...',         // Registry API (or ULUOPS_REGISTRY_URL)
-  validationUrl: 'https://...',       // Validation API (or ULUOPS_VALIDATION_URL)
+  submissionUrl: 'https://...',        // Submission API (or ULUOPS_SUBMISSION_URL)
 
   // Behavior
   trackingEnabled: true,              // Auto-submit results to validation service
@@ -521,7 +521,7 @@ const client = new UluOpsClient({
 | `GOOGLE_API_KEY` | Google/Gemini provider key | - |
 | `GOOGLE_GENERATIVE_AI_API_KEY` | Google provider key (alternative) | - |
 | `ULUOPS_REGISTRY_URL` | Registry API URL | `https://api.uluops.ai/api/v1/registry` |
-| `ULUOPS_VALIDATION_URL` | Validation API URL | `https://api.uluops.ai/api/v1/ops` |
+| `ULUOPS_SUBMISSION_URL` | Submission API URL | `https://api.uluops.ai/api/v1/ops` |
 | `ULUOPS_TRACKING_ENABLED` | Auto-submit results | `true` |
 | `ULUOPS_PROJECT` | Default project name | - |
 | `ULUOPS_LOCAL_DEFINITIONS` | Local definitions path | - |
@@ -560,7 +560,7 @@ import {
   ConfigurationError,
   ModelNotFoundError,
   // Error code narrowing
-  ValidationErrorCodes,
+  SubmissionErrorCodes,
 } from '@uluops/core';
 ```
 
@@ -593,7 +593,7 @@ The SDK provides a structured error hierarchy:
 | `PreflightError` | `CommandExecutor` (preflight phase) | Preflight check failed — missing env var, file not found, command unavailable |
 | `ExecutionError` | `AgentExecutor.execute()`, `CommandExecutor.execute()` | Agent execution failure or definition type mismatch. Check `error.partialResult` for partial output |
 | `ParseError` | `OutputExtractor.extractWithMetadata()` | LLM output could not be parsed as structured JSON. Check `error.contentPreview` for raw output |
-| `ValidationError` | `ValidationClient` methods | Validation service rejected a submission. Use `ValidationErrorCodes` to narrow by code |
+| `SubmissionError` | `SubmissionClient` methods | Validation service rejected a submission. Use `SubmissionErrorCodes` to narrow by code |
 | `WorkflowError` | `WorkflowExecutor.execute()` | Phase gate failure. Check `error.context.partialResult` for completed phase results |
 | `PipelineError` | `PipelineExecutor.execute()` | Pipeline stage failure. Check `error.context` for stage name/index |
 | `SubscriptionRequiredError` | `RegistryClient.resolve()` | Definition requires a higher subscription tier. Check `error.requiredTier`, `error.currentTier`, and `error.upgradeUrl` for upgrade guidance |
@@ -645,7 +645,7 @@ try {
     // Back off and retry — the SDK does not auto-retry rate limits
     await new Promise(r => setTimeout(r, 5000));
   } else if (error instanceof NetworkError) {
-    // Check ULUOPS_REGISTRY_URL and ULUOPS_VALIDATION_URL environment variables
+    // Check ULUOPS_REGISTRY_URL and ULUOPS_SUBMISSION_URL environment variables
     console.error('Connection failed. Verify API URLs and network access.');
   }
 }

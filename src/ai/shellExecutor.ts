@@ -1,7 +1,10 @@
 import { exec } from 'child_process';
 import { promisify } from 'util';
+import type { Logger } from '@uluops/sdk-core';
 
 const execAsync = promisify(exec);
+
+const noopLogger: Logger = { debug() {}, info() {}, warn() {}, error() {} };
 
 interface ShellResult {
   stdout: string;
@@ -32,12 +35,17 @@ interface OpenAIShellOutput {
  * to `exec()` (i.e., `sh -c <command>`), which grants the LLM full host OS access scoped
  * to `cwd`. There is no allowlist or OS-level sandbox. Only enable the bash tool in
  * isolated environments (containers, CI sandboxes). Never enable it for untrusted targets.
+ *
+ * AUDIT: Every invocation is logged (command string only, not output) for traceability.
+ * Output is not logged because it may contain secrets read from the target project.
  */
 export async function runShellCommand(
   command: string,
   cwd: string,
   timeoutMs: number,
+  logger: Logger = noopLogger,
 ): Promise<ShellResult> {
+  logger.info(`[shell] exec: ${command.length > 200 ? command.substring(0, 200) + '…' : command} (cwd=${cwd}, timeout=${timeoutMs}ms)`);
   try {
     const { stdout, stderr } = await execAsync(command, {
       cwd,
@@ -64,8 +72,9 @@ export async function executeShellAsString(
   command: string,
   cwd: string,
   timeoutMs: number,
+  logger?: Logger,
 ): Promise<string> {
-  const result = await runShellCommand(command, cwd, timeoutMs);
+  const result = await runShellCommand(command, cwd, timeoutMs, logger);
   if (result.timedOut) return `Command timed out after ${timeoutMs}ms`;
   return result.stdout || result.stderr || '(no output)';
 }
@@ -79,6 +88,7 @@ export async function executeShellAsOpenAIResult(
   action: OpenAIShellAction,
   cwd: string,
   defaultTimeoutMs: number,
+  logger?: Logger,
 ): Promise<OpenAIShellOutput> {
   const timeoutMs = action.timeoutMs ?? defaultTimeoutMs;
   const results = [];
@@ -86,7 +96,7 @@ export async function executeShellAsOpenAIResult(
   const maxLen = action.maxOutputLength;
 
   for (const command of action.commands) {
-    const result = await runShellCommand(command, cwd, timeoutMs);
+    const result = await runShellCommand(command, cwd, timeoutMs, logger);
     results.push({
       stdout: maxLen !== undefined ? result.stdout.substring(0, maxLen) : result.stdout,
       stderr: maxLen !== undefined ? result.stderr.substring(0, maxLen) : result.stderr,

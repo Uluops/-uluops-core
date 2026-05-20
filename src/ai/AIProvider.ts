@@ -386,7 +386,7 @@ export class AIProvider {
       }
       return {
         bash: bashTool({
-          execute: async ({ command }) => executeShellAsString(command, targetDir, timeoutMs),
+          execute: async ({ command }) => executeShellAsString(command, targetDir, timeoutMs, this.logger),
         }),
       };
     }
@@ -397,7 +397,7 @@ export class AIProvider {
       // Tool<any, any> due to schema symbol variance. Safe at runtime.
       return {
         shell: this.openaiInstance.tools.shell({
-          execute: async ({ action }) => executeShellAsOpenAIResult(action, targetDir, timeoutMs),
+          execute: async ({ action }) => executeShellAsOpenAIResult(action, targetDir, timeoutMs, this.logger),
         }),
       } as unknown as ToolSet;
     }

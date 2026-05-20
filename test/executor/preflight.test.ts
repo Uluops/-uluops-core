@@ -63,6 +63,19 @@ describe('runPreflightChecks', () => {
       const checks: PreflightCheck[] = [{ check: 'command' }];
       await expect(runPreflightChecks(checks, input)).rejects.toThrow('requires a command');
     });
+
+    it.each([
+      ['semicolon', 'echo ok; rm -rf /'],
+      ['pipe', 'echo ok | cat'],
+      ['ampersand', 'echo ok && rm -rf /'],
+      ['backtick', 'echo `whoami`'],
+      ['command substitution', 'echo $(whoami)'],
+      ['newline', 'echo ok\nrm -rf /'],
+      ['carriage return', 'echo ok\rrm -rf /'],
+    ])('rejects shell metacharacter: %s', async (_label, cmd) => {
+      const checks: PreflightCheck[] = [{ check: 'command', command: cmd }];
+      await expect(runPreflightChecks(checks, input)).rejects.toThrow('disallowed shell metacharacters');
+    });
   });
 
   describe('env_var', () => {
