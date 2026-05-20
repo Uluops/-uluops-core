@@ -114,6 +114,7 @@ async function checkFileExists(
         : `Failed to resolve real path: ${error instanceof Error ? error.message : 'unknown'}`,
       'file_exists',
       { path: check.path },
+      { cause: error },
     );
   }
 }
@@ -183,11 +184,12 @@ async function checkCommand(check: PreflightCheck): Promise<void> {
 
   try {
     await execFileAsync('sh', ['-c', check.command], { timeout: 10_000 });
-  } catch {
+  } catch (error) {
     throw new PreflightError(
       check.message ?? `Command check failed: ${check.command}`,
       'command',
       { command: check.command },
+      { cause: error },
     );
   }
 }

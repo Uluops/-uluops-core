@@ -28,8 +28,9 @@ export class PreflightError extends UluOpsError {
     message: string,
     public readonly check: string,
     public readonly details?: Record<string, unknown>,
+    options?: { cause?: unknown },
   ) {
-    super(message);
+    super(message, options);
     this.name = 'PreflightError';
   }
 

@@ -67,6 +67,10 @@ export async function runShellCommand(
   }
 }
 
+/** Max shell output size returned to the LLM context. Prevents a single tool call from
+ *  consuming the entire context budget (e.g., `cat /dev/urandom | base64 | head -c 500000`). */
+const MAX_SHELL_OUTPUT = 100_000; // ~100KB, well within 1MB maxBuffer but bounded for context
+
 /** Anthropic bash tool adapter — returns plain string */
 export async function executeShellAsString(
   command: string,
@@ -76,7 +80,11 @@ export async function executeShellAsString(
 ): Promise<string> {
   const result = await runShellCommand(command, cwd, timeoutMs, logger);
   if (result.timedOut) return `Command timed out after ${timeoutMs}ms`;
-  return result.stdout || result.stderr || '(no output)';
+  const output = result.stdout || result.stderr || '(no output)';
+  if (output.length > MAX_SHELL_OUTPUT) {
+    return output.substring(0, MAX_SHELL_OUTPUT) + `\n\n[truncated — ${output.length} chars total, showing first ${MAX_SHELL_OUTPUT}]`;
+  }
+  return output;
 }
 
 /**

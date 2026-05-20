@@ -297,7 +297,17 @@ export class RegistryClient {
    */
   private normalizeOrThrow(parsed: Record<string, unknown>): ResolvedDefinition['definition'] {
     try {
-      const { definition } = normalizeDefinition(parsed);
+      const { definition, topKey } = normalizeDefinition(parsed);
+      // Validate that the SDK-normalized output has the expected top-level key
+      // before the type assertion. normalizeDefinition guarantees topKey matches
+      // one of the four definition types, and that the key's value is an object
+      // with required fields (interface.name, interface.version, etc.).
+      const section = definition[topKey];
+      if (!section || typeof section !== 'object') {
+        throw new ConfigurationError(
+          `Normalized definition missing expected section '${topKey}'`,
+        );
+      }
       return definition as unknown as ResolvedDefinition['definition'];
     } catch (error) {
       if (error instanceof DefinitionValidationError) {
@@ -370,7 +380,15 @@ export class RegistryClient {
     }
 
     // Workflow/pipeline definitions ARE the runtime — the parsed YAML structure
-    // is used directly. Already validated by castDefinition() in resolveLocal().
+    // is used directly. Validate key structural fields before the type assertion
+    // to catch malformed YAMLs that passed castDefinition()'s top-level check.
+    const section = definition[type] as Record<string, unknown> | undefined;
+    if (type === 'workflow' && (!section || !('orchestration' in section))) {
+      degradations.push('runtime:missing-orchestration');
+    }
+    if (type === 'pipeline' && (!section || !('stages' in section))) {
+      degradations.push('runtime:missing-stages');
+    }
     return {
       runtime: definition as unknown as ResolvedDefinition['runtime'],
       degradations,

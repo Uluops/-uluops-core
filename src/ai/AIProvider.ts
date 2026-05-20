@@ -196,17 +196,16 @@ export class AIProvider {
     // Reasoning models (o1, o3, o4-mini, gpt-5.x) don't support temperature —
     // strip it to suppress repeated AI SDK warnings. Check both extendedThinking
     // (SDK type) and reasoning (raw API field) since the registry may return either.
+    // Use a shallow copy instead of mutating the caller's options object.
     const isReasoning = resolved.capabilities.extendedThinking
       || (resolved.capabilities as unknown as Record<string, unknown>)['reasoning'] === true;
-    if (isReasoning) {
-      options.temperature = undefined;
-    }
 
     this.logPreGeneration(options, resolved, modelInput, useStructuredOutput);
 
     // 2. Execute LLM with tool loop
     try {
-      const result = await this.executeGeneration(options, languageModel, system, providerOptions, useStructuredOutput);
+      const generateOptions = isReasoning ? { ...options, temperature: undefined } : options;
+      const result = await this.executeGeneration(generateOptions, languageModel, system, providerOptions, useStructuredOutput);
       return this.buildGenerateResult(result, resolved, useStructuredOutput);
     } catch (error) {
       return this.handleGenerateError(error, resolved, useStructuredOutput, options.timeoutMs);
@@ -656,7 +655,13 @@ export class AIProvider {
     }
 
     try {
-      // Dynamic import of @ai-sdk/<provider>
+      // Dynamic import of @ai-sdk/<provider>.
+      // SECURITY: additionalProviders names map to npm package names (@ai-sdk/<name>).
+      // The package is resolved from the consuming project's node_modules — it carries
+      // the full trust of the npm registry and the project's dependency tree. There is
+      // no integrity verification beyond npm's own lockfile checksums. An attacker who
+      // can write to node_modules (supply chain compromise, dependency confusion) could
+      // achieve code execution via a malicious provider package.
       const mod = await import(`@ai-sdk/${providerName}`) as Record<string, unknown>;
 
       // Check override map first, then try standard naming convention (createMistral, createCohere, etc.)
