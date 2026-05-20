@@ -102,7 +102,7 @@ The `@uluops/core` SDK provides:
 - **Content-Addressed Integrity** - SHA-256 hash verification on all definitions
 - **Universal Agent Output** - Single `agentOutputSchema` with categories + artifacts for all 6 agent types (validator, executor, analyst, generator, explorer, forecaster)
 - **Structured Output Extraction** - 4-strategy fallback: AI SDK structured output > JSON code fence > inline JSON > regex text parsing
-- **Validation Tracking** - Automatic result submission with issue correlation, regression detection, and analytics
+- **Validation Tracking** - Automatic result submission with issue correlation, regression detection, per-agent execution recording, and analytics
 - **Analysis Summary Extraction** - Automatic extraction of category scores, system metrics, epistemic assessments, and exploration maps from agent results at submission time
 - **Local Development Support** - Load definitions from local YAML files with registry fallback
 - **Bundled Starter Agents** - 5 built-in agents for immediate use without registry access

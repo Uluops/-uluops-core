@@ -4,6 +4,20 @@ All notable changes to `@uluops/core` will be documented in this file.
 
 This project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.11.0] - 2026-05-20
+
+### Added
+
+- **Per-agent execution recording** — when a command or workflow runs, each participating agent now gets its own execution record in the registry. `trackIfEnabled()` extracts agent name+version pairs from the result tree via `SubmissionClient.extractAgents()` and records each against the registry. Dedup is handled by the per-definition unique index `(definition_id, run_id)` — same tracker UUID can appear on multiple definitions.
+- **`SubmissionClient.extractAgents()`** — new public method exposing the agent decomposition logic already used for tracker submission. Returns `Array<{ name: string; version?: string }>` from any `ExecutionResult` or `AgentResult`.
+
+### Design Notes
+
+- Agent recording is non-fatal — if an agent name doesn't match a published registry definition, the failure is silently caught
+- Direct agent runs (`runAgent`) skip per-agent recording since the top-level IS the agent
+- Pipelines via `startPipeline()` are not covered by this path — the webhook and sync service paths handle pipeline-level per-agent recording via `agent_snapshots`
+- See `plans/execution-recording-integrity-spec-v0_1_0.md` for the full spec and name-game analysis
+
 ## [0.10.1] - 2026-05-19
 
 ### Changed

@@ -211,6 +211,17 @@ export class SubmissionClient {
   }
 
   /**
+   * Extract agent name+version pairs from a result for per-agent execution recording.
+   * Reuses the same decomposition logic used for tracker submission.
+   */
+  extractAgents(result: ExecutionResult | AgentResult): Array<{ name: string; version?: string }> {
+    const entries = this.isWorkflowResult(result)
+      ? this.extractWorkflowAgents(result)
+      : [this.resultToAgent(result)];
+    return entries.map(a => ({ name: a.name, version: a.definitionVersion }));
+  }
+
+  /**
    * Check if a result is a WorkflowResult with decomposable phases.
    */
   private isWorkflowResult(result: ExecutionResult | AgentResult): result is WorkflowResult {

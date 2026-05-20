@@ -453,6 +453,22 @@ export class UluOpsClient {
             `Execution recording failed (non-fatal): ${execError instanceof Error ? execError.message : String(execError)}`,
           );
         }
+
+        // Record per-agent executions for compound definitions (non-fatal)
+        if (resolved.type !== 'agent') {
+          const agents = this.submission.extractAgents(result);
+          for (const agent of agents) {
+            if (!agent.version || agent.version === 'unknown') continue;
+            try {
+              await this.registry.registrySdk.executions.record(
+                'agent', agent.name, agent.version,
+                { source: 'core-sdk', runId: response.runId },
+              );
+            } catch {
+              // Non-fatal — agent may not have a published registry definition
+            }
+          }
+        }
       } else {
         this.logger.debug('Skipping execution recording for unversioned local definition');
       }
