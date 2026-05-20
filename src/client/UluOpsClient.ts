@@ -492,8 +492,11 @@ export class UluOpsClient {
             'agent', agent.name, agent.version,
             { source: 'core-sdk', runId },
           );
-        } catch {
+        } catch (agentExecError) {
           // Non-fatal — agent may not have a published registry definition
+          this.logger.debug(
+            `Per-agent recording skipped for ${agent.name}: ${agentExecError instanceof Error ? agentExecError.message : String(agentExecError)}`,
+          );
         }
       }
     }

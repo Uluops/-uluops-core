@@ -97,7 +97,7 @@ The `@uluops/core` SDK provides:
 - **4-Layer Execution Hierarchy** - Agent > Command > Workflow > Pipeline orchestration
 - **AI SDK v6 Integration** - Vercel AI SDK for LLM communication with automatic tool loops (`maxSteps`) and built-in retry
 - **Registry-Backed Model Resolution** - Model aliases resolved via UluOps Registry with provider metadata
-- **Multi-Provider AI** - Anthropic-first with deepest optimization (caching, context management, bash tools); OpenAI + Google bundled; Mistral, Cohere, and 10+ others via dynamic `@ai-sdk/*` import. See [SCOPE.md](SCOPE.md) for provider strategy.
+- **Multi-Provider AI** - Anthropic-first with deepest optimization (caching, context management, bash tools); OpenAI + Google bundled; Mistral, Cohere, and 10+ others via dynamic `@ai-sdk/*` import. See [SCOPE.md](https://github.com/Uluops/-uluops-core/blob/main/SCOPE.md) for provider strategy.
 - **Filesystem Sandboxing** - ToolHandler restricts LLM file access to the target directory with symlink-aware path validation
 - **Content-Addressed Integrity** - SHA-256 hash verification on all definitions
 - **Universal Agent Output** - Single `agentOutputSchema` with categories + artifacts for all 6 agent types (validator, executor, analyst, generator, explorer, forecaster)

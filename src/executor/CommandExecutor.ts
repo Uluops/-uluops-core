@@ -11,7 +11,7 @@ import { parseRef } from '../utils/parseRef.js';
 import { sumTokenMetrics } from '../utils/sumTokenMetrics.js';
 import { DEFAULT_PASS_THRESHOLD, DEFAULT_WARN_THRESHOLD } from '../constants.js';
 import { mapCategory } from './mapCategory.js';
-import { aggregateScores } from '../utils/aggregateScores.js';
+import { aggregateScores, type AggregationMethod } from '../utils/aggregateScores.js';
 
 /**
  * Executes command definitions.
@@ -193,7 +193,7 @@ export class CommandExecutor {
     def: CommandDefinition,
     hash: string,
     startTime: number,
-    aggregation: { method: string; weights?: Record<string, number> },
+    aggregation: { method: AggregationMethod; weights?: Record<string, number> },
     minSubscription?: SubscriptionTier,
   ): CommandResult {
     const durationMs = Date.now() - startTime;

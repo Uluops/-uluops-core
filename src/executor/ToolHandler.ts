@@ -439,6 +439,11 @@ export class ToolHandler {
    * Recursively build directory tree, returning lines and accumulated stats.
    * Stats bubble up so parent directories can display file count + total size
    * without a redundant recursive glob + stat pass.
+   *
+   * I/O profile: performs fs.stat() + fs.readFile() per file when includeSizes=true
+   * (for line counting). With maxDepth=3 and MAX_DIR_ENTRIES=50 per level, worst case
+   * is ~150 stat+read operations per tree call. Bounded by MAX_DIR_ENTRIES cap per
+   * directory and maxDepth limit. Acceptable for single-call-per-agent usage.
    */
   private async buildTree(
     dirPath: string,

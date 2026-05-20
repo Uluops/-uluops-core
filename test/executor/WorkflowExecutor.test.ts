@@ -683,10 +683,10 @@ describe('WorkflowExecutor', () => {
     });
 
     it('respects dependency ordering across levels', async () => {
-      const levelTimestamps: Record<string, number> = {};
+      const executionOrder: string[] = [];
       const cmdExec = {
         execute: vi.fn().mockImplementation(async (resolved: ResolvedDefinition) => {
-          levelTimestamps[resolved.name] = Date.now();
+          executionOrder.push(resolved.name);
           return makeCommandResult({ name: resolved.name, score: 85 });
         }),
       } as unknown as CommandExecutor;
@@ -709,9 +709,10 @@ describe('WorkflowExecutor', () => {
 
       expect(result.phases).toHaveLength(3);
       expect(result.phases.every(p => p.decision === 'passed')).toBe(true);
-      // c must start after both a and b complete
-      expect(levelTimestamps['cmd-c']!).toBeGreaterThanOrEqual(levelTimestamps['cmd-a']!);
-      expect(levelTimestamps['cmd-c']!).toBeGreaterThanOrEqual(levelTimestamps['cmd-b']!);
+      // c must execute after both a and b (deterministic — no timestamp race)
+      const cIndex = executionOrder.indexOf('cmd-c');
+      expect(cIndex).toBeGreaterThan(executionOrder.indexOf('cmd-a'));
+      expect(cIndex).toBeGreaterThan(executionOrder.indexOf('cmd-b'));
     });
 
     it('handles diamond dependency pattern', async () => {

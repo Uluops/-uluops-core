@@ -27,7 +27,7 @@ export interface ScoredItem {
  */
 export function aggregateScores(
   items: ScoredItem[],
-  method: string = 'average',
+  method: AggregationMethod = 'average',
   weights: Record<string, number> = {},
 ): number {
   if (items.length === 0) return 0;
