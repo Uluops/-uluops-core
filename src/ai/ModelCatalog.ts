@@ -160,7 +160,7 @@ export class ModelCatalog {
     const resolved: ResolvedModel = {
       provider: model.provider,
       modelId: model.modelId,
-      providerModelId: model.providerModelId,
+      providerModelId: model.providerModelId ?? model.modelId,
       tier: model.tier,
       capabilities: model.capabilities,
       resolvedFrom: providerModelId,
@@ -201,7 +201,7 @@ export class ModelCatalog {
     const resolved: ResolvedModel = {
       provider: model.provider,
       modelId: model.modelId,
-      providerModelId: model.providerModelId,
+      providerModelId: model.providerModelId ?? model.modelId,
       tier: model.tier,
       capabilities: model.capabilities,
       resolvedFrom: tier,

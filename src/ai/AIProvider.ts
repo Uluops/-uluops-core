@@ -186,7 +186,7 @@ export class AIProvider {
     // (400: "Function calling with a response mime type: 'application/json' is unsupported").
     // Verified still broken as of @ai-sdk/google@3.0.31 + Gemini 2.5 Flash (2026-04-18).
     const hasTools = !!options.tools && Object.keys(options.tools).length > 0;
-    const useStructuredOutput = !!options.output && resolved.capabilities.structuredOutput
+    const useStructuredOutput = !!options.output && !!resolved.capabilities.structuredOutput
       && !(resolved.provider === 'google' && hasTools);
 
     // Reasoning models (o1, o3, o4-mini, gpt-5.x) don't support temperature —
