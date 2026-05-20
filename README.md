@@ -487,6 +487,7 @@ const client = new UluOpsClient({
     },
     defaultProvider: 'anthropic',      // Default AI provider
     modelOverride: 'sonnet',           // Override model for all executions
+    additionalProviders: ['groq', 'xai'], // Enable extra @ai-sdk/* providers (must be installed)
   },
 
   // Service URLs

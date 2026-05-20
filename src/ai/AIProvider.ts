@@ -95,6 +95,10 @@ export interface AIGenerateOptions {
   /** Structured output schema. When provided and the model supports it,
    *  constrains the final response to match this schema exactly. */
   output?: Parameters<typeof Output.object>[0];
+
+  /** Maximum retries for transient LLM errors (429, 5xx). Passed to AI SDK's generateText().
+   *  Default: 2 (3 total attempts with exponential backoff). The AI SDK respects Retry-After headers. */
+  maxRetries?: number;
 }
 
 /**
@@ -258,6 +262,7 @@ export class AIProvider {
       maxOutputTokens: options.maxTokens ?? DEFAULT_MAX_TOKENS,
       stopWhen: stepCountIs(maxSteps + (useStructuredOutput ? 2 : 0)),
       temperature: options.temperature ?? 0,
+      maxRetries: options.maxRetries,
       abortSignal: options.timeoutMs
         ? AbortSignal.timeout(options.timeoutMs)
         : undefined,

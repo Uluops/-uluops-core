@@ -85,6 +85,7 @@ export class AgentExecutor {
       timeoutMs: context.timeoutMs,
       temperature: context.temperature,
       contextBudget: this.config.contextBudget,
+      maxRetries: this.config.maxRetries,
       budgetTracker: toolAdapter.budgetTracker,
       output: { schema: agentOutputSchema, name: 'AgentResult' },
     });

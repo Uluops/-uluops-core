@@ -296,6 +296,11 @@ export class UluOpsClient {
     return this.submission.submit({ project, workflowType, result });
   }
 
+  /** Clear the definition resolution cache. Call after registry updates in long-lived processes. */
+  clearCache(): void {
+    this.registry.clearCache();
+  }
+
   // ─── Private Helpers ────────────────────────────────────────────────────
 
   private resolveConfig(config: UluOpsConfig): ResolvedConfig {
@@ -356,6 +361,7 @@ export class UluOpsClient {
       defaultThinkingBudget: config.defaultThinkingBudget ?? 10_000,
       debug: config.debug ?? (process.env['ULUOPS_DEBUG'] === 'true'),
       contextBudget: config.contextBudget ?? 200_000,
+      maxRetries: config.maxRetries,
       allowedTools: config.allowedTools ?? this.parseAllowedTools(process.env['ULUOPS_ALLOWED_TOOLS']),
     };
   }
@@ -438,46 +444,57 @@ export class UluOpsClient {
       // Attach dashboard URL to original result for caller convenience
       result.dashboardUrl = response.dashboardUrl;
 
-      // Record execution in registry for definition-level analytics (non-fatal)
-      if (resolved.version !== 'unknown') {
-        try {
-          await this.registry.registrySdk.executions.record(
-            resolved.type as Parameters<typeof this.registry.registrySdk.executions.record>[0],
-            resolved.name,
-            resolved.version,
-            { source: 'core-sdk', runId: response.runId },
-          );
-          this.logger.debug(`Execution recorded for ${resolved.type}/${resolved.name}@${resolved.version}`);
-        } catch (execError) {
-          this.logger.warn(
-            `Execution recording failed (non-fatal): ${execError instanceof Error ? execError.message : String(execError)}`,
-          );
-        }
-
-        // Record per-agent executions for compound definitions (non-fatal)
-        if (resolved.type !== 'agent') {
-          const agents = this.submission.extractAgents(result);
-          for (const agent of agents) {
-            if (!agent.version || agent.version === 'unknown') continue;
-            try {
-              await this.registry.registrySdk.executions.record(
-                'agent', agent.name, agent.version,
-                { source: 'core-sdk', runId: response.runId },
-              );
-            } catch {
-              // Non-fatal — agent may not have a published registry definition
-            }
-          }
-        }
-      } else {
-        this.logger.debug('Skipping execution recording for unversioned local definition');
-      }
+      await this.recordExecutions(resolved, result, response.runId);
     } catch (error) {
+      result.trackingFailed = true;
       this.logger.warn(
         `Tracking submission failed (non-fatal): ${error instanceof Error ? error.message : String(error)}`,
       );
       if (error instanceof Error && 'statusCode' in error) {
         this.logger.debug(`Tracking error: statusCode=${(error as { statusCode?: number }).statusCode}`);
+      }
+    }
+  }
+
+  /** Record definition-level and per-agent executions in the registry (non-fatal). */
+  private async recordExecutions(
+    resolved: ResolvedDefinition,
+    result: ExecutionResult | AgentResult,
+    runId: string,
+  ): Promise<void> {
+    if (resolved.version === 'unknown') {
+      this.logger.debug('Skipping execution recording for unversioned local definition');
+      return;
+    }
+
+    // Definition-level recording
+    try {
+      await this.registry.registrySdk.executions.record(
+        resolved.type as Parameters<typeof this.registry.registrySdk.executions.record>[0],
+        resolved.name,
+        resolved.version,
+        { source: 'core-sdk', runId },
+      );
+      this.logger.debug(`Execution recorded for ${resolved.type}/${resolved.name}@${resolved.version}`);
+    } catch (execError) {
+      this.logger.warn(
+        `Execution recording failed (non-fatal): ${execError instanceof Error ? execError.message : String(execError)}`,
+      );
+    }
+
+    // Per-agent recording for compound definitions
+    if (resolved.type !== 'agent') {
+      const agents = this.submission.extractAgents(result);
+      for (const agent of agents) {
+        if (!agent.version || agent.version === 'unknown') continue;
+        try {
+          await this.registry.registrySdk.executions.record(
+            'agent', agent.name, agent.version,
+            { source: 'core-sdk', runId },
+          );
+        } catch {
+          // Non-fatal — agent may not have a published registry definition
+        }
       }
     }
   }

@@ -130,6 +130,8 @@ export class PipelineExecutor {
 
         const stageEnd = Date.now() - startTime;
 
+        // Aggregating AgentResult → CommandResult conversion for pipeline stages.
+        // See CommandExecutor.wrapAgentResult for divergence rationale across all three sites.
         return {
           id: stage.id,
           name: stage.name,

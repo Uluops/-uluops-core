@@ -259,10 +259,14 @@ export class AnalysisSummaryExtractor {
       const e = entry as Record<string, unknown>;
       if (typeof e.metadata !== 'object' || !Array.isArray(e.sections)) continue;
 
-      const sections = (e.sections as Array<Record<string, unknown>>).map(s => this.reshapeSection(s));
+      const VALID_SECTION_TYPES = new Set(['inventory', 'topology', 'landscape', 'classification', 'mapping', 'synthesis', 'limitation', 'agenda']);
+      const sections = (e.sections as Array<Record<string, unknown>>)
+        .filter(s => typeof s.type === 'string' && typeof s.label === 'string' && VALID_SECTION_TYPES.has(s.type as string))
+        .map(s => this.reshapeSection(s));
       maps.push({
         metadata: e.metadata as ExplorationMap['metadata'],
-        // Safe: reshapeSection guarantees required discriminant fields per section type
+        // reshapeSection produces typed fields for all 8 known section types;
+        // unknown types are filtered out above to avoid untyped pass-through.
         sections: sections as unknown as ExplorationMap['sections'],
       });
     }

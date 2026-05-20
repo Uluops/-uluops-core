@@ -146,6 +146,13 @@ export interface UluOpsConfig {
   contextBudget?: number;
 
   /**
+   * Maximum retries for transient LLM errors (429, 5xx). Passed to AI SDK's generateText().
+   * The AI SDK retries with exponential backoff and respects Retry-After headers.
+   * @default 2 (3 total attempts)
+   */
+  maxRetries?: number;
+
+  /**
    * Operator-controlled tool allowlist. Definitions can request tools (e.g., `tools: ['bash']`
    * in agent YAML), but the tool is only granted if it also appears in this allowlist.
    *
@@ -184,5 +191,6 @@ export interface ResolvedConfig {
   defaultThinkingBudget: number;
   debug: boolean;
   contextBudget: number;
+  maxRetries?: number;
   allowedTools?: string[];
 }

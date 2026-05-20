@@ -88,6 +88,9 @@ export interface ExecutionResult {
   /** Dashboard URL for this run (populated after validation service submission) */
   dashboardUrl?: string;
 
+  /** Set to true when tracking submission failed — dashboardUrl will be undefined */
+  trackingFailed?: boolean;
+
   /** All recommendations (flattened for workflows/pipelines) */
   recommendations: Recommendation[];
 

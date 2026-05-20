@@ -174,6 +174,13 @@ export class ToolHandler {
 
     // Line-range mode: read specific lines
     if (opts.startLine !== undefined || opts.endLine !== undefined) {
+      if (stat.size > MAX_FILE_SIZE) {
+        return {
+          tool_use_id: id,
+          content: `File too large for line-range read (${(stat.size / 1024).toFixed(0)}KB > ${(MAX_FILE_SIZE / 1024).toFixed(0)}KB limit): ${relativePath}`,
+          is_error: true,
+        };
+      }
       const content = await fs.readFile(filePath, 'utf-8');
       const allLines = content.split('\n');
       const totalLines = allLines.length;

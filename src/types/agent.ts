@@ -446,6 +446,9 @@ interface AgentResultBase {
   /** Dashboard URL (populated after validation submission) */
   dashboardUrl?: string;
 
+  /** Set to true when tracking submission failed — dashboardUrl will be undefined */
+  trackingFailed?: boolean;
+
   /** Execution metrics */
   metrics: ExecutionMetrics;
 

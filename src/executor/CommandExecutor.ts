@@ -129,7 +129,27 @@ export class CommandExecutor {
   }
 
   /**
-   * Wrap a single agent result as a CommandResult
+   * Wrap a single agent result as a CommandResult.
+   *
+   * DIVERGENCE NOTE: Three sites convert AgentResult → CommandResult with intentionally
+   * different field sets. A shared helper was considered but rejected because the field
+   * differences are not parameterizable without making the helper harder to understand
+   * than the three inline implementations:
+   *
+   * - CommandExecutor.wrapAgentResult (HERE): Full conversion — includes threshold,
+   *   categories (mapped), artifacts, minSubscription. Used when a command wraps a
+   *   single agent and the full result metadata is available from the definition.
+   *
+   * - WorkflowExecutor.wrapAgentResult: Thin conversion — omits threshold, categories,
+   *   artifacts. Used for phase-level aggregation where only score/decision/recommendations
+   *   matter. The workflow doesn't have per-agent command definitions to pull thresholds from.
+   *
+   * - PipelineExecutor (inline): Aggregating conversion — combines multiple AgentResults
+   *   into one CommandResult per stage (averaged score, flattened recommendations, summed
+   *   metrics). Structurally different from single-agent wrapping.
+   *
+   * If a new field is added to AgentResult that must propagate to CommandResult, update
+   * all three sites. Search for "wrapAgentResult" to find them.
    */
   private wrapAgentResult(
     agentResult: AgentResult,
