@@ -79,11 +79,18 @@ export class CommandExecutor {
       });
     };
 
-    const agentResults: AgentResult[] = def.command.execution.sequential === false
-      ? await this.executeParallel(agentRefs, executeAgent)
-      : await this.executeSequentially(agentRefs, executeAgent);
+    let agentResults: AgentResult[];
+    let agentErrors: string[] = [];
 
-    return this.aggregateResults(
+    if (def.command.execution.sequential === false) {
+      const parallel = await this.executeParallel(agentRefs, executeAgent);
+      agentResults = parallel.results;
+      agentErrors = parallel.agentErrors;
+    } else {
+      agentResults = await this.executeSequentially(agentRefs, executeAgent);
+    }
+
+    const result = this.aggregateResults(
       agentResults,
       def,
       resolved.hash,
@@ -91,6 +98,19 @@ export class CommandExecutor {
       def.command.aggregation ?? { method: 'average' },
       resolved.minSubscription,
     );
+
+    // Surface partial failures as critical recommendations so consumers see them
+    if (agentErrors.length > 0) {
+      const errorRecs: Recommendation[] = agentErrors.map(msg => ({
+        title: msg,
+        priority: 'critical' as const,
+        severity: 'critical' as const,
+        file_paths: [],
+      }));
+      result.recommendations = [...errorRecs, ...result.recommendations];
+    }
+
+    return result;
   }
 
   private async executeSequentially(
@@ -107,25 +127,27 @@ export class CommandExecutor {
   private async executeParallel(
     refs: string[],
     fn: (ref: string) => Promise<AgentResult>,
-  ): Promise<AgentResult[]> {
+  ): Promise<{ results: AgentResult[]; agentErrors: string[] }> {
     const settled = await Promise.allSettled(refs.map(fn));
     const results: AgentResult[] = [];
-    const errors: string[] = [];
+    const agentErrors: string[] = [];
 
     for (let i = 0; i < settled.length; i++) {
       const outcome = settled[i]!;
       if (outcome.status === 'fulfilled') {
         results.push(outcome.value);
       } else {
-        errors.push(outcome.reason instanceof Error ? outcome.reason.message : String(outcome.reason));
+        const ref = refs[i]!;
+        const msg = outcome.reason instanceof Error ? outcome.reason.message : String(outcome.reason);
+        agentErrors.push(`Agent ${ref} failed: ${msg}`);
       }
     }
 
     if (results.length === 0) {
-      throw new ExecutionError(`All parallel agents failed: ${errors.join('; ')}`);
+      throw new ExecutionError(`All parallel agents failed: ${agentErrors.join('; ')}`);
     }
 
-    return results;
+    return { results, agentErrors };
   }
 
   /**

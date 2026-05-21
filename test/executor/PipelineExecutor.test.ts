@@ -482,6 +482,10 @@ describe('PipelineExecutor', () => {
       expect(result.stages[0]!.status).toBe('failed');
       expect(result.stages[0]!.skipReason).toContain('Agent crashed');
       expect(result.stages[1]!.status).toBe('completed');
+      // Pipeline decision must reflect the thrown-error failure
+      expect(result.decision).toBe('FAIL');
+      expect(result.metrics.stagesFailed).toBe(1);
+      expect(result.metrics.stagesExecuted).toBe(2);
     });
 
     it('records failed stage when registry is unavailable', async () => {

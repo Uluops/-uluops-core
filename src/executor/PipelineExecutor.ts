@@ -401,7 +401,9 @@ class PipelineHandle implements IPipelineHandle {
 
     for (const s of this.state.stageResults) {
       if (s.status === 'skipped') { stagesSkipped++; continue; }
-      if (s.status === 'completed') stagesExecuted++;
+      stagesExecuted++;
+      // Thrown-error stages have status='failed' but no result — count as failed
+      if (s.status === 'failed') { stagesFailed++; continue; }
       const category = classifyDecision(s.result?.decision);
       if (category === 'positive') stagesPassed++;
       else if (category === 'negative') stagesFailed++;
@@ -415,8 +417,9 @@ class PipelineHandle implements IPipelineHandle {
     if (this.state.status === 'cancelled') return 'CANCELLED';
     if (this.state.status === 'failed') return 'FAIL';
 
+    // Thrown-error stages have status='failed' but no result.decision
     const hasFailures = this.state.stageResults.some(s =>
-      classifyDecision(s.result?.decision) === 'negative',
+      s.status === 'failed' || classifyDecision(s.result?.decision) === 'negative',
     );
     if (hasFailures) return 'FAIL';
 

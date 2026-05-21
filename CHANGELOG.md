@@ -4,6 +4,13 @@ All notable changes to `@uluops/core` will be documented in this file.
 
 This project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.12.1] - 2026-05-20
+
+### Fixed
+
+- **Pipeline decision ignores thrown-error stages** — `computeDecision` now checks `s.status === 'failed'` in addition to `classifyDecision(s.result?.decision)`, so stages that throw (registry unavailable, agent crash) correctly produce a FAIL decision. Previously these stages were invisible to the decision logic because they had no `result` object. `computeStageMetrics` also updated — failed stages now count as both executed and failed instead of neither. Found by GPT-5.5 code-validator run.
+- **Parallel command execution silently drops rejected agents** — `executeParallel` now returns agent errors alongside successful results. Partial failures are surfaced as critical recommendations on the aggregated `CommandResult`, so consumers see which agents failed and why. Previously, if some agents succeeded and others threw, the errors were collected but never exposed.
+
 ## [0.12.0] - 2026-05-20
 
 ### Changed
