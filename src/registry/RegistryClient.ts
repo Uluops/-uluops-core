@@ -3,7 +3,7 @@ import * as path from 'node:path';
 import * as crypto from 'node:crypto';
 import * as yaml from 'yaml';
 import { RegistryClient as RegistrySdk } from '@uluops/registry-sdk';
-import { normalizeDefinition, DefinitionValidationError } from '@uluops/registry-sdk/normalization';
+import { normalizeDefinition, DefinitionValidationError } from '@uluops/definition-factory';
 import type { ResolvedConfig } from '../types/config.js';
 import type { DefinitionType } from '../types/execution.js';
 import type { AgentDefinition } from '../types/agent.js';
@@ -178,7 +178,7 @@ export class RegistryClient {
         version: this.extractVersion(definition, candidate.type),
         hash: `sha256:${crypto.createHash('sha256').update(yamlContent).digest('hex')}`,
         yaml: yamlContent,
-        definition: this.normalizeOrThrow(definition),
+        definition: this.normalizeLocally(definition),
         runtime,
         domain: this.extractDomain(definition, candidate.type) as ResolvedDefinition['domain'],
         agentType: this.extractAgentType(definition, candidate.type),
@@ -230,12 +230,13 @@ export class RegistryClient {
       resolvedType = match.type as DefinitionType;
     }
 
-    // Fetch definition with YAML and runtime
+    // Fetch definition with YAML, runtime, and server-side normalization
     let def;
     try {
       def = await this.sdk.definitions.get(resolvedType, name, version, {
         includeYaml: true,
         includeRuntime: true,
+        normalize: true,
       });
     } catch (error) {
       // 402 = content-gated by pro-handler; rethrow as typed SubscriptionRequiredError
@@ -255,15 +256,23 @@ export class RegistryClient {
     // Get rendered markdown
     const rendered = await this.sdk.render.get(resolvedType, name, def.version);
 
+    // Use API-provided normalized output; fall back to client-side if unavailable
+    let definition: ResolvedDefinition['definition'];
+    if (def.normalized) {
+      definition = def.normalized as unknown as ResolvedDefinition['definition'];
+    } else if (def.yaml) {
+      definition = this.normalizeLocally(this.safeParseYaml(def.yaml, name));
+    } else {
+      definition = this.emptyDefinition();
+    }
+
     return {
       type: resolvedType,
       name: def.name,
       version: def.version,
       hash: def.hash,
       yaml: def.yaml ?? '',
-      definition: def.yaml
-        ? this.normalizeOrThrow(this.safeParseYaml(def.yaml, name))
-        : this.emptyDefinition(),
+      definition,
       runtime: { prompt: rendered.markdown } as ResolvedDefinition['runtime'],
       domain: (def.domain ?? 'general') as ResolvedDefinition['domain'],
       agentType: (def.agentType ?? undefined) as ResolvedDefinition['agentType'],
@@ -290,18 +299,15 @@ export class RegistryClient {
   // ─────────────────────────────────────────────────────────────────────────────
 
   /**
-   * Normalize a parsed definition via @uluops/registry-sdk/normalization,
-   * mapping SDK errors to core's ConfigurationError.
+   * Normalize a parsed definition via @uluops/definition-factory,
+   * mapping factory errors to core's ConfigurationError.
    *
-   * @see ADR-003 in @uluops/registry-sdk for design rationale.
+   * Used for local file resolution and as a fallback when the API
+   * doesn't return a normalized field.
    */
-  private normalizeOrThrow(parsed: Record<string, unknown>): ResolvedDefinition['definition'] {
+  private normalizeLocally(parsed: Record<string, unknown>): ResolvedDefinition['definition'] {
     try {
       const { definition, topKey } = normalizeDefinition(parsed);
-      // Validate that the SDK-normalized output has the expected top-level key
-      // before the type assertion. normalizeDefinition guarantees topKey matches
-      // one of the four definition types, and that the key's value is an object
-      // with required fields (interface.name, interface.version, etc.).
       const section = definition[topKey];
       if (!section || typeof section !== 'object') {
         throw new ConfigurationError(

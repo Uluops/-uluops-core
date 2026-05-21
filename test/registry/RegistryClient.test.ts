@@ -299,6 +299,7 @@ describe('RegistryClient', () => {
       expect(mocks.definitions.get).toHaveBeenCalledWith('agent', 'typed-agent', undefined, {
         includeYaml: true,
         includeRuntime: true,
+        normalize: true,
       });
     });
 
