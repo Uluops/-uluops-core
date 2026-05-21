@@ -4,6 +4,18 @@ All notable changes to `@uluops/core` will be documented in this file.
 
 This project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.12.0] - 2026-05-20
+
+### Changed
+
+- **Server-side definition normalization** — `RegistryClient` now requests `?normalize=true` from the registry API and uses the API-provided `normalized` field directly, eliminating client-side YAML parsing for remote definitions. Falls back to local normalization via `@uluops/definition-factory` when the API response lacks a `normalized` field.
+- **Normalization import migrated** — switched from `@uluops/registry-sdk/normalization` (removed in SDK v0.26.0) to `@uluops/definition-factory`. Local file resolution uses the factory directly.
+
+### Dependencies
+
+- Added `@uluops/definition-factory` — provides `normalizeDefinition()` for local file resolution and remote fallback
+- `@uluops/registry-sdk` — consumes v0.26.0 (`normalized` field on `Definition`, `/normalization` subpath removed)
+
 ## [0.11.1] - 2026-05-20
 
 ### Security
