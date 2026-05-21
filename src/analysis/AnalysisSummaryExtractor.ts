@@ -3,6 +3,23 @@ import type { AnalysisSummaryInput, AnalysisRecordInput, CategoryScore, Explorat
 import type { AgentResult, AgentDefinition } from '../types/agent.js';
 import type { ResolvedDefinition } from '../types/registry.js';
 
+/** Valid recordType enum values accepted by the tracker API. */
+const VALID_RECORD_TYPES = new Set([
+  'category_breakdown', 'criterion_deduction', 'auto_fail_check', 'convention',
+  'power_map', 'tension', 'tension_health', 'stagnation', 'four_cause',
+  'essential_property', 'naming_chain', 'ritual', 'evidence_claim', 'causal_claim',
+  'is_ought_violation', 'habitual_assumption', 'theory', 'corroboration',
+  'untested_assumption', 'bold_conjecture', 'participation_gap', 'shadow',
+  'hierarchy_inversion', 'form_extraction', 'confidence_basis', 'examination_debt',
+  'intervention_chain', 'reversal', 'emptiness', 'control_paradox',
+  'stress_concentration', 'lever_point', 'displacement', 'fulcrum',
+  'center_of_gravity', 'commitment', 'contradiction', 'inquiry_question',
+  'definitional_stability', 'decay_vector', 'tension_trajectory', 'cascade_layer',
+  'capability_emergence', 'artifact', 'completion_criterion', 'improvement',
+  'evidence_finding',
+]);
+
+
 /**
  * Result of analysis extraction from an agent execution.
  */
@@ -363,7 +380,7 @@ export class AnalysisSummaryExtractor {
     // Tier 4: auto-generated from recommendations
     return result.recommendations.map(rec => ({
       agentName: result.name,
-      recordType: rec.failureDomain ?? 'evidence_finding',
+      recordType: rec.failureDomain && VALID_RECORD_TYPES.has(rec.failureDomain) ? rec.failureDomain : 'evidence_finding',
       recordId: this.safeRecordId(rec.failureCode, `${result.name}/${rec.title}`),
       title: rec.title,
       classification: rec.failureCode ?? null,
@@ -401,7 +418,7 @@ export class AnalysisSummaryExtractor {
 
       return {
         agentName,
-        recordType: String(r.recordType),
+        recordType: VALID_RECORD_TYPES.has(String(r.recordType)) ? String(r.recordType) : 'evidence_finding',
         recordId: this.safeRecordId(String(r.recordId), `${agentName}/${r.title}`),
         title: String(r.title),
         classification: r.classification ? String(r.classification) : null,

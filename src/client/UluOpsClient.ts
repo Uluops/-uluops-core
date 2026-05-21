@@ -447,11 +447,14 @@ export class UluOpsClient {
       await this.recordExecutions(resolved, result, response.runId);
     } catch (error) {
       result.trackingFailed = true;
-      this.logger.warn(
-        `Tracking submission failed (non-fatal): ${error instanceof Error ? error.message : String(error)}`,
-      );
-      if (error instanceof Error && 'statusCode' in error) {
-        this.logger.debug(`Tracking error: statusCode=${(error as { statusCode?: number }).statusCode}`);
+      const errMsg = error instanceof Error ? error.message : String(error);
+      const errName = error instanceof Error ? error.constructor.name : typeof error;
+      const errCode = error instanceof Error && 'code' in error ? (error as { code: string }).code : undefined;
+      this.logger.warn(`Tracking submission failed (non-fatal): [${errName}${errCode ? `:${errCode}` : ''}] ${errMsg}`);
+      // Log SdkApiError details for diagnosis
+      if (error instanceof Error) {
+        const e = error as { statusCode?: number; code?: string; details?: unknown; requestId?: string };
+        this.logger.warn(`  statusCode=${e.statusCode} requestId=${e.requestId} details=${JSON.stringify(e.details ?? null)}`);
       }
     }
   }

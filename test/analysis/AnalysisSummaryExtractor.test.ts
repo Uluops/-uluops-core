@@ -321,7 +321,7 @@ describe('AnalysisSummaryExtractor', () => {
       expect(records).toHaveLength(2);
       expect(records[0]).toEqual({
         agentName: 'test-validator',
-        recordType: 'STR',
+        recordType: 'evidence_finding',
         recordId: 'STR-NUL/H',
         title: 'Missing null check',
         classification: 'STR-NUL/H',
