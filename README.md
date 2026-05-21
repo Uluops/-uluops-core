@@ -178,6 +178,26 @@ console.log(`Score: ${result.score} | Decision: ${result.decision}`);
 console.log(`Recommendations: ${result.recommendations.length}`);
 ```
 
+#### Operator Prompt
+
+Pass a `prompt` to give the agent a directive or focus. Especially useful for generators and executors that need to know *what* to create:
+
+```typescript
+// Generator: tell it what to create
+const generated = await client.runAgent('aristotle-generator', {
+  target: './src',
+  prompt: 'Create a health check endpoint for the Express API',
+}, { model: 'opus' });
+
+// Validator: provide focus context
+const focused = await client.runAgent('security-analyst', {
+  target: './src',
+  prompt: 'Focus on the authentication middleware and JWT handling',
+});
+```
+
+The prompt appears as a prominent `Directive:` section in the initial message, before project context. When omitted, behavior is identical to previous versions.
+
 ### Command Execution
 
 Execute saved command configurations. Uses model, thresholds, and aggregation from the command definition. Ideal for CI/CD:
@@ -428,6 +448,7 @@ const executor = new AgentExecutor(config, ai, logger);
 // Execute with full control over options
 const result = await executor.execute(resolvedDefinition, {
   target: '/path/to/project',
+  prompt: 'Create a database migration for the users table',  // optional operator directive
 }, {
   model: 'opus',
   maxTokens: 16384,

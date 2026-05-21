@@ -4,6 +4,18 @@ All notable changes to `@uluops/core` will be documented in this file.
 
 This project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.13.0] - 2026-05-21
+
+### Added
+
+- **Operator prompt on `ExecutionInput`** — new `prompt?: string` field lets operators pass a free-text directive to any agent run. For generators, this provides the telos ("Create a health check endpoint"); for validators/analysts, it provides focus ("Focus on the authentication module"). The prompt appears as a prominent `Directive:` section in the initial user message, positioned before project context.
+- **Agent-type-aware initial message templates** — `AgentExecutor.buildInitialMessage()` now renders type-specific preambles and closing instructions based on the agent's type: generators get "Generate the requested artifact", executors get "Execute the requested operation", explorers/forecasters/analysts/validators each get appropriate framing. Previously all agent types received the generic "Analyze the following project" preamble.
+
+### Changed
+
+- **`UluOpsClient.runAgent()` accepts `string | ExecutionInput`** — the second parameter now accepts either a target path string (existing behavior) or a full `ExecutionInput` object with `target`, `prompt`, and `options`. This aligns `runAgent` with `runCommand`, `runWorkflow`, and `run`, which already accept `ExecutionInput`. Fully backward compatible — all existing string-based calls continue to work.
+- **Empty `Options: {}` suppressed** — when `ExecutionInput.options` is empty or undefined, the `Options:` line is omitted from the initial message instead of rendering `Options: {}`.
+
 ## [0.12.1] - 2026-05-20
 
 ### Fixed
