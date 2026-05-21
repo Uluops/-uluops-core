@@ -633,6 +633,58 @@ describe('UluOpsClient', () => {
       expect(result.agentType).toBe('validator');
       expect(result.score).toBe(85);
     });
+
+    it('accepts ExecutionInput object with prompt', async () => {
+      const client = new UluOpsClient({ apiKey: 'ulr_test-key', trackingEnabled: false });
+      const resolved = makeResolvedDef('agent');
+      mockRegistryResolve.mockResolvedValue(resolved);
+      mockAgentExecutorExecute.mockResolvedValue(makeAgentResult());
+
+      await client.runAgent('aristotle-generator', {
+        target: '/tmp/test',
+        prompt: 'Create an auth middleware',
+      });
+
+      expect(mockAgentExecutorExecute).toHaveBeenCalledWith(
+        resolved,
+        { target: '/tmp/test', prompt: 'Create an auth middleware' },
+        undefined,
+      );
+    });
+
+    it('normalizes string target to ExecutionInput', async () => {
+      const client = new UluOpsClient({ apiKey: 'ulr_test-key', trackingEnabled: false });
+      const resolved = makeResolvedDef('agent');
+      mockRegistryResolve.mockResolvedValue(resolved);
+      mockAgentExecutorExecute.mockResolvedValue(makeAgentResult());
+
+      await client.runAgent('code-validator', '/tmp/test');
+
+      expect(mockAgentExecutorExecute).toHaveBeenCalledWith(
+        resolved,
+        { target: '/tmp/test' },
+        undefined,
+      );
+    });
+
+    it('passes ExecutionInput with prompt alongside ExecutionOptions', async () => {
+      const client = new UluOpsClient({ apiKey: 'ulr_test-key', trackingEnabled: false });
+      const resolved = makeResolvedDef('agent');
+      mockRegistryResolve.mockResolvedValue(resolved);
+      mockAgentExecutorExecute.mockResolvedValue(makeAgentResult());
+
+      await client.runAgent(
+        'aristotle-generator',
+        { target: '/tmp/test', prompt: 'Create a health check' },
+        { model: 'opus' },
+      );
+
+      expect(mockAgentExecutorExecute).toHaveBeenCalledWith(
+        resolved,
+        { target: '/tmp/test', prompt: 'Create a health check' },
+        { model: 'opus' },
+      );
+    });
   });
 
   // ─── runAgent tracking ───────────────────────────────────────────────────

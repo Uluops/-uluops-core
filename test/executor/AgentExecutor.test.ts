@@ -346,6 +346,162 @@ describe('AgentExecutor', () => {
       const prompt = generateCall.prompt as string;
       expect(prompt).toContain('"verbose":true');
     });
+
+    it('suppresses Options line when options is empty', async () => {
+      const ai = mockAIProvider();
+      const executor = new AgentExecutor(baseConfig, ai, noopLogger);
+
+      await executor.execute(makeValidatorDef(), { target: tmpDir });
+
+      const generateCall = (ai.generate as ReturnType<typeof vi.fn>).mock.calls[0]![0] as Record<string, unknown>;
+      const prompt = generateCall.prompt as string;
+      expect(prompt).not.toContain('Options:');
+    });
+
+    it('includes operator prompt as Directive when provided', async () => {
+      const ai = mockAIProvider();
+      const executor = new AgentExecutor(baseConfig, ai, noopLogger);
+
+      await executor.execute(
+        makeValidatorDef(),
+        { target: tmpDir, prompt: 'Focus on the authentication module' },
+      );
+
+      const generateCall = (ai.generate as ReturnType<typeof vi.fn>).mock.calls[0]![0] as Record<string, unknown>;
+      const prompt = generateCall.prompt as string;
+      expect(prompt).toContain('Directive:');
+      expect(prompt).toContain('Focus on the authentication module');
+    });
+
+    it('places Directive before project context', async () => {
+      const ai = mockAIProvider();
+      const executor = new AgentExecutor(baseConfig, ai, noopLogger);
+
+      await executor.execute(
+        makeValidatorDef(),
+        { target: tmpDir, prompt: 'Focus on auth' },
+      );
+
+      const generateCall = (ai.generate as ReturnType<typeof vi.fn>).mock.calls[0]![0] as Record<string, unknown>;
+      const prompt = generateCall.prompt as string;
+      const directiveIndex = prompt.indexOf('Directive:');
+      const targetIndex = prompt.indexOf('Target:');
+      expect(directiveIndex).toBeLessThan(targetIndex);
+    });
+
+    it('omits Directive section when no prompt provided', async () => {
+      const ai = mockAIProvider();
+      const executor = new AgentExecutor(baseConfig, ai, noopLogger);
+
+      await executor.execute(makeValidatorDef(), { target: tmpDir });
+
+      const generateCall = (ai.generate as ReturnType<typeof vi.fn>).mock.calls[0]![0] as Record<string, unknown>;
+      const prompt = generateCall.prompt as string;
+      expect(prompt).not.toContain('Directive:');
+    });
+
+    it('uses "Analyze" preamble for validator agents', async () => {
+      const ai = mockAIProvider();
+      const executor = new AgentExecutor(baseConfig, ai, noopLogger);
+
+      await executor.execute(makeValidatorDef(), { target: tmpDir });
+
+      const generateCall = (ai.generate as ReturnType<typeof vi.fn>).mock.calls[0]![0] as Record<string, unknown>;
+      const prompt = generateCall.prompt as string;
+      expect(prompt).toMatch(/^Analyze the following project:/);
+    });
+
+    it('uses "Generate" preamble for generator agents', async () => {
+      const ai = mockAIProvider({
+        text: JSON.stringify({ decision: 'ACTUALIZED', score: 91 }),
+      });
+      const executor = new AgentExecutor(baseConfig, ai, noopLogger);
+
+      const generatorDef = makeValidatorDef({
+        name: 'test-generator',
+        agentType: 'generator',
+        runtime: {
+          prompt: 'You are a generator.',
+          defaults: { model: 'opus', timeout: 60000 },
+          config: { mode: 'execute', inputs: [], tasks: [], outputs: [], completionCriteria: [], outputSchema: 'json' },
+        } as ExecutorRuntime,
+      });
+
+      await executor.execute(generatorDef, { target: tmpDir, prompt: 'Create a REST endpoint' });
+
+      const generateCall = (ai.generate as ReturnType<typeof vi.fn>).mock.calls[0]![0] as Record<string, unknown>;
+      const prompt = generateCall.prompt as string;
+      expect(prompt).toMatch(/^Generate the requested artifact/);
+      expect(prompt).toContain('Directive:');
+      expect(prompt).toContain('Create a REST endpoint');
+    });
+
+    it('uses "Execute" preamble for executor agents', async () => {
+      const ai = mockAIProvider({
+        text: JSON.stringify({ decision: 'COMPLETE' }),
+      });
+      const executor = new AgentExecutor(baseConfig, ai, noopLogger);
+
+      await executor.execute(makeExecutorDef(), { target: tmpDir });
+
+      const generateCall = (ai.generate as ReturnType<typeof vi.fn>).mock.calls[0]![0] as Record<string, unknown>;
+      const prompt = generateCall.prompt as string;
+      expect(prompt).toMatch(/^Execute the requested operation/);
+    });
+
+    it('uses "Explore" preamble for explorer agents', async () => {
+      const ai = mockAIProvider({
+        text: JSON.stringify({ decision: 'EXPLORED' }),
+      });
+      const executor = new AgentExecutor(baseConfig, ai, noopLogger);
+
+      const explorerDef = makeValidatorDef({
+        name: 'test-explorer',
+        agentType: 'explorer',
+      });
+
+      await executor.execute(explorerDef, { target: tmpDir });
+
+      const generateCall = (ai.generate as ReturnType<typeof vi.fn>).mock.calls[0]![0] as Record<string, unknown>;
+      const prompt = generateCall.prompt as string;
+      expect(prompt).toMatch(/^Explore the following project:/);
+    });
+
+    it('uses "Forecast" preamble for forecaster agents', async () => {
+      const ai = mockAIProvider({
+        text: JSON.stringify({ decision: 'HIGH_CONFIDENCE' }),
+      });
+      const executor = new AgentExecutor(baseConfig, ai, noopLogger);
+
+      const forecasterDef = makeValidatorDef({
+        name: 'test-forecaster',
+        agentType: 'forecaster',
+      });
+
+      await executor.execute(forecasterDef, { target: tmpDir });
+
+      const generateCall = (ai.generate as ReturnType<typeof vi.fn>).mock.calls[0]![0] as Record<string, unknown>;
+      const prompt = generateCall.prompt as string;
+      expect(prompt).toMatch(/^Forecast trends for the following project:/);
+    });
+
+    it('uses "Analyze" preamble for analyst agents', async () => {
+      const ai = mockAIProvider({
+        text: JSON.stringify({ decision: 'COHERENT', score: 75 }),
+      });
+      const executor = new AgentExecutor(baseConfig, ai, noopLogger);
+
+      const analystDef = makeValidatorDef({
+        name: 'test-analyst',
+        agentType: 'analyst',
+      });
+
+      await executor.execute(analystDef, { target: tmpDir });
+
+      const generateCall = (ai.generate as ReturnType<typeof vi.fn>).mock.calls[0]![0] as Record<string, unknown>;
+      const prompt = generateCall.prompt as string;
+      expect(prompt).toMatch(/^Analyze the following project:/);
+    });
   });
 
   describe('error handling', () => {
