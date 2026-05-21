@@ -53,6 +53,14 @@ export interface ExecutionInput {
   /** Target path to analyze */
   target: string;
 
+  /**
+   * Operator-provided directive or context for the agent run.
+   * For generators: describes WHAT to create (telos, output path, constraints).
+   * For validators/analysts: provides additional focus ("focus on auth module").
+   * Appears prominently in the initial user message, not as JSON.
+   */
+  prompt?: string;
+
   /** Execution options */
   options?: Record<string, unknown>;
 }

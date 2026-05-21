@@ -80,17 +80,21 @@ export class UluOpsClient {
    */
   async runAgent(
     name: string,
-    target: string,
+    targetOrInput: string | ExecutionInput,
     options?: ExecutionOptions,
   ): Promise<AgentResult> {
+    const input: ExecutionInput = typeof targetOrInput === 'string'
+      ? { target: targetOrInput }
+      : targetOrInput;
+
     const resolved = await this.resolveByRef(name, 'agent');
 
     if (resolved.type !== 'agent') {
       throw new ConfigurationError(`${name} is not an agent (type: ${resolved.type}). Use runCommand() instead.`);
     }
 
-    const result = await this.agentExecutor.execute(resolved, { target }, options);
-    await this.trackIfEnabled(result, resolved, resolved.name, options, target);
+    const result = await this.agentExecutor.execute(resolved, input, options);
+    await this.trackIfEnabled(result, resolved, resolved.name, options, input.target);
     return result;
   }
 

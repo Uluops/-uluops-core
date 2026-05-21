@@ -74,7 +74,7 @@ export class AgentExecutor {
     const toolAdapter = await this.setupTools(runtime, input, options, context);
 
     // 2. Execute LLM with tool loop
-    const initialMessage = await this.buildInitialMessage(input, toolAdapter.toolHandler);
+    const initialMessage = await this.buildInitialMessage(input, toolAdapter.toolHandler, agentType);
     const result = await this.aiProvider.generate({
       model: context.model,
       system: runtime.prompt,
@@ -324,28 +324,74 @@ export class AgentExecutor {
   }
 
   /**
-   * Build the initial user message with project structure context
+   * Build the initial user message with project structure context.
+   * Template varies by agent type — generators get "Generate the requested artifact",
+   * validators get "Analyze the following project", etc.
    */
-  private async buildInitialMessage(input: ExecutionInput, toolHandler: ToolHandler): Promise<string> {
+  private async buildInitialMessage(input: ExecutionInput, toolHandler: ToolHandler, agentType: AgentType): Promise<string> {
     const stats = await this.scanProjectStructure(toolHandler);
+    const parts: string[] = [];
 
-    return [
-      'Analyze the following project:',
-      '',
-      `Target: ${input.target}`,
-      '',
-      'Project Structure:',
-      stats.tree,
-      '',
-      'Statistics:',
-      `- Files: ${stats.fileCount}`,
-      `- Languages: ${stats.languages.join(', ')}`,
-      '',
-      `Options: ${JSON.stringify(input.options ?? {})}`,
-      '',
-      'Use the provided tools to read files and analyze the codebase.',
-      'Produce your assessment in the required JSON output format.',
-    ].join('\n');
+    // 1. Agent-type-aware preamble
+    parts.push(this.getPreamble(agentType));
+    parts.push('');
+
+    // 2. Operator prompt (prominent, before project context)
+    if (input.prompt) {
+      parts.push('Directive:');
+      parts.push(input.prompt);
+      parts.push('');
+    }
+
+    // 3. Project context
+    parts.push(`Target: ${input.target}`);
+    parts.push('');
+    parts.push('Project Structure:');
+    parts.push(stats.tree);
+    parts.push('');
+    parts.push('Statistics:');
+    parts.push(`- Files: ${stats.fileCount}`);
+    parts.push(`- Languages: ${stats.languages.join(', ')}`);
+    parts.push('');
+
+    // 4. Options (only when non-empty)
+    if (input.options && Object.keys(input.options).length > 0) {
+      parts.push(`Options: ${JSON.stringify(input.options)}`);
+      parts.push('');
+    }
+
+    // 5. Agent-type-aware closing instruction
+    parts.push(this.getClosingInstruction(agentType));
+
+    return parts.join('\n');
+  }
+
+  private getPreamble(agentType: AgentType): string {
+    switch (agentType) {
+      case 'generator':
+        return 'Generate the requested artifact for the following project:';
+      case 'executor':
+        return 'Execute the requested operation on the following project:';
+      case 'explorer':
+        return 'Explore the following project:';
+      case 'forecaster':
+        return 'Forecast trends for the following project:';
+      case 'analyst':
+      case 'validator':
+      default:
+        return 'Analyze the following project:';
+    }
+  }
+
+  private getClosingInstruction(agentType: AgentType): string {
+    switch (agentType) {
+      case 'generator':
+        return 'Use the provided tools to read the codebase and generate the requested artifact.\nProduce your output in the required JSON format.';
+      case 'executor':
+        return 'Use the provided tools to read and modify the codebase as needed.\nProduce your assessment in the required JSON output format.';
+      default:
+        return 'Use the provided tools to read files and analyze the codebase.\nProduce your assessment in the required JSON output format.';
+    }
   }
 
   private async scanProjectStructure(toolHandler: ToolHandler): Promise<{
