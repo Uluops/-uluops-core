@@ -142,6 +142,16 @@ export class ToolHandler {
   }
 
   /**
+   * Reject glob patterns that could escape the sandbox (CWE-22).
+   * Blocks ../ traversal, absolute paths, and backslash escapes.
+   */
+  private isGlobPatternSafe(pattern: string): boolean {
+    if (pattern.startsWith('/') || pattern.startsWith('\\')) return false;
+    if (pattern.includes('..')) return false;
+    return true;
+  }
+
+  /**
    * Check if resolved path is within base path (security).
    * Uses fs.realpath() to follow symlinks and detect escape attempts.
    */
@@ -217,7 +227,12 @@ export class ToolHandler {
     dirPath: string,
     opts: { pattern?: string; maxResults: number },
   ): Promise<ToolResult> {
-    const files = await glob(opts.pattern ?? '*', {
+    const globPattern = opts.pattern ?? '*';
+    if (!this.isGlobPatternSafe(globPattern)) {
+      return { tool_use_id: id, content: 'Error: glob pattern must not contain ".." or absolute paths', is_error: true };
+    }
+
+    const files = await glob(globPattern, {
       cwd: dirPath,
       nodir: true,
       ignore: ['**/node_modules/**', '**/.git/**', '**/dist/**', '**/build/**'],
@@ -261,7 +276,12 @@ export class ToolHandler {
       contextLines: number;
     },
   ): Promise<ToolResult> {
-    const files = await glob(opts.filePattern ?? '**/*', {
+    const fileGlob = opts.filePattern ?? '**/*';
+    if (!this.isGlobPatternSafe(fileGlob)) {
+      return { tool_use_id: id, content: 'Error: file pattern must not contain ".." or absolute paths', is_error: true };
+    }
+
+    const files = await glob(fileGlob, {
       cwd: this.basePath,
       nodir: true,
       ignore: ['**/node_modules/**', '**/.git/**'],

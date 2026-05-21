@@ -94,6 +94,18 @@ describe('ToolHandler', () => {
       expect(result.is_error).toBe(true);
       expect(result.content).toContain('outside the target directory');
     });
+
+    it('blocks glob pattern with ../ traversal', async () => {
+      const result = await handler.fulfill(makeToolUse('list_files', { path: '.', pattern: '../*.json' }));
+      expect(result.is_error).toBe(true);
+      expect(result.content).toContain('must not contain ".."');
+    });
+
+    it('blocks glob pattern with absolute path', async () => {
+      const result = await handler.fulfill(makeToolUse('list_files', { path: '.', pattern: '/etc/*' }));
+      expect(result.is_error).toBe(true);
+      expect(result.content).toContain('must not contain ".."');
+    });
   });
 
   describe('search_content', () => {
@@ -128,6 +140,22 @@ describe('ToolHandler', () => {
       );
       const matches = JSON.parse(result.content) as Array<unknown>;
       expect(matches).toEqual([]);
+    });
+
+    it('blocks file_pattern with ../ traversal', async () => {
+      const result = await handler.fulfill(
+        makeToolUse('search_content', { pattern: 'secret', path: '.', file_pattern: '../../.env' }),
+      );
+      expect(result.is_error).toBe(true);
+      expect(result.content).toContain('must not contain ".."');
+    });
+
+    it('blocks file_pattern with absolute path', async () => {
+      const result = await handler.fulfill(
+        makeToolUse('search_content', { pattern: 'root', path: '.', file_pattern: '/etc/passwd' }),
+      );
+      expect(result.is_error).toBe(true);
+      expect(result.content).toContain('must not contain ".."');
     });
   });
 
