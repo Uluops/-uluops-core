@@ -261,7 +261,18 @@ console.log(`Decision: ${result.decision}`);
 
 ### Pipeline Execution
 
-Async multi-stage pipelines with dependency resolution:
+Synchronous execution (blocks until complete):
+
+```typescript
+const result = await client.runPipeline('foundations', { target: './src' });
+
+console.log(`Overall: ${result.decision} (score: ${result.score})`);
+for (const stage of result.stages) {
+  console.log(`  ${stage.name}: ${stage.status}`);
+}
+```
+
+Async execution with handle-based control:
 
 ```typescript
 // Start async pipeline

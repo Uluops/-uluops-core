@@ -4,6 +4,12 @@ All notable changes to `@uluops/core` will be documented in this file.
 
 This project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.15.0] - 2026-05-21
+
+### Added
+
+- **`runPipeline()` convenience method** — synchronous pipeline execution mirroring `runWorkflow()`. Resolves by ref, validates the definition is a pipeline, executes via `PipelineExecutor` with timeout and model config, and tracks results. Use `runPipeline()` for blocking execution or `startPipeline()` for async handle-based control.
+
 ## [0.13.0] - 2026-05-21
 
 ### Added
