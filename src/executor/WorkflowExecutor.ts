@@ -414,9 +414,11 @@ export class WorkflowExecutor {
     } as CommandResult;
   }
 
-  private aggregatePhaseScore(results: CommandResult[], method: 'average' | 'min' | 'max'): number {
+  private aggregatePhaseScore(results: CommandResult[], method: 'average' | 'min' | 'max'): number | null {
     if (results.length === 0) return 0;
-    const scores = results.map(r => r.score ?? 0);
+    const scoredResults = results.filter(r => r.score != null);
+    if (scoredResults.length === 0) return null;
+    const scores = scoredResults.map(r => r.score!);
 
     switch (method) {
       case 'min': return Math.min(...scores);
@@ -428,10 +430,11 @@ export class WorkflowExecutor {
   }
 
   private evaluateGate(
-    score: number,
+    score: number | null,
     gate?: PhaseDefinition['gate'],
   ): 'passed' | 'warned' | 'blocked' {
     if (!gate) return 'passed';
+    if (score === null) return 'passed';
     if (score >= gate.threshold) return 'passed';
     if (gate.on_fail === 'warn') return 'warned';
     return 'blocked';

@@ -168,8 +168,8 @@ export interface PhaseResult {
   /** Gate threshold that was applied */
   gateThreshold: number;
 
-  /** Aggregated phase score */
-  score: number;
+  /** Aggregated phase score (null for scoreless phases, e.g. all-generator) */
+  score: number | null;
 
   /** Phase duration */
   durationMs: number;

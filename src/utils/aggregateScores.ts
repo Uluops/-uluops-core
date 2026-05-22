@@ -14,7 +14,7 @@ export type AggregationMethod = 'min' | 'max' | 'sum' | 'weighted_average' | 'av
 export interface ScoredItem {
   /** Key used to look up weight in the weights map */
   key: string;
-  score: number;
+  score: number | null;
 }
 
 /**
@@ -32,7 +32,10 @@ export function aggregateScores(
 ): number {
   if (items.length === 0) return 0;
 
-  const scores = items.map(i => i.score);
+  const scorable = items.filter((i): i is ScoredItem & { score: number } => i.score != null);
+  if (scorable.length === 0) return 0;
+
+  const scores = scorable.map(i => i.score);
 
   switch (method) {
     case 'min':
@@ -44,7 +47,7 @@ export function aggregateScores(
     case 'weighted_average': {
       let totalWeight = 0;
       let weightedSum = 0;
-      for (const item of items) {
+      for (const item of scorable) {
         const w = weights[item.key] ?? 1;
         totalWeight += w;
         weightedSum += item.score * w;
