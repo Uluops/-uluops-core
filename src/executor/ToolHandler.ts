@@ -236,6 +236,7 @@ export class ToolHandler {
       cwd: dirPath,
       nodir: true,
       ignore: ['**/node_modules/**', '**/.git/**', '**/dist/**', '**/build/**'],
+      follow: false,
       signal: AbortSignal.timeout(GLOB_TIMEOUT_MS),
     });
 
@@ -246,6 +247,7 @@ export class ToolHandler {
     const entries = await Promise.all(capped.map(async (file) => {
       const filePath = path.join(dirPath, file);
       try {
+        if (!(await this.isPathSafe(filePath))) return file;
         const stat = await fs.stat(filePath);
         const sizeStr = formatFileSize(stat.size);
         const lineCount = await countLines(filePath, stat.size);
@@ -284,7 +286,8 @@ export class ToolHandler {
     const files = await glob(fileGlob, {
       cwd: this.basePath,
       nodir: true,
-      ignore: ['**/node_modules/**', '**/.git/**'],
+      ignore: ['**/node_modules/**', '**/.git/**', '**/dist/**', '**/build/**'],
+      follow: false,
       signal: AbortSignal.timeout(GLOB_TIMEOUT_MS),
     });
 
@@ -338,6 +341,7 @@ export class ToolHandler {
       if (matching.length >= maxResults) break;
       try {
         const filePath = path.join(this.basePath, file);
+        if (!(await this.isPathSafe(filePath))) continue;
         const stat = await fs.stat(filePath);
         if (stat.size > MAX_FILE_SIZE) continue;
         const content = await fs.readFile(filePath, 'utf-8');
@@ -360,6 +364,7 @@ export class ToolHandler {
       if (counts.length >= maxResults) break;
       try {
         const filePath = path.join(this.basePath, file);
+        if (!(await this.isPathSafe(filePath))) continue;
         const stat = await fs.stat(filePath);
         if (stat.size > MAX_FILE_SIZE) continue;
         const content = await fs.readFile(filePath, 'utf-8');
@@ -387,6 +392,7 @@ export class ToolHandler {
       if (results.length >= maxResults) break;
       try {
         const filePath = path.join(this.basePath, file);
+        if (!(await this.isPathSafe(filePath))) continue;
         const stat = await fs.stat(filePath);
         if (stat.size > MAX_FILE_SIZE) {
           this.logger.debug(`Skipped oversized file: ${file} (${stat.size} bytes)`);

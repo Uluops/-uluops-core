@@ -280,17 +280,20 @@ export class OutputExtractor {
     };
 
     if (scoreMatch?.[1]) {
-      output.score = parseFloat(scoreMatch[1]);
+      const parsed = parseFloat(scoreMatch[1]);
+      if (!isNaN(parsed)) output.score = parsed;
     }
 
     if (agentType === 'validator') {
       // Extract maxScore from fraction pattern (95/100) or explicit pattern
       if (scoreMatch?.[2]) {
-        output.maxScore = parseInt(scoreMatch[2], 10);
+        const parsed = parseInt(scoreMatch[2], 10);
+        if (!isNaN(parsed)) output.maxScore = parsed;
       } else {
         const maxScoreMatch = content.match(patterns.maxScore);
         if (maxScoreMatch?.[1]) {
-          output.maxScore = parseInt(maxScoreMatch[1], 10);
+          const parsed = parseInt(maxScoreMatch[1], 10);
+          if (!isNaN(parsed)) output.maxScore = parsed;
         }
       }
 

@@ -45,7 +45,8 @@ export class OutputNormalizer {
     if (typeof rawScore === 'number') {
       output.score = rawScore;
     } else if (typeof rawScore === 'string') {
-      output.score = parseFloat(rawScore);
+      const parsed = parseFloat(rawScore);
+      if (!isNaN(parsed)) output.score = parsed;
     }
 
     this.resolveAgentFields(output, sources);
@@ -104,7 +105,8 @@ export class OutputNormalizer {
     if (typeof rawMaxScore === 'number') {
       output.maxScore = rawMaxScore;
     } else if (typeof rawMaxScore === 'string') {
-      output.maxScore = parseInt(rawMaxScore, 10);
+      const parsed = parseInt(rawMaxScore, 10);
+      if (!isNaN(parsed)) output.maxScore = parsed;
     }
 
     // Resolve categories
