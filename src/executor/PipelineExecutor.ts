@@ -125,8 +125,10 @@ export class PipelineExecutor {
       // Inline agents — PDL stages with agents[] run each agent directly in parallel
       if (stage.type === 'agents' && stage.agents) {
         const agentResults = await this.executeInlineAgents(stage.agents, input, options);
-        const scores = agentResults.map(r => r.score ?? 0);
-        const avgScore = scores.length > 0 ? scores.reduce((a, b) => a + b, 0) / scores.length : 0;
+        // Exclude crashed agents (decision=FAIL, score=0) from average to prevent
+        // one crash from poisoning the entire stage score (e.g., 1 pass at 90 + 2 crashes → 30).
+        const successScores = agentResults.filter(r => r.decision !== 'FAIL' || (r.score ?? 0) > 0).map(r => r.score ?? 0);
+        const avgScore = successScores.length > 0 ? successScores.reduce((a, b) => a + b, 0) / successScores.length : 0;
 
         const stageEnd = Date.now() - startTime;
 

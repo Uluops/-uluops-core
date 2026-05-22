@@ -256,10 +256,14 @@ export class RegistryClient {
     // Get rendered markdown
     const rendered = await this.sdk.render.get(resolvedType, name, def.version);
 
-    // Use API-provided normalized output; fall back to client-side if unavailable
+    // Use API-provided normalized output; fall back to client-side if unavailable.
+    // Validate the expected top-level section key before casting to catch malformed API responses.
     let definition: ResolvedDefinition['definition'];
-    if (def.normalized) {
+    if (def.normalized && typeof def.normalized === 'object' && resolvedType in (def.normalized as Record<string, unknown>)) {
       definition = def.normalized as unknown as ResolvedDefinition['definition'];
+    } else if (def.normalized) {
+      this.logger.warn(`Remote normalized definition missing expected section '${resolvedType}'; falling back to local normalization`);
+      definition = def.yaml ? this.normalizeLocally(this.safeParseYaml(def.yaml, name)) : this.emptyDefinition();
     } else if (def.yaml) {
       definition = this.normalizeLocally(this.safeParseYaml(def.yaml, name));
     } else {
@@ -388,13 +392,23 @@ export class RegistryClient {
     // Workflow/pipeline definitions ARE the runtime — the parsed YAML structure
     // is used directly. Validate key structural fields before the type assertion
     // to catch malformed YAMLs that passed castDefinition()'s top-level check.
+    // If the required structural key is missing, fall back to prompt-based runtime
+    // instead of casting a malformed object that would cause deep runtime errors.
     const section = definition[type] as Record<string, unknown> | undefined;
-    if (type === 'workflow' && (!section || !('orchestration' in section))) {
-      degradations.push('runtime:missing-orchestration');
+    const structurallyValid =
+      (type === 'workflow' && section && 'orchestration' in section) ||
+      (type === 'pipeline' && section && 'stages' in section);
+
+    if (!structurallyValid) {
+      const missing = type === 'workflow' ? 'orchestration' : 'stages';
+      degradations.push(`runtime:missing-${missing}`);
+      this.logger.warn(`${type} definition missing required '${missing}' key; using prompt-based fallback`);
+      return {
+        runtime: { prompt: yamlContent } as ResolvedDefinition['runtime'],
+        degradations,
+      };
     }
-    if (type === 'pipeline' && (!section || !('stages' in section))) {
-      degradations.push('runtime:missing-stages');
-    }
+
     return {
       runtime: definition as unknown as ResolvedDefinition['runtime'],
       degradations,

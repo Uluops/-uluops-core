@@ -25,7 +25,7 @@ import type { Logger } from '@uluops/sdk-core';
 /**
  * Result from AI provider generation
  */
-export interface AIGenerateResult {
+export interface AIGenerateResult<TOutput = unknown> {
   /** Final text content after tool loop completion */
   text: string;
 
@@ -48,8 +48,9 @@ export interface AIGenerateResult {
   finishReason: string;
 
   /** Structured output object, if output schema was provided and model supports it.
-   *  When present, this is already validated against the schema — no extraction needed. */
-  structuredOutput?: unknown;
+   *  When present, this is already validated against the schema — no extraction needed.
+   *  Generic type parameter allows callers to preserve Zod schema output types. */
+  structuredOutput?: TOutput;
 }
 
 /**

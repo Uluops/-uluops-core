@@ -295,11 +295,12 @@ export class AnalysisSummaryExtractor {
       const VALID_SECTION_TYPES = new Set(['inventory', 'topology', 'landscape', 'classification', 'mapping', 'synthesis', 'limitation', 'agenda']);
       const sections = (e.sections as Array<Record<string, unknown>>)
         .filter(s => typeof s.type === 'string' && typeof s.label === 'string' && VALID_SECTION_TYPES.has(s.type as string))
-        .map(s => this.reshapeSection(s));
+        .map(s => this.reshapeSection(s))
+        .filter(s => this.validateSectionShape(s));
       maps.push({
         metadata: e.metadata as ExplorationMap['metadata'],
         // reshapeSection produces typed fields for all 8 known section types;
-        // unknown types are filtered out above to avoid untyped pass-through.
+        // validateSectionShape confirms required per-type fields exist.
         sections: sections as unknown as ExplorationMap['sections'],
       });
     }
@@ -341,6 +342,22 @@ export class AnalysisSummaryExtractor {
         return { ...base, questions: items };
       default:
         return section;
+    }
+  }
+
+  /** Validate that a reshaped section has the required fields for its declared type. */
+  private validateSectionShape(section: Record<string, unknown>): boolean {
+    const type = section.type as string;
+    switch (type) {
+      case 'inventory': return Array.isArray(section.items);
+      case 'topology': return Array.isArray(section.entities);
+      case 'landscape': return Array.isArray(section.findings);
+      case 'classification': return Array.isArray(section.hierarchy);
+      case 'mapping': return Array.isArray(section.translations);
+      case 'synthesis': return Array.isArray(section.patterns);
+      case 'limitation': return Array.isArray(section.blindSpots) || Array.isArray(section.blind_spots);
+      case 'agenda': return Array.isArray(section.questions);
+      default: return false;
     }
   }
 
