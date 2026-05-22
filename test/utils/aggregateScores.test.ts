@@ -100,4 +100,43 @@ describe('aggregateScores', () => {
       expect(aggregateScores(scored, 'weighted_average', { a: 1, b: 2 })).toBe(83);
     });
   });
+
+  describe('null score handling', () => {
+    it('excludes null-score items from average', () => {
+      const scored: ScoredItem[] = [
+        { key: 'a', score: 80 },
+        { key: 'b', score: 90 },
+        { key: 'c', score: null },
+      ];
+      // (80 + 90) / 2 = 85
+      expect(aggregateScores(scored, 'average')).toBe(85);
+    });
+
+    it('returns 0 when all items have null scores', () => {
+      const scored: ScoredItem[] = [
+        { key: 'a', score: null },
+        { key: 'b', score: null },
+      ];
+      expect(aggregateScores(scored, 'average')).toBe(0);
+    });
+
+    it('excludes null-score items from min', () => {
+      const scored: ScoredItem[] = [
+        { key: 'a', score: 80 },
+        { key: 'b', score: null },
+        { key: 'c', score: 60 },
+      ];
+      expect(aggregateScores(scored, 'min')).toBe(60);
+    });
+
+    it('excludes null-score items from weighted_average', () => {
+      const scored: ScoredItem[] = [
+        { key: 'a', score: 100 },
+        { key: 'b', score: null },
+        { key: 'c', score: 50 },
+      ];
+      // (100*1 + 50*1) / 2 = 75
+      expect(aggregateScores(scored, 'weighted_average')).toBe(75);
+    });
+  });
 });
