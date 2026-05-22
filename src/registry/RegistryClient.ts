@@ -3,7 +3,6 @@ import * as path from 'node:path';
 import * as crypto from 'node:crypto';
 import * as yaml from 'yaml';
 import { RegistryClient as RegistrySdk } from '@uluops/registry-sdk';
-import { normalizeDefinition, DefinitionValidationError } from '@uluops/definition-factory';
 import type { ResolvedConfig } from '../types/config.js';
 import type { DefinitionType } from '../types/execution.js';
 import type { AgentDefinition } from '../types/agent.js';
@@ -302,29 +301,33 @@ export class RegistryClient {
   // Private: Local Rendering
   // ─────────────────────────────────────────────────────────────────────────────
 
+  private static readonly KNOWN_TOP_KEYS = ['agent', 'command', 'workflow', 'pipeline'] as const;
+
   /**
-   * Normalize a parsed definition via @uluops/definition-factory,
-   * mapping factory errors to core's ConfigurationError.
+   * Validate and pass through a parsed definition for local resolution.
    *
-   * Used for local file resolution and as a fallback when the API
-   * doesn't return a normalized field.
+   * Detects the top-level key, validates the section is an object, and returns
+   * a cloned definition. Full normalization (CDL/WDL/PDL section transforms)
+   * is handled server-side by the registry API — this path is for offline mode
+   * and API fallback only.
    */
   private normalizeLocally(parsed: Record<string, unknown>): ResolvedDefinition['definition'] {
-    try {
-      const { definition, topKey } = normalizeDefinition(parsed);
-      const section = definition[topKey];
-      if (!section || typeof section !== 'object') {
-        throw new ConfigurationError(
-          `Normalized definition missing expected section '${topKey}'`,
-        );
-      }
-      return definition as unknown as ResolvedDefinition['definition'];
-    } catch (error) {
-      if (error instanceof DefinitionValidationError) {
-        throw new ConfigurationError(error.message);
-      }
-      throw error;
+    const topKey = RegistryClient.KNOWN_TOP_KEYS.find(k => k in parsed);
+    if (!topKey) {
+      throw new ConfigurationError(
+        `Invalid definition: expected a top-level key of ${RegistryClient.KNOWN_TOP_KEYS.join(', ')}, ` +
+        `found: ${Object.keys(parsed).join(', ')}`,
+      );
     }
+
+    const section = parsed[topKey];
+    if (!section || typeof section !== 'object') {
+      throw new ConfigurationError(
+        `Invalid definition: "${topKey}" must be an object`,
+      );
+    }
+
+    return structuredClone(parsed) as unknown as ResolvedDefinition['definition'];
   }
 
   /**

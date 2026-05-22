@@ -52,7 +52,6 @@
     "@ai-sdk/anthropic": "^3.0.33",
     "@ai-sdk/google": "^3.0.31",
     "@ai-sdk/openai": "^3.0.33",
-    "@uluops/definition-factory": "^0.36.0",
     "@uluops/ops-sdk": "^2.0.0",
     "@uluops/registry-sdk": "^0.26.0",
     "@uluops/sdk-core": "^0.10.1",
