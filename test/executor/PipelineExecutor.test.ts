@@ -4,6 +4,8 @@ import type { ResolvedDefinition } from '../../src/types/registry.js';
 import type { PipelineDefinition } from '../../src/types/pipeline.js';
 import { PipelineError } from '../../src/errors/index.js';
 import type { AgentExecutor } from '../../src/executor/AgentExecutor.js';
+import type { CommandExecutor } from '../../src/executor/CommandExecutor.js';
+import type { RegistryClient } from '../../src/registry/RegistryClient.js';
 import {
   makeCommandResult,
   makeWorkflowResult,

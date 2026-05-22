@@ -69,6 +69,7 @@ export class AnalysisSummaryExtractor {
    * @param result - The completed agent result with parsed output and metrics
    * @param resolved - The resolved definition providing scoring weights and vocabulary
    * @returns Summary and records ready for tracker submission
+   * @throws {Error} if the analysis block JSON is malformed (propagated from JSON.parse)
    */
   extract(result: AgentResult, resolved: ResolvedDefinition): AnalysisExtractionResult {
     const analysisBlock = this.parseAnalysisBlock(result.rawOutput);

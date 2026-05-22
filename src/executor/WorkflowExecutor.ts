@@ -41,6 +41,9 @@ export class WorkflowExecutor {
    * whose dependencies are satisfied execute in parallel. Gate evaluation
    * occurs after each phase completes, and failure behavior determines
    * whether subsequent levels proceed.
+   *
+   * @throws {WorkflowError} on internal workflow failures (phase crashes, gate violations)
+   * @throws {ConfigurationError} if the definition is not a valid workflow
    */
   async execute(resolved: ResolvedDefinition, input: ExecutionInput): Promise<WorkflowResult> {
     const startTime = Date.now();

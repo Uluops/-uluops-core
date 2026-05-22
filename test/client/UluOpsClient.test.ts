@@ -629,6 +629,8 @@ describe('UluOpsClient', () => {
 
       const result = await client.runAgent('code-validator', '/tmp/test');
 
+      // Verify executor result is forwarded unmodified through the facade
+      expect(result).toBe(agentResult);
       expect(result.type).toBe('agent');
       expect(result.agentType).toBe('validator');
       expect(result.score).toBe(85);
@@ -839,12 +841,14 @@ describe('UluOpsClient', () => {
       const client = new UluOpsClient({ apiKey: 'ulr_test-key', trackingEnabled: false });
       const resolved = makeResolvedDef('command', 'validate');
       mockRegistryResolve.mockResolvedValue(resolved);
-      mockCommandExecutorExecute.mockResolvedValue(makeCommandResult());
+      const cmdResult = makeCommandResult();
+      mockCommandExecutorExecute.mockResolvedValue(cmdResult);
 
       const result = await client.runCommand('validate', { target: '/tmp/test' });
 
       expect(mockRegistryResolve).toHaveBeenCalledWith('validate', undefined, 'command');
       expect(mockCommandExecutorExecute).toHaveBeenCalledWith(resolved, { target: '/tmp/test' }, undefined);
+      expect(result).toBe(cmdResult);
       expect(result.type).toBe('command');
     });
 
@@ -889,10 +893,12 @@ describe('UluOpsClient', () => {
       const client = new UluOpsClient({ apiKey: 'ulr_test-key', trackingEnabled: false });
       const resolved = makeResolvedDef('workflow', 'ship');
       mockRegistryResolve.mockResolvedValue(resolved);
-      mockWorkflowExecutorExecute.mockResolvedValue(makeWorkflowResult());
+      const wfResult = makeWorkflowResult();
+      mockWorkflowExecutorExecute.mockResolvedValue(wfResult);
 
       const result = await client.runWorkflow('ship', { target: '/tmp/test' });
 
+      expect(result).toBe(wfResult);
       expect(mockRegistryResolve).toHaveBeenCalledWith('ship', undefined, 'workflow');
       expect(mockWorkflowExecutorExecute).toHaveBeenCalledWith(resolved, { target: '/tmp/test' });
       expect(result.type).toBe('workflow');

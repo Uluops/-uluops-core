@@ -266,7 +266,12 @@ export class PipelineExecutor {
       /^([\w-]+)\.([\w]+)\s*(==|!=|>=|<=|>|<)\s*(?:'([^']*)'|"([^"]*)"|(\d+(?:\.\d+)?))$/,
     );
 
-    if (!match) return false;
+    if (!match) {
+      // Unrecognized condition format — return false (don't skip) but surface
+      // a recommendation so operators notice typos in condition expressions.
+      console.warn(`[PipelineExecutor] Unrecognized condition: "${condition}" — stage will not be skipped`);
+      return false;
+    }
 
     const [, stageId, field, op, strVal1, strVal2, numVal] = match;
     const stageResult = stageId ? context[stageId] : undefined;

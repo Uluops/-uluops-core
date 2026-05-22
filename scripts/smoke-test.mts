@@ -14,6 +14,8 @@
 import { resolve } from 'node:path';
 import { readFileSync } from 'node:fs';
 
+const noopLogger = { debug() {}, info() {}, warn() {}, error() {} };
+
 // Load .env.local, overriding shell env (--env-file doesn't override existing vars)
 const envPath = resolve(import.meta.dirname, '../.env.local');
 try {
@@ -62,7 +64,7 @@ async function testLocalResolution() {
     timeout: 30000,
   };
 
-  const registry = new RegistryClient(config);
+  const registry = new RegistryClient(config as any, noopLogger as any);
 
   // Test resolve
   console.log('Resolving code-validator...');
@@ -111,7 +113,7 @@ async function testAIConnectivity() {
     return false;
   }
 
-  console.log(`  ANTHROPIC_API_KEY: ${anthropicKey.slice(0, 12)}...`);
+  console.log('  ANTHROPIC_API_KEY: present');
 
   // Pre-validate key with a lightweight API call
   const checkResp = await fetch('https://api.anthropic.com/v1/messages', {
@@ -176,9 +178,9 @@ async function testAIConnectivity() {
   const start = Date.now();
 
   const result = await aiProvider.generate({
-    prompt: 'You are a test validator.',
+    system: 'You are a test validator.',
     model: 'haiku',
-    messages: [{ role: 'user', content: 'Reply with exactly: {"status":"ok"}' }],
+    prompt: 'Reply with exactly: {"status":"ok"}',
     maxTokens: 100,
     timeoutMs: 30000,
   });
@@ -249,7 +251,7 @@ async function testFullExecution() {
     refresh: async () => {},
   };
 
-  const registry = new RegistryClient(config);
+  const registry = new RegistryClient(config as any, noopLogger as any);
   const aiProvider = new AIProvider(config, mockCatalog);
   const executor = new AgentExecutor(config, aiProvider);
 

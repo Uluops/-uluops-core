@@ -461,13 +461,36 @@ export class AgentExecutor {
       );
     }
     const o = parsed.data;
+    // Zod .nullable() produces `T | null`; ParsedOutput uses `T | undefined`.
+    // Coerce null → undefined via ?? and map arrays to strip nullable wrappers.
     return {
       decision: o.decision,
       score: o.score,
       maxScore: o.maxScore,
       summary: o.summary ?? undefined,
-      categories: (o.categories as unknown as ParsedOutput['categories']) ?? undefined,
-      artifacts: (o.artifacts as unknown as ParsedOutput['artifacts']) ?? undefined,
+      categories: o.categories?.map(c => ({
+        name: c.name,
+        score: c.score ?? 0,
+        maxScore: c.maxScore ?? 100,
+        findings: (c.findings ?? []).map(f => ({
+          criterion: f.criterion ?? '',
+          pointsEarned: f.pointsEarned ?? 0,
+          pointsPossible: f.pointsPossible ?? 0,
+          issues: (f.issues ?? []).map(issue => ({
+            title: issue.title,
+            description: issue.description ?? '',
+            severity: issue.severity ?? 'medium',
+            priority: issue.priority ?? 'suggested',
+            failureCode: issue.failureCode ?? undefined,
+            filePath: issue.filePath ?? undefined,
+            lineNumber: issue.lineNumber ?? undefined,
+          })),
+        })),
+      })) ?? undefined,
+      artifacts: o.artifacts?.map(a => ({
+        name: a.type,
+        path: a.path ?? '',
+      })) ?? undefined,
       rawJson: output,
     };
   }

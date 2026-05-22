@@ -244,20 +244,27 @@ export class ToolHandler {
     const capped = files.slice(0, opts.maxResults);
     const lines: string[] = [];
 
-    const entries = await Promise.all(capped.map(async (file) => {
-      const filePath = path.join(dirPath, file);
-      try {
-        if (!(await this.isPathSafe(filePath))) return file;
-        const stat = await fs.stat(filePath);
-        const sizeStr = formatFileSize(stat.size);
-        const lineCount = await countLines(filePath, stat.size);
-        return lineCount
-          ? `${file} (${sizeStr}, ${lineCount} lines)`
-          : `${file} (${sizeStr})`;
-      } catch {
-        return file;
-      }
-    }));
+    // Process in batches to limit concurrent I/O (each file needs stat + read for line counting)
+    const BATCH_SIZE = 20;
+    const entries: string[] = [];
+    for (let b = 0; b < capped.length; b += BATCH_SIZE) {
+      const batch = capped.slice(b, b + BATCH_SIZE);
+      const batchResults = await Promise.all(batch.map(async (file) => {
+        const filePath = path.join(dirPath, file);
+        try {
+          if (!(await this.isPathSafe(filePath))) return file;
+          const stat = await fs.stat(filePath);
+          const sizeStr = formatFileSize(stat.size);
+          const lineCount = await countLines(filePath, stat.size);
+          return lineCount
+            ? `${file} (${sizeStr}, ${lineCount} lines)`
+            : `${file} (${sizeStr})`;
+        } catch {
+          return file;
+        }
+      }));
+      entries.push(...batchResults);
+    }
     lines.push(...entries);
 
     if (totalFiles > opts.maxResults) {

@@ -198,8 +198,9 @@ export class AIProvider {
     // strip it to suppress repeated AI SDK warnings. Check both extendedThinking
     // (SDK type) and reasoning (raw API field) since the registry may return either.
     // Use a shallow copy instead of mutating the caller's options object.
+    // Check both SDK-typed field and raw API field (registry may return either)
     const isReasoning = resolved.capabilities.extendedThinking
-      || (resolved.capabilities as unknown as Record<string, unknown>)['reasoning'] === true;
+      || ('reasoning' in resolved.capabilities && (resolved.capabilities as Record<string, unknown>)['reasoning'] === true);
 
     this.logPreGeneration(options, resolved, modelInput, useStructuredOutput);
 
@@ -664,6 +665,7 @@ export class AIProvider {
       // can write to node_modules (supply chain compromise, dependency confusion) could
       // achieve code execution via a malicious provider package.
       const mod = await import(`@ai-sdk/${providerName}`) as Record<string, unknown>;
+      this.logger.info(`Loaded AI provider: @ai-sdk/${providerName}`);
 
       // Check override map first, then try standard naming convention (createMistral, createCohere, etc.)
       const factoryName = AIProvider.FACTORY_NAME_OVERRIDES[providerName]

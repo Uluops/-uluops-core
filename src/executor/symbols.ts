@@ -105,11 +105,12 @@ function extractPythonSymbols(lines: string[], symbols: SymbolInfo[]): void {
     // Top-level classes (no indentation)
     const classMatch = /^class\s+(\w+)/.exec(line);
     if (classMatch) {
+      const className = classMatch[1] ?? '';
       symbols.push({
         type: 'class',
-        name: classMatch[1]!,
+        name: className,
         line: i + 1,
-        exported: !classMatch[1]!.startsWith('_'),
+        exported: !className.startsWith('_'),
       });
     }
   }

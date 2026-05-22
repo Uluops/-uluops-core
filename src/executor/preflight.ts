@@ -161,7 +161,7 @@ async function checkCommand(check: PreflightCheck): Promise<void> {
   // Commands like `node -e "..."` or `python3 -c "..."` can execute arbitrary code.
   if (/\b(bash|sh|zsh|dash|csh|fish|node|python[23]?|ruby|perl|php|lua|deno|bun|awk|gawk|mawk|nawk)\s+(-e|--eval|-c)\b/.test(check.command)) {
     throw new PreflightError(
-      `Preflight command contains disallowed interpreter eval: ${check.command}`,
+      'Preflight command contains disallowed interpreter eval',
       'command',
       { command: check.command },
     );
@@ -186,7 +186,7 @@ async function checkCommand(check: PreflightCheck): Promise<void> {
     await execFileAsync('sh', ['-c', check.command], { timeout: 10_000 });
   } catch (error) {
     throw new PreflightError(
-      check.message ?? `Command check failed: ${check.command}`,
+      check.message ?? 'Preflight command check failed',
       'command',
       { command: check.command },
       { cause: error },
