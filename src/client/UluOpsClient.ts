@@ -14,7 +14,7 @@ import type { ExecutionInput, ExecutionResult, ExecutionOptions } from '../types
 import type { AgentResult } from '../types/agent.js';
 import type { CommandResult } from '../types/command.js';
 import type { WorkflowResult } from '../types/workflow.js';
-import type { PipelineHandle } from '../types/pipeline.js';
+import type { PipelineHandle, PipelineResult } from '../types/pipeline.js';
 import type { DefinitionSummary, ResolvedDefinition } from '../types/registry.js';
 import type { DefinitionType } from '../types/execution.js';
 import { parseRef } from '../utils/parseRef.js';
@@ -128,6 +128,24 @@ export class UluOpsClient {
     }
 
     const result = await this.workflowExecutor.execute(resolved, input);
+    await this.trackIfEnabled(result, resolved, result.name, undefined, input.target);
+    return result;
+  }
+
+  /**
+   * Execute a pipeline with multi-stage orchestration.
+   */
+  async runPipeline(name: string, input: ExecutionInput): Promise<PipelineResult> {
+    const resolved = await this.resolveByRef(name, 'pipeline');
+
+    if (resolved.type !== 'pipeline') {
+      throw new ConfigurationError(`${name} is not a pipeline (type: ${resolved.type}). Use runWorkflow() for workflows or runCommand() for commands.`);
+    }
+
+    const result = await this.pipelineExecutor.execute(resolved, input, {
+      timeoutMs: this.config.timeout,
+      model: this.config.ai.modelOverride,
+    });
     await this.trackIfEnabled(result, resolved, result.name, undefined, input.target);
     return result;
   }
