@@ -300,7 +300,7 @@ export class ToolHandler {
 
     // Cap pattern length to mitigate ReDoS from LLM-generated pathological regexes (CWE-1333)
     if (opts.pattern.length > 200) {
-      return { tool_use_id: id, content: `Error: regex pattern too long (${opts.pattern.length} chars, max 200)` };
+      return { tool_use_id: id, content: `Error: regex pattern too long (${opts.pattern.length} chars, max 200)`, is_error: true };
     }
 
     // Reject patterns with nested quantifiers or alternation explosions that cause
@@ -308,19 +308,19 @@ export class ToolHandler {
     // Nested quantifiers: (x+)+, (x*)+, (x+)*, (x{n,})+, ([...]+)+
     // Alternation explosion: (a|aa)+, (a|a?)+  — overlapping alternation under quantifier
     if (/(\([^)]*[+*][^)]*\))[+*]|\(\?:[^)]*[+*][^)]*\)[+*]/.test(opts.pattern)) {
-      return { tool_use_id: id, content: 'Error: regex pattern contains nested quantifiers which may cause catastrophic backtracking' };
+      return { tool_use_id: id, content: 'Error: regex pattern contains nested quantifiers which may cause catastrophic backtracking', is_error: true };
     }
     // Detect overlapping alternation under quantifier: (alt1|alt2)+ where alternatives overlap.
     // Conservative heuristic: any group with alternation followed by a quantifier.
     if (/\([^)]*\|[^)]*\)[+*{]/.test(opts.pattern)) {
-      return { tool_use_id: id, content: 'Error: regex pattern contains alternation under quantifier which may cause catastrophic backtracking' };
+      return { tool_use_id: id, content: 'Error: regex pattern contains alternation under quantifier which may cause catastrophic backtracking', is_error: true };
     }
 
     let regex: RegExp;
     try {
       regex = new RegExp(opts.pattern, 'gi');
     } catch {
-      return { tool_use_id: id, content: `Error: invalid regex pattern: ${opts.pattern}` };
+      return { tool_use_id: id, content: `Error: invalid regex pattern: ${opts.pattern}`, is_error: true };
     }
 
     switch (opts.mode) {
@@ -654,6 +654,7 @@ function toString(v: unknown): string | undefined {
   return typeof v === 'string' ? v : undefined;
 }
 
+/** Map a file extension (e.g., '.ts') to a human-readable language name (e.g., 'TypeScript'). */
 export function extToLanguage(ext: string): string {
   return LANG_MAP[ext.toLowerCase()] ?? 'Unknown';
 }

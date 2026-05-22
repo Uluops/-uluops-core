@@ -22,6 +22,14 @@ export default tseslint.config(
     },
   },
   {
+    // Scripts/examples: relax rules (partial configs, unused imports from interactive use)
+    files: ['scripts/**/*.mts', 'examples/**/*.ts'],
+    rules: {
+      '@typescript-eslint/no-explicit-any': 'off',
+      '@typescript-eslint/no-unused-vars': 'off',
+    },
+  },
+  {
     ignores: ['dist/', 'coverage/', 'vitest.config.ts'],
   },
 );

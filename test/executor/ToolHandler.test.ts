@@ -159,6 +159,41 @@ describe('ToolHandler', () => {
     });
   });
 
+  describe('search_content regex validation', () => {
+    it('rejects overly long regex patterns with is_error', async () => {
+      const longPattern = 'a'.repeat(201);
+      const result = await handler.fulfill(
+        makeToolUse('search_content', { pattern: longPattern, path: '.' }),
+      );
+      expect(result.is_error).toBe(true);
+      expect(result.content).toContain('too long');
+    });
+
+    it('rejects nested quantifier patterns with is_error', async () => {
+      const result = await handler.fulfill(
+        makeToolUse('search_content', { pattern: '(a+)+', path: '.' }),
+      );
+      expect(result.is_error).toBe(true);
+      expect(result.content).toContain('nested quantifiers');
+    });
+
+    it('rejects alternation under quantifier with is_error', async () => {
+      const result = await handler.fulfill(
+        makeToolUse('search_content', { pattern: '(a|b)+', path: '.' }),
+      );
+      expect(result.is_error).toBe(true);
+      expect(result.content).toContain('alternation under quantifier');
+    });
+
+    it('rejects invalid regex syntax with is_error', async () => {
+      const result = await handler.fulfill(
+        makeToolUse('search_content', { pattern: '[unterminated', path: '.' }),
+      );
+      expect(result.is_error).toBe(true);
+      expect(result.content).toContain('invalid regex');
+    });
+  });
+
   describe('symlink handling', () => {
     it('blocks symlink within base directory pointing outside', async () => {
       // isPathSafe uses fs.realpath() to follow symlinks and detect escape
@@ -206,6 +241,26 @@ describe('ToolHandler', () => {
         expect(result.content).toContain('outside the target directory');
       } finally {
         await fs.rm(evilDir, { recursive: true, force: true });
+      }
+    });
+
+    it('search_content skips symlinked files pointing outside sandbox', async () => {
+      const outsideDir = await fs.mkdtemp(path.join(os.tmpdir(), 'search-outside-'));
+      await fs.writeFile(path.join(outsideDir, 'secret.ts'), 'export const SECRET = "leaked";');
+
+      try {
+        // Create a symlink inside the sandbox pointing to the outside file
+        await fs.symlink(path.join(outsideDir, 'secret.ts'), path.join(tmpDir, 'src', 'secret-link.ts'));
+
+        const result = await handler.fulfill(
+          makeToolUse('search_content', { pattern: 'SECRET', path: '.' }),
+        );
+        // The search should succeed but NOT include the symlinked file
+        expect(result.is_error).toBeUndefined();
+        const matches = JSON.parse(result.content) as Array<{ file: string }>;
+        expect(matches.every(m => !m.file.includes('secret-link'))).toBe(true);
+      } finally {
+        await fs.rm(outsideDir, { recursive: true, force: true });
       }
     });
 
