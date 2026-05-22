@@ -10,6 +10,13 @@ This project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.htm
 
 - **`runPipeline()` convenience method** — synchronous pipeline execution mirroring `runWorkflow()`. Resolves by ref, validates the definition is a pipeline, executes via `PipelineExecutor` with timeout and model config, and tracks results. Use `runPipeline()` for blocking execution or `startPipeline()` for async handle-based control.
 
+### Changed
+
+- **`PhaseResult.score` is now `number | null`** — all-generator phases return null score instead of 0. Gate evaluation passes null-score phases unconditionally (scoreless phases are not score-bearing).
+- **`aggregatePhaseScore` filters null scores** — only scored command results contribute to phase score aggregation. An all-scoreless phase returns null.
+- **`evaluateGate` accepts null score** — null score → `'passed'`. Scoreless phases are categorically outside the scoring domain.
+- **`aggregateScores` filters null entries** — `ScoredItem.score` is now `number | null`. Null-score items are excluded from min/max/sum/average/weighted_average computation. Returns 0 when all items are null.
+
 ## [0.13.0] - 2026-05-21
 
 ### Added
