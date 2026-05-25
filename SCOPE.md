@@ -17,7 +17,7 @@ Additionally:
 - **Filesystem sandboxing** — `ToolHandler` provides six LLM-accessible tools (read_file, list_files, search_content, get_file_info, get_directory_tree, get_symbols) with symlink-aware path validation to prevent directory traversal.
 - **Output extraction** — 4-strategy fallback: AI SDK structured output > JSON code fence > inline JSON > regex text parsing. The strategies are ordered by confidence; lower strategies activate only when higher ones fail.
 - **Registry integration** — `RegistryClient` resolves definitions by name/version from local YAML files or the remote registry API, with SHA-256 hash verification. `ModelCatalog` resolves model aliases (e.g., `sonnet` → `claude-sonnet-4-6`) via the registry.
-- **Validation tracking** — `ValidationClient` submits execution results to the tracker API with issue correlation and regression detection.
+- **Validation tracking** — `SubmissionClient` submits execution results to the tracker API with issue correlation and regression detection.
 
 ## Why These Live Together
 
@@ -60,7 +60,7 @@ Definition authoring stays in `@uluops/definition-factory`. Analytics computatio
 | `RegistryClient` definition resolution | Yes | Core execution — definitions must be resolved before execution |
 | `TokenBudgetTracker` | Yes | Core execution — prevents context window exhaustion |
 | `ModelCatalog` alias resolution | Yes | Core execution — model names must resolve to provider:modelId |
-| `ValidationClient` result submission | Yes | Post-execution tracking — SDK users expect `trackResults: true` |
+| `SubmissionClient` result submission | Yes | Post-execution tracking — SDK users expect `trackResults: true` |
 | ADL/CDL/WDL/PDL YAML validation | No | Build-time concern — `@uluops/definition-factory` |
 | Score analytics (burn-down, velocity) | No | Post-execution analytics — `@uluops/analytics` |
 | Tier-gated endpoint enforcement | No | API-layer concern — `@uluops/tier-gate` |
@@ -131,7 +131,7 @@ The Zod schemas in `outputSchemas.ts` must stay synchronized with TypeScript typ
 |---|---|
 | `@uluops/sdk-core` | Foundation — provides HttpClient, error hierarchy (RateLimitError, UnauthorizedError, etc.), auth utilities. Build dependency. |
 | `@uluops/registry-sdk` | Foundation — provides RegistrySdk client consumed by RegistryClient and ModelCatalog. Build dependency. |
-| `@uluops/ops-sdk` | Foundation — provides validation/tracking API client consumed by ValidationClient. Build dependency. |
+| `@uluops/ops-sdk` | Foundation — provides validation/tracking API client consumed by SubmissionClient. Build dependency. |
 | `@uluops/definition-factory` | Upstream — parses and validates YAML definitions. This package executes the parsed output. No direct dependency. |
 | `@uluops/analytics` | Downstream — consumes execution results for effectiveness scoring, health metrics, trend analysis. No direct dependency. |
 | `@uluops/tier-gate` | Independent — gates access to analytics endpoints. Does not interact with this package. |

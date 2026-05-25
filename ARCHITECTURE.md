@@ -227,9 +227,9 @@ How the `name` and `version` fields on each result type are sourced:
 | `AgentResult` | `ResolvedDefinition.name` (registry name or filename) | `definition.agent.interface.version` or `'unknown'`. Universal type — all 6 agent types use the same result shape with score, categories, artifacts. |
 | `CommandResult` | `def.command.interface.name` (from YAML) | `def.command.interface.version` (from YAML) |
 | `WorkflowResult` | `def.workflow.interface.name` (from YAML) | `def.workflow.interface.version` (from YAML) |
-| `PipelineResult` | Generated `pipelineId` (`pipeline_<timestamp>_<random>`) | `def.pipeline.interface.version` (from YAML) |
+| `PipelineResult` | `def.pipeline.interface.name` (from YAML) | `def.pipeline.interface.version` (from YAML) |
 
-**Notable:** Pipeline result `name` is a generated ID, not the definition name. All other result types use the definition's declared name.
+**Notable:** `pipelineId` (generated as `pipeline_<timestamp>_<random>`) is used internally for state tracking but the result `name` field uses the definition's declared name, consistent with other result types.
 
 ---
 
@@ -237,11 +237,11 @@ How the `name` and `version` fields on each result type are sourced:
 
 When `trackResults` is enabled (default: `config.trackingEnabled`), two API calls are made after execution:
 
-### 1. Tracker Submission (ValidationClient)
+### 1. Tracker Submission (SubmissionClient)
 
 ```
 UluOpsClient.trackIfEnabled()
-  → ValidationClient.submit({ project, workflowType, result })
+  → SubmissionClient.submit({ project, workflowType, result })
     → transformToOpsInput():
         project = options.project ?? config.defaultProject ?? resolved.name
         workflowType = 'agent' | 'command' | 'workflow' | 'pipeline'
@@ -270,7 +270,7 @@ UluOpsClient.trackIfEnabled()
 
 ### Tracking gaps
 
-- `startPipeline()` does **not** call `trackIfEnabled()`. Use `run()` for tracked pipelines.
+- `startPipeline()` wraps `handle.wait()` to call `trackIfEnabled()` on completion. Tracking occurs when the caller awaits the handle, not at start time.
 - Local definitions with no version field → `version = 'unknown'` → registry recording skipped.
 - Local definitions → `hash = ''` → empty hash in tracker payload.
 
@@ -290,5 +290,5 @@ All external boundaries the execution chain crosses:
 | Filesystem (tool fulfillment) | ToolHandler.fulfill per step | I/O |
 | Shell subprocess (bash/shell tool) | ShellExecutor | Process |
 | Shell subprocess (preflight commands) | preflight.checkCommand (cwd=target) | Process (read-only allowlist, supply-chain trust) |
-| Tracker API (result submission) | ValidationClient → OpsClient | Network + Auth |
+| Tracker API (result submission) | SubmissionClient → OpsClient | Network + Auth |
 | Registry API (execution recording) | registrySdk.executions.record | Network + Auth |
