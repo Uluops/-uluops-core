@@ -8,7 +8,7 @@ import { agentOutputSchema } from '../parser/outputSchemas.js';
 import { ExecutionError } from '../errors/index.js';
 import { classifyDecision, buildVocabularyMap, type DecisionCategory } from './classifyDecision.js';
 import type { ResolvedConfig } from '../types/config.js';
-import type { ResolvedDefinition, ValidatorRuntime, ExecutorRuntime } from '../types/registry.js';
+import type { ResolvedDefinition, AgentRuntime, ExecutorRuntime } from '../types/registry.js';
 import type { ExecutionInput, ExecutionOptions, ExecutionMetrics, ResolvedExecutionContext, Recommendation } from '../types/execution.js';
 import type { AgentResult } from '../types/agent.js';
 import type { AgentType } from '../types/execution.js';
@@ -135,7 +135,7 @@ export class AgentExecutor {
    * Setup tool handler, budget tracker, and optional shell tool.
    */
   private async setupTools(
-    runtime: ValidatorRuntime | ExecutorRuntime,
+    runtime: AgentRuntime | ExecutorRuntime,
     input: ExecutionInput,
     options: ExecutionOptions | undefined,
     context: ResolvedExecutionContext,
@@ -306,11 +306,11 @@ export class AgentExecutor {
     };
   }
 
-  private assertAgentRuntime(resolved: ResolvedDefinition): ValidatorRuntime | ExecutorRuntime {
+  private assertAgentRuntime(resolved: ResolvedDefinition): AgentRuntime | ExecutorRuntime {
     if (resolved.type !== 'agent') {
       throw new ExecutionError(`AgentExecutor received a '${resolved.type}' definition (expected 'agent')`);
     }
-    return resolved.runtime as ValidatorRuntime | ExecutorRuntime;
+    return resolved.runtime as AgentRuntime | ExecutorRuntime;
   }
 
   private resolveThresholds(

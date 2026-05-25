@@ -510,8 +510,11 @@ export class OutputNormalizer {
         for (const sub of rec['issues'] as unknown[]) {
           if (typeof sub === 'object' && sub !== null) {
             const subRec = sub as Record<string, unknown>;
-            if (groupSeverity && !subRec['severity']) subRec['severity'] = groupSeverity;
-            flatItems.push(subRec);
+            if (groupSeverity && !subRec['severity']) {
+              flatItems.push({ ...subRec, severity: groupSeverity });
+            } else {
+              flatItems.push(subRec);
+            }
           }
         }
       } else {

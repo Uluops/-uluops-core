@@ -67,6 +67,7 @@ export class UluOpsClient {
       this.commandExecutor,
       this.agentExecutor,
       this.registry,
+      logger,
     );
   }
 

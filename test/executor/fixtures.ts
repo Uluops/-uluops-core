@@ -9,7 +9,7 @@ import type { AgentExecutor } from '../../src/executor/AgentExecutor.js';
 import type { CommandExecutor } from '../../src/executor/CommandExecutor.js';
 import type { WorkflowExecutor } from '../../src/executor/WorkflowExecutor.js';
 import type { RegistryClient } from '../../src/registry/RegistryClient.js';
-import type { ResolvedDefinition, ValidatorRuntime } from '../../src/types/registry.js';
+import type { ResolvedDefinition, AgentRuntime } from '../../src/types/registry.js';
 import type { ValidatorAgentResult, ExecutorAgentResult } from '../../src/types/agent.js';
 import type { CommandResult } from '../../src/types/command.js';
 import type { WorkflowResult } from '../../src/types/workflow.js';
@@ -109,7 +109,7 @@ export function makeAgentDef(name = 'test-agent'): ResolvedDefinition {
       prompt: 'test',
       defaults: { model: 'sonnet', timeout: 30000 },
       config: { maxScore: 100, threshold: 75, categories: [], outputSchema: 'json' },
-    } as ValidatorRuntime,
+    } as AgentRuntime,
     domain: 'software',
     agentType: 'validator',
   };

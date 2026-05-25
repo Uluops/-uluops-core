@@ -11,6 +11,7 @@ import { parseRef } from '../utils/parseRef.js';
 import { formatErrorMessage } from '../utils/formatError.js';
 import { sumTokenMetrics } from '../utils/sumTokenMetrics.js';
 import { classifyDecision } from './classifyDecision.js';
+import type { Logger } from '@uluops/sdk-core';
 
 /**
  * Executes pipelines with multi-stage orchestration and async support.
@@ -24,6 +25,7 @@ export class PipelineExecutor {
     private commandExecutor: CommandExecutor,
     private agentExecutor: AgentExecutor,
     private registry: RegistryClient,
+    private logger: Logger,
   ) {}
 
   /**
@@ -269,7 +271,7 @@ export class PipelineExecutor {
     if (!match) {
       // Unrecognized condition format — return false (don't skip) but surface
       // a recommendation so operators notice typos in condition expressions.
-      console.warn(`[PipelineExecutor] Unrecognized condition: "${condition}" — stage will not be skipped`);
+      this.logger.warn(`Unrecognized condition: "${condition}" — stage will not be skipped`);
       return false;
     }
 

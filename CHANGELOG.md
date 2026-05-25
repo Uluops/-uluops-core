@@ -4,6 +4,26 @@ All notable changes to `@uluops/core` will be documented in this file.
 
 This project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.15.1] - 2026-05-25
+
+### Fixed
+
+- **`console.warn` replaced with logger in PipelineExecutor** — PipelineExecutor now accepts a `Logger` parameter and routes warnings through the structured logging system instead of `console.warn`.
+- **`flattenGroupedIssues` no longer mutates input** — severity assignment on grouped issues now spreads before writing, preventing mutation of caller-owned objects.
+- **PreflightError no longer leaks full command string** — security rejection error details now include only the base command name, not the full command with arguments.
+- **`buildTree` sandbox escape via symlinked directories** — `getDirectoryTree` now calls `isPathSafe()` on subdirectories before recursing, preventing symlink-based sandbox escapes.
+- **Stale `@uluops/definition-factory` reference removed from README** — dependency was removed in v0.10.0 but the README table still listed it.
+
+### Changed
+
+- **`ValidatorRuntime` renamed to `AgentRuntime`** — completes the validator→agent naming migration. All internal references updated. Not a public API change (type was not exported).
+- **`BaseRuntime` extracted** — new base interface with `{ prompt: string }` shared by all runtime types. `AgentRuntime` and `ExecutorRuntime` now extend it. `ResolvedDefinition.runtime` includes `BaseRuntime` in its union, eliminating unsafe casts during registry resolution.
+- **`degradations` populated on fallback paths** — `RegistryClient.resolve()` now sets `degradations: ['empty-definition']` and/or `'normalization-fallback'` when resolution falls back to empty or client-side normalization, giving consumers a discriminant for the `Partial<AgentDefinition>` branch.
+
+### Added
+
+- **`clearCache()` documented in README** — new Cache Management section documents the public method for long-lived processes.
+
 ## [0.15.0] - 2026-05-21
 
 ### Added

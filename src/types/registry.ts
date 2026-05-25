@@ -30,7 +30,7 @@ export interface ResolvedDefinition {
   definition: AgentDefinition | CommandDefinition | WorkflowDefinition | PipelineDefinition | Partial<AgentDefinition>;
 
   /** Rendered runtime - type depends on agentType */
-  runtime: ValidatorRuntime | ExecutorRuntime | WorkflowRuntime | PipelineRuntime;
+  runtime: BaseRuntime | AgentRuntime | ExecutorRuntime | WorkflowRuntime | PipelineRuntime;
 
   /** Domain classification */
   domain: Domain;
@@ -46,12 +46,18 @@ export interface ResolvedDefinition {
 }
 
 /**
- * Runtime configuration for validator agents
+ * Base runtime shared by all definition types — the minimum shape
+ * available after registry resolution (before type-narrowing).
  */
-export interface ValidatorRuntime {
+export interface BaseRuntime {
   /** Complete system prompt */
   prompt: string;
+}
 
+/**
+ * Runtime configuration for agents (analysts, validators, forecasters, explorers, generators)
+ */
+export interface AgentRuntime extends BaseRuntime {
   /** Agent interface metadata (tools, name, etc.) */
   interface?: {
     tools?: string[];
@@ -79,10 +85,7 @@ export interface ValidatorRuntime {
 /**
  * Runtime configuration for executor agents
  */
-export interface ExecutorRuntime {
-  /** Complete system prompt */
-  prompt: string;
-
+export interface ExecutorRuntime extends BaseRuntime {
   /** Agent interface metadata (tools, name, etc.) */
   interface?: {
     tools?: string[];

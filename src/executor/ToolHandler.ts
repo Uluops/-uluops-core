@@ -511,6 +511,9 @@ export class ToolHandler {
       const fullDirPath = path.join(dirPath, dirName);
 
       if (depth < maxDepth) {
+        // Sandbox check: prevent symlinked directories from escaping the base path
+        if (!(await this.isPathSafe(fullDirPath))) continue;
+
         // Recurse first to get accumulated stats
         const sub = await this.buildTree(fullDirPath, indent + '  ', depth + 1, maxDepth, includeSizes);
 

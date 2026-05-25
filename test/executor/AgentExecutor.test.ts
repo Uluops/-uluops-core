@@ -5,7 +5,7 @@ import * as os from 'node:os';
 import { AgentExecutor } from '../../src/executor/AgentExecutor.js';
 import type { AIProvider, AIGenerateResult } from '../../src/ai/AIProvider.js';
 import type { ResolvedConfig } from '../../src/types/config.js';
-import type { ResolvedDefinition, ValidatorRuntime, ExecutorRuntime } from '../../src/types/registry.js';
+import type { ResolvedDefinition, AgentRuntime, ExecutorRuntime } from '../../src/types/registry.js';
 import type { Logger } from '@uluops/sdk-core';
 
 const noopLogger: Logger = { debug() {}, info() {}, warn() {}, error() {} };
@@ -93,7 +93,7 @@ function makeValidatorDef(overrides?: Partial<ResolvedDefinition>): ResolvedDefi
       prompt: 'You are a test validator. Analyze the code.',
       defaults: { model: 'sonnet', timeout: 30000 },
       config: { maxScore: 100, threshold: 75, categories: [], outputSchema: 'json' },
-    } as ValidatorRuntime,
+    } as AgentRuntime,
     domain: 'software',
     agentType: 'validator',
     ...overrides,
@@ -228,7 +228,7 @@ describe('AgentExecutor', () => {
           prompt: 'You are a test validator.',
           defaults: { model: 'sonnet', timeout: 30000, thresholds: { pass: 70, warn: 50 } },
           config: { maxScore: 100, threshold: 75, categories: [], outputSchema: 'json' },
-        } as ValidatorRuntime,
+        } as AgentRuntime,
       });
 
       const result = await executor.execute(def, { target: tmpDir });
@@ -305,7 +305,7 @@ describe('AgentExecutor', () => {
           prompt: 'test',
           defaults: { model: undefined as unknown as string, timeout: 30000 },
           config: { maxScore: 100, threshold: 75, categories: [], outputSchema: 'json' },
-        } as ValidatorRuntime,
+        } as AgentRuntime,
       });
 
       await executor.execute(defWithoutModel, { target: tmpDir });

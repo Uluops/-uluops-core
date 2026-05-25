@@ -258,14 +258,18 @@ export class RegistryClient {
     // Use API-provided normalized output; fall back to client-side if unavailable.
     // Validate the expected top-level section key before casting to catch malformed API responses.
     let definition: ResolvedDefinition['definition'];
+    const degradations: string[] = [];
     if (def.normalized && typeof def.normalized === 'object' && resolvedType in (def.normalized as Record<string, unknown>)) {
       definition = def.normalized as unknown as ResolvedDefinition['definition'];
     } else if (def.normalized) {
       this.logger.warn(`Remote normalized definition missing expected section '${resolvedType}'; falling back to local normalization`);
+      degradations.push('normalization-fallback');
       definition = def.yaml ? this.normalizeLocally(this.safeParseYaml(def.yaml, name)) : this.emptyDefinition();
+      if (!def.yaml) degradations.push('empty-definition');
     } else if (def.yaml) {
       definition = this.normalizeLocally(this.safeParseYaml(def.yaml, name));
     } else {
+      degradations.push('empty-definition');
       definition = this.emptyDefinition();
     }
 
@@ -276,10 +280,11 @@ export class RegistryClient {
       hash: def.hash,
       yaml: def.yaml ?? '',
       definition,
-      runtime: { prompt: rendered.markdown } as ResolvedDefinition['runtime'],
+      runtime: { prompt: rendered.markdown },
       domain: (def.domain ?? 'general') as ResolvedDefinition['domain'],
       agentType: (def.agentType ?? undefined) as ResolvedDefinition['agentType'],
       minSubscription: (def.minSubscription as ResolvedDefinition['minSubscription']) ?? undefined,
+      ...(degradations.length > 0 && { degradations }),
     };
   }
 

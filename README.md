@@ -323,6 +323,13 @@ const info = await client.describe('code-validator');
 console.log(info.name, info.version, info.interface);
 ```
 
+### Cache Management
+
+```typescript
+// Clear the definition resolution cache — call after registry updates in long-lived processes
+client.clearCache();
+```
+
 ### Validation Tracking
 
 Submit execution results, preview submissions, and query run history:
@@ -723,7 +730,6 @@ The `ToolHandler` restricts LLM file operations to the target directory:
 | Package | Purpose |
 |---------|---------|
 | `@uluops/sdk-core` | Shared HTTP infrastructure (HttpClient, errors, auth) |
-| `@uluops/definition-factory` | Definition normalization for local file resolution (`normalizeDefinition()`) |
 | `@uluops/registry-sdk` | Registry API client for definitions, models, and server-side normalization (`?normalize=true`) |
 | `@uluops/ops-sdk` | Validation tracking API client |
 | `ai` | Vercel AI SDK v6 - LLM communication and tool loops |

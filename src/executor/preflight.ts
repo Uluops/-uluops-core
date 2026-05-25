@@ -153,7 +153,7 @@ async function checkCommand(check: PreflightCheck): Promise<void> {
       `Preflight command "${baseCommand}" is not in the allowed command list. ` +
       `Allowed: ${ALLOWED_PREFLIGHT_COMMANDS.join(', ')}`,
       'command',
-      { command: check.command },
+      { command: baseCommand },
     );
   }
 
@@ -163,7 +163,7 @@ async function checkCommand(check: PreflightCheck): Promise<void> {
     throw new PreflightError(
       'Preflight command contains disallowed interpreter eval',
       'command',
-      { command: check.command },
+      { command: baseCommand },
     );
   }
 
@@ -178,7 +178,7 @@ async function checkCommand(check: PreflightCheck): Promise<void> {
       `Preflight command contains disallowed shell metacharacters. ` +
       `Commands must be simple (no chaining with ; && || or command substitution).`,
       'command',
-      { command: check.command },
+      { command: baseCommand },
     );
   }
 
