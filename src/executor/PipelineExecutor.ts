@@ -38,6 +38,7 @@ export class PipelineExecutor {
 
     const state: PipelineState = {
       pipelineId,
+      definitionName: def.pipeline.interface.name,
       definitionVersion: def.pipeline.interface.version,
       definitionHash: resolved.hash,
       minSubscription: resolved.minSubscription,
@@ -159,7 +160,34 @@ export class PipelineExecutor {
               toolCalls: agentResults.reduce((sum, r) => sum + (r.metrics.toolCallCount ?? 0), 0),
             },
           },
+          agentResults,
           durationMs: stageEnd,
+        };
+      }
+
+      // Steps-only stages (PDL shell preflight) — not yet executed by the engine.
+      // Treat as auto-pass so downstream stages can proceed.
+      if (!stage.ref && !stage.agents) {
+        this.logger.warn(`Stage "${stage.id}" has no ref or agents — treating as auto-pass`);
+        return {
+          id: stage.id,
+          name: stage.name,
+          type: 'command' as const,
+          status: 'completed',
+          result: {
+            type: 'command',
+            name: stage.name,
+            version: '1.0.0',
+            definitionHash: '',
+            agentType: 'analyst',
+            decision: 'PASS',
+            score: 100,
+            maxScore: 100,
+            recommendations: [],
+            durationMs: Date.now() - startTime,
+            metrics: { durationMs: Date.now() - startTime, model: 'none', toolCalls: 0, inputTokens: 0, outputTokens: 0, totalEffectiveTokens: 0 },
+          },
+          durationMs: Date.now() - startTime,
         };
       }
 
@@ -377,7 +405,7 @@ class PipelineHandle implements IPipelineHandle {
 
     return {
       type: 'pipeline',
-      name: this.state.pipelineId,
+      name: this.state.definitionName,
       version: this.state.definitionVersion,
       definitionHash: this.state.definitionHash,
       minSubscription: this.state.minSubscription,

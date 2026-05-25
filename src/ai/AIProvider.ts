@@ -195,12 +195,12 @@ export class AIProvider {
       && !(resolved.provider === 'google' && hasTools);
 
     // Reasoning models (o1, o3, o4-mini, gpt-5.x) don't support temperature —
-    // strip it to suppress repeated AI SDK warnings. Check both extendedThinking
-    // (SDK type) and reasoning (raw API field) since the registry may return either.
-    // Use a shallow copy instead of mutating the caller's options object.
-    // Check both SDK-typed field and raw API field (registry may return either)
+    // strip it to suppress repeated AI SDK warnings. Check capabilities
+    // (extendedThinking or reasoning) and tier ('reasoning') since the registry
+    // may signal reasoning capability through any of these fields.
     const isReasoning = resolved.capabilities.extendedThinking
-      || ('reasoning' in resolved.capabilities && (resolved.capabilities as Record<string, unknown>)['reasoning'] === true);
+      || ('reasoning' in resolved.capabilities && (resolved.capabilities as Record<string, unknown>)['reasoning'] === true)
+      || resolved.tier === 'reasoning';
 
     this.logPreGeneration(options, resolved, modelInput, useStructuredOutput);
 

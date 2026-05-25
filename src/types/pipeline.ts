@@ -1,4 +1,5 @@
 import type { ExecutionResult, ExecutionMetrics, Domain, SubscriptionTier } from './execution.js';
+import type { AgentResult } from './agent.js';
 import type { CommandResult } from './command.js';
 import type { WorkflowResult } from './workflow.js';
 
@@ -137,6 +138,9 @@ export interface StageResult {
   /** Result (command or workflow depending on stage type) */
   result?: CommandResult | WorkflowResult;
 
+  /** Individual agent results for inline-agent stages (preserved for tracker decomposition) */
+  agentResults?: AgentResult[];
+
   /** Reason if stage was skipped */
   skipReason?: string;
 
@@ -175,6 +179,9 @@ export interface PipelineArtifact {
 export interface PipelineState {
   /** Unique pipeline execution ID */
   pipelineId: string;
+
+  /** Definition name (e.g., 'peirce-pipeline') */
+  definitionName: string;
 
   /** Version of the pipeline definition being executed */
   definitionVersion: string;

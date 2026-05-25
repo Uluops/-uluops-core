@@ -3,6 +3,7 @@ import type { ResolvedConfig } from '../types/config.js';
 import type { ExecutionResult, ExecutionMetrics } from '../types/execution.js';
 import type { AgentResult } from '../types/agent.js';
 import type { WorkflowResult } from '../types/workflow.js';
+import type { PipelineResult } from '../types/pipeline.js';
 import type { CommandResult } from '../types/command.js';
 import type { RunSubmission, RunSubmissionResponse, RunHistoryEntry, SubmissionQueryOptions } from '../types/submission.js';
 import { AnalysisSummaryExtractor } from '../analysis/AnalysisSummaryExtractor.js';
@@ -150,19 +151,37 @@ export class SubmissionClient {
   private transformToOpsInput(submission: RunSubmission): Parameters<OpsClient['runs']['save']>[0] {
     const { result } = submission;
 
-    // Workflow/pipeline results: decompose phases into per-agent entries
+    // Workflow/pipeline results: decompose phases/stages into per-agent entries
     const agents = this.isWorkflowResult(result)
       ? this.extractWorkflowAgents(result)
-      : [this.resultToAgent(result)];
+      : this.isPipelineResult(result)
+        ? this.extractPipelineAgents(result)
+        : [this.resultToAgent(result)];
 
-    // Extract analysis summary and records when definition is available and result is an agent
+    // Extract analysis summary and records from agent results
     let analysisSummary: AnalysisSummaryInput | undefined;
     let analysisRecords: AnalysisRecordInput[] | undefined;
 
-    if (submission.resolvedDefinition && this.isAgentResult(result)) {
-      const analysis = this.analysisExtractor.extract(result as AgentResult, submission.resolvedDefinition);
-      analysisSummary = analysis.summary;
-      analysisRecords = analysis.records.length > 0 ? analysis.records : undefined;
+    if (submission.resolvedDefinition) {
+      if (this.isAgentResult(result)) {
+        const analysis = this.analysisExtractor.extract(result as AgentResult, submission.resolvedDefinition);
+        analysisSummary = analysis.summary;
+        analysisRecords = analysis.records.length > 0 ? analysis.records : undefined;
+      } else if (this.isPipelineResult(result)) {
+        // Extract analysis from each preserved AgentResult across pipeline stages
+        const allRecords: AnalysisRecordInput[] = [];
+        for (const stage of (result as PipelineResult).stages) {
+          if (stage.agentResults) {
+            for (const agent of stage.agentResults) {
+              const analysis = this.analysisExtractor.extract(agent, submission.resolvedDefinition);
+              if (analysis.records.length > 0) allRecords.push(...analysis.records);
+              // Use the first agent's summary as the run-level summary
+              if (!analysisSummary && analysis.summary) analysisSummary = analysis.summary;
+            }
+          }
+        }
+        if (allRecords.length > 0) analysisRecords = allRecords;
+      }
     }
 
     return {
@@ -217,7 +236,9 @@ export class SubmissionClient {
   extractAgents(result: ExecutionResult | AgentResult): Array<{ name: string; version?: string }> {
     const entries = this.isWorkflowResult(result)
       ? this.extractWorkflowAgents(result)
-      : [this.resultToAgent(result)];
+      : this.isPipelineResult(result)
+        ? this.extractPipelineAgents(result)
+        : [this.resultToAgent(result)];
     return entries.map(a => ({ name: a.name, version: a.definitionVersion }));
   }
 
@@ -243,6 +264,46 @@ export class SubmissionClient {
     }
 
     // Fallback: if no agents were extracted (all phases skipped), create a single entry
+    if (agents.length === 0) {
+      agents.push(this.resultToAgent(result));
+    }
+
+    return agents;
+  }
+
+  /**
+   * Check if a result is a PipelineResult with decomposable stages.
+   */
+  private isPipelineResult(result: ExecutionResult | AgentResult): result is PipelineResult {
+    return result.type === 'pipeline' && 'stages' in result && Array.isArray((result as PipelineResult).stages);
+  }
+
+  /**
+   * Extract individual agent entries from pipeline stages.
+   * Each stage contains a CommandResult or WorkflowResult — decompose into agent entries.
+   */
+  private extractPipelineAgents(result: PipelineResult): ReturnType<typeof this.resultToAgent>[] {
+    const agents: ReturnType<typeof this.resultToAgent>[] = [];
+
+    for (const stage of result.stages) {
+      if (stage.status === 'skipped' || !stage.result) continue;
+
+      // Prefer preserved individual agent results (inline-agent stages)
+      if (stage.agentResults && stage.agentResults.length > 0) {
+        for (const agent of stage.agentResults) {
+          agents.push(this.resultToAgent(agent));
+        }
+        continue;
+      }
+
+      // Fall back to stage-level decomposition
+      if (stage.type === 'workflow' && this.isWorkflowResult(stage.result as WorkflowResult)) {
+        agents.push(...this.extractWorkflowAgents(stage.result as WorkflowResult));
+      } else {
+        agents.push(this.commandToAgent(stage.result as CommandResult));
+      }
+    }
+
     if (agents.length === 0) {
       agents.push(this.resultToAgent(result));
     }

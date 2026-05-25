@@ -4,6 +4,19 @@ All notable changes to `@uluops/core` will be documented in this file.
 
 This project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.16.0] - 2026-05-25
+
+### Added
+
+- **Pipeline agent decomposition** — pipeline stages with inline agents (`type: 'agents'`) now preserve individual `AgentResult[]` on `StageResult.agentResults`. The submission client decomposes these into per-agent tracker entries instead of collapsing them into stage-level summaries. Dashboard now shows `confucius-analyst`, `laozi-analyst`, etc. instead of `Parallel Philosophical Analysis`.
+- **Pipeline analysis extraction** — structured analysis records are now extracted from each `AgentResult` within pipeline stages and submitted to the tracker. Previously analysis extraction only ran for single-agent results.
+- **Steps-only pipeline stage auto-pass** — PDL stages with `steps` but no `ref` or `agents` (e.g., shell preflight checks) are treated as auto-pass so downstream stages can proceed. Logged as a warning.
+
+### Fixed
+
+- **`PipelineResult.name` uses definition name** — pipeline results now report the definition name (e.g., `peirce-pipeline`) instead of the internal execution ID (`pipeline_1779739332318_a757fda2`). The `definitionName` field was added to `PipelineState`.
+- **Reasoning model temperature detection** — `isReasoning` now checks `resolved.tier === 'reasoning'` in addition to capability flags (`extendedThinking`, `reasoning`). Fixes temperature warnings for GPT-5.5 and other models where the registry signals reasoning via tier rather than capabilities.
+
 ## [0.15.2] - 2026-05-25
 
 ### Changed
