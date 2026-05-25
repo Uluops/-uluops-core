@@ -56,7 +56,7 @@ async function runSingleCheck(
     case 'path_exists':
       return checkFileExists(check, input);
     case 'command':
-      return checkCommand(check);
+      return checkCommand(check, input);
     case 'env_var':
       return checkEnvVar(check);
     case 'git_clean':
@@ -122,28 +122,35 @@ async function checkFileExists(
 /**
  * Run a shell command from a CDL preflight definition.
  *
- * SECURITY: The command string comes from the definition YAML file, which is
- * authored by the SDK user (not end-user input). It's passed to `sh -c` via
- * execFile's argv array (not shell-expanded), but the inner command IS
- * interpreted by sh. We reject commands that contain obvious injection
- * patterns from untrusted YAML.
+ * SECURITY MODEL: Preflight commands are prerequisite checks authored in CDL
+ * YAML by definition authors (supply-chain trust). The allowlist prevents
+ * accidental use of destructive or network-capable commands but does NOT
+ * sandbox command effects — allowed commands (git, grep, find, etc.) can still
+ * read arbitrary files accessible to the process.
+ *
+ * Defense layers:
+ *   1. Base-command allowlist (read-only/query commands only)
+ *   2. Interpreter eval rejection (node -e, python -c, etc.)
+ *   3. Shell metacharacter rejection (;, |, &&, $(), backticks)
+ *   4. $ARGUMENTS shell-quoting (CWE-78 prevention)
+ *
+ * Commands execute in the target directory (cwd = input.target) to match
+ * the execution context of file_exists and git_clean checks.
  */
-async function checkCommand(check: PreflightCheck): Promise<void> {
+async function checkCommand(check: PreflightCheck, input: ExecutionInput): Promise<void> {
   if (!check.command) {
     throw new PreflightError('command check requires a command', 'command');
   }
 
-  // Allowlist of commands permitted in preflight checks.
-  // Preflight commands come from operator-authored YAML definitions (supply-chain trust).
-  // An allowlist is more robust than a denylist — new dangerous patterns are blocked
-  // by default rather than requiring explicit enumeration.
+  // Allowlist restricted to read-only/query commands. Package managers (npm, pip),
+  // orchestrators (docker, kubectl), build tools (make, cargo), and interpreters
+  // (node, python) are excluded — they have broad side-effect authority that
+  // doesn't belong in prerequisite checks. None are used in any real CDL definition.
   const ALLOWED_PREFLIGHT_COMMANDS = [
     'test', '[', 'true', 'false', 'echo',
-    'git', 'npm', 'npx', 'node', 'pnpm', 'yarn', 'bun',
-    'python', 'python3', 'pip', 'pip3',
-    'grep', 'find', 'ls', 'cat', 'head', 'tail', 'wc', 'which', 'command',
-    'docker', 'kubectl',
-    'cargo', 'go', 'make', 'cmake',
+    'git',
+    'grep', 'find', 'ls', 'cat', 'head', 'tail', 'wc',
+    'which', 'command',
   ];
 
   // Extract the base command name (first token, strip any path prefix)
@@ -183,7 +190,7 @@ async function checkCommand(check: PreflightCheck): Promise<void> {
   }
 
   try {
-    await execFileAsync('sh', ['-c', check.command], { timeout: 10_000 });
+    await execFileAsync('sh', ['-c', check.command], { cwd: input.target, timeout: 10_000 });
   } catch (error) {
     throw new PreflightError(
       check.message ?? 'Preflight command check failed',

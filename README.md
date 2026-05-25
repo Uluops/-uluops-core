@@ -725,6 +725,17 @@ The `ToolHandler` restricts LLM file operations to the target directory:
 - Fail-closed on filesystem errors (dangling symlinks, race conditions)
 - macOS `/tmp` → `/private/tmp` symlink handling
 
+### Preflight Checks
+
+CDL command definitions can declare prerequisite checks (file existence, git state, tool availability) that run before agent execution. Preflight `command` checks:
+
+- Execute in the **target directory** (`cwd = input.target`), matching the execution context of `file_exists` and `git_clean` checks
+- Are restricted to a **read-only allowlist**: `test`, `git`, `grep`, `find`, `ls`, `cat`, `head`, `tail`, `wc`, `which`, `command`, and shell built-ins (`[`, `true`, `false`, `echo`)
+- Reject shell metacharacters (`;`, `|`, `&&`, `` ` ``, `$()`), interpreter eval flags (`-e`, `-c`), and chaining operators
+- Quote `$ARGUMENTS` substitutions via `shellQuote()` to prevent CWE-78 injection
+
+Package managers (`npm`, `pip`), orchestrators (`docker`, `kubectl`), build tools (`make`, `cargo`), and interpreters (`node`, `python`) are **not permitted** in preflight — they have broad side-effect authority that doesn't belong in prerequisite checks. The security boundary for preflight commands is supply-chain trust in the definition author, not runtime effect confinement.
+
 ## Dependencies
 
 | Package | Purpose |

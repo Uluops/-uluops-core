@@ -4,6 +4,15 @@ All notable changes to `@uluops/core` will be documented in this file.
 
 This project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.15.2] - 2026-05-25
+
+### Changed
+
+- **Preflight commands execute in target directory** — `checkCommand` now passes `cwd: input.target` to `execFileAsync`, matching the execution context of `file_exists` and `git_clean` checks. Previously commands ran in the CLI process's cwd.
+- **Preflight allowlist trimmed to read-only commands** — removed package managers (`npm`, `pip`), orchestrators (`docker`, `kubectl`), build tools (`make`, `cargo`), and interpreters (`node`, `python`). None were used in any CDL definition; their broad side-effect authority doesn't belong in prerequisite checks.
+- **Preflight security model documented** — README now includes a Preflight Checks section documenting the trust model, allowlist rationale, and defense layers. ARCHITECTURE.md boundary crossing updated to reflect cwd and trust model.
+- **Reasoning model temperature warnings suppressed** — `executeGeneration` omits `temperature` for reasoning models (o1, o3, gpt-5.x) instead of sending `undefined` which the AI SDK defaulted back to 0.
+
 ## [0.15.1] - 2026-05-25
 
 ### Fixed

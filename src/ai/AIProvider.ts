@@ -206,8 +206,7 @@ export class AIProvider {
 
     // 2. Execute LLM with tool loop
     try {
-      const generateOptions = isReasoning ? { ...options, temperature: undefined } : options;
-      const result = await this.executeGeneration(generateOptions, languageModel, system, providerOptions, useStructuredOutput);
+      const result = await this.executeGeneration(options, languageModel, system, providerOptions, useStructuredOutput, isReasoning);
       return this.buildGenerateResult(result, resolved, useStructuredOutput);
     } catch (error) {
       return this.handleGenerateError(error, resolved, useStructuredOutput, options.timeoutMs);
@@ -247,6 +246,7 @@ export class AIProvider {
     system: ReturnType<typeof this.buildSystemMessage>,
     providerOptions: ReturnType<typeof this.buildProviderOptions>,
     useStructuredOutput: boolean,
+    isReasoning = false,
   ) {
     let stepCount = 0;
     const budgetTracker = options.budgetTracker;
@@ -262,7 +262,7 @@ export class AIProvider {
       tools: options.tools,
       maxOutputTokens: options.maxTokens ?? DEFAULT_MAX_TOKENS,
       stopWhen: stepCountIs(maxSteps + (useStructuredOutput ? 2 : 0)),
-      temperature: options.temperature ?? 0,
+      ...(isReasoning ? {} : { temperature: options.temperature ?? 0 }),
       maxRetries: options.maxRetries,
       abortSignal: options.timeoutMs
         ? AbortSignal.timeout(options.timeoutMs)

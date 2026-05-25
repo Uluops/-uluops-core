@@ -76,6 +76,33 @@ describe('runPreflightChecks', () => {
       const checks: PreflightCheck[] = [{ check: 'command', command: cmd }];
       await expect(runPreflightChecks(checks, input)).rejects.toThrow('disallowed shell metacharacters');
     });
+
+    it('executes command in target directory', async () => {
+      // Write a marker file in tmpDir, then use test -f to verify cwd is target
+      await fs.writeFile(path.join(tmpDir, '.preflight-marker'), '');
+      const checks: PreflightCheck[] = [{ check: 'command', command: 'test -f .preflight-marker' }];
+      await expect(runPreflightChecks(checks, input)).resolves.toBeUndefined();
+    });
+
+    it.each([
+      'npm', 'npx', 'node', 'pnpm', 'yarn', 'bun',
+      'python', 'python3', 'pip', 'pip3',
+      'docker', 'kubectl',
+      'cargo', 'go', 'make', 'cmake',
+    ])('rejects broad-authority command: %s', async (cmd) => {
+      const checks: PreflightCheck[] = [{ check: 'command', command: `${cmd} --version` }];
+      await expect(runPreflightChecks(checks, input)).rejects.toThrow('not in the allowed command list');
+    });
+
+    it.each([
+      ['node -e', 'node -e "process.exit(0)"'],
+      ['python3 -c', 'python3 -c "print(1)"'],
+      ['bash -c', 'bash -c "echo hi"'],
+      ['bun --eval', 'bun --eval "1"'],
+    ])('rejects interpreter eval: %s', async (_label, cmd) => {
+      const checks: PreflightCheck[] = [{ check: 'command', command: cmd }];
+      await expect(runPreflightChecks(checks, input)).rejects.toThrow(PreflightError);
+    });
   });
 
   describe('env_var', () => {

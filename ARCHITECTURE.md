@@ -289,6 +289,6 @@ All external boundaries the execution chain crosses:
 | LLM Provider API (generation) | AIProvider.generate → generateText | Network + Auth |
 | Filesystem (tool fulfillment) | ToolHandler.fulfill per step | I/O |
 | Shell subprocess (bash/shell tool) | ShellExecutor | Process |
-| Shell subprocess (preflight commands) | preflight.checkCommand | Process |
+| Shell subprocess (preflight commands) | preflight.checkCommand (cwd=target) | Process (read-only allowlist, supply-chain trust) |
 | Tracker API (result submission) | ValidationClient → OpsClient | Network + Auth |
 | Registry API (execution recording) | registrySdk.executions.record | Network + Auth |
