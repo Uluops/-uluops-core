@@ -286,6 +286,7 @@ export class UluOpsClient {
     version: string;
     hash: string;
     interface: Record<string, unknown>;
+    riskProfile: Record<string, unknown> | null;
   }> {
     const resolved = await this.registry.resolve(name);
     return {
@@ -294,6 +295,7 @@ export class UluOpsClient {
       version: resolved.version,
       hash: resolved.hash,
       interface: this.extractInterface(resolved.definition),
+      riskProfile: resolved.riskProfile ?? null,
     };
   }
 

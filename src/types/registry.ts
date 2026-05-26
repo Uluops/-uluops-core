@@ -41,6 +41,9 @@ export interface ResolvedDefinition {
   /** Minimum subscription tier required to access this definition's content */
   minSubscription?: SubscriptionTier;
 
+  /** Safety analysis results — null when not yet analyzed */
+  riskProfile?: Record<string, unknown> | null;
+
   /** Degradation markers — tracks which fallback paths were taken during resolution */
   degradations?: string[];
 }

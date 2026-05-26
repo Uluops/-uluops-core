@@ -284,6 +284,7 @@ export class RegistryClient {
       domain: (def.domain ?? 'general') as ResolvedDefinition['domain'],
       agentType: (def.agentType ?? undefined) as ResolvedDefinition['agentType'],
       minSubscription: (def.minSubscription as ResolvedDefinition['minSubscription']) ?? undefined,
+      riskProfile: (def as unknown as Record<string, unknown>).riskProfile as ResolvedDefinition['riskProfile'] ?? null,
       ...(degradations.length > 0 && { degradations }),
     };
   }
