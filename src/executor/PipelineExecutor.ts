@@ -11,6 +11,7 @@ import { parseRef } from '../utils/parseRef.js';
 import { formatErrorMessage } from '../utils/formatError.js';
 import { sumTokenMetrics } from '../utils/sumTokenMetrics.js';
 import { classifyDecision } from './classifyDecision.js';
+import { aggregateScores } from '../utils/aggregateScores.js';
 import type { Logger } from '@uluops/sdk-core';
 
 /**
@@ -130,8 +131,10 @@ export class PipelineExecutor {
         const agentResults = await this.executeInlineAgents(stage.agents, input, options);
         // Exclude crashed agents (decision=FAIL, score=0) from average to prevent
         // one crash from poisoning the entire stage score (e.g., 1 pass at 90 + 2 crashes → 30).
-        const successScores = agentResults.filter(r => r.decision !== 'FAIL' || (r.score ?? 0) > 0).map(r => r.score ?? 0);
-        const avgScore = successScores.length > 0 ? successScores.reduce((a, b) => a + b, 0) / successScores.length : 0;
+        const successResults = agentResults.filter(r => r.decision !== 'FAIL' || (r.score ?? 0) > 0);
+        const avgScore = aggregateScores(
+          successResults.map(r => ({ key: r.name, score: r.score ?? null })),
+        );
 
         const stageEnd = Date.now() - startTime;
 
@@ -149,7 +152,7 @@ export class PipelineExecutor {
             definitionHash: '',
             agentType: 'analyst',
             decision: agentResults.every(r => r.decision !== 'FAIL') ? 'PASS' : 'FAIL',
-            score: Math.round(avgScore),
+            score: avgScore,
             maxScore: 100,
             recommendations: agentResults.flatMap(r => r.recommendations),
             durationMs: stageEnd,
@@ -390,13 +393,9 @@ class PipelineHandle implements IPipelineHandle {
   private buildResult(): PipelineResult {
     const durationMs = Date.now() - this.state.startTime;
 
-    const stageScores = this.state.stageResults
-      .map(s => s.result?.score)
-      .filter((score): score is number => score !== undefined);
-
-    const score = stageScores.length > 0
-      ? stageScores.reduce((a, b) => a + b, 0) / stageScores.length
-      : 0;
+    const score = aggregateScores(
+      this.state.stageResults.map(s => ({ key: s.id, score: s.result?.score ?? null })),
+    );
 
     const recommendations = this.state.stageResults
       .flatMap(s => s.result?.recommendations ?? []);
