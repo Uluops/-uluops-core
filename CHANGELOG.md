@@ -4,6 +4,16 @@ All notable changes to `@uluops/core` will be documented in this file.
 
 This project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.17.0] - 2026-05-27
+
+### Added
+
+- **`riskProfile` on `ResolvedDefinition`** — definitions resolved from the registry now include safety scan results (risk level, signals, scanner version) when available. Also surfaced in `describe()` output.
+
+### Changed
+
+- **`PipelineExecutor` uses shared `aggregateScores` utility** — pipeline and workflow score aggregation consolidated into a single path, eliminating duplicate averaging logic.
+
 ## [0.16.0] - 2026-05-25
 
 ### Added
