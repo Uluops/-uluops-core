@@ -4,6 +4,12 @@ All notable changes to `@uluops/core` will be documented in this file.
 
 This project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.17.1] - 2026-05-27
+
+### Fixed
+
+- **Submission URL corrected** — default submission URL changed from `https://api.uluops.ai/api/v1/ops` to `https://api.uluops.ai/api/v1`.
+
 ## [0.17.0] - 2026-05-27
 
 ### Added

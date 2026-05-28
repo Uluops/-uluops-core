@@ -87,7 +87,7 @@ export interface UluOpsConfig {
 
   /**
    * Base URL for uluops submission API
-   * @default "https://api.uluops.ai/api/v1/ops"
+   * @default "https://api.uluops.ai/api/v1"
    */
   submissionUrl?: string;
 

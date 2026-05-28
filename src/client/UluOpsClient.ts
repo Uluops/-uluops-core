@@ -364,7 +364,7 @@ export class UluOpsClient {
     }
 
     const registryUrl = config.registryUrl ?? process.env['ULUOPS_REGISTRY_URL'] ?? 'https://api.uluops.ai/api/v1/registry';
-    const submissionUrl = config.submissionUrl ?? process.env['ULUOPS_SUBMISSION_URL'] ?? 'https://api.uluops.ai/api/v1/ops';
+    const submissionUrl = config.submissionUrl ?? process.env['ULUOPS_SUBMISSION_URL'] ?? 'https://api.uluops.ai/api/v1';
     const dashboardUrl = config.dashboardUrl ?? process.env['ULUOPS_DASHBOARD_URL'] ?? 'https://app.uluops.ai';
 
     // Enforce HTTPS when a real API key is present to prevent credential exfiltration.

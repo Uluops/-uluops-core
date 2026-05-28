@@ -311,7 +311,7 @@ describe('UluOpsClient', () => {
 
       const config = constructorArgs(RegistryClient as unknown as ReturnType<typeof vi.fn>)[0] as Record<string, unknown>;
       expect(config.registryUrl).toBe('https://api.uluops.ai/api/v1/registry');
-      expect(config.submissionUrl).toBe('https://api.uluops.ai/api/v1/ops');
+      expect(config.submissionUrl).toBe('https://api.uluops.ai/api/v1');
       expect(config.dashboardUrl).toBe('https://app.uluops.ai');
     });
 

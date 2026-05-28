@@ -561,7 +561,7 @@ const client = new UluOpsClient({
 | `GOOGLE_API_KEY` | Google/Gemini provider key | - |
 | `GOOGLE_GENERATIVE_AI_API_KEY` | Google provider key (alternative) | - |
 | `ULUOPS_REGISTRY_URL` | Registry API URL | `https://api.uluops.ai/api/v1/registry` |
-| `ULUOPS_SUBMISSION_URL` | Submission API URL | `https://api.uluops.ai/api/v1/ops` |
+| `ULUOPS_SUBMISSION_URL` | Submission API URL | `https://api.uluops.ai/api/v1` |
 | `ULUOPS_TRACKING_ENABLED` | Auto-submit results | `true` |
 | `ULUOPS_PROJECT` | Default project name | - |
 | `ULUOPS_LOCAL_DEFINITIONS` | Local definitions path | - |
