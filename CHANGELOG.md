@@ -4,6 +4,14 @@ All notable changes to `@uluops/core` will be documented in this file.
 
 This project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.18.0] - 2026-06-01
+
+### Changed
+
+- Bumps `@uluops/sdk-core` to `0.11.0` (exact pin), `@uluops/ops-sdk` to `3.0.0`
+  (exact pin), `@uluops/registry-sdk` to `0.30.0` (exact pin). Aligns with the
+  sdk-core schema-removal cascade; no code changes in core itself.
+
 ## [0.17.1] - 2026-05-27
 
 ### Fixed
