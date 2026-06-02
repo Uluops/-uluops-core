@@ -4,6 +4,20 @@ All notable changes to `@uluops/core` will be documented in this file.
 
 This project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.18.1] - 2026-06-01
+
+### Fixed
+
+- **Repair broken dependency references in published `0.18.0` manifest.** `0.18.0` was published pinning `@uluops/ops-sdk: 3.0.0` and `@uluops/registry-sdk: 0.30.0`, both of which were later unpublished from the npm registry. As a result, every fresh `npm install` of `@uluops/core@0.18.0` failed with `ETARGET No matching version found`. This release re-pins to currently-published versions (`ops-sdk: 3.0.5`, `registry-sdk: 0.30.2`).
+
+### Security
+
+- **Bump `@uluops/sdk-core` from `0.11.0` to `0.11.1`.** Pulls in today's sdk-core security hardening: `redirect: 'error'` on all fetch sites (CRLF/credential-replay on auth redirects), control-character stripping in error messages (`stripControlChars` + `SdkApiError` constructor), widened `SENSITIVE_KEYS` (x-api-key, set-cookie, proxy-authorization, x-auth-token), added `column` to `REDACTED_DETAIL_KEYS`, and `sanitizeString` coverage for URL userinfo + bare JWT shapes. See `@uluops/sdk-core` CHANGELOG 0.11.1.
+
+### Supply chain
+
+- **Pin all dependencies and devDependencies to exact versions.** Per the new UluOps-wide exact-pinning policy adopted 2026-06-01 in response to the RedHat-class supply-chain attack pattern. `@ai-sdk/*`, `ai`, `glob`, `yaml`, `zod`, and all devDeps stripped of caret ranges. Lockfile re-aligned to actually-tested resolutions.
+
 ## [0.18.0] - 2026-06-01
 
 ### Changed
