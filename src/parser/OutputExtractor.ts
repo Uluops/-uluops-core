@@ -141,9 +141,23 @@ export class OutputExtractor {
     options: ExtractionOptions,
   ): unknown | null {
     const lang = options.codeFenceLanguage ?? 'json';
-    const pattern = new RegExp(`\`\`\`(?:${lang})?\\s*\\n([\\s\\S]*?)\\n\`\`\``, 'g');
-
-    const matches = [...content.matchAll(pattern)];
+    // Prefer the disambiguated fence (introduced by report-mode invocations) so
+    // example ```${lang} blocks in prose cannot claim the last-match. Fall back
+    // to the legacy pattern for non-report-mode invocations that emit only one
+    // ```${lang} fence at the end of the output.
+    const discriminatedPattern = new RegExp(
+      `\`\`\`${lang}\\s+analysis\\s*\\n([\\s\\S]*?)\\n\`\`\``,
+      'g',
+    );
+    const legacyPattern = new RegExp(
+      `\`\`\`(?:${lang})?\\s*\\n([\\s\\S]*?)\\n\`\`\``,
+      'g',
+    );
+    const discriminatedMatches = [...content.matchAll(discriminatedPattern)];
+    const matches =
+      discriminatedMatches.length > 0
+        ? discriminatedMatches
+        : [...content.matchAll(legacyPattern)];
     if (matches.length === 0) return null;
 
     const lastMatch = matches[matches.length - 1];

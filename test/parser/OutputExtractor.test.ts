@@ -47,6 +47,58 @@ After further analysis:
       expect(result.method).toBe('json_code_fence');
       expect(result.output.decision).toBe('PASS');
     });
+
+    // ── v0.1.1: ```json analysis discriminator (report-mode marker) ──────
+    // The discriminator fence is emitted by agents under @uluops/cli's --report
+    // mode. extractFromCodeFence must prefer it over a plain ```json fence so
+    // that illustrative ```json blocks in the prose body cannot claim the
+    // last-match. See agent-reporting-spec-v0_1_1.md Phase 0.3b.
+
+    it('parses ```json analysis discriminator fence (report-mode marker)', () => {
+      const content = `# Wittgensteinian Report\n\nProse analysis here...\n\n\`\`\`json analysis
+{"decision": "CLEAR", "score": 88, "maxScore": 100}
+\`\`\`\n`;
+      const result = extractor.extractWithMetadata(content, 'analyst');
+      expect(result.method).toBe('json_code_fence');
+      expect(result.confidence).toBe(0.95);
+      expect(result.output.decision).toBe('CLEAR');
+      expect(result.output.score).toBe(88);
+    });
+
+    it('prefers ```json analysis discriminator over an earlier illustrative ```json block', () => {
+      // The case the discriminator exists to prevent: an analyst includes a
+      // ```json example block in their prose, then ends with the canonical
+      // ```json analysis block. Without the discriminator-first match, the
+      // last-match regex would consume the example. With it, the canonical
+      // block wins regardless of position.
+      const content = `# Report\n\nHere is an example payload:\n\n\`\`\`json
+{"example": "this is an illustrative payload"}
+\`\`\`\n\nAnd the canonical block:\n\n\`\`\`json analysis
+{"decision": "CLEAR", "score": 90, "maxScore": 100}
+\`\`\`\n`;
+      const result = extractor.extractWithMetadata(content, 'analyst');
+      expect(result.method).toBe('json_code_fence');
+      expect(result.output.decision).toBe('CLEAR');
+      expect(result.output.score).toBe(90);
+      // Critical: the example payload's keys ("example") must NOT appear in
+      // the parsed output — the canonical block won.
+      expect(result.output as Record<string, unknown>).not.toHaveProperty(
+        'example',
+      );
+    });
+
+    it('falls back to legacy ```json fence when no discriminator present (regression guard)', () => {
+      // Non-report-mode invocations emit only a plain ```json fence. This
+      // pre-existing path must continue to work bit-for-bit.
+      const content = `Some analysis...\n\n\`\`\`json
+{"decision": "PASS", "score": 75}
+\`\`\``;
+      const result = extractor.extractWithMetadata(content, 'validator');
+      expect(result.method).toBe('json_code_fence');
+      expect(result.confidence).toBe(0.95);
+      expect(result.output.decision).toBe('PASS');
+      expect(result.output.score).toBe(75);
+    });
   });
 
   describe('inline JSON extraction', () => {

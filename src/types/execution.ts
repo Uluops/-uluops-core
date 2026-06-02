@@ -166,6 +166,15 @@ export interface ExecutionOptions {
   /** Submit results to validation service (default: true) */
   trackResults?: boolean;
 
+  /**
+   * Report mode flag. When true, AgentExecutor omits the structured output
+   * schema from the AI SDK call, freeing the model to honor a publication-mode
+   * prompt directive (used by @uluops/cli's `--report` flag). Defaults to
+   * false. Mutually exclusive with `trackResults: true` in CLI usage — the CLI
+   * forces `trackResults: false` whenever it sets `reportMode: true`.
+   */
+  reportMode?: boolean;
+
   /** Project name for result tracking */
   project?: string;
 
@@ -198,6 +207,9 @@ export interface ResolvedExecutionContext {
 
   /** Whether to track results */
   trackResults: boolean;
+
+  /** Whether the run is in report mode (structured-output enforcement gated off) */
+  reportMode: boolean;
 
   /** Project for tracking */
   project?: string;

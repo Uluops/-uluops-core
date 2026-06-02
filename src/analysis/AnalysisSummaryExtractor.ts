@@ -112,7 +112,13 @@ export class AnalysisSummaryExtractor {
   private parseAnalysisBlock(rawOutput?: string): AgentAnalysisBlock | null {
     if (!rawOutput) return null;
 
-    const jsonMatch = rawOutput.match(/```json\n([\s\S]*?)```/);
+    // Prefer the disambiguated fence (introduced by report-mode invocations) so that
+    // example ```json blocks in the prose body never claim the canonical match.
+    // Fall back to the plain fence to preserve compatibility with non-report-mode
+    // invocations that emit a single trailing ```json block.
+    const jsonMatch =
+      rawOutput.match(/```json analysis\n([\s\S]*?)```/) ??
+      rawOutput.match(/```json\n([\s\S]*?)```/);
     if (!jsonMatch) return null;
 
     try {

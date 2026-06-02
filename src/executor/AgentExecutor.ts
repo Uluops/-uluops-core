@@ -19,6 +19,21 @@ import type { Logger } from '@uluops/sdk-core';
 import { DEFAULT_PASS_THRESHOLD, DEFAULT_WARN_THRESHOLD, DEFAULT_MAX_STEPS, DEFAULT_MAX_TOKENS, DEFAULT_MODEL_ALIAS } from '../constants.js';
 
 /**
+ * Maximum bytes retained from the LLM's raw text output on AgentResult.rawOutput.
+ *
+ * Raised from 32 KiB to 512 KiB in v0.1.0 of agent reporting to support the
+ * `--report` flag on `ulu exec agent`. Empirically observed publication-quality
+ * reports range 33–208 KB; 512 KiB leaves comfortable headroom while still
+ * bounding pathological output (e.g., runaway loops that emit megabytes).
+ *
+ * Note: AnalysisSummaryExtractor.parseAnalysisBlock regexes a ```json fence
+ * out of rawOutput. Lifting this ceiling improves — never degrades — its
+ * ability to find the fence, because previous truncation at 32K frequently
+ * clipped the closing ```.
+ */
+const MAX_RAW_OUTPUT_BYTES = 512 * 1024;
+
+/**
  * Primary executor for single-agent runs.
  *
  * Orchestrates:
@@ -87,7 +102,14 @@ export class AgentExecutor {
       contextBudget: this.config.contextBudget,
       maxRetries: this.config.maxRetries,
       budgetTracker: toolAdapter.budgetTracker,
-      output: { schema: agentOutputSchema, name: 'AgentResult' },
+      // Report mode disables structured-output enforcement so a publication-mode
+      // prompt directive (set by @uluops/cli's --report flag) can take effect.
+      // Without this gate, OpenAI's strict json_schema mode forces JSON-only
+      // output regardless of the directive. See agent-reporting-spec-v0_1_1.md
+      // Phase 4.3 for the full rationale.
+      ...(context.reportMode
+        ? {}
+        : { output: { schema: agentOutputSchema, name: 'AgentResult' } }),
     });
 
     // 3. Parse and extract output
@@ -272,7 +294,7 @@ export class AgentExecutor {
       durationMs,
       summary: parsed.summary,
       metrics,
-      rawOutput: rawText ? (rawText.length > 32_768 ? rawText.substring(0, 32_768) : rawText) : undefined,
+      rawOutput: rawText ? (rawText.length > MAX_RAW_OUTPUT_BYTES ? rawText.substring(0, MAX_RAW_OUTPUT_BYTES) : rawText) : undefined,
       extractionMethod: extraction.method,
       extractionConfidence: extraction.confidence,
       degradations: resolved.degradations,
@@ -302,6 +324,7 @@ export class AgentExecutor {
         defaults && 'thresholds' in defaults ? defaults.thresholds : undefined,
       ),
       trackResults: options?.trackResults ?? this.config.trackingEnabled,
+      reportMode: options?.reportMode ?? false,
       project: options?.project ?? this.config.defaultProject,
     };
   }

@@ -561,4 +561,66 @@ describe('AgentExecutor', () => {
       expect(result.name).toBe('test-validator');
     });
   });
+
+  // ── v0.1.1: reportMode gating ──────────────────────────────────────────
+  // Report mode disables AI SDK structured-output enforcement so a publication-
+  // mode prompt directive (@uluops/cli's --report flag) can take effect.
+  // See agent-reporting-spec-v0_1_1.md Phase 4.3 for the full rationale.
+
+  describe('reportMode (v0.1.1)', () => {
+    it('passes output schema to aiProvider.generate by default (non-report-mode)', async () => {
+      const ai = mockAIProvider();
+      const executor = new AgentExecutor(baseConfig, ai, noopLogger);
+
+      await executor.execute(makeValidatorDef(), { target: tmpDir });
+
+      const generateCall = (ai.generate as ReturnType<typeof vi.fn>).mock.calls[0]?.[0];
+      expect(generateCall).toBeDefined();
+      expect(generateCall).toHaveProperty('output');
+      expect(generateCall.output).toMatchObject({ name: 'AgentResult' });
+    });
+
+    it('omits output schema from aiProvider.generate when reportMode is true', async () => {
+      const ai = mockAIProvider();
+      const executor = new AgentExecutor(baseConfig, ai, noopLogger);
+
+      await executor.execute(
+        makeValidatorDef(),
+        { target: tmpDir },
+        { reportMode: true },
+      );
+
+      const generateCall = (ai.generate as ReturnType<typeof vi.fn>).mock.calls[0]?.[0];
+      expect(generateCall).toBeDefined();
+      expect(generateCall).not.toHaveProperty('output');
+    });
+
+    it('passes output schema when reportMode is explicitly false', async () => {
+      const ai = mockAIProvider();
+      const executor = new AgentExecutor(baseConfig, ai, noopLogger);
+
+      await executor.execute(
+        makeValidatorDef(),
+        { target: tmpDir },
+        { reportMode: false },
+      );
+
+      const generateCall = (ai.generate as ReturnType<typeof vi.fn>).mock.calls[0]?.[0];
+      expect(generateCall).toHaveProperty('output');
+    });
+
+    it('passes output schema when reportMode is undefined (default)', async () => {
+      const ai = mockAIProvider();
+      const executor = new AgentExecutor(baseConfig, ai, noopLogger);
+
+      await executor.execute(
+        makeValidatorDef(),
+        { target: tmpDir },
+        {}, // no reportMode field
+      );
+
+      const generateCall = (ai.generate as ReturnType<typeof vi.fn>).mock.calls[0]?.[0];
+      expect(generateCall).toHaveProperty('output');
+    });
+  });
 });

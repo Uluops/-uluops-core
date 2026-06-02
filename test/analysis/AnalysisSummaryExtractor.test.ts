@@ -552,5 +552,53 @@ describe('AnalysisSummaryExtractor', () => {
         confidence: 'medium', groundingRatio: 0.7, keyUncertainties: null, methodology: null,
       });
     });
+
+    it('parses the ```json analysis discriminator fence (report-mode marker)', () => {
+      // Report-mode invocations instruct the agent to emit ```json analysis instead
+      // of plain ```json so an earlier illustrative fence in the prose cannot claim
+      // the canonical match. The extractor must accept this marker as equivalent.
+      const reportModeFence = `# Wittgensteinian Report\n\nProse analysis here...\n\n\`\`\`json analysis\n${JSON.stringify({
+        agent: { name: 'test-validator' },
+        result: { score: 88, decision: 'CLEAR' },
+        categories: [],
+        analysis: {
+          records: [
+            { recordType: 'commitment', recordId: 'R-1', title: 'Discriminator parsed', data: { status: 'OK' } },
+          ],
+        },
+      })}\n\`\`\`\n`;
+      const result = makeAgentResult({ rawOutput: reportModeFence });
+      const resolved = makeResolvedDefinition();
+      const { records } = extractor.extract(result, resolved);
+
+      expect(records).toHaveLength(1);
+      expect(records[0].recordId).toBe('R-1');
+      expect(records[0].agentName).toBe('test-validator');
+    });
+
+    it('prefers the ```json analysis discriminator over an earlier ```json example in prose', () => {
+      // The case the discriminator exists to prevent: an analyst includes a ```json
+      // example block in their prose, then ends with the canonical ```json analysis
+      // block. Without the discriminator the first-match regex would consume the
+      // example. With it, the canonical block wins.
+      const canonicalRecords = [
+        { recordType: 'commitment', recordId: 'CANONICAL', title: 'Canonical block', data: {} },
+      ];
+      const exampleBlock = '```json\n{"example": "this is an illustrative payload"}\n```';
+      const canonicalFence = `\`\`\`json analysis\n${JSON.stringify({
+        agent: { name: 'test-validator' },
+        result: { score: 90, decision: 'CLEAR' },
+        categories: [],
+        analysis: { records: canonicalRecords },
+      })}\n\`\`\``;
+      const rawOutput = `# Report\n\nHere is an example payload:\n\n${exampleBlock}\n\nAnd the canonical block:\n\n${canonicalFence}\n`;
+
+      const result = makeAgentResult({ rawOutput });
+      const resolved = makeResolvedDefinition();
+      const { records } = extractor.extract(result, resolved);
+
+      expect(records).toHaveLength(1);
+      expect(records[0].recordId).toBe('CANONICAL');
+    });
   });
 });

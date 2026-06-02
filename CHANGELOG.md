@@ -4,6 +4,27 @@ All notable changes to `@uluops/core` will be documented in this file.
 
 This project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.18.3] - 2026-06-02
+
+### Added
+
+- **`AgentExecutor` now supports report mode via `ExecutionOptions.reportMode`.** When set to `true`, the structured output schema is omitted from the AI SDK `generate()` call, freeing the model to produce free-form text (e.g., publication-quality reports). Without this, OpenAI's strict `json_schema` mode forces JSON-only output regardless of any prompt directive — see `agent-reporting-spec-v0_1_1.md` Phase 4 for the full rationale. Default is `false`; non-report-mode invocations are unaffected.
+
+### Changed
+
+- **`OutputExtractor.extractFromCodeFence` regex extended with discriminator-first chain.** Mirrors the `AnalysisSummaryExtractor` change from 0.18.2: prefers the disambiguated `\`\`\`json analysis` fence over the plain `\`\`\`json` fence, with legacy fallback. Necessary because v0.18.2's directive in `@uluops/cli`'s `--report` mode instructs agents to use the discriminator at the end of a prose report — and `OutputExtractor` is the primary parser populating `score`/`decision`/`categories`. Without this, report-mode runs produced `score: 0, decision: "UNKNOWN"` even when the discriminator was correctly emitted. Non-report-mode invocations continue to use the plain fence via fallback, fully backward compatible.
+
+### Internal
+
+- `ResolvedExecutionContext` now includes `reportMode: boolean` (resolved from `ExecutionOptions.reportMode ?? false` in `resolveContext`). Existing consumers that construct `ResolvedExecutionContext` literals must now provide this field; consumers that go through `resolveContext` are unaffected.
+
+## [0.18.2] - 2026-06-02
+
+### Changed
+
+- **`AgentResult.rawOutput` truncation cap raised from 32 KiB to 512 KiB.** Constant introduced as `MAX_RAW_OUTPUT_BYTES` in `executor/AgentExecutor.ts`. Publication-quality reports (33–208 KB observed empirically when `@uluops/cli`'s `--report` flag is used) were previously clipped — frequently mid-JSON, which also broke `AnalysisSummaryExtractor.parseAnalysisBlock` regex matching. Lifting the cap strictly improves both the report-on-disk flow and the analysis-block extraction flow that feeds tracker submissions. 512 KiB bounds pathological output (e.g., runaway loops) while leaving comfortable headroom for normal reports.
+- **`AnalysisSummaryExtractor.parseAnalysisBlock` regex extended to match `\`\`\`json analysis` discriminator with fallback to plain `\`\`\`json`.** Necessary for report-mode invocations from `@uluops/cli` 0.12.2+, where the agent's prose may contain illustrative `\`\`\`json` blocks before the canonical analysis fence. The discriminator gives the extractor an unambiguous anchor; legacy non-report-mode invocations continue to use the plain fence unchanged.
+
 ## [0.18.1] - 2026-06-01
 
 ### Fixed
