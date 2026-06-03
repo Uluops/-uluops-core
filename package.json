@@ -1,6 +1,6 @@
 {
   "name": "@uluops/core",
-  "version": "0.18.3",
+  "version": "0.18.4",
   "description": "The foundational execution engine for UluOps. Orchestrates AI-powered code analysis through a 4-layer execution hierarchy (Agent > Command > Workflow > Pipeline), manages LLM tool loops via Vercel AI SDK, and integrates with UluOps Registry and Validation services.",
   "type": "module",
   "main": "dist/index.js",
@@ -52,7 +52,7 @@
     "@ai-sdk/anthropic": "3.0.39",
     "@ai-sdk/google": "3.0.31",
     "@ai-sdk/openai": "3.0.33",
-    "@uluops/ops-sdk": "3.0.5",
+    "@uluops/ops-sdk": "3.1.0",
     "@uluops/registry-sdk": "0.30.2",
     "@uluops/sdk-core": "0.11.1",
     "ai": "6.0.77",

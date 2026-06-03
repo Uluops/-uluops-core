@@ -45,7 +45,7 @@ export class SubmissionClient {
       runId: response.run.id,
       runNumber: response.run.runNumber,
       projectId: response.run.projectId,
-      dashboardUrl: `${this.config.dashboardUrl}/runs/${response.run.id}`,
+      dashboardUrl: this.buildDashboardUrl(response.run),
       allGatesPassed: response.run.allGatesPassed,
       averageScore: response.run.averageScore ?? 0,
       correlation: {
@@ -121,7 +121,7 @@ export class SubmissionClient {
       runId: run.id,
       runNumber: run.runNumber,
       projectId: run.projectId,
-      dashboardUrl: `${this.config.dashboardUrl}/runs/${run.id}`,
+      dashboardUrl: this.buildDashboardUrl(run),
       allGatesPassed: run.allGatesPassed,
       averageScore: run.averageScore ?? 0,
       correlation: { newIssues: 0, recurringIssues: 0, regressions: 0 },
@@ -132,6 +132,23 @@ export class SubmissionClient {
   // ─────────────────────────────────────────────────────────────────────────────
   // Private Methods
   // ─────────────────────────────────────────────────────────────────────────────
+
+  /**
+   * Build the dashboard URL for a saved run.
+   *
+   * Canonical path is `/orgs/<orgSlug>/<projectSlug>/runs/<runId>` — there is
+   * no top-level `/runs/<id>` route on the dashboard. We need both slugs from
+   * the API response to construct a working link. When either is missing
+   * (older API that predates the slug fields), fall back to the run-id-only
+   * path; it will 404, but that's strictly better than printing an invented
+   * URL that silently misroutes.
+   */
+  private buildDashboardUrl(run: { id: string; projectSlug?: string; orgSlug?: string | null }): string {
+    if (run.projectSlug && run.orgSlug) {
+      return `${this.config.dashboardUrl}/orgs/${run.orgSlug}/${run.projectSlug}/runs/${run.id}`;
+    }
+    return `${this.config.dashboardUrl}/runs/${run.id}`;
+  }
 
   /**
    * Determine if a decision is positive using decisionCategory (agents) or raw string fallback.

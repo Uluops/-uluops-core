@@ -116,6 +116,31 @@ describe('SubmissionClient', () => {
       expect(response.deduplicated).toBe(false);
     });
 
+    it('builds canonical dashboard URL with org and project slugs', async () => {
+      mockSave.mockResolvedValueOnce({
+        run: {
+          id: 'run-abc',
+          projectId: 'proj-456',
+          runNumber: 9,
+          workflowType: 'agent',
+          allGatesPassed: true,
+          averageScore: 82,
+          projectSlug: '-uluops-core',
+          orgSlug: 'system',
+        },
+        agents: [],
+        correlation: { newIssues: 0, recurringIssues: 0, regressions: 0 },
+        deduplicated: false,
+      });
+
+      const client = new SubmissionClient(baseConfig);
+      const response = await client.submit(makeSubmission());
+
+      expect(response.dashboardUrl).toBe(
+        'https://app.example.com/orgs/system/-uluops-core/runs/run-abc',
+      );
+    });
+
     it('transforms execution result to ops input format', async () => {
       mockSave.mockResolvedValueOnce({
         run: { id: 'r', projectId: 'p', runNumber: 1, allGatesPassed: true, averageScore: 85 },
