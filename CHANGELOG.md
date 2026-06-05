@@ -4,6 +4,16 @@ All notable changes to `@uluops/core` will be documented in this file.
 
 This project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.18.5] - 2026-06-05
+
+### Added
+
+- **`UluOpsClient.describe()` now accepts optional `version` and `type` parameters.** Forwards them to `RegistryClient.resolve()` so callers can disambiguate definitions whose names exist across multiple types (e.g., `socrates-explorer` registered as both `agent` and `command`). Previously the method took only `name`, leaving consumers — including `@uluops/cli`'s `ulu exec describe` — unable to act on the SDK's own "Specify type explicitly" error guidance. Backward compatible: both new params are optional and unused calls behave identically.
+
+### Internal
+
+- New test in `UluOpsClient.test.ts` verifies `describe(name, version, type)` forwards all three positional args to `registry.resolve`.
+
 ## [0.18.3] - 2026-06-02
 
 ### Added

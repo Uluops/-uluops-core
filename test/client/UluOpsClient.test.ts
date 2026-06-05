@@ -1142,6 +1142,21 @@ describe('UluOpsClient', () => {
       expect(info.interface).toHaveProperty('name', 'code-validator');
     });
 
+    it('describe() forwards version and type to registry.resolve for disambiguation', async () => {
+      const client = new UluOpsClient({ apiKey: 'ulr_test-key' });
+      mockRegistryResolve.mockResolvedValue(
+        makeResolvedDef('command', 'socrates-explorer'),
+      );
+
+      await client.describe('socrates-explorer', '1.0.0', 'command');
+
+      expect(mockRegistryResolve).toHaveBeenCalledWith(
+        'socrates-explorer',
+        '1.0.0',
+        'command',
+      );
+    });
+
     it('describe() returns {} for malformed definition', async () => {
       const client = new UluOpsClient({ apiKey: 'ulr_test-key' });
       mockRegistryResolve.mockResolvedValue({

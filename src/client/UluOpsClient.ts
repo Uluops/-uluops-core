@@ -278,9 +278,15 @@ export class UluOpsClient {
   /**
    * Inspect a definition's metadata and interface.
    * @param name - Definition name, optionally with version suffix (e.g. "code-validator@1.2.0")
+   * @param version - Optional explicit version (overrides any suffix in `name`)
+   * @param type - Optional definition type to disambiguate when the same name exists across types
    * @returns Resolved definition metadata including type, version, hash, and interface
    */
-  async describe(name: string): Promise<{
+  async describe(
+    name: string,
+    version?: string,
+    type?: DefinitionType,
+  ): Promise<{
     type: DefinitionType;
     name: string;
     version: string;
@@ -288,7 +294,7 @@ export class UluOpsClient {
     interface: Record<string, unknown>;
     riskProfile: Record<string, unknown> | null;
   }> {
-    const resolved = await this.registry.resolve(name);
+    const resolved = await this.registry.resolve(name, version, type);
     return {
       type: resolved.type,
       name: resolved.name,
