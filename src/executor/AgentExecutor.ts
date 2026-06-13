@@ -4,6 +4,7 @@ import { ToolHandler, extToLanguage } from './ToolHandler.js';
 import { ToolAdapter } from '../ai/ToolAdapter.js';
 import { TokenBudgetTracker } from '../ai/TokenBudgetTracker.js';
 import { OutputExtractor } from '../parser/OutputExtractor.js';
+import { deriveContextBudget } from '../ai/contextBudget.js';
 import { agentOutputSchema } from '../parser/outputSchemas.js';
 import { ExecutionError } from '../errors/index.js';
 import { classifyDecision, buildVocabularyMap, type DecisionCategory } from './classifyDecision.js';
@@ -85,8 +86,21 @@ export class AgentExecutor {
     const context = this.resolveContext(resolved, options);
     this.logger.debug(`Context: model=${context.model}, maxSteps=${context.maxSteps}, temp=${context.temperature}, timeout=${context.timeoutMs}ms`);
 
+    // Reconcile the context budget against the resolved model's real window.
+    // Resolve with the same precedence generate() uses (modelOverride wins) so the
+    // window — and thus the effective budget — matches what generate() enforces.
+    const budgetModelInput = this.config.ai.modelOverride ?? context.model;
+    const resolvedForBudget = await this.aiProvider.resolveModel(budgetModelInput);
+    const effectiveBudget = deriveContextBudget({
+      modelWindow: resolvedForBudget.contextWindow,
+      operatorBudget: this.config.contextBudget,
+    });
+    this.logger.debug(
+      `Context budget: ${effectiveBudget} (window=${resolvedForBudget.contextWindow ?? 'unknown'}, operator=${this.config.contextBudget ?? 'unset'})`,
+    );
+
     const runtime = this.assertAgentRuntime(resolved);
-    const toolAdapter = await this.setupTools(runtime, input, options, context);
+    const toolAdapter = await this.setupTools(runtime, input, options, context, effectiveBudget);
 
     // 2. Execute LLM with tool loop
     const initialMessage = await this.buildInitialMessage(input, toolAdapter.toolHandler, agentType);
@@ -99,7 +113,7 @@ export class AgentExecutor {
       maxSteps: context.maxSteps,
       timeoutMs: context.timeoutMs,
       temperature: context.temperature,
-      contextBudget: this.config.contextBudget,
+      contextBudget: effectiveBudget,
       maxRetries: this.config.maxRetries,
       budgetTracker: toolAdapter.budgetTracker,
       // Report mode disables structured-output enforcement so a publication-mode
@@ -161,6 +175,7 @@ export class AgentExecutor {
     input: ExecutionInput,
     options: ExecutionOptions | undefined,
     context: ResolvedExecutionContext,
+    effectiveBudget: number,
   ) {
     const agentTools = runtime.interface?.tools;
     let additionalTools: ToolSet | undefined;
@@ -171,7 +186,7 @@ export class AgentExecutor {
     }
 
     const toolHandler = new ToolHandler(input.target, this.logger);
-    const budgetTracker = new TokenBudgetTracker(this.config.contextBudget);
+    const budgetTracker = new TokenBudgetTracker(effectiveBudget);
     const adapter = new ToolAdapter(toolHandler, additionalTools, budgetTracker);
 
     return { toolHandler, budgetTracker, adapter };

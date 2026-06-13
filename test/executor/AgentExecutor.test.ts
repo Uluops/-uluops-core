@@ -78,6 +78,15 @@ function mockAIProvider(overrides?: Partial<AIGenerateResult>): AIProvider {
       finishReason: 'stop',
       ...overrides,
     }),
+    resolveModel: vi.fn().mockResolvedValue({
+      provider: 'anthropic',
+      modelId: 'claude-sonnet-4-5-20250929',
+      providerModelId: 'claude-sonnet-4-5-20250929',
+      tier: 'premium',
+      capabilities: { tools: true },
+      contextWindow: 200_000,
+      resolvedFrom: 'sonnet',
+    }),
   } as unknown as AIProvider;
 }
 
@@ -508,6 +517,15 @@ describe('AgentExecutor', () => {
     it('propagates AI provider errors', async () => {
       const ai = {
         generate: vi.fn().mockRejectedValue(new Error('Rate limit exceeded')),
+        resolveModel: vi.fn().mockResolvedValue({
+          provider: 'anthropic',
+          modelId: 'claude-sonnet-4-5-20250929',
+          providerModelId: 'claude-sonnet-4-5-20250929',
+          tier: 'premium',
+          capabilities: { tools: true },
+          contextWindow: 200_000,
+          resolvedFrom: 'sonnet',
+        }),
       } as unknown as AIProvider;
       const executor = new AgentExecutor(baseConfig, ai, noopLogger);
 
@@ -566,6 +584,48 @@ describe('AgentExecutor', () => {
   // Report mode disables AI SDK structured-output enforcement so a publication-
   // mode prompt directive (@uluops/cli's --report flag) can take effect.
   // See agent-reporting-spec-v0_1_1.md Phase 4.3 for the full rationale.
+
+  describe('context budget reconciliation (Cluster A)', () => {
+    it('passes the model-window-derived effective budget to generate (sub-200k model)', async () => {
+      const ai = mockAIProvider();
+      // Model with a 128k window — below the 200k operator config → effective 128k.
+      (ai.resolveModel as ReturnType<typeof vi.fn>).mockResolvedValue({
+        provider: 'openai',
+        modelId: 'gpt-4.1-mini',
+        providerModelId: 'gpt-4.1-mini',
+        tier: 'standard',
+        capabilities: { tools: true },
+        contextWindow: 128_000,
+        resolvedFrom: 'gpt-4.1-mini',
+      });
+      const executor = new AgentExecutor(baseConfig, ai, noopLogger);
+
+      await executor.execute(makeValidatorDef(), { target: tmpDir });
+
+      const generateCall = (ai.generate as ReturnType<typeof vi.fn>).mock.calls[0]?.[0];
+      expect(generateCall.contextBudget).toBe(128_000);
+    });
+
+    it('falls back to the operator budget when the model window is unknown', async () => {
+      const ai = mockAIProvider();
+      (ai.resolveModel as ReturnType<typeof vi.fn>).mockResolvedValue({
+        provider: 'anthropic',
+        modelId: 'unregistered',
+        providerModelId: 'unregistered',
+        tier: 'standard',
+        capabilities: { tools: true },
+        contextWindow: undefined,
+        resolvedFrom: 'unregistered',
+      });
+      const executor = new AgentExecutor(baseConfig, ai, noopLogger);
+
+      await executor.execute(makeValidatorDef(), { target: tmpDir });
+
+      const generateCall = (ai.generate as ReturnType<typeof vi.fn>).mock.calls[0]?.[0];
+      // baseConfig.contextBudget = 200_000
+      expect(generateCall.contextBudget).toBe(200_000);
+    });
+  });
 
   describe('reportMode (v0.1.1)', () => {
     it('passes output schema to aiProvider.generate by default (non-report-mode)', async () => {

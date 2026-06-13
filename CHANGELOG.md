@@ -4,6 +4,25 @@ All notable changes to `@uluops/core` will be documented in this file.
 
 This project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.19.0] - 2026-06-13
+
+### Added
+
+- **Per-model context-budget reconciliation.** The agent execution engine now sizes its context-budget guards against the resolved model's *real* context window (registry `limits.context`, surfaced via `@uluops/registry-sdk@0.32.0`) instead of a single static 200k. New `deriveContextBudget()` helper (`src/ai/contextBudget.ts`) applies the rule: an explicit operator `contextBudget` caps everything (`min(operator, window)`); otherwise the full model window is used; otherwise it falls back to `DEFAULT_CONTEXT_BUDGET` (200k) when the window is unknown. `ResolvedModel` now carries `contextWindow` (copied from `limits.context` at every resolution path; `0`/null treated as unknown). The derived budget drives both the 80% wrap-up guard and the 50% Anthropic eviction trigger, and is shared with the in-context `TokenBudgetTracker`.
+
+  Fixes the failure where sub-200k models (many GPT/Gemini at ~128k) had their wrap-up guard sitting *above* the hard limit — the run died on a provider HTTP 400 context overflow instead of degrading gracefully (tracker SEM-INC/H, PRA-FRA/H from run `8dde22ed`).
+
+- **Behavior change for large-window models.** Default-model runs on 1M-window models (e.g. `claude-opus-4-6`/`4-7`/`4-8`) now use up to the full 1M window (wrap-up at ~800k) unless an operator `contextBudget` is set. Set `contextBudget` to control cost/latency on large-window models.
+
+### Changed
+
+- `ResolvedConfig.contextBudget` is now optional (`number | undefined`). Undefined means "operator did not set one" — the engine then prefers the model window. The 200k default was moved out of `UluOpsClient` config resolution and into `deriveContextBudget` as the fallback, so an unset budget is distinguishable from an explicit `200000`.
+
+### Internal
+
+- Bumped `@uluops/registry-sdk` to `0.32.0` (exact) for the `Model.limits` field.
+- New tests: `contextBudget.test.ts` (derivation rule table), `ModelCatalog` window-copy cases, AIProvider window-sized eviction, and AgentExecutor end-to-end budget threading. Suite → 666.
+
 ## [0.18.5] - 2026-06-05
 
 ### Added

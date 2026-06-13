@@ -27,6 +27,14 @@ export interface ResolvedModel {
   /** Model capabilities */
   capabilities: ModelCapabilities;
 
+  /**
+   * Model's real context window in tokens (registry `limits.context`).
+   * Undefined when the registry has no window for this model (null/0 limit, or
+   * an unregistered model). Consumed by deriveContextBudget() to size the budget
+   * guards against the actual window rather than a static default.
+   */
+  contextWindow?: number;
+
   /** Original input that resolved to this model */
   resolvedFrom: string;
 }
@@ -163,6 +171,7 @@ export class ModelCatalog {
       providerModelId: model.providerModelId ?? model.modelId,
       tier: model.tier,
       capabilities: model.capabilities,
+      contextWindow: model.limits?.context || undefined,
       resolvedFrom: providerModelId,
     };
 
@@ -204,6 +213,7 @@ export class ModelCatalog {
       providerModelId: model.providerModelId ?? model.modelId,
       tier: model.tier,
       capabilities: model.capabilities,
+      contextWindow: model.limits?.context || undefined,
       resolvedFrom: tier,
     };
 
@@ -246,6 +256,7 @@ export class ModelCatalog {
       providerModelId: model?.providerModelId ?? targetParts[1] ?? alias.target,
       tier: model?.tier ?? 'standard',
       capabilities: model?.capabilities ?? DEFAULT_CAPABILITIES,
+      contextWindow: model?.limits?.context || undefined,
       resolvedFrom: input,
     };
   }

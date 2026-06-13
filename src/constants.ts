@@ -45,6 +45,12 @@ export const DEFAULT_MAX_STEPS = 50;
  * defaults.maxTokens or per-call via ExecutionOptions.maxTokens. */
 export const DEFAULT_MAX_TOKENS = 16384;
 
+/** Fallback context-window budget (tokens) used only when the resolved model's
+ * real window is unknown AND the operator did not set an explicit contextBudget.
+ * The model's actual window (registry `limits.context`) is preferred — see
+ * {@link deriveContextBudget} in ai/contextBudget.ts. */
+export const DEFAULT_CONTEXT_BUDGET = 200_000;
+
 /** Number of recent tool uses retained during Anthropic context management.
  * When context management clears old tool uses to stay within budget,
  * this many recent tool uses are kept. Recency-based heuristic — most recent

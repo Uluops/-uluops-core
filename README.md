@@ -539,7 +539,11 @@ const client = new UluOpsClient({
   defaultProject: 'my-project',       // Default project for result submission
   debug: false,                       // Detailed execution logging (or ULUOPS_DEBUG)
   defaultThinkingBudget: 10000,       // Extended thinking budget (Anthropic + Google models)
-  contextBudget: 200000,              // Context window budget — forces wrap-up at 80%, Anthropic context management at 50%
+  contextBudget: 200000,              // Optional cap on the context budget (forces wrap-up at 80%, Anthropic eviction at 50%).
+                                      // When unset, the engine uses the resolved model's real context window
+                                      // (registry `limits.context`) — e.g. 1M for Opus 4.6+, 128k for many GPT/Gemini —
+                                      // falling back to 200k only when the window is unknown. When set, it caps the
+                                      // budget at min(this, modelWindow). Set it to control cost on large-window models.
   dashboardUrl: 'https://app.uluops.ai', // Dashboard link prefix for run URLs
 
   // Security

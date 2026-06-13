@@ -478,6 +478,34 @@ describe('AIProvider', () => {
       expect(anthropicOpts.contextManagement.edits[0].trigger.value).toBe(100_000);
       expect(anthropicOpts.contextManagement.edits[0].keep.value).toBe(5);
     });
+
+    it('sizes the eviction trigger off the effective budget (model window), not the static config', async () => {
+      const { generateText } = await import('ai');
+      const mockGenerateText = vi.mocked(generateText);
+
+      mockGenerateText.mockResolvedValueOnce({
+        text: 'done',
+        usage: { inputTokens: 100, outputTokens: 50 },
+        steps: [],
+        finishReason: 'stop',
+        providerMetadata: {},
+      } as never);
+
+      const catalog = mockCatalog();
+      const provider = new AIProvider(mockConfig, catalog, noopLogger);
+      // AgentExecutor passes the derived effective budget as contextBudget.
+      // A 128k-window model must evict at 50% of 128k = 64k, not 100k (50% of 200k).
+      await provider.generate({
+        model: 'sonnet',
+        system: 'test',
+        prompt: 'test',
+        contextBudget: 128_000,
+      });
+
+      const call = mockGenerateText.mock.calls[0]?.[0] as any;
+      const anthropicOpts = call.providerOptions?.anthropic;
+      expect(anthropicOpts.contextManagement.edits[0].trigger.value).toBe(64_000);
+    });
   });
 
   describe('ensureProvider', () => {

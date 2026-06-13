@@ -8,7 +8,7 @@ import { formatErrorMessage } from '../utils/formatError.js';
 import type { ResolvedConfig, ResolvedAIConfig } from '../types/config.js';
 import type { ModelCatalog, ResolvedModel } from './ModelCatalog.js';
 import { TokenBudgetTracker } from './TokenBudgetTracker.js';
-import { DEFAULT_MAX_STEPS, DEFAULT_MAX_TOKENS, ANTHROPIC_BASH_TOOL_VERSION, ANTHROPIC_CONTEXT_MANAGEMENT_TYPE, ANTHROPIC_CONTEXT_KEEP_TOOL_USES, DEFAULT_DYNAMIC_PROVIDERS } from '../constants.js';
+import { DEFAULT_MAX_STEPS, DEFAULT_MAX_TOKENS, ANTHROPIC_BASH_TOOL_VERSION, ANTHROPIC_CONTEXT_MANAGEMENT_TYPE, ANTHROPIC_CONTEXT_KEEP_TOOL_USES, DEFAULT_DYNAMIC_PROVIDERS, DEFAULT_CONTEXT_BUDGET } from '../constants.js';
 import { executeShellAsString, executeShellAsOpenAIResult } from './shellExecutor.js';
 import {
   SdkApiError,
@@ -179,7 +179,7 @@ export class AIProvider {
 
     const factory = this.getProviderFactory(resolved.provider);
     const languageModel = factory(resolved.providerModelId);
-    const providerOptions = this.buildProviderOptions(resolved, options.providerOptions);
+    const providerOptions = this.buildProviderOptions(resolved, options.providerOptions, options.contextBudget);
     const system = this.buildSystemMessage(resolved.provider, options.system);
     // ASSUMPTION (2026-04-16): the model catalog's capability flags
     // (structuredOutput, toolCalling, contextManagement) accurately reflect
@@ -454,9 +454,9 @@ export class AIProvider {
    */
   private readonly providerOptionsBuilders: Record<
     string,
-    (resolved: ResolvedModel, userOptions?: ProviderOptions) => ProviderOptions | undefined
+    (resolved: ResolvedModel, userOptions?: ProviderOptions, effectiveBudget?: number) => ProviderOptions | undefined
   > = {
-    anthropic: (r, o) => this.buildAnthropicOptions(r, o),
+    anthropic: (r, o, b) => this.buildAnthropicOptions(r, o, b),
     openai: (r, o) => this.buildOpenAIOptions(r, o),
     google: (r, o) => this.buildGoogleOptions(r, o),
   };
@@ -464,9 +464,10 @@ export class AIProvider {
   private buildProviderOptions(
     resolved: ResolvedModel,
     userOptions?: ProviderOptions,
+    effectiveBudget?: number,
   ): ProviderOptions | undefined {
     const builder = this.providerOptionsBuilders[resolved.provider];
-    return builder ? builder(resolved, userOptions) : userOptions;
+    return builder ? builder(resolved, userOptions, effectiveBudget) : userOptions;
   }
 
   /**
@@ -477,6 +478,7 @@ export class AIProvider {
   private buildAnthropicOptions(
     resolved: ResolvedModel,
     userOptions?: ProviderOptions,
+    effectiveBudget?: number,
   ): ProviderOptions {
     const userAnthropicOpts = (userOptions?.anthropic ?? {}) as Record<string, unknown>;
     let anthropicOpts = { ...userAnthropicOpts };
@@ -491,10 +493,12 @@ export class AIProvider {
     }
 
     // Auto-inject context management to clear old tool uses when context grows large.
-    // Trigger at 50% of the configured context budget to leave room for the final
-    // response. Keep the 5 most recent tool uses so the model retains working context.
+    // Trigger at 50% of the effective context budget (the model's real window, or
+    // the operator cap) to leave room for the final response. Keep the 5 most recent
+    // tool uses so the model retains working context.
     if (!('contextManagement' in anthropicOpts)) {
-      const contextTrigger = Math.round(this.config.contextBudget * 0.5);
+      const evictionBudget = effectiveBudget ?? this.config.contextBudget ?? DEFAULT_CONTEXT_BUDGET;
+      const contextTrigger = Math.round(evictionBudget * 0.5);
       anthropicOpts = {
         ...anthropicOpts,
         contextManagement: {

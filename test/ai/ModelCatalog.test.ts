@@ -21,6 +21,7 @@ function makeModel(overrides?: Partial<Model>): Model {
     description: 'Fast, capable model',
     providerModelId: 'claude-sonnet-4-5-20250929',
     capabilities: { vision: true, tools: true, streaming: true, extendedThinking: false },
+    limits: { context: 200_000, output: 16_384 },
     tier: 'premium',
     status: 'active',
     ...overrides,
@@ -155,6 +156,44 @@ describe('ModelCatalog', () => {
       await catalog.resolve('anthropic:claude-sonnet-4-5-20250929');
 
       expect(getModel).toHaveBeenCalledTimes(1);
+    });
+  });
+
+  // ─── resolve(): contextWindow plumbing ────────────────────────────────────
+
+  describe('contextWindow from limits.context', () => {
+    it('copies the window from limits.context on explicit resolution', async () => {
+      const sdk = mockSdk({ getModel: vi.fn().mockResolvedValue(makeModel({ limits: { context: 128_000, output: 8_192 } })) });
+      const result = await new ModelCatalog(sdk).resolve('anthropic:claude-sonnet-4-5-20250929');
+      expect(result.contextWindow).toBe(128_000);
+    });
+
+    it('copies the window through alias resolution', async () => {
+      const sdk = mockSdk({
+        resolveAlias: vi.fn().mockResolvedValue(makeAliasResolution({ model: makeModel({ limits: { context: 1_000_000, output: 64_000 } }) })),
+      });
+      const result = await new ModelCatalog(sdk).resolve('sonnet');
+      expect(result.contextWindow).toBe(1_000_000);
+    });
+
+    it('leaves contextWindow undefined when limits is absent', async () => {
+      const noLimits = makeModel();
+      delete (noLimits as Record<string, unknown>).limits;
+      const sdk = mockSdk({ getModel: vi.fn().mockResolvedValue(noLimits) });
+      const result = await new ModelCatalog(sdk).resolve('anthropic:claude-sonnet-4-5-20250929');
+      expect(result.contextWindow).toBeUndefined();
+    });
+
+    it('treats a 0 limit as unknown (undefined)', async () => {
+      const sdk = mockSdk({ getModel: vi.fn().mockResolvedValue(makeModel({ limits: { context: 0, output: 0 } })) });
+      const result = await new ModelCatalog(sdk).resolve('anthropic:claude-sonnet-4-5-20250929');
+      expect(result.contextWindow).toBeUndefined();
+    });
+
+    it('leaves contextWindow undefined for unregistered models', async () => {
+      const sdk = mockSdk({ getModel: vi.fn().mockRejectedValue(makeNotFoundError()) });
+      const result = await new ModelCatalog(sdk).resolve('openai:gpt-4o');
+      expect(result.contextWindow).toBeUndefined();
     });
   });
 

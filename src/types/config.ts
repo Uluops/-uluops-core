@@ -190,7 +190,14 @@ export interface ResolvedConfig {
   defaultProject?: string;
   defaultThinkingBudget: number;
   debug: boolean;
-  contextBudget: number;
+  /**
+   * Operator-configured context budget in tokens. Undefined means the operator
+   * did not set one — in that case the engine uses the resolved model's real
+   * context window (registry `limits.context`), falling back to
+   * DEFAULT_CONTEXT_BUDGET only when the window is unknown. See
+   * deriveContextBudget() in ai/contextBudget.ts.
+   */
+  contextBudget?: number;
   maxRetries?: number;
   allowedTools?: string[];
 }
