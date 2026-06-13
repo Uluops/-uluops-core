@@ -99,7 +99,7 @@ The `@uluops/core` SDK provides:
 - **Registry-Backed Model Resolution** - Model aliases resolved via UluOps Registry with provider metadata
 - **Multi-Provider AI** - Anthropic-first with deepest optimization (caching, context management, bash tools); OpenAI + Google bundled; Mistral, Cohere, and 10+ others via dynamic `@ai-sdk/*` import. See [SCOPE.md](https://github.com/Uluops/-uluops-core/blob/main/SCOPE.md) for provider strategy.
 - **Filesystem Sandboxing** - ToolHandler restricts LLM file access to the target directory with symlink-aware path validation
-- **Content-Addressed Integrity** - SHA-256 hash verification on registry-resolved definitions (local definitions use empty hash)
+- **Content-Addressed Hashing** - Registry-resolved definitions carry a SHA-256 content hash (`sha256:…`, computed server-side over normalized YAML) used as a content-address identifier; local definitions are hashed over their raw YAML. The client surfaces this hash but does not currently re-verify resolved content against it
 - **Universal Agent Output** - Single `agentOutputSchema` with categories + artifacts for all 6 agent types (validator, executor, analyst, generator, explorer, forecaster)
 - **Structured Output Extraction** - 4-strategy fallback: AI SDK structured output > JSON code fence > inline JSON > regex text parsing
 - **Validation Tracking** - Automatic result submission with issue correlation, regression detection, per-agent execution recording, and analytics
@@ -405,7 +405,7 @@ UluOpsClient (facade)
   |     +-- WorkflowExecutor
   |     +-- CommandExecutor
   |
-  +-- RegistryClient       (definition resolution + hash verification)
+  +-- RegistryClient       (definition resolution + content hash)
   +-- SubmissionClient     (result submission + history)
   |     +-- AnalysisSummaryExtractor (auto-extract analysis from AgentResult)
   +-- ModelCatalog         (registry-backed model alias resolution)
