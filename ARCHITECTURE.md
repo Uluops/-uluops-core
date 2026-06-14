@@ -33,11 +33,11 @@ Every chain starts with `UluOpsClient.resolveByRef()`. This sub-chain is shared.
       - Tries up to 8 candidate paths (name.type.yaml × flat + subdirectory)
       - fs.readFile → yaml.parse → castDefinition (structural validation)
       - tryRenderViaAPI (registry render.preview) or raw YAML fallback
-      - hash = '' (no server-side computation for local)
+      - hash = computeHash(yaml) (shared @uluops/sdk-core normalized hash)
    c. REMOTE:
       - sdk.definitions.get(type, name, version, { includeYaml, includeRuntime })
-      - sdk.render.get(type, name, version) → rendered markdown prompt
-      - hash = def.hash (SHA-256 from registry)
+      - runtime.prompt = def.runtimeMd (FROZEN rendered artifact; live render.get only as a fallback when runtimeMd is null)
+      - hash = def.hash; promptHash = def.promptHash; caller pins verified fail-closed (verifyPins)
 
 4. Cache the result (in-memory Map)
 
@@ -275,7 +275,7 @@ UluOpsClient.trackIfEnabled()
 
 - `startPipeline()` wraps `handle.wait()` to call `trackIfEnabled()` on completion. Tracking occurs when the caller awaits the handle, not at start time.
 - Local definitions with no version field → `version = 'unknown'` → registry recording skipped.
-- Local definitions → `hash = ''` → empty hash in tracker payload.
+- Local definitions → `hash = computeHash(yaml)` (shared normalized hash; no longer empty).
 
 ---
 
