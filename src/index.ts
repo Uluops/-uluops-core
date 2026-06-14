@@ -160,6 +160,7 @@ export {
   PipelineError,
   ParseError,
   SubscriptionRequiredError,
+  IntegrityError,
 } from './errors/index.js';
 
 // ─── Errors: Re-exported from @uluops/sdk-core ───────────────────────────────

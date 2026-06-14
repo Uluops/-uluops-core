@@ -153,7 +153,10 @@ Every chain starts with `UluOpsClient.resolveByRef()`. This sub-chain is shared.
       blocked/aborted → BLOCK
       warned → HOLD
       all passed → SHIP
-13. deduplicateRecommendations() — by title + filePath + lineNumber
+13. deduplicateRecommendations() — by agent + title + filePath + lineNumber
+      (agent is included so cross-agent convergence is preserved; two agents
+      finding the same issue at the same location is evidence of multi-lens
+      signal, not duplication)
 14. Construct WorkflowResult with phase-level metrics
 15. trackIfEnabled()
 16. Return WorkflowResult

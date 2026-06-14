@@ -198,6 +198,43 @@ export class ParseError extends UluOpsError {
   }
 }
 
+/**
+ * Thrown when a caller-pinned integrity check fails at resolve time.
+ *
+ * Fail-closed: execution is refused rather than proceeding with unverified
+ * bytes. `kind` distinguishes the three failure modes:
+ *  - `yaml`        — `computeHash(resolved.yaml)` ≠ the pinned `expectedHash`
+ *  - `prompt`      — `computePromptHash(resolved.runtime.prompt)` ≠ the pinned `expectedPromptHash`
+ *  - `unavailable` — a prompt pin was supplied but there is no rendered prompt to
+ *                    verify (WDL/PDL, content-gated, local, or schema-stale). Never a silent pass.
+ */
+export class IntegrityError extends UluOpsError {
+  readonly code = 'INTEGRITY_ERROR' as const;
+
+  constructor(
+    message: string,
+    public readonly kind: 'yaml' | 'prompt' | 'unavailable',
+    public readonly definitionName: string,
+    public readonly definitionVersion: string,
+    public readonly expected?: string,
+    public readonly actual?: string,
+  ) {
+    super(message);
+    this.name = 'IntegrityError';
+  }
+
+  override toJSON(): Record<string, unknown> {
+    return {
+      ...super.toJSON(),
+      kind: this.kind,
+      definitionName: this.definitionName,
+      definitionVersion: this.definitionVersion,
+      ...(this.expected !== undefined ? { expected: this.expected } : {}),
+      ...(this.actual !== undefined ? { actual: this.actual } : {}),
+    };
+  }
+}
+
 // Re-exports from @uluops/sdk-core
 export {
   SdkApiError,

@@ -8,3 +8,5 @@ tsconfig.json
 vitest.config.ts
 eslint.config.js
 CLAUDE.md
+SCOPE.md
+ARCHITECTURE.md

@@ -23,6 +23,19 @@ export interface ResolvedDefinition {
   /** SHA-256 hash of source YAML */
   hash: string;
 
+  /**
+   * SHA-256 hash of the rendered prompt (runtime_md), as stored by the registry
+   * at publish/retranslate time. Undefined for local definitions and for remote
+   * definitions with no rendered prompt (WDL/PDL, content-gated).
+   */
+  promptHash?: string;
+
+  /**
+   * Translator (definition-factory) version that produced the frozen runtime_md.
+   * Lets callers detect a retranslation restamp. Undefined for local definitions.
+   */
+  translatorVersion?: string;
+
   /** Raw YAML content (null when content-gated — check proRestricted) */
   yaml: string;
 

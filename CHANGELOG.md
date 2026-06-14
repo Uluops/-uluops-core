@@ -4,6 +4,22 @@ All notable changes to `@uluops/core` will be documented in this file.
 
 This project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.20.0] - 2026-06-14
+
+### Added
+
+- **Caller-pinned integrity verification at `resolve()`.** `RegistryClient.resolve(name, version?, type?, opts?)` accepts `{ expectedHash?, expectedPromptHash? }` and verifies the resolved definition against the caller's pins — fail-closed — on **every** return path (cache hit, local, remote). Pins come from a trusted, independent channel; verification uses the shared `@uluops/sdk-core` hash util so it matches the registry's stored hashes by construction. Pins are not part of the cache key — verification is per-call and the shared content cache is verified on every hit.
+- **`IntegrityError`** (`src/errors/index.ts`, code `INTEGRITY_ERROR`) with `kind: 'yaml' | 'prompt' | 'unavailable'`, expected/actual, and definition name/version. `unavailable` covers a prompt pin on a definition with no frozen rendered prompt (WDL/PDL, local, content-gated, schema-stale) — never a silent pass. Exported from the package root.
+- **`ExecutionOptions.expectedHash` / `expectedPromptHash`**, forwarded by `runAgent` into resolve. The YAML pin covers source + config (and fully covers WDL/PDL execution); the prompt pin is required for full agent/command executed-prompt integrity.
+- **`ResolvedDefinition.promptHash` / `translatorVersion`** — surfaced from the registry so callers can pin the prompt and detect a retranslation restamp.
+
+### Changed
+
+- **Remote resolution now executes the FROZEN rendered artifact (`def.runtimeMd`), not a live re-render.** `resolveRemote` sets `runtime.prompt = def.runtimeMd` (the published, hashed, safety-scanned prompt that `prompt_hash` certifies) and drops the unconditional `render.get` round-trip. A live re-render is used **only** when `runtimeMd` is null (schema-stale / translation-failed rows), recording a `runtime:live-rerender-fallback` degradation; if that re-render also fails, resolve surfaces a clear error rather than an empty prompt. **Behavior change:** a definition whose factory improved since publish executes the same prompt until it is retranslated (correct content-addressing). A non-fatal belt-and-suspenders check flags `prompt-hash-inconsistent` when the registry's own `runtime_md`/`prompt_hash` disagree.
+- **Remote agents now honor their declared `defaults`/`config`.** `resolveRemote` populates `runtime.defaults`/`config` from the verified YAML (mirroring local rendering), fixing a latent bug where remote agents ignored their `defaults.model`/temperature/maxTokens and fell back to CLI options / `DEFAULT_MODEL_ALIAS`. This also makes the YAML pin meaningfully cover the execution config.
+- **`resolveLocal` hashes via the shared `computeHash`** (normalized) instead of a raw `crypto` SHA-256, so a local definition's `hash` matches the registry scheme and can be pinned.
+- Bump `@uluops/sdk-core` to `0.12.0` (shared hash util).
+
 ## [0.19.0] - 2026-06-13
 
 ### Added

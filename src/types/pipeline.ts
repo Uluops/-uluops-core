@@ -209,7 +209,15 @@ export interface PipelineState {
 }
 
 /**
- * Handle for monitoring async pipeline execution
+ * Handle for monitoring an async pipeline execution.
+ *
+ * IN-MEMORY ONLY: the handle is bound to the process that started the
+ * pipeline. State and the underlying execution Promise live in JS heap;
+ * if the process exits, the handle is gone. `executionId` is a transient
+ * identifier scoped to that process — it cannot be persisted and resumed
+ * after a restart. For durable pipeline runs (resume across processes,
+ * survive restarts), an external orchestrator is required and is out of
+ * scope for @uluops/core.
  */
 export interface PipelineHandle {
   readonly executionId: string;

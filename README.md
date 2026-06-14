@@ -80,6 +80,7 @@ This still requires an AI provider key but no UluOps API key or network access t
   - [Convenience Methods](#convenience-methods)
   - [Discovery](#discovery)
   - [Validation Tracking](#validation-tracking)
+  - [Integrity Verification](#integrity-verification)
 - [Architecture](#architecture)
 - [Execution Hierarchy](#execution-hierarchy)
 - [Advanced Exports](#advanced-exports)
@@ -99,7 +100,7 @@ The `@uluops/core` SDK provides:
 - **Registry-Backed Model Resolution** - Model aliases resolved via UluOps Registry with provider metadata
 - **Multi-Provider AI** - Anthropic-first with deepest optimization (caching, context management, bash tools); OpenAI + Google bundled; Mistral, Cohere, and 10+ others via dynamic `@ai-sdk/*` import. See [SCOPE.md](https://github.com/Uluops/-uluops-core/blob/main/SCOPE.md) for provider strategy.
 - **Filesystem Sandboxing** - ToolHandler restricts LLM file access to the target directory with symlink-aware path validation
-- **Content-Addressed Hashing** - Registry-resolved definitions carry a SHA-256 content hash (`sha256:…`, computed server-side over normalized YAML) used as a content-address identifier; local definitions are hashed over their raw YAML. The client surfaces this hash but does not currently re-verify resolved content against it
+- **Content-Addressed Integrity Verification** - Registry-resolved definitions carry a SHA-256 YAML content hash (`sha256:…`) and, for agents/commands, a `promptHash` over the frozen rendered prompt. Hashing uses the shared `@uluops/sdk-core` implementation, so the client and registry hash identically. Remote resolution executes the **frozen `runtimeMd`** the `promptHash` certifies (not a live re-render). Callers can pin `expectedHash`/`expectedPromptHash` (from a trusted channel) on `resolve()`/`ExecutionOptions`; pins are verified **fail-closed** on every resolve path (cache/local/remote) and a mismatch throws `IntegrityError`. Verification is opt-in — unpinned resolves behave as before. See [Integrity Verification](#integrity-verification).
 - **Universal Agent Output** - Single `agentOutputSchema` with categories + artifacts for all 6 agent types (validator, executor, analyst, generator, explorer, forecaster)
 - **Structured Output Extraction** - 4-strategy fallback: AI SDK structured output > JSON code fence > inline JSON > regex text parsing
 - **Validation Tracking** - Automatic result submission with issue correlation, regression detection, per-agent execution recording, and analytics
@@ -383,6 +384,37 @@ if (metrics.thinkingTokens) {
 console.log(`Effective total: ${metrics.totalEffectiveTokens}`);
 ```
 
+### Integrity Verification
+
+Pin a definition's expected hashes so execution is **refused** if the resolved
+content doesn't match. Pins come from a trusted, independent channel (a lockfile,
+a reviewed value) — recomputing against the registry's own returned hash only
+catches an internally-inconsistent registry, not a compromised one.
+
+```typescript
+import { IntegrityError } from '@uluops/core';
+
+try {
+  const result = await client.runAgent('code-validator', './src', {
+    expectedHash: 'sha256:…',        // pins the YAML (source + config)
+    expectedPromptHash: 'sha256:…',  // pins the rendered prompt (agents/commands)
+  });
+} catch (err) {
+  if (err instanceof IntegrityError) {
+    // err.kind: 'yaml' | 'prompt' | 'unavailable'; err.expected / err.actual
+    console.error(`Execution refused (${err.kind}): ${err.message}`);
+  }
+}
+```
+
+- **Both pins are optional.** Unpinned resolves are unverified and behave exactly as before.
+- **`expectedHash`** verifies `computeHash(resolved.yaml)` — covers source and execution config. For **WDL/PDL** the YAML *is* the runtime, so the YAML pin alone fully covers execution.
+- **`expectedPromptHash`** verifies the frozen rendered prompt and is required (with `expectedHash`) for full **agent/command** executed-prompt integrity. Supplying it for a definition with no rendered prompt (workflow/pipeline, local, content-gated, schema-stale) throws `IntegrityError(kind: 'unavailable')` — never a silent pass.
+- Verification runs on **every** resolve path, including cache hits — a prior unpinned resolve cannot let a later pinned one through unchecked.
+- `ResolvedDefinition` also surfaces `promptHash` and `translatorVersion` so callers can detect a retranslation restamp.
+
+> **Trust bootstrap.** This ships the verification *mechanism* and explicit pin inputs, not pin *provenance*. A pin seeded from a first unpinned `resolve()` against an already-compromised registry is trust-on-first-use. A pin manifest (lockfile) is the natural completion.
+
 ## Architecture
 
 ```
@@ -642,6 +674,7 @@ The SDK provides a structured error hierarchy:
 | `WorkflowError` | `WorkflowExecutor.execute()` | Phase gate failure. Check `error.context.partialResult` for completed phase results |
 | `PipelineError` | `PipelineExecutor.execute()` | Pipeline stage failure. Check `error.context` for stage name/index |
 | `SubscriptionRequiredError` | `RegistryClient.resolve()` | Definition requires a higher subscription tier. Check `error.requiredTier`, `error.currentTier`, and `error.upgradeUrl` for upgrade guidance |
+| `IntegrityError` | `RegistryClient.resolve()` (caller-pinned) | A pinned `expectedHash`/`expectedPromptHash` did not match the resolved content, or a prompt pin was supplied for a definition with no rendered prompt. Check `error.kind` (`'yaml'`/`'prompt'`/`'unavailable'`), `error.expected`, `error.actual`. Fail-closed — execution is refused |
 
 ```typescript
 import { ConfigurationError, ModelNotFoundError, ExecutionError, SubscriptionRequiredError } from '@uluops/core';

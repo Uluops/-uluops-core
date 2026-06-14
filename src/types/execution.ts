@@ -183,6 +183,23 @@ export interface ExecutionOptions {
 
   /** Maximum tool loop steps. Default: 50 */
   maxSteps?: number;
+
+  /**
+   * Caller-pinned expected YAML hash (`sha256:...`) from a trusted, independent
+   * channel. When set, resolve verifies `computeHash(resolved.yaml)` against it
+   * and refuses execution (IntegrityError, kind 'yaml') on mismatch. Covers the
+   * definition source + config; for WDL/PDL it fully covers execution.
+   */
+  expectedHash?: string;
+
+  /**
+   * Caller-pinned expected rendered-prompt hash (`sha256:...`). When set, resolve
+   * verifies `computePromptHash(resolved.runtime.prompt)` against it and refuses
+   * execution (IntegrityError, kind 'prompt'). Required for full agent/command
+   * executed-prompt integrity. Omit for workflow/pipeline (no rendered prompt →
+   * kind 'unavailable').
+   */
+  expectedPromptHash?: string;
 }
 
 /**

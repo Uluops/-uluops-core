@@ -1,5 +1,5 @@
 import * as path from 'node:path';
-import { RegistryClient } from '../registry/RegistryClient.js';
+import { RegistryClient, type ResolvePinOptions } from '../registry/RegistryClient.js';
 import { SubmissionClient } from '../submission/SubmissionClient.js';
 import { AIProvider } from '../ai/AIProvider.js';
 import { ModelCatalog } from '../ai/ModelCatalog.js';
@@ -88,7 +88,14 @@ export class UluOpsClient {
       ? { target: targetOrInput }
       : targetOrInput;
 
-    const resolved = await this.resolveByRef(name, 'agent');
+    // Forward caller-pinned integrity hashes (if any) into resolve, which verifies
+    // fail-closed before the definition is executed. Only pass pins when present
+    // so unpinned resolves keep their original (unverified) call path.
+    const pins: ResolvePinOptions | undefined =
+      options?.expectedHash || options?.expectedPromptHash
+        ? { expectedHash: options.expectedHash, expectedPromptHash: options.expectedPromptHash }
+        : undefined;
+    const resolved = await this.resolveByRef(name, 'agent', pins);
 
     if (resolved.type !== 'agent') {
       throw new ConfigurationError(`${name} is not an agent (type: ${resolved.type}). Use runCommand() instead.`);
@@ -449,8 +456,11 @@ export class UluOpsClient {
     };
   }
 
-  private async resolveByRef(name: string, type?: DefinitionType) {
+  private async resolveByRef(name: string, type?: DefinitionType, opts?: ResolvePinOptions) {
     const [refName, refVersion] = parseRef(name);
+    if (opts) {
+      return this.registry.resolve(refName, refVersion, type, opts);
+    }
     return type
       ? this.registry.resolve(refName, refVersion, type)
       : this.registry.resolve(refName, refVersion);

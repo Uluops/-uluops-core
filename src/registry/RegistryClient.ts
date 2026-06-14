@@ -1,17 +1,25 @@
 import * as fs from 'node:fs/promises';
 import * as path from 'node:path';
-import * as crypto from 'node:crypto';
 import * as yaml from 'yaml';
 import { RegistryClient as RegistrySdk } from '@uluops/registry-sdk';
 import type { ResolvedConfig } from '../types/config.js';
 import type { DefinitionType } from '../types/execution.js';
 import type { AgentDefinition } from '../types/agent.js';
 import type { ResolvedDefinition, DefinitionSummary } from '../types/registry.js';
-import { ConfigurationError, SubscriptionRequiredError } from '../errors/index.js';
+import { ConfigurationError, SubscriptionRequiredError, IntegrityError } from '../errors/index.js';
 import { formatErrorMessage } from '../utils/formatError.js';
 import { DEFAULT_PASS_THRESHOLD, DEFAULT_MODEL_ALIAS } from '../constants.js';
 import type { Logger } from '@uluops/sdk-core';
+import { computeHash, computePromptHash, verifyHash, verifyPromptHash } from '@uluops/sdk-core';
 import { SdkApiError } from '@uluops/sdk-core/errors';
+
+/** Caller-supplied integrity pins, verified at resolve time against a trusted channel. */
+export interface ResolvePinOptions {
+  /** Expected YAML hash (`sha256:...`). Verified via computeHash(resolved.yaml). */
+  expectedHash?: string;
+  /** Expected rendered-prompt hash (`sha256:...`). Verified via computePromptHash(runtime.prompt). */
+  expectedPromptHash?: string;
+}
 
 /**
  * Definition resolver with local development fallback.
@@ -20,6 +28,15 @@ import { SdkApiError } from '@uluops/sdk-core/errors';
  * rate limiting, error mapping, auth). Local file resolution is handled
  * in this class directly. Hash computation and verification are the
  * responsibility of the registry API server.
+ *
+ * SINGLE-ACTOR CONTRACT: each instance is bound to one API key + config
+ * (passed in the constructor) and caches resolutions in an instance-scoped
+ * Map. The cache is keyed by content identity (type:name@version), and
+ * definitions are immutable per version, so the cache is safe under that
+ * contract. Do NOT share a single instance across tenants or actors with
+ * differing tier entitlements — instantiate one client per actor instead.
+ * If multi-tenant orchestration becomes a requirement, the cache key must
+ * be extended with an actor discriminator before the contract changes.
  */
 export class RegistryClient {
   private cache = new Map<string, ResolvedDefinition>();
@@ -51,6 +68,7 @@ export class RegistryClient {
     name: string,
     version?: string,
     type?: DefinitionType,
+    opts?: ResolvePinOptions,
   ): Promise<ResolvedDefinition> {
     // Validate name to prevent path traversal (CWE-22) before filesystem or API use
     if (!RegistryClient.SAFE_NAME_PATTERN.test(name) || name.includes('..')) {
@@ -59,9 +77,15 @@ export class RegistryClient {
 
     const cacheKey = `${type ?? 'any'}:${name}@${version ?? 'latest'}`;
 
+    // Caller pins are NOT part of the cache key — verification is per-call, the
+    // content cache is shared. verifyPins runs on EVERY return path (including
+    // cache hits) so a prior unpinned resolve cannot let a later pinned one pass
+    // unchecked. Content is cached before verification so a bad pin throws
+    // without poisoning the cache for a subsequent correct call.
     const cached = this.cache.get(cacheKey);
     if (cached) {
       this.logger.debug(`Cache hit: ${cacheKey}`);
+      this.verifyPins(cached, opts);
       return cached;
     }
 
@@ -70,6 +94,7 @@ export class RegistryClient {
       const local = await this.resolveLocal(name, type, this.config.localDefinitions);
       if (local) {
         this.cache.set(cacheKey, local);
+        this.verifyPins(local, opts);
         return local;
       }
     }
@@ -77,7 +102,60 @@ export class RegistryClient {
     // Resolve from remote registry
     const remote = await this.resolveRemote(name, version, type);
     this.cache.set(cacheKey, remote);
+    this.verifyPins(remote, opts);
     return remote;
+  }
+
+  /**
+   * Caller-pinned integrity verification. Fail-closed: throws IntegrityError on
+   * any mismatch or when a prompt pin cannot be satisfied. No-op when no pins
+   * are supplied (verification is opt-in).
+   */
+  private verifyPins(resolved: ResolvedDefinition, opts?: ResolvePinOptions): void {
+    if (!opts) return;
+    const { expectedHash, expectedPromptHash } = opts;
+    const ref = `${resolved.type} "${resolved.name}@${resolved.version}"`;
+
+    if (expectedHash) {
+      if (!verifyHash(resolved.yaml ?? '', expectedHash)) {
+        throw new IntegrityError(
+          `YAML integrity check failed for ${ref}: resolved source does not match the pinned hash. Execution refused.`,
+          'yaml', resolved.name, resolved.version, expectedHash, computeHash(resolved.yaml ?? ''),
+        );
+      }
+    }
+
+    if (expectedPromptHash) {
+      const prompt = this.verifiablePrompt(resolved);
+      if (prompt == null) {
+        throw new IntegrityError(
+          `No frozen rendered prompt is available to verify for ${ref} ` +
+          `(workflow/pipeline, content-gated, local, or schema-stale). A prompt-hash pin ` +
+          `cannot be satisfied — omit it for this definition. Execution refused.`,
+          'unavailable', resolved.name, resolved.version, expectedPromptHash,
+        );
+      }
+      if (!verifyPromptHash(prompt, expectedPromptHash)) {
+        throw new IntegrityError(
+          `Prompt integrity check failed for ${ref}: rendered prompt does not match the pinned hash. Execution refused.`,
+          'prompt', resolved.name, resolved.version, expectedPromptHash, computePromptHash(prompt),
+        );
+      }
+    }
+  }
+
+  /**
+   * The executed prompt bytes a prompt-hash pin can be verified against, or null
+   * when there is no frozen rendered prompt to pin. Only remote agent/command
+   * resolutions that executed the frozen `runtime_md` qualify (signaled by
+   * `promptHash` being set). WDL/PDL (YAML is the runtime), local definitions,
+   * and live-rerender fallbacks all return null → IntegrityError(kind 'unavailable').
+   */
+  private verifiablePrompt(resolved: ResolvedDefinition): string | null {
+    if (resolved.type !== 'agent' && resolved.type !== 'command') return null;
+    if (resolved.promptHash === undefined) return null;
+    const runtime = resolved.runtime as { prompt?: unknown };
+    return typeof runtime.prompt === 'string' ? runtime.prompt : null;
   }
 
   /**
@@ -175,7 +253,9 @@ export class RegistryClient {
         type: candidate.type,
         name,
         version: this.extractVersion(definition, candidate.type),
-        hash: `sha256:${crypto.createHash('sha256').update(yamlContent).digest('hex')}`,
+        // Shared normalized hash (matches the registry's scheme) so a caller can
+        // pin a local definition's YAML hash and have it verify consistently.
+        hash: computeHash(yamlContent),
         yaml: yamlContent,
         definition: this.normalizeLocally(definition),
         runtime,
@@ -252,9 +332,6 @@ export class RegistryClient {
       throw error;
     }
 
-    // Get rendered markdown
-    const rendered = await this.sdk.render.get(resolvedType, name, def.version);
-
     // Use API-provided normalized output; fall back to client-side if unavailable.
     // Validate the expected top-level section key before casting to catch malformed API responses.
     let definition: ResolvedDefinition['definition'];
@@ -273,20 +350,105 @@ export class RegistryClient {
       definition = this.emptyDefinition();
     }
 
+    // Execute the FROZEN, hashed artifact (def.runtimeMd) — not a live re-render —
+    // and wire runtime config from the verified YAML. Captures promptHash/
+    // translatorVersion so callers can pin the prompt and detect retranslations.
+    const { runtime, promptHash, translatorVersion } =
+      await this.buildRemoteRuntime(resolvedType, name, def, degradations);
+
     return {
       type: resolvedType,
       name: def.name,
       version: def.version,
       hash: def.hash,
+      ...(promptHash !== undefined && { promptHash }),
+      ...(translatorVersion !== undefined && { translatorVersion }),
       yaml: def.yaml ?? '',
       definition,
-      runtime: { prompt: rendered.markdown },
+      runtime,
       domain: (def.domain ?? 'general') as ResolvedDefinition['domain'],
       agentType: (def.agentType ?? undefined) as ResolvedDefinition['agentType'],
       minSubscription: (def.minSubscription as ResolvedDefinition['minSubscription']) ?? undefined,
       riskProfile: (def as unknown as Record<string, unknown>).riskProfile as ResolvedDefinition['riskProfile'] ?? null,
       ...(degradations.length > 0 && { degradations }),
     };
+  }
+
+  /**
+   * Build the remote runtime from the frozen rendered artifact.
+   *
+   * Priority: execute `def.runtimeMd` (the published, hashed, safety-scanned
+   * prompt that `prompt_hash` certifies). Only when it is null (schema-stale /
+   * translation-failed rows) fall back to a live re-render, recording a
+   * degradation. For agents, wire `defaults`/`config` from the verified YAML so
+   * the executor honors the declared model/temperature/maxTokens (and the YAML
+   * pin meaningfully covers config).
+   */
+  private async buildRemoteRuntime(
+    type: DefinitionType,
+    name: string,
+    def: { version: string; runtimeMd?: string | null; promptHash?: string | null; translatorVersion?: string | null; yaml?: string | null },
+    degradations: string[],
+  ): Promise<{ runtime: ResolvedDefinition['runtime']; promptHash?: string; translatorVersion?: string }> {
+    const translatorVersion = def.translatorVersion ?? undefined;
+    let prompt: string;
+    let promptHash: string | undefined;
+
+    if (def.runtimeMd != null) {
+      prompt = def.runtimeMd;
+      promptHash = def.promptHash ?? undefined;
+      // Belt-and-suspenders: both values come from the SAME fetch, so this only
+      // fires on an internally-inconsistent registry (not benign render drift).
+      if (def.promptHash != null && computePromptHash(def.runtimeMd) !== def.promptHash) {
+        degradations.push('prompt-hash-inconsistent');
+        this.logger.warn(
+          `Registry returned runtime_md whose hash does not match the returned prompt_hash for ` +
+          `${type} "${name}@${def.version}" — internally inconsistent registry.`,
+        );
+      }
+    } else {
+      // No frozen artifact. For a published row this usually means the YAML failed
+      // schema validation, so a live re-render will also fail — surface that
+      // clearly rather than degrading to an empty prompt (finding N3).
+      degradations.push('runtime:live-rerender-fallback');
+      let rendered: { markdown: string };
+      try {
+        rendered = await this.sdk.render.get(type, name, def.version);
+      } catch (error) {
+        throw new ConfigurationError(
+          `Cannot resolve ${type} "${name}@${def.version}": the registry has no frozen rendered ` +
+          `prompt (runtime_md) and a live re-render failed (${formatErrorMessage(error)}). The ` +
+          `definition is likely schema-stale — retranslate or republish it.`,
+        );
+      }
+      prompt = rendered.markdown;
+      // promptHash stays undefined: there is no frozen artifact to pin against.
+    }
+
+    if (type === 'agent' && def.yaml) {
+      const agent = this.safeParseYaml(def.yaml, name)['agent'] as AgentDefinition['agent'] | undefined;
+      // Require interface before building config (buildAgentConfig reads it). A
+      // malformed/empty agent section falls through to a prompt-only runtime
+      // rather than crashing resolve.
+      if (agent?.interface) {
+        return {
+          runtime: {
+            prompt,
+            defaults: {
+              model: agent.defaults?.model ?? DEFAULT_MODEL_ALIAS,
+              timeout: agent.defaults?.timeout ?? 300_000,
+              maxTokens: agent.defaults?.max_tokens,
+              temperature: agent.defaults?.temperature,
+            },
+            config: this.buildAgentConfig(agent),
+          } as ResolvedDefinition['runtime'],
+          promptHash,
+          translatorVersion,
+        };
+      }
+    }
+
+    return { runtime: { prompt } as ResolvedDefinition['runtime'], promptHash, translatorVersion };
   }
 
   // ─────────────────────────────────────────────────────────────────────────────
