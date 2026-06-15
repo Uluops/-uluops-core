@@ -36,6 +36,14 @@ export const DEFAULT_WARN_THRESHOLD = 50;
 /** Default gate threshold for workflow phase quality gates (0-100). */
 export const DEFAULT_GATE_THRESHOLD = 70;
 
+/** Minimum output-extraction confidence (0-1) for a parsed decision to be
+ * trusted by gate logic. Below this, the decision is preserved on the result
+ * (non-destructive) but treated as non-passing by SubmissionClient.allGatesPassed.
+ * Confidence by extraction method: structured output = 1.0; JSON code fence = 0.95;
+ * whole/inline JSON = 0.9/0.75; regex structured-text = 0.5; fallback = 0.
+ * See OutputExtractor.ts for where these are assigned. */
+export const EXTRACTION_CONFIDENCE_THRESHOLD = 0.7;
+
 /** Default maximum tool loop steps for agent execution. */
 export const DEFAULT_MAX_STEPS = 50;
 
