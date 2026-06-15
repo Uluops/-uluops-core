@@ -565,6 +565,25 @@ describe('AgentExecutor', () => {
       }
     });
 
+    // ── Non-destructive extraction (F4) ──────────────────────────────────
+    // A low-confidence (structured_text, 0.5) extraction that parsed a real
+    // decision must NOT have that decision overwritten. The decision is
+    // preserved; trust is expressed via extractionConfidence. Gate logic in
+    // SubmissionClient decides whether a low-confidence result passes.
+    it('preserves a parsed decision from a low-confidence structured_text extraction', async () => {
+      const ai = mockAIProvider({ text: 'Decision: PASS\nScore: 85/100' });
+      const executor = new AgentExecutor(baseConfig, ai, noopLogger);
+
+      const result = await executor.execute(makeValidatorDef(), { target: tmpDir });
+
+      expect(result.extractionMethod).toBe('structured_text');
+      expect(result.extractionConfidence).toBe(0.5);
+      // The real decision survives — no EXTRACTION_FAILED sentinel.
+      expect(result.decision).toBe('PASS');
+      expect(result.decision).not.toBe('EXTRACTION_FAILED');
+      expect(result.decisionCategory).toBe('positive');
+    });
+
     it('handles non-existent target directory gracefully', async () => {
       const ai = mockAIProvider();
       const executor = new AgentExecutor(baseConfig, ai, noopLogger);

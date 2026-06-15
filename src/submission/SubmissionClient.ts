@@ -7,6 +7,7 @@ import type { PipelineResult } from '../types/pipeline.js';
 import type { CommandResult } from '../types/command.js';
 import type { RunSubmission, RunSubmissionResponse, RunHistoryEntry, SubmissionQueryOptions } from '../types/submission.js';
 import { AnalysisSummaryExtractor } from '../analysis/AnalysisSummaryExtractor.js';
+import { EXTRACTION_CONFIDENCE_THRESHOLD } from '../constants.js';
 
 /**
  * Thin wrapper around @uluops/ops-sdk for execution result submission.
@@ -154,8 +155,22 @@ export class SubmissionClient {
    * Determine if a decision is positive using decisionCategory (agents) or raw string fallback.
    * Resolves Aporia A3: cognitive lens agents with non-PASS positive decisions
    * (EXAMINED, VITAL, FLOWING, etc.) now correctly report allGatesPassed: true.
+   *
+   * A low-confidence extraction (regex-parsed prose, confidence < the trust
+   * threshold) is not trustworthy enough to pass a gate even when a positive
+   * decision string was parsed. The decision is preserved on the result for
+   * analytics/reporting; gating simply refuses to treat it as a pass. This
+   * scopes to agent results only — `extractionConfidence` is absent on command/
+   * workflow ExecutionResults, so their gating is unchanged.
    */
   private isPositiveDecision(result: ExecutionResult | AgentResult): boolean {
+    if (
+      'extractionConfidence' in result &&
+      result.extractionConfidence !== undefined &&
+      result.extractionConfidence < EXTRACTION_CONFIDENCE_THRESHOLD
+    ) {
+      return false;
+    }
     if ('decisionCategory' in result && result.decisionCategory) {
       return result.decisionCategory === 'positive';
     }

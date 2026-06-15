@@ -306,6 +306,29 @@ describe('SubmissionClient', () => {
       expect(ship.allGatesPassed).toBe(true);
     });
 
+    it('blocks low-confidence extractions even when the decision is positive', async () => {
+      const client = new SubmissionClient({ ...baseConfig, trackingEnabled: false });
+
+      // structured_text regex (0.5) parsed a real PASS, but it is below the trust
+      // threshold — the decision is preserved on the result, gating refuses it.
+      const lowConf = await client.submit(makeSubmission({
+        result: { ...makeResult({ decision: 'PASS' }), decisionCategory: 'positive' as const, extractionConfidence: 0.5 },
+      }));
+      expect(lowConf.allGatesPassed).toBe(false);
+
+      // At/above the threshold a positive decision passes as normal (inline JSON, 0.75).
+      const highConf = await client.submit(makeSubmission({
+        result: { ...makeResult({ decision: 'PASS' }), decisionCategory: 'positive' as const, extractionConfidence: 0.75 },
+      }));
+      expect(highConf.allGatesPassed).toBe(true);
+
+      // Absent extractionConfidence (structured output / command path) is unaffected.
+      const noConf = await client.submit(makeSubmission({
+        result: makeResult({ decision: 'PASS' }),
+      }));
+      expect(noConf.allGatesPassed).toBe(true);
+    });
+
     it('uses decisionCategory for non-standard positive decisions', async () => {
       const client = new SubmissionClient({ ...baseConfig, trackingEnabled: false });
 

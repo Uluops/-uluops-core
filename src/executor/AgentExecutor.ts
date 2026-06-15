@@ -146,9 +146,15 @@ export class AgentExecutor {
     const durationMs = Date.now() - startTime;
     const metrics = this.buildMetrics(result, durationMs);
 
-    // Extraction-aware decision: low-confidence extractions (< 0.7) are unreliable
-    // regardless of whether a decision string was parsed. A 0.5-confidence regex
-    // match that found "PASS" in prose is not the same as a structured JSON PASS.
+    // ── Decision (non-destructive) ──────────────────────────────────────────
+    // The decision always reflects the actual parsed value. Extraction trust is
+    // expressed separately via `extractionConfidence`/`extractionMethod` on the
+    // result — we never overwrite a correctly-parsed decision just because a
+    // low-confidence (e.g. 0.5 regex) extraction method produced it. Whether a
+    // low-confidence result is allowed to pass a gate is decided downstream by
+    // SubmissionClient.isPositiveDecision (EXTRACTION_CONFIDENCE_THRESHOLD), not
+    // by erasing the decision here.
+    //
     // ── Decision normalization ──────────────────────────────────────────────
     // Agents emit native vocabulary (PASS, EXAMINED, VITAL, FLOWING, etc.).
     // classifyAgentDecision() normalizes these to DecisionCategory (positive/
@@ -159,9 +165,7 @@ export class AgentExecutor {
     // on raw decision strings, vocabulary drift across agent types will cause
     // silent misclassification. SubmissionClient.allGatesPassed is the known
     // exception — it checks for literal 'PASS' | 'SHIP'. See issue A3 in tracker.
-    const effectiveDecision = extraction.confidence < 0.7
-      ? 'EXTRACTION_FAILED'
-      : (parsed.decision ?? 'FAIL');
+    const effectiveDecision = parsed.decision ?? 'FAIL';
     const decisionCategory = this.classifyAgentDecision(resolved, effectiveDecision);
 
     return this.buildResult(resolved, agentType, context, parsed, effectiveDecision, extraction, recommendations, durationMs, metrics, decisionCategory, rawText);
