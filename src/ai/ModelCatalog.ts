@@ -58,6 +58,9 @@ const DEFAULT_CAPABILITIES: ModelCapabilities = {
   streaming: true,
   extendedThinking: false,
   structuredOutput: false,
+  // Absence/true = allowed. Only false (set in the catalog for Google/Gemini)
+  // disables structured output when tools are present.
+  structuredOutputWithTools: true,
 };
 
 /**

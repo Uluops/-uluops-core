@@ -182,17 +182,18 @@ export class AIProvider {
     const providerOptions = this.buildProviderOptions(resolved, options.providerOptions, options.contextBudget);
     const system = this.buildSystemMessage(resolved.provider, options.system);
     // ASSUMPTION (2026-04-16): the model catalog's capability flags
-    // (structuredOutput, toolCalling, contextManagement) accurately reflect
-    // current provider behavior. Capability drift is external to this codebase —
-    // providers may change what their models support without notice. The catalog
-    // is the single point of truth; if a model starts failing structured output,
-    // update the catalog entry rather than adding provider-specific workarounds here.
-    // Google models don't support structured output + tool use simultaneously
-    // (400: "Function calling with a response mime type: 'application/json' is unsupported").
-    // Verified still broken as of @ai-sdk/google@3.0.31 + Gemini 2.5 Flash (2026-04-18).
+    // (structuredOutput, structuredOutputWithTools, toolCalling) accurately
+    // reflect current provider behavior. Capability drift is external to this
+    // codebase — providers may change what their models support without notice.
+    // The catalog is the single point of truth: structuredOutputWithTools=false
+    // marks models that reject structured output + tool calling in the same
+    // request (e.g. Google/Gemini — 400 "Function calling with a response mime
+    // type: 'application/json' is unsupported", verified @ai-sdk/google@3.0.31 +
+    // Gemini 2.5 Flash 2026-04-18). The constraint lives in the catalog (set at
+    // model sync), not as a provider-name branch here. Absence = allowed.
     const hasTools = !!options.tools && Object.keys(options.tools).length > 0;
     const useStructuredOutput = !!options.output && !!resolved.capabilities.structuredOutput
-      && !(resolved.provider === 'google' && hasTools);
+      && !(hasTools && resolved.capabilities.structuredOutputWithTools === false);
 
     // Reasoning models (o1, o3, o4-mini, gpt-5.x) don't support temperature —
     // strip it to suppress repeated AI SDK warnings. Check capabilities

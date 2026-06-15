@@ -20,6 +20,7 @@ vi.mock('ai', () => ({
   generateText: vi.fn(),
   stepCountIs: vi.fn((n: number) => ({ type: 'stepCount', count: n })),
   tool: vi.fn((t: unknown) => t),
+  Output: { object: vi.fn((schema: unknown) => ({ type: 'output-object', schema })) },
 }));
 
 vi.mock('@ai-sdk/anthropic', () => ({
@@ -135,6 +136,105 @@ describe('AIProvider', () => {
       expect(catalog.resolve).toHaveBeenCalledWith('sonnet', {
         requiredCapabilities: undefined,
       });
+    });
+
+    // ── Structured-output-with-tools capability gating (Option C) ──────────
+    // useStructuredOutput is true only when the model supports structured output
+    // AND it is not the case that tools are present on a model whose
+    // structuredOutputWithTools capability is false (Google/Gemini). generateText
+    // receives an `output` key only when structured output is enabled.
+    function mockStopResult() {
+      return {
+        text: '{}',
+        usage: { inputTokens: 1, outputTokens: 1 },
+        steps: [],
+        finishReason: 'stop',
+        providerMetadata: {},
+      } as never;
+    }
+
+    it('disables structured output when structuredOutputWithTools is false and tools are present', async () => {
+      const { generateText } = await import('ai');
+      const mockGenerateText = vi.mocked(generateText);
+      mockGenerateText.mockResolvedValueOnce(mockStopResult());
+
+      const catalog = mockCatalog({
+        resolve: vi.fn().mockResolvedValue(makeResolvedModel({
+          provider: 'google',
+          capabilities: { tools: true, streaming: true, structuredOutput: true, structuredOutputWithTools: false },
+        })),
+      });
+      const googleCfg: ResolvedConfig = {
+        ...mockConfig,
+        ai: {
+          providers: { anthropic: { apiKey: 'test-anthropic-key' }, google: { apiKey: 'test-google-key' } },
+          defaultProvider: 'anthropic',
+        },
+      };
+      const provider = new AIProvider(googleCfg, catalog, noopLogger);
+      await provider.generate({
+        model: 'gemini',
+        system: 's',
+        prompt: 'p',
+        tools: { read_file: {} } as never,
+        output: { schema: {} } as never,
+      });
+
+      const callArg = mockGenerateText.mock.calls[0]![0] as Record<string, unknown>;
+      expect(callArg).not.toHaveProperty('output');
+    });
+
+    it('enables structured output when structuredOutputWithTools is false but no tools are present', async () => {
+      const { generateText } = await import('ai');
+      const mockGenerateText = vi.mocked(generateText);
+      mockGenerateText.mockResolvedValueOnce(mockStopResult());
+
+      const catalog = mockCatalog({
+        resolve: vi.fn().mockResolvedValue(makeResolvedModel({
+          provider: 'google',
+          capabilities: { tools: true, streaming: true, structuredOutput: true, structuredOutputWithTools: false },
+        })),
+      });
+      const googleCfg: ResolvedConfig = {
+        ...mockConfig,
+        ai: {
+          providers: { anthropic: { apiKey: 'test-anthropic-key' }, google: { apiKey: 'test-google-key' } },
+          defaultProvider: 'anthropic',
+        },
+      };
+      const provider = new AIProvider(googleCfg, catalog, noopLogger);
+      await provider.generate({
+        model: 'gemini',
+        system: 's',
+        prompt: 'p',
+        output: { schema: {} } as never,
+      });
+
+      const callArg = mockGenerateText.mock.calls[0]![0] as Record<string, unknown>;
+      expect(callArg).toHaveProperty('output');
+    });
+
+    it('enables structured output when structuredOutputWithTools is absent (allowed by default)', async () => {
+      const { generateText } = await import('ai');
+      const mockGenerateText = vi.mocked(generateText);
+      mockGenerateText.mockResolvedValueOnce(mockStopResult());
+
+      const catalog = mockCatalog({
+        resolve: vi.fn().mockResolvedValue(makeResolvedModel({
+          capabilities: { tools: true, streaming: true, structuredOutput: true },
+        })),
+      });
+      const provider = new AIProvider(mockConfig, catalog, noopLogger);
+      await provider.generate({
+        model: 'sonnet',
+        system: 's',
+        prompt: 'p',
+        tools: { read_file: {} } as never,
+        output: { schema: {} } as never,
+      });
+
+      const callArg = mockGenerateText.mock.calls[0]![0] as Record<string, unknown>;
+      expect(callArg).toHaveProperty('output');
     });
 
     it('applies modelOverride from config', async () => {
