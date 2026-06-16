@@ -6,6 +6,12 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) 
 
 ## [Unreleased]
 
+## [0.22.4] - 2026-06-16
+
+### Internal
+
+- **Config resolution extracted to pure, directly-testable functions.** `resolveConfig`/`resolveAIConfig` (plus `parseMaxConcurrency`/`parseAllowedTools`) moved from private `UluOpsClient` methods to module-level functions that take an explicit `env` argument (defaulting to `process.env`). No public API change — neither is re-exported from the package entry; behavior is identical (the constructor still calls `resolveConfig(config)`). This replaces ~25 brittle `UluOpsClient` tests that introspected the mocked `RegistryClient` constructor's arguments to observe resolved config — they now assert the pure function's return value against an explicit env, decoupled from collaborator wiring and immune to global-env pollution. Added HTTPS-enforcement, localhost-allowance, and offline-no-key behavioral cases. (tracker 385650e4, EPI-GRN/M)
+
 ## [0.22.3] - 2026-06-16
 
 ### Fixed

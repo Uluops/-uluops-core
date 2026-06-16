@@ -48,7 +48,7 @@ export class UluOpsClient {
   private logger: ReturnType<typeof createLogger>;
 
   constructor(config: UluOpsConfig) {
-    this.config = this.resolveConfig(config);
+    this.config = resolveConfig(config);
 
     this.logger = createLogger('[core]', this.config.debug);
     const logger = this.logger;
@@ -452,121 +452,6 @@ export class UluOpsClient {
 
   // ─── Private Helpers ────────────────────────────────────────────────────
 
-  private resolveConfig(config: UluOpsConfig): ResolvedConfig {
-    const apiKey = config.apiKey ?? process.env['ULUOPS_API_KEY'] ?? process.env['ULU_API_KEY'];
-
-    // API key is optional when using local definitions with tracking disabled.
-    // Remote operations (registry resolve, submission) will fail at call
-    // time if no key is available — but local-only usage works without one.
-    const needsRemoteAccess = !config.localDefinitions || config.trackingEnabled !== false;
-    if (!apiKey && needsRemoteAccess) {
-      throw new ConfigurationError(
-        'UluOps API key is required for registry and tracking access. ' +
-        'Provide via config.apiKey, ULUOPS_API_KEY, or ULU_API_KEY environment variable. ' +
-        'Generate a key at https://app.uluops.ai. ' +
-        'For offline usage, set localDefinitions and trackingEnabled: false.',
-      );
-    }
-
-    if (apiKey && !apiKey.startsWith('ulr_')) {
-      throw new ConfigurationError(
-        `Invalid API key format: keys must begin with "ulr_". ` +
-        `Got: "[redacted]". ` +
-        `Generate a valid key at https://app.uluops.ai.`,
-      );
-    }
-
-    const registryUrl = config.registryUrl ?? process.env['ULUOPS_REGISTRY_URL'] ?? 'https://api.uluops.ai/api/v1/registry';
-    const submissionUrl = config.submissionUrl ?? process.env['ULUOPS_SUBMISSION_URL'] ?? 'https://api.uluops.ai/api/v1';
-    const dashboardUrl = config.dashboardUrl ?? process.env['ULUOPS_DASHBOARD_URL'] ?? 'https://app.uluops.ai';
-
-    // Enforce HTTPS when a real API key is present to prevent credential exfiltration.
-    // Allow HTTP for local development (no key, test_ prefix, or localhost/127.0.0.1).
-    const isLocalUrl = (url: string) => {
-      try { const u = new URL(url); return u.hostname === 'localhost' || u.hostname === '127.0.0.1'; }
-      catch { return false; }
-    };
-    if (apiKey && !apiKey.startsWith('test_')) {
-      for (const [label, url] of [['registryUrl', registryUrl], ['submissionUrl', submissionUrl]] as const) {
-        if (!url.startsWith('https://') && !isLocalUrl(url)) {
-          throw new ConfigurationError(
-            `${label} must use HTTPS when an API key is configured (got "${url}"). ` +
-            `Use HTTPS to prevent credential exposure, or omit the API key for local-only usage.`,
-          );
-        }
-      }
-    }
-
-    return {
-      apiKey,
-      ai: this.resolveAIConfig(config.ai),
-      registryUrl,
-      submissionUrl,
-      dashboardUrl,
-      localDefinitions: config.localDefinitions ?? process.env['ULUOPS_LOCAL_DEFINITIONS'],
-      trackingEnabled: config.trackingEnabled ?? (process.env['ULUOPS_TRACKING_ENABLED'] !== 'false'),
-      timeout: config.timeout ?? DEFAULT_TIMEOUT_MS,
-      defaultProject: config.defaultProject ?? process.env['ULUOPS_PROJECT'],
-      defaultThinkingBudget: config.defaultThinkingBudget ?? 10_000,
-      debug: config.debug ?? (process.env['ULUOPS_DEBUG'] === 'true'),
-      contextBudget: config.contextBudget,
-      maxRetries: config.maxRetries,
-      maxConcurrency: config.maxConcurrency ?? this.parseMaxConcurrency(process.env['ULUOPS_MAX_CONCURRENCY']) ?? DEFAULT_MAX_CONCURRENCY,
-      allowedTools: config.allowedTools ?? this.parseAllowedTools(process.env['ULUOPS_ALLOWED_TOOLS']),
-    };
-  }
-
-  /**
-   * Parse ULUOPS_MAX_CONCURRENCY env var into a positive integer, or undefined
-   * if unset/invalid (caller falls back to DEFAULT_MAX_CONCURRENCY).
-   */
-  private parseMaxConcurrency(envValue?: string): number | undefined {
-    if (!envValue) return undefined;
-    const n = Number.parseInt(envValue, 10);
-    return Number.isFinite(n) && n > 0 ? n : undefined;
-  }
-
-  /**
-   * Resolve AI config with env var fallbacks.
-   *
-   * Default: Anthropic provider with ANTHROPIC_API_KEY env var.
-   * Env var convention: <PROVIDER>_API_KEY (e.g., ANTHROPIC_API_KEY, OPENAI_API_KEY)
-   */
-  private parseAllowedTools(envValue?: string): string[] | undefined {
-    if (!envValue) return undefined;
-    return envValue.split(',').map(t => t.trim()).filter(Boolean);
-  }
-
-  private resolveAIConfig(ai?: AIConfig): ResolvedAIConfig {
-    const providers: Record<string, { apiKey: string }> = {};
-
-    if (ai?.providers) {
-      // Use explicitly configured providers with env var fallback
-      for (const [name, creds] of Object.entries(ai.providers)) {
-        const apiKey = creds.apiKey ?? resolveProviderApiKey(name);
-        if (apiKey) {
-          providers[name] = { apiKey };
-        }
-      }
-    } else {
-      // Auto-detect: scan env vars for known provider API keys
-      const KNOWN_PROVIDERS = ['anthropic', 'openai', 'google', 'mistral', 'cohere'] as const;
-      for (const name of KNOWN_PROVIDERS) {
-        const apiKey = resolveProviderApiKey(name);
-        if (apiKey) {
-          providers[name] = { apiKey };
-        }
-      }
-    }
-
-    return {
-      providers,
-      defaultProvider: ai?.defaultProvider ?? 'anthropic',
-      modelOverride: ai?.modelOverride,
-      additionalProviders: ai?.additionalProviders,
-    };
-  }
-
   private async resolveByRef(name: string, type?: DefinitionType, opts?: ResolvePinOptions) {
     const [refName, refVersion] = parseRef(name);
     if (opts) {
@@ -684,18 +569,153 @@ export class UluOpsClient {
 }
 
 /**
+ * Resolve a partial {@link UluOpsConfig} into a fully-defaulted {@link ResolvedConfig},
+ * applying config → environment-variable → built-in-default precedence.
+ *
+ * Pure: reads only its two arguments and module constants, with no `this` or
+ * collaborator dependency. This is the directly-testable unit for config-resolution
+ * behavior — assert its return value rather than introspecting what the constructor
+ * passes to RegistryClient/SubmissionClient/etc.
+ *
+ * @param config - Caller-supplied configuration.
+ * @param env - Environment source (defaults to `process.env`); pass an explicit
+ *   object in tests to avoid mutating/restoring global env.
+ * @returns The fully-defaulted resolved configuration.
+ * @throws {ConfigurationError} If an API key is required but absent, malformed
+ *   (missing `ulr_` prefix), or paired with a non-HTTPS URL while a real key is set.
+ */
+export function resolveConfig(config: UluOpsConfig, env: NodeJS.ProcessEnv = process.env): ResolvedConfig {
+  const apiKey = config.apiKey ?? env['ULUOPS_API_KEY'] ?? env['ULU_API_KEY'];
+
+  // API key is optional when using local definitions with tracking disabled.
+  // Remote operations (registry resolve, submission) will fail at call
+  // time if no key is available — but local-only usage works without one.
+  const needsRemoteAccess = !config.localDefinitions || config.trackingEnabled !== false;
+  if (!apiKey && needsRemoteAccess) {
+    throw new ConfigurationError(
+      'UluOps API key is required for registry and tracking access. ' +
+      'Provide via config.apiKey, ULUOPS_API_KEY, or ULU_API_KEY environment variable. ' +
+      'Generate a key at https://app.uluops.ai. ' +
+      'For offline usage, set localDefinitions and trackingEnabled: false.',
+    );
+  }
+
+  if (apiKey && !apiKey.startsWith('ulr_')) {
+    throw new ConfigurationError(
+      `Invalid API key format: keys must begin with "ulr_". ` +
+      `Got: "[redacted]". ` +
+      `Generate a valid key at https://app.uluops.ai.`,
+    );
+  }
+
+  const registryUrl = config.registryUrl ?? env['ULUOPS_REGISTRY_URL'] ?? 'https://api.uluops.ai/api/v1/registry';
+  const submissionUrl = config.submissionUrl ?? env['ULUOPS_SUBMISSION_URL'] ?? 'https://api.uluops.ai/api/v1';
+  const dashboardUrl = config.dashboardUrl ?? env['ULUOPS_DASHBOARD_URL'] ?? 'https://app.uluops.ai';
+
+  // Enforce HTTPS when a real API key is present to prevent credential exfiltration.
+  // Allow HTTP for local development (no key, test_ prefix, or localhost/127.0.0.1).
+  const isLocalUrl = (url: string) => {
+    try { const u = new URL(url); return u.hostname === 'localhost' || u.hostname === '127.0.0.1'; }
+    catch { return false; }
+  };
+  if (apiKey && !apiKey.startsWith('test_')) {
+    for (const [label, url] of [['registryUrl', registryUrl], ['submissionUrl', submissionUrl]] as const) {
+      if (!url.startsWith('https://') && !isLocalUrl(url)) {
+        throw new ConfigurationError(
+          `${label} must use HTTPS when an API key is configured (got "${url}"). ` +
+          `Use HTTPS to prevent credential exposure, or omit the API key for local-only usage.`,
+        );
+      }
+    }
+  }
+
+  return {
+    apiKey,
+    ai: resolveAIConfig(config.ai, env),
+    registryUrl,
+    submissionUrl,
+    dashboardUrl,
+    localDefinitions: config.localDefinitions ?? env['ULUOPS_LOCAL_DEFINITIONS'],
+    trackingEnabled: config.trackingEnabled ?? (env['ULUOPS_TRACKING_ENABLED'] !== 'false'),
+    timeout: config.timeout ?? DEFAULT_TIMEOUT_MS,
+    defaultProject: config.defaultProject ?? env['ULUOPS_PROJECT'],
+    defaultThinkingBudget: config.defaultThinkingBudget ?? 10_000,
+    debug: config.debug ?? (env['ULUOPS_DEBUG'] === 'true'),
+    contextBudget: config.contextBudget,
+    maxRetries: config.maxRetries,
+    maxConcurrency: config.maxConcurrency ?? parseMaxConcurrency(env['ULUOPS_MAX_CONCURRENCY']) ?? DEFAULT_MAX_CONCURRENCY,
+    allowedTools: config.allowedTools ?? parseAllowedTools(env['ULUOPS_ALLOWED_TOOLS']),
+  };
+}
+
+/**
+ * Resolve AI config with env var fallbacks.
+ *
+ * Default: Anthropic provider with ANTHROPIC_API_KEY env var.
+ * Env var convention: <PROVIDER>_API_KEY (e.g., ANTHROPIC_API_KEY, OPENAI_API_KEY).
+ *
+ * @param ai - Caller-supplied AI config (providers, defaultProvider, modelOverride).
+ * @param env - Environment source (defaults to `process.env`).
+ */
+export function resolveAIConfig(ai: AIConfig | undefined, env: NodeJS.ProcessEnv = process.env): ResolvedAIConfig {
+  const providers: Record<string, { apiKey: string }> = {};
+
+  if (ai?.providers) {
+    // Use explicitly configured providers with env var fallback
+    for (const [name, creds] of Object.entries(ai.providers)) {
+      const apiKey = creds.apiKey ?? resolveProviderApiKey(name, env);
+      if (apiKey) {
+        providers[name] = { apiKey };
+      }
+    }
+  } else {
+    // Auto-detect: scan env vars for known provider API keys
+    const KNOWN_PROVIDERS = ['anthropic', 'openai', 'google', 'mistral', 'cohere'] as const;
+    for (const name of KNOWN_PROVIDERS) {
+      const apiKey = resolveProviderApiKey(name, env);
+      if (apiKey) {
+        providers[name] = { apiKey };
+      }
+    }
+  }
+
+  return {
+    providers,
+    defaultProvider: ai?.defaultProvider ?? 'anthropic',
+    modelOverride: ai?.modelOverride,
+    additionalProviders: ai?.additionalProviders,
+  };
+}
+
+/**
+ * Parse ULUOPS_MAX_CONCURRENCY env var into a positive integer, or undefined
+ * if unset/invalid (caller falls back to DEFAULT_MAX_CONCURRENCY).
+ */
+function parseMaxConcurrency(envValue?: string): number | undefined {
+  if (!envValue) return undefined;
+  const n = Number.parseInt(envValue, 10);
+  return Number.isFinite(n) && n > 0 ? n : undefined;
+}
+
+/** Parse a comma-separated ULUOPS_ALLOWED_TOOLS env var into a trimmed list. */
+function parseAllowedTools(envValue?: string): string[] | undefined {
+  if (!envValue) return undefined;
+  return envValue.split(',').map(t => t.trim()).filter(Boolean);
+}
+
+/**
  * Resolve an API key for a provider from environment variables.
  * Checks `<PROVIDER>_API_KEY` first, then provider-specific fallbacks
  * (e.g., `GOOGLE_GENERATIVE_AI_API_KEY` for Google's SDK default).
  */
-function resolveProviderApiKey(name: string): string | undefined {
+function resolveProviderApiKey(name: string, env: NodeJS.ProcessEnv = process.env): string | undefined {
   const envKey = `${name.toUpperCase()}_API_KEY`;
-  const apiKey = process.env[envKey];
+  const apiKey = env[envKey];
   if (apiKey) return apiKey;
 
   // Google SDK uses GOOGLE_GENERATIVE_AI_API_KEY by default
   if (name === 'google') {
-    return process.env['GOOGLE_GENERATIVE_AI_API_KEY'];
+    return env['GOOGLE_GENERATIVE_AI_API_KEY'];
   }
 
   return undefined;

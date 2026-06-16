@@ -78,7 +78,7 @@ vi.mock('../../src/executor/PipelineExecutor.js', () => ({
 
 // ─── Imports (after mocks) ───────────────────────────────────────────────────
 
-import { UluOpsClient } from '../../src/client/UluOpsClient.js';
+import { UluOpsClient, resolveConfig, resolveAIConfig } from '../../src/client/UluOpsClient.js';
 import { RegistryClient } from '../../src/registry/RegistryClient.js';
 import { SubmissionClient } from '../../src/submission/SubmissionClient.js';
 import { ModelCatalog } from '../../src/ai/ModelCatalog.js';
@@ -236,257 +236,171 @@ describe('UluOpsClient', () => {
 
   // ─── Config Resolution ───────────────────────────────────────────────────
 
+  // resolveConfig is the pure config-resolution unit. Tests assert its return value
+  // directly with an explicit env object — observable behavior, not the args the
+  // constructor happens to pass to a collaborator (was: constructorArgs(RegistryClient)).
   describe('resolveConfig', () => {
     it('throws when no API key is provided from any source', () => {
-      delete process.env['ULUOPS_API_KEY'];
-      delete process.env['ULU_API_KEY'];
-
-      expect(() => new UluOpsClient({})).toThrow('API key is required');
+      expect(() => resolveConfig({}, {})).toThrow('API key is required');
     });
 
     it('throws ConfigurationError when API key lacks ulr_ prefix', () => {
-      delete process.env['ULUOPS_API_KEY'];
-      delete process.env['ULU_API_KEY'];
-
-      expect(() => new UluOpsClient({ apiKey: 'bad-prefix-key' })).toThrow('keys must begin with "ulr_"');
+      expect(() => resolveConfig({ apiKey: 'bad-prefix-key' }, {})).toThrow('keys must begin with "ulr_"');
     });
 
     it('accepts API key from config', () => {
-      delete process.env['ULUOPS_API_KEY'];
-      delete process.env['ULU_API_KEY'];
-
-      expect(() => new UluOpsClient({ apiKey: 'ulr_from-config' })).not.toThrow();
+      expect(() => resolveConfig({ apiKey: 'ulr_from-config' }, {})).not.toThrow();
     });
 
     it('reads API key from ULUOPS_API_KEY env var', () => {
-      delete process.env['ULU_API_KEY'];
-      process.env['ULUOPS_API_KEY'] = 'ulr_from-env';
-
-      new UluOpsClient({});
-
-      // Verify resolved config passed to RegistryClient has the env var key
-      const config = constructorArgs(RegistryClient as unknown as ReturnType<typeof vi.fn>)[0] as Record<string, unknown>;
+      const config = resolveConfig({}, { ULUOPS_API_KEY: 'ulr_from-env' });
       expect(config.apiKey).toBe('ulr_from-env');
     });
 
     it('falls back to ULU_API_KEY env var', () => {
-      delete process.env['ULUOPS_API_KEY'];
-      process.env['ULU_API_KEY'] = 'ulr_from-ulu-env';
-
-      new UluOpsClient({});
-
-      const config = constructorArgs(RegistryClient as unknown as ReturnType<typeof vi.fn>)[0] as Record<string, unknown>;
+      const config = resolveConfig({}, { ULU_API_KEY: 'ulr_from-ulu-env' });
       expect(config.apiKey).toBe('ulr_from-ulu-env');
     });
 
     it('config apiKey takes precedence over env vars', () => {
-      process.env['ULUOPS_API_KEY'] = 'ulr_from-env';
-      process.env['ULU_API_KEY'] = 'ulr_from-ulu-env';
-
-      new UluOpsClient({ apiKey: 'ulr_from-config' });
-
-      const config = constructorArgs(RegistryClient as unknown as ReturnType<typeof vi.fn>)[0] as Record<string, unknown>;
+      const config = resolveConfig(
+        { apiKey: 'ulr_from-config' },
+        { ULUOPS_API_KEY: 'ulr_from-env', ULU_API_KEY: 'ulr_from-ulu-env' },
+      );
       expect(config.apiKey).toBe('ulr_from-config');
     });
 
     it('reads URL overrides from env vars', () => {
-      process.env['ULUOPS_REGISTRY_URL'] = 'https://custom-registry/api';
-      process.env['ULUOPS_SUBMISSION_URL'] = 'https://custom-ops/api';
-      process.env['ULUOPS_DASHBOARD_URL'] = 'https://custom-dash';
-
-      new UluOpsClient({ apiKey: 'ulr_test-key' });
-
-      const config = constructorArgs(RegistryClient as unknown as ReturnType<typeof vi.fn>)[0] as Record<string, unknown>;
+      const config = resolveConfig({ apiKey: 'ulr_test-key' }, {
+        ULUOPS_REGISTRY_URL: 'https://custom-registry/api',
+        ULUOPS_SUBMISSION_URL: 'https://custom-ops/api',
+        ULUOPS_DASHBOARD_URL: 'https://custom-dash',
+      });
       expect(config.registryUrl).toBe('https://custom-registry/api');
       expect(config.submissionUrl).toBe('https://custom-ops/api');
       expect(config.dashboardUrl).toBe('https://custom-dash');
     });
 
     it('uses production defaults when no URL env vars set', () => {
-      delete process.env['ULUOPS_REGISTRY_URL'];
-      delete process.env['ULUOPS_SUBMISSION_URL'];
-      delete process.env['ULUOPS_DASHBOARD_URL'];
-
-      new UluOpsClient({ apiKey: 'ulr_test-key' });
-
-      const config = constructorArgs(RegistryClient as unknown as ReturnType<typeof vi.fn>)[0] as Record<string, unknown>;
+      const config = resolveConfig({ apiKey: 'ulr_test-key' }, {});
       expect(config.registryUrl).toBe('https://api.uluops.ai/api/v1/registry');
       expect(config.submissionUrl).toBe('https://api.uluops.ai/api/v1');
       expect(config.dashboardUrl).toBe('https://app.uluops.ai');
     });
 
+    it('rejects non-HTTPS URLs when a real API key is present', () => {
+      expect(() => resolveConfig(
+        { apiKey: 'ulr_test-key', registryUrl: 'http://insecure/api' }, {},
+      )).toThrow('must use HTTPS');
+    });
+
+    it('allows non-HTTPS localhost URLs even with an API key', () => {
+      const config = resolveConfig(
+        { apiKey: 'ulr_test-key', registryUrl: 'http://localhost:3001', submissionUrl: 'http://127.0.0.1:3100' }, {},
+      );
+      expect(config.registryUrl).toBe('http://localhost:3001');
+      expect(config.submissionUrl).toBe('http://127.0.0.1:3100');
+    });
+
     it('defaults trackingEnabled to true', () => {
-      delete process.env['ULUOPS_TRACKING_ENABLED'];
-
-      new UluOpsClient({ apiKey: 'ulr_test-key' });
-
-      const config = constructorArgs(RegistryClient as unknown as ReturnType<typeof vi.fn>)[0] as Record<string, unknown>;
+      const config = resolveConfig({ apiKey: 'ulr_test-key' }, {});
       expect(config.trackingEnabled).toBe(true);
     });
 
     it('disables tracking via ULUOPS_TRACKING_ENABLED=false', () => {
-      process.env['ULUOPS_TRACKING_ENABLED'] = 'false';
-
-      new UluOpsClient({ apiKey: 'ulr_test-key' });
-
-      const config = constructorArgs(RegistryClient as unknown as ReturnType<typeof vi.fn>)[0] as Record<string, unknown>;
+      const config = resolveConfig({ apiKey: 'ulr_test-key' }, { ULUOPS_TRACKING_ENABLED: 'false' });
       expect(config.trackingEnabled).toBe(false);
     });
 
     it('config trackingEnabled overrides env var', () => {
-      process.env['ULUOPS_TRACKING_ENABLED'] = 'false';
-
-      new UluOpsClient({ apiKey: 'ulr_test-key', trackingEnabled: true });
-
-      const config = constructorArgs(RegistryClient as unknown as ReturnType<typeof vi.fn>)[0] as Record<string, unknown>;
+      const config = resolveConfig({ apiKey: 'ulr_test-key', trackingEnabled: true }, { ULUOPS_TRACKING_ENABLED: 'false' });
       expect(config.trackingEnabled).toBe(true);
     });
 
     it('defaults timeout to 300000ms', () => {
-      new UluOpsClient({ apiKey: 'ulr_test-key' });
-
-      const config = constructorArgs(RegistryClient as unknown as ReturnType<typeof vi.fn>)[0] as Record<string, unknown>;
+      const config = resolveConfig({ apiKey: 'ulr_test-key' }, {});
       expect(config.timeout).toBe(300_000);
     });
 
     it('defaults defaultThinkingBudget to 10000', () => {
-      new UluOpsClient({ apiKey: 'ulr_test-key' });
-
-      const config = constructorArgs(RegistryClient as unknown as ReturnType<typeof vi.fn>)[0] as Record<string, unknown>;
+      const config = resolveConfig({ apiKey: 'ulr_test-key' }, {});
       expect(config.defaultThinkingBudget).toBe(10_000);
     });
 
     it('reads debug from config', () => {
-      new UluOpsClient({ apiKey: 'ulr_test-key', debug: true });
-
-      const config = constructorArgs(RegistryClient as unknown as ReturnType<typeof vi.fn>)[0] as Record<string, unknown>;
+      const config = resolveConfig({ apiKey: 'ulr_test-key', debug: true }, {});
       expect(config.debug).toBe(true);
     });
 
     it('reads debug from ULUOPS_DEBUG env var', () => {
-      process.env['ULUOPS_DEBUG'] = 'true';
-
-      new UluOpsClient({ apiKey: 'ulr_test-key' });
-
-      const config = constructorArgs(RegistryClient as unknown as ReturnType<typeof vi.fn>)[0] as Record<string, unknown>;
+      const config = resolveConfig({ apiKey: 'ulr_test-key' }, { ULUOPS_DEBUG: 'true' });
       expect(config.debug).toBe(true);
     });
 
     it('reads defaultProject from ULUOPS_PROJECT env var', () => {
-      process.env['ULUOPS_PROJECT'] = 'env-project';
-
-      new UluOpsClient({ apiKey: 'ulr_test-key' });
-
-      const config = constructorArgs(RegistryClient as unknown as ReturnType<typeof vi.fn>)[0] as Record<string, unknown>;
+      const config = resolveConfig({ apiKey: 'ulr_test-key' }, { ULUOPS_PROJECT: 'env-project' });
       expect(config.defaultProject).toBe('env-project');
     });
 
-    it('reads localDefinitions from config and env var', () => {
-      process.env['ULUOPS_LOCAL_DEFINITIONS'] = '/from/env';
+    it('reads localDefinitions from env var, config overrides', () => {
+      expect(resolveConfig({ apiKey: 'ulr_test-key' }, { ULUOPS_LOCAL_DEFINITIONS: '/from/env' }).localDefinitions)
+        .toBe('/from/env');
+      expect(resolveConfig({ apiKey: 'ulr_test-key', localDefinitions: '/from/config' }, { ULUOPS_LOCAL_DEFINITIONS: '/from/env' }).localDefinitions)
+        .toBe('/from/config');
+    });
 
-      // Env var
-      new UluOpsClient({ apiKey: 'ulr_test-key' });
-      let config = constructorArgs(RegistryClient as unknown as ReturnType<typeof vi.fn>)[0] as Record<string, unknown>;
-      expect(config.localDefinitions).toBe('/from/env');
-
-      vi.clearAllMocks();
-
-      // Config overrides
-      new UluOpsClient({ apiKey: 'ulr_test-key', localDefinitions: '/from/config' });
-      config = constructorArgs(RegistryClient as unknown as ReturnType<typeof vi.fn>)[0] as Record<string, unknown>;
-      expect(config.localDefinitions).toBe('/from/config');
+    it('allows a missing API key when localDefinitions is set and tracking is disabled', () => {
+      const config = resolveConfig({ localDefinitions: '/local', trackingEnabled: false }, {});
+      expect(config.apiKey).toBeUndefined();
+      expect(config.localDefinitions).toBe('/local');
     });
   });
 
   // ─── AI Config Resolution ────────────────────────────────────────────────
 
+  // resolveAIConfig tested directly against its return value with explicit env.
   describe('resolveAIConfig', () => {
     it('defaults to anthropic provider when no ai config', () => {
-      process.env['ANTHROPIC_API_KEY'] = 'test-anthropic-key';
-
-      new UluOpsClient({ apiKey: 'ulr_test-key' });
-
-      const config = constructorArgs(RegistryClient as unknown as ReturnType<typeof vi.fn>)[0] as Record<string, unknown>;
-      const ai = config.ai as Record<string, unknown>;
+      const ai = resolveAIConfig(undefined, { ANTHROPIC_API_KEY: 'test-anthropic-key' });
       expect(ai.defaultProvider).toBe('anthropic');
-      expect((ai.providers as Record<string, unknown>).anthropic).toEqual({ apiKey: 'test-anthropic-key' });
+      expect(ai.providers.anthropic).toEqual({ apiKey: 'test-anthropic-key' });
     });
 
     it('excludes providers without API keys', () => {
-      delete process.env['ANTHROPIC_API_KEY'];
-
-      new UluOpsClient({ apiKey: 'ulr_test-key' });
-
-      const config = constructorArgs(RegistryClient as unknown as ReturnType<typeof vi.fn>)[0] as Record<string, unknown>;
-      const ai = config.ai as Record<string, unknown>;
-      const providers = ai.providers as Record<string, unknown>;
-      expect(providers.anthropic).toBeUndefined();
+      const ai = resolveAIConfig(undefined, {});
+      expect(ai.providers.anthropic).toBeUndefined();
     });
 
     it('uses explicit provider config with env var fallback', () => {
-      process.env['OPENAI_API_KEY'] = 'openai-key-from-env';
-
-      new UluOpsClient({
-        apiKey: 'ulr_test-key',
-        ai: {
+      const ai = resolveAIConfig(
+        {
           providers: {
             anthropic: { apiKey: 'explicit-anthropic' },
             openai: {}, // No apiKey — falls back to OPENAI_API_KEY env var
           },
           defaultProvider: 'anthropic',
         },
-      });
-
-      const config = constructorArgs(RegistryClient as unknown as ReturnType<typeof vi.fn>)[0] as Record<string, unknown>;
-      const ai = config.ai as Record<string, unknown>;
-      const providers = ai.providers as Record<string, unknown>;
-      expect(providers.anthropic).toEqual({ apiKey: 'explicit-anthropic' });
-      expect(providers.openai).toEqual({ apiKey: 'openai-key-from-env' });
+        { OPENAI_API_KEY: 'openai-key-from-env' },
+      );
+      expect(ai.providers.anthropic).toEqual({ apiKey: 'explicit-anthropic' });
+      expect(ai.providers.openai).toEqual({ apiKey: 'openai-key-from-env' });
     });
 
     it('detects google via GOOGLE_GENERATIVE_AI_API_KEY fallback in auto-detect', () => {
-      delete process.env['GOOGLE_API_KEY'];
-      process.env['GOOGLE_GENERATIVE_AI_API_KEY'] = 'google-alt-key';
-
-      new UluOpsClient({ apiKey: 'ulr_test-key' });
-
-      const config = constructorArgs(RegistryClient as unknown as ReturnType<typeof vi.fn>)[0] as Record<string, unknown>;
-      const ai = config.ai as Record<string, unknown>;
-      const providers = ai.providers as Record<string, unknown>;
-      expect(providers.google).toEqual({ apiKey: 'google-alt-key' });
+      const ai = resolveAIConfig(undefined, { GOOGLE_GENERATIVE_AI_API_KEY: 'google-alt-key' });
+      expect(ai.providers.google).toEqual({ apiKey: 'google-alt-key' });
     });
 
     it('detects google via GOOGLE_GENERATIVE_AI_API_KEY fallback in explicit config', () => {
-      delete process.env['GOOGLE_API_KEY'];
-      process.env['GOOGLE_GENERATIVE_AI_API_KEY'] = 'google-alt-key';
-
-      new UluOpsClient({
-        apiKey: 'ulr_test-key',
-        ai: {
-          providers: {
-            google: {}, // No apiKey — falls back to GOOGLE_GENERATIVE_AI_API_KEY
-          },
-          defaultProvider: 'anthropic',
-        },
-      });
-
-      const config = constructorArgs(RegistryClient as unknown as ReturnType<typeof vi.fn>)[0] as Record<string, unknown>;
-      const ai = config.ai as Record<string, unknown>;
-      const providers = ai.providers as Record<string, unknown>;
-      expect(providers.google).toEqual({ apiKey: 'google-alt-key' });
+      const ai = resolveAIConfig(
+        { providers: { google: {} }, defaultProvider: 'anthropic' }, // No apiKey — env fallback
+        { GOOGLE_GENERATIVE_AI_API_KEY: 'google-alt-key' },
+      );
+      expect(ai.providers.google).toEqual({ apiKey: 'google-alt-key' });
     });
 
     it('passes through modelOverride', () => {
-      new UluOpsClient({
-        apiKey: 'ulr_test-key',
-        ai: {
-          providers: { anthropic: { apiKey: 'key' } },
-          modelOverride: 'haiku',
-        },
-      });
-
-      const config = constructorArgs(RegistryClient as unknown as ReturnType<typeof vi.fn>)[0] as Record<string, unknown>;
-      const ai = config.ai as Record<string, unknown>;
+      const ai = resolveAIConfig({ providers: { anthropic: { apiKey: 'key' } }, modelOverride: 'haiku' }, {});
       expect(ai.modelOverride).toBe('haiku');
     });
   });
