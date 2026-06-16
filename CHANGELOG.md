@@ -6,6 +6,12 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) 
 
 ## [Unreleased]
 
+## [0.22.5] - 2026-06-16
+
+### Design Notes
+
+- **Documented why `DEFAULT_CAPABILITIES.structuredOutput` is default-deny.** Models absent from the registry (unregistered explicit `provider:modelId`, or an alias with no model object) fall back to these defaults; `structuredOutput: false` is intentional — with no capability data, assuming structured-output support produces hard API errors when wrong, whereas text extraction works for any model emitting a JSON fence (and is non-destructive since the Option B fix). Added a source comment so the deliberate default isn't "fixed" to `true`. No behavior change. (tracker 8caa7b45, PRA-FRA/L)
+
 ## [0.22.4] - 2026-06-16
 
 ### Internal

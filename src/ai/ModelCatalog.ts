@@ -52,11 +52,20 @@ export interface ResolveOptions {
 
 const VALID_TIERS: readonly string[] = ['budget', 'standard', 'premium', 'reasoning'];
 
+// Capabilities assumed for models ABSENT from the registry — reached only on two
+// paths: an unregistered explicit provider:modelId (resolveExplicit) and an alias
+// whose resolution carries no model object (toResolvedModel). Registered models and
+// tier resolution use the registry's own capabilities.
 const DEFAULT_CAPABILITIES: ModelCapabilities = {
   vision: false,
   tools: true,
   streaming: true,
   extendedThinking: false,
+  // Default-deny is intentional, not a placeholder: with no registry data we can't
+  // know a model supports JSON-schema structured output, and assuming true produces
+  // hard API errors when wrong. false routes to text extraction, which works for any
+  // model emitting a JSON fence (and is non-destructive since the Option B extraction
+  // fix). Register the model to opt it into structured output. Do NOT flip to true.
   structuredOutput: false,
   // Absence/true = allowed. Only false (set in the catalog for Google/Gemini)
   // disables structured output when tools are present.
