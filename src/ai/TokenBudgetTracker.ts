@@ -18,8 +18,26 @@ export class TokenBudgetTracker {
   private currentContextTokens = 0;
   /** Cumulative output tokens across all steps */
   private cumulativeOutput = 0;
+  /** Whether the context-budget wrap-up latch is currently engaged. */
+  private forcedWrapUpFlag = false;
 
   constructor(private budget: number) {}
+
+  /**
+   * Record the final state of the budget wrap-up latch. Set when the latch
+   * engages (≥80% of budget) and cleared when it releases (<70%, hysteresis),
+   * so the value reflects whether the run *ended* in forced wrap-up — a run
+   * that latched then recovered is not left flagged. Read by AgentExecutor to
+   * emit a `budget.forced-wrap-up` degradation marker.
+   */
+  markForcedWrapUp(engaged: boolean): void {
+    this.forcedWrapUpFlag = engaged;
+  }
+
+  /** Whether the wrap-up latch was engaged at the end of the run. */
+  get forcedWrapUp(): boolean {
+    return this.forcedWrapUpFlag;
+  }
 
   /**
    * Record token usage from a completed step.

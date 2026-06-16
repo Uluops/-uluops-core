@@ -85,4 +85,13 @@ describe('TokenBudgetTracker', () => {
     expect(status.percentUsed).toBe(0);
     expect(status.remaining).toBe(200_000);
   });
+
+  it('forcedWrapUp defaults to false and reflects the latest markForcedWrapUp', () => {
+    const tracker = new TokenBudgetTracker(200_000);
+    expect(tracker.forcedWrapUp).toBe(false);
+    tracker.markForcedWrapUp(true);
+    expect(tracker.forcedWrapUp).toBe(true);
+    tracker.markForcedWrapUp(false); // released (hysteresis)
+    expect(tracker.forcedWrapUp).toBe(false);
+  });
 });

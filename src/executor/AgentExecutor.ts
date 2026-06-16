@@ -8,6 +8,8 @@ import { deriveContextBudget } from '../ai/contextBudget.js';
 import { agentOutputSchema } from '../parser/outputSchemas.js';
 import { ExecutionError, MaxStepsExhaustedError } from '../errors/index.js';
 import { classifyDecision, buildVocabularyMap, type DecisionCategory } from './classifyDecision.js';
+import { deriveCompleteness, resolutionMarkersFromLegacy } from './degradationMarkers.js';
+import type { DegradationMarker } from '../types/degradation.js';
 import type { ResolvedConfig } from '../types/config.js';
 import type { ResolvedDefinition, AgentRuntime, ExecutorRuntime } from '../types/registry.js';
 import type { ExecutionInput, ExecutionOptions, ExecutionMetrics, ResolvedExecutionContext, Recommendation } from '../types/execution.js';
@@ -17,7 +19,7 @@ import type { ParsedOutput, ExtractionResult } from '../types/parser.js';
 import { mapCategory } from './mapCategory.js';
 import type { UsageMetrics } from '../types/ai.js';
 import type { Logger } from '@uluops/sdk-core';
-import { DEFAULT_PASS_THRESHOLD, DEFAULT_WARN_THRESHOLD, DEFAULT_MAX_STEPS, DEFAULT_MAX_TOKENS, DEFAULT_MODEL_ALIAS } from '../constants.js';
+import { DEFAULT_PASS_THRESHOLD, DEFAULT_WARN_THRESHOLD, DEFAULT_MAX_STEPS, DEFAULT_MAX_TOKENS, DEFAULT_MODEL_ALIAS, EXTRACTION_CONFIDENCE_THRESHOLD } from '../constants.js';
 
 /**
  * Maximum bytes retained from the LLM's raw text output on AgentResult.rawOutput.
@@ -184,7 +186,12 @@ export class AgentExecutor {
     const effectiveDecision = parsed.decision ?? 'FAIL';
     const decisionCategory = this.classifyAgentDecision(resolved, effectiveDecision);
 
-    return this.buildResult(resolved, agentType, context, parsed, effectiveDecision, extraction, recommendations, durationMs, metrics, decisionCategory, rawText);
+    // Execution-phase degradation markers (resolution-phase markers are merged
+    // from resolved.degradations inside buildResult). These feed the run's
+    // derived completeness — see deriveCompleteness().
+    const executionMarkers = this.collectExecutionMarkers(result, rawText, extraction, toolAdapter.budgetTracker);
+
+    return this.buildResult(resolved, agentType, context, parsed, effectiveDecision, extraction, recommendations, durationMs, metrics, decisionCategory, rawText, executionMarkers);
   }
 
   /**
@@ -296,6 +303,64 @@ export class AgentExecutor {
   }
 
   /**
+   * Collect execution-phase degradation markers for a completed generation.
+   *
+   * - `budget.forced-wrap-up` — the context-budget latch was engaged at run end.
+   * - `steps.near-exhaustion` — the tool loop was cut at the step ceiling
+   *   (`finishReason === 'tool-calls'`) but had already produced output. The
+   *   empty-output form of this is thrown as MaxStepsExhaustedError upstream, so
+   *   here finishReason 'tool-calls' implies non-empty text. We rely on
+   *   finishReason, not a step-count comparison, because the effective ceiling is
+   *   `maxSteps + (structuredOutput ? 2 : 0)` and is not known to the executor.
+   * - `extraction.failed` (critical) / `extraction.low-confidence` (degraded) —
+   *   from the output extractor's confidence.
+   */
+  private collectExecutionMarkers(
+    result: AIGenerateResult,
+    rawText: string,
+    extraction: ExtractionResult,
+    budgetTracker: TokenBudgetTracker,
+  ): DegradationMarker[] {
+    const markers: DegradationMarker[] = [];
+
+    if (budgetTracker.forcedWrapUp) {
+      markers.push({
+        code: 'budget.forced-wrap-up',
+        phase: 'execution',
+        severity: 'degraded',
+        detail: 'Context-budget wrap-up was forced; coverage may be partial.',
+      });
+    }
+
+    if (result.finishReason === 'tool-calls' && rawText.length > 0) {
+      markers.push({
+        code: 'steps.near-exhaustion',
+        phase: 'execution',
+        severity: 'degraded',
+        detail: `Tool loop cut at the step ceiling after ${result.steps} steps with output present.`,
+      });
+    }
+
+    if (extraction.confidence === 0) {
+      markers.push({
+        code: 'extraction.failed',
+        phase: 'execution',
+        severity: 'critical',
+        detail: `No structured output and no usable text extracted (method: ${extraction.method}).`,
+      });
+    } else if (extraction.confidence < EXTRACTION_CONFIDENCE_THRESHOLD) {
+      markers.push({
+        code: 'extraction.low-confidence',
+        phase: 'execution',
+        severity: 'degraded',
+        detail: `Extracted via ${extraction.method} at confidence ${extraction.confidence}; decision/score may be approximate.`,
+      });
+    }
+
+    return markers;
+  }
+
+  /**
    * Build discriminated agent result based on agent type.
    */
   private buildResult(
@@ -310,7 +375,16 @@ export class AgentExecutor {
     metrics: ExecutionMetrics,
     decisionCategory: DecisionCategory,
     rawText: string,
+    executionMarkers: DegradationMarker[],
   ): AgentResult {
+    // Merge resolution-phase markers (derived from the legacy degradations
+    // strings, byte-exact) with execution-phase markers, then derive completeness.
+    const degradationMarkers = [
+      ...resolutionMarkersFromLegacy(resolved.degradations ?? []),
+      ...executionMarkers,
+    ];
+    const completeness = deriveCompleteness(degradationMarkers);
+
     return {
       type: 'agent',
       agentType,
@@ -333,6 +407,8 @@ export class AgentExecutor {
       extractionMethod: extraction.method,
       extractionConfidence: extraction.confidence,
       degradations: resolved.degradations,
+      degradationMarkers: degradationMarkers.length > 0 ? degradationMarkers : undefined,
+      completeness,
       rawJson: parsed.rawJson,
     };
   }

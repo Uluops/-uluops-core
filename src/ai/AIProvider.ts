@@ -270,7 +270,7 @@ export class AIProvider {
     let stepCount = 0;
     const budgetTracker = options.budgetTracker;
     const prepareStep = options.contextBudget
-      ? this.buildBudgetPrepareStep(options.contextBudget)
+      ? this.buildBudgetPrepareStep(options.contextBudget, budgetTracker)
       : undefined;
     const maxSteps = options.maxSteps ?? DEFAULT_MAX_STEPS;
 
@@ -609,7 +609,7 @@ export class AIProvider {
    * conversation including cached tokens). The last step's value represents the
    * current context window size. We check that against the budget.
    */
-  private buildBudgetPrepareStep(budget: number) {
+  private buildBudgetPrepareStep(budget: number, budgetTracker?: TokenBudgetTracker) {
     // Hysteresis band: latch wrap-up on at 80% of budget, release it only once
     // context falls back below 70%. The lower release threshold prevents the
     // latch from flapping on/off around a single boundary, while still allowing
@@ -631,6 +631,7 @@ export class AIProvider {
         // Release the latch if context has recovered below the lower band.
         if (contextSize < lowerThreshold) {
           wrapUpInjected = false;
+          budgetTracker?.markForcedWrapUp(false);
           this.logger.info(
             `Context budget recovered (${contextSize}/${budget}, <70%). Releasing wrap-up — tool calls re-enabled.`,
           );
@@ -642,6 +643,7 @@ export class AIProvider {
 
       if (contextSize >= upperThreshold) {
         wrapUpInjected = true;
+        budgetTracker?.markForcedWrapUp(true);
         this.logger.warn(
           `Context budget 80% used (${contextSize}/${budget}). Forcing output — no more tool calls.`,
         );

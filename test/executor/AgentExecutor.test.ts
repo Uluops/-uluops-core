@@ -621,6 +621,69 @@ describe('AgentExecutor', () => {
     });
   });
 
+  // ── Execution completeness & degradation markers ────────────────────────
+  describe('completeness & degradation markers', () => {
+    it('a clean run is complete with no markers', async () => {
+      const ai = mockAIProvider(); // default: valid JSON, finishReason 'stop'
+      const executor = new AgentExecutor(baseConfig, ai, noopLogger);
+
+      const result = await executor.execute(makeValidatorDef(), { target: tmpDir });
+
+      expect(result.completeness).toBe('complete');
+      expect(result.degradationMarkers).toBeUndefined();
+    });
+
+    it('near-exhaustion (finishReason tool-calls, non-empty output) marks partial', async () => {
+      const ai = mockAIProvider({ finishReason: 'tool-calls', steps: 50 }); // default text is non-empty JSON
+      const executor = new AgentExecutor(baseConfig, ai, noopLogger);
+
+      const result = await executor.execute(makeValidatorDef(), { target: tmpDir });
+
+      expect(result.completeness).toBe('partial');
+      expect(result.degradationMarkers?.map(d => d.code)).toContain('steps.near-exhaustion');
+    });
+
+    it('low-confidence extraction marks partial', async () => {
+      const ai = mockAIProvider({ text: 'Decision: PASS\nScore: 85/100' }); // structured_text, 0.5
+      const executor = new AgentExecutor(baseConfig, ai, noopLogger);
+
+      const result = await executor.execute(makeValidatorDef(), { target: tmpDir });
+
+      expect(result.completeness).toBe('partial');
+      expect(result.degradationMarkers?.map(d => d.code)).toContain('extraction.low-confidence');
+    });
+
+    it('failed extraction (confidence 0) marks failed', async () => {
+      const ai = mockAIProvider({ text: 'This is not JSON at all, just plain text analysis.' });
+      const executor = new AgentExecutor(baseConfig, ai, noopLogger);
+
+      const result = await executor.execute(makeValidatorDef(), { target: tmpDir });
+
+      expect(result.completeness).toBe('failed');
+      expect(result.degradationMarkers?.map(d => d.code)).toContain('extraction.failed');
+    });
+
+    it('resolution-phase degradations propagate as typed markers + preserve the legacy field', async () => {
+      const ai = mockAIProvider(); // clean execution
+      const executor = new AgentExecutor(baseConfig, ai, noopLogger);
+
+      const result = await executor.execute(
+        makeValidatorDef({ degradations: ['render:raw-yaml-fallback'] }),
+        { target: tmpDir },
+      );
+
+      // Legacy field unchanged (byte-exact)
+      expect(result.degradations).toEqual(['render:raw-yaml-fallback']);
+      // Typed marker derived
+      expect(result.degradationMarkers?.find(d => d.code === 'render.raw-yaml-fallback')).toMatchObject({
+        phase: 'resolution',
+        severity: 'degraded',
+      });
+      // render.raw-yaml-fallback is degraded → partial
+      expect(result.completeness).toBe('partial');
+    });
+  });
+
   // ── v0.1.1: reportMode gating ──────────────────────────────────────────
   // Report mode disables AI SDK structured-output enforcement so a publication-
   // mode prompt directive (@uluops/cli's --report flag) can take effect.

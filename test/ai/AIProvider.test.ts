@@ -1,5 +1,6 @@
 import { describe, it, expect, vi, beforeEach } from 'vitest';
 import { AIProvider } from '../../src/ai/AIProvider.js';
+import { TokenBudgetTracker } from '../../src/ai/TokenBudgetTracker.js';
 import type { ModelCatalog, ResolvedModel } from '../../src/ai/ModelCatalog.js';
 import type { ResolvedConfig } from '../../src/types/config.js';
 import type { Logger } from '@uluops/sdk-core';
@@ -559,6 +560,38 @@ describe('AIProvider', () => {
 
       // And it can re-latch if context climbs back over 80%
       expect(call.prepareStep({ steps: [{ usage: { inputTokens: 90_000 } }] }).toolChoice).toBe('none');
+    });
+
+    it('sets the budget tracker forcedWrapUp flag on latch and clears it on release', async () => {
+      const { generateText } = await import('ai');
+      const mockGenerateText = vi.mocked(generateText);
+
+      mockGenerateText.mockResolvedValueOnce({
+        text: 'done',
+        usage: { inputTokens: 50000, outputTokens: 2000 },
+        steps: [{ toolCalls: [] }],
+        finishReason: 'stop',
+        providerMetadata: {},
+      } as never);
+
+      const tracker = new TokenBudgetTracker(100_000);
+      const catalog = mockCatalog();
+      const provider = new AIProvider(mockConfig, catalog, noopLogger);
+      await provider.generate({
+        model: 'sonnet',
+        system: 'test',
+        prompt: 'test',
+        contextBudget: 100_000,
+        budgetTracker: tracker,
+      });
+
+      const call = mockGenerateText.mock.calls[0]?.[0] as any;
+
+      expect(tracker.forcedWrapUp).toBe(false);
+      call.prepareStep({ steps: [{ usage: { inputTokens: 85_000 } }] }); // latch on
+      expect(tracker.forcedWrapUp).toBe(true);
+      call.prepareStep({ steps: [{ usage: { inputTokens: 65_000 } }] }); // release (<70%)
+      expect(tracker.forcedWrapUp).toBe(false);
     });
 
     it('does not inject prepareStep when no contextBudget', async () => {

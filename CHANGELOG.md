@@ -4,6 +4,30 @@ All notable changes to `@uluops/core` will be documented in this file.
 
 This project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.22.0] - 2026-06-15
+
+Execution completeness & typed degradation markers (Tier 1). Gives every core-executed agent run a **completeness** signal — `complete` / `partial` / `failed` — distinct from the agent's decision, so a confident-looking report built on incomplete coverage is no longer indistinguishable from a clean run. Spec: `uluops-specifications/specs/drafts/plans/execution-completeness-spec-v0_2_1.md`. Addresses run `8dde22ed` issues #2b (`c60fc3c4`), #3 residual (`5aa1ff44`), #6 (`f76b8b50`).
+
+### Added
+
+- **`DegradationMarker` type** (`src/types/degradation.ts`): `{ code, phase, severity, detail? }`. `code` is a stable, namespaced machine token (the contract); `detail` is human-only and explicitly not a contract. `phase` is `resolution` | `execution`; `severity` is `info` | `degraded` | `critical`.
+- **`AgentResult.degradationMarkers`** and **`AgentResult.completeness`** (`Completeness = 'complete' | 'partial' | 'failed'`). Completeness is *derived* from marker severities (`deriveCompleteness`): any `critical` → `failed`; any `degraded` → `partial`; else `complete`. The engine observes completeness; agents never self-report it.
+- **Execution-phase markers**, new this release:
+  - `budget.forced-wrap-up` (degraded) — the context-budget latch was engaged at run end (`TokenBudgetTracker.forcedWrapUp`, set on latch / cleared on hysteresis release, so a recovered run is not flagged).
+  - `steps.near-exhaustion` (degraded) — the tool loop was cut at the step ceiling (`finishReason === 'tool-calls'`) with output already present. Detected via `finishReason`, not a step-count comparison, because the effective ceiling is `maxSteps + (structuredOutput ? 2 : 0)`. The empty-output form remains a thrown `MaxStepsExhaustedError`.
+  - `extraction.failed` (critical, confidence 0) / `extraction.low-confidence` (degraded, `0 < c < EXTRACTION_CONFIDENCE_THRESHOLD`).
+- **Exports:** `deriveCompleteness`, `resolutionMarkersFromLegacy`, and the degradation types from the package root and `@uluops/core/types`.
+
+### Changed
+
+- **`AgentResult.degradations: string[]` is now `@deprecated`** but unchanged in behavior — it remains the byte-exact legacy alias (old colon-style strings, resolution-phase only). The typed `degradationMarkers` are derived from it (`resolutionMarkersFromLegacy`), reconstructing the dynamic `runtime:missing-<field>` form and preserving order/duplicates. Removal is deferred (Tier 2).
+- **No change to recording or gating.** The submission transform does not map the new fields and `SubmissionClient.isPositiveDecision` is untouched — completeness is observational in this release. Persistence, analytics exclusion of degraded runs, and gating integration are deferred to Tier 2.
+
+### Internal
+
+- New tests: `deriveCompleteness` rule table, `resolutionMarkersFromLegacy` byte-exact mapping, `TokenBudgetTracker.forcedWrapUp`, AIProvider latch-sets-tracker-flag, and AgentExecutor completeness/marker cases. Suite → 706.
+- Pre-implementation-architect reviewed (PROCEED, 88/100); required amendments folded into spec v0.2.1 before implementation.
+
 ## [0.21.1] - 2026-06-15
 
 Resilience hardening for the agent execution engine, addressing three high-severity findings from forecaster run `8dde22ed` (project `-uluops-core`). All three share one failure shape: a resource guard (retry / context-budget latch / step ceiling) that degraded toward silent, confident-looking wrong output instead of an explicit incomplete signal.

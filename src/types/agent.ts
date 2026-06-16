@@ -1,5 +1,6 @@
 import type { Domain, AgentType, ExecutionMetrics, Recommendation, SubscriptionTier } from './execution.js';
 import type { Finding, ArtifactResult } from './command.js';
+import type { DegradationMarker, Completeness } from './degradation.js';
 
 // ─────────────────────────────────────────────────────────────────────────────
 // Agent Definition — matches ADL v1.6.0 schema
@@ -466,8 +467,24 @@ interface AgentResultBase {
    * Low confidence indicates the result may be unreliable — decision/score may be defaults. */
   extractionConfidence?: number;
 
-  /** Degradation markers from definition resolution (e.g., render fallback paths taken) */
+  /**
+   * @deprecated Prefer `degradationMarkers`. Legacy flat string form of
+   * resolution-phase markers, retained for backward compatibility (emits the
+   * old colon-style strings). Removal is tracked as Tier 2 work.
+   */
   degradations?: string[];
+
+  /**
+   * Typed degradation markers from both resolution and execution phases.
+   * `code` is the stable contract; `detail` is human-only. Absent ⇒ none.
+   */
+  degradationMarkers?: DegradationMarker[];
+
+  /**
+   * Derived completeness of the run — whether it finished its work, independent
+   * of the agent's decision. Absent ⇒ treat as 'complete'.
+   */
+  completeness?: Completeness;
 
   /** Full parsed JSON from LLM output (pre-Zod-strip).
    * Contains fields beyond agentOutputSchema — epistemicAssessment, explorationMaps,

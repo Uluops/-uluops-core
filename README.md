@@ -199,6 +199,30 @@ const focused = await client.runAgent('security-analyst', {
 
 The prompt appears as a prominent `Directive:` section in the initial message, before project context. When omitted, behavior is identical to previous versions.
 
+#### Run Completeness & Degradation Markers
+
+Every agent run carries a `completeness` signal — **distinct from the agent's decision** — describing whether the run actually finished its work:
+
+```typescript
+const result = await client.runAgent('security-analyst', './src');
+
+// Decision = what the agent concluded; completeness = whether the run finished its work.
+console.log(`${result.decision} · ${result.completeness ?? 'complete'}`);
+
+if (result.completeness !== 'complete') {
+  for (const m of result.degradationMarkers ?? []) {
+    console.log(`[${m.severity}] ${m.code}${m.detail ? ` — ${m.detail}` : ''}`);
+  }
+}
+```
+
+- **`completeness`**: `'complete' | 'partial' | 'failed'`, derived from degradation markers (any `critical` ⇒ `failed`; any `degraded` ⇒ `partial`; else `complete`). Absent ⇒ treat as `complete`. A `PASS` + `partial` result is a positive verdict reached on incomplete evidence — worth surfacing.
+- **`degradationMarkers`**: typed `{ code, phase, severity, detail? }[]`. `code` is the stable contract (e.g. `budget.forced-wrap-up`, `steps.near-exhaustion`, `extraction.low-confidence`, `render.raw-yaml-fallback`); `detail` is human-only — never match on it. `phase` is `'resolution' | 'execution'`.
+- The engine *observes* completeness from how the run actually executed; agents never self-report it. `deriveCompleteness(markers)` is exported if you want to recompute it.
+- `degradations: string[]` is the deprecated legacy alias (resolution-phase strings only), retained for compatibility — prefer `degradationMarkers`.
+
+> Empty-output step exhaustion is a thrown [`MaxStepsExhaustedError`](#error-handling), not a marker; near-exhaustion *with* output is the `steps.near-exhaustion` marker.
+
 ### Command Execution
 
 Execute saved command configurations. Uses model, thresholds, and aggregation from the command definition. Ideal for CI/CD:
@@ -636,6 +660,10 @@ import {
   // Decision classification
   classifyDecision,
   type DecisionCategory,
+  // Completeness & degradation markers
+  deriveCompleteness,
+  type Completeness,
+  type DegradationMarker,
   // Usage metrics
   type UsageMetrics,
   // Error classes

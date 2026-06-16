@@ -28,6 +28,8 @@ export { ToolHandler } from './executor/ToolHandler.js';
 export { parseRef } from './utils/parseRef.js';
 export { classifyDecision, buildVocabularyMap } from './executor/classifyDecision.js';
 export type { DecisionCategory, DecisionVocabularyMap } from './executor/classifyDecision.js';
+export { deriveCompleteness, resolutionMarkersFromLegacy } from './executor/degradationMarkers.js';
+export type { DegradationMarker, DegradationPhase, DegradationSeverity, Completeness } from './types/degradation.js';
 export {
   STARTER_DEFINITIONS_DIR,
   DEFAULT_PASS_THRESHOLD,

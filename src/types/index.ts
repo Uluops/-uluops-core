@@ -1,6 +1,9 @@
 // Configuration
 export type { UluOpsConfig, AIConfig, AIProviderCredentials, ResolvedConfig, ResolvedAIConfig } from './config.js';
 
+// Degradation markers & completeness
+export type { DegradationMarker, DegradationPhase, DegradationSeverity, Completeness } from './degradation.js';
+
 // Execution (base types)
 export type {
   DefinitionType,
