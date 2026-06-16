@@ -397,11 +397,22 @@ export class AnalysisSummaryExtractor {
   // ─── Analysis Records ──────────────────────────────────────────────────
 
   /**
-   * Build analysis records with 4-tier precedence:
-   * 1. Analysis block records (from JSON code fence — richest: typed, meaningful IDs)
-   * 2. Structured output analysisRecords (from agentOutputSchema — typed, meaningful IDs)
-   * 3. Derived from exploration maps (inventory items, agenda questions, etc.)
-   * 4. Auto-generated from recommendations (fallback — evidence_finding, hash IDs)
+   * Build analysis records via a first-non-empty-tier-wins cascade. The tiers are
+   * mutually-exclusive *representations* of the same findings, not additive sources —
+   * an agent emits records in exactly one form, and the highest-fidelity present form
+   * wins. (First-wins, not merge, so a finding expressed in two forms isn't counted
+   * twice.) Each tier is the primary source for a different agent class, so the
+   * ordering is a contract, not a convenience — reordering or removing a tier changes
+   * the persisted record shape for whichever class depends on it. The precedence
+   * boundaries are locked by the "record tier precedence" tests; keep them in sync.
+   *
+   * 1. Analysis block records (JSON code fence) — analysts/validators in report mode;
+   *    richest: typed records with meaningful IDs.
+   * 2. Structured output analysisRecords (agentOutputSchema) — analysts/validators in
+   *    structured-output mode; typed, meaningful IDs.
+   * 3. Derived from exploration maps — explorers (inventory items, agenda questions).
+   * 4. Auto-generated from recommendations — fallback for any agent that emitted none
+   *    of the above (evidence_finding, hash IDs).
    */
   private buildAnalysisRecords(
     result: AgentResult,

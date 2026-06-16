@@ -6,6 +6,12 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) 
 
 ## [Unreleased]
 
+## [0.22.6] - 2026-06-16
+
+### Internal
+
+- **Locked the `buildAnalysisRecords` tier precedence.** The record-derivation cascade (analysis-block → structured-output → exploration-maps → recommendations) is first-non-empty-wins, with each tier the primary source for a different agent class — so the ordering is a contract, and a reorder/removal silently changes the persisted record shape for that class. Documented the cascade semantics + per-class mapping on the method, and added "record tier precedence" boundary tests (T1>T2, T2>T3, T3>T4; T1>T4 was already covered) so any future tier change is a loud failure rather than silent data loss. No behavior change. (tracker 30ac11b3, STR-INC/L)
+
 ## [0.22.5] - 2026-06-16
 
 ### Design Notes

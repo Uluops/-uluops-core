@@ -437,6 +437,56 @@ describe('AnalysisSummaryExtractor', () => {
     });
   });
 
+  // Locks the first-non-empty-tier-wins ordering of buildAnalysisRecords so a tier
+  // reorder/removal is a loud failure rather than silent data loss for an agent class.
+  describe('record tier precedence', () => {
+    const fenceWith = (analysis: Record<string, unknown>) =>
+      `# Report\n\n\`\`\`json\n${JSON.stringify({ agent: {}, result: {}, analysis })}\n\`\`\`\n`;
+
+    it('Tier 1 (analysis block) wins over Tier 2 (structured) / Tier 4 (recommendations)', () => {
+      const result = makeAgentResult({
+        rawOutput: fenceWith({ records: [{ recordType: 'commitment', recordId: 'T1', title: 'tier-1', data: {} }] }),
+        rawJson: { analysisRecords: [{ recordType: 'commitment', recordId: 'T2', title: 'tier-2', data: [] }] },
+        recommendations: [{ agent: 'test-validator', title: 'tier-4', priority: 'suggested' }],
+      });
+      const { records } = extractor.extract(result, makeResolvedDefinition());
+      expect(records).toHaveLength(1);
+      expect(records[0].recordId).toBe('T1');
+    });
+
+    it('Tier 2 (structured) wins over Tier 3 (exploration maps) / Tier 4 (recommendations)', () => {
+      const result = makeAgentResult({
+        rawJson: {
+          analysisRecords: [{ recordType: 'commitment', recordId: 'T2', title: 'tier-2', data: [] }],
+          explorationMaps: [{
+            metadata: { explorerName: 'x', framework: 'y' },
+            sections: [{ type: 'inventory', label: 'inv', entries: [{ key: 'M1', value: 'map item' }] }],
+          }],
+        },
+        recommendations: [{ agent: 'test-validator', title: 'tier-4', priority: 'suggested' }],
+      });
+      const { records } = extractor.extract(result, makeResolvedDefinition());
+      expect(records).toHaveLength(1);
+      expect(records[0].recordId).toBe('T2');
+    });
+
+    it('Tier 3 (exploration maps) wins over Tier 4 (recommendations)', () => {
+      const result = makeAgentResult({
+        rawJson: {
+          explorationMaps: [{
+            metadata: { explorerName: 'x', framework: 'y' },
+            sections: [{ type: 'inventory', label: 'inv', entries: [{ key: 'M1', value: 'map item' }] }],
+          }],
+        },
+        recommendations: [{ agent: 'test-validator', title: 'tier-4', priority: 'suggested' }],
+      });
+      const { records } = extractor.extract(result, makeResolvedDefinition());
+      // Map-derived, not recommendation-derived.
+      expect(records).toHaveLength(1);
+      expect(records[0].title).toBe('M1');
+    });
+  });
+
   describe('analysis block from rawOutput JSON fence', () => {
     const jsonFence = (analysis: Record<string, unknown>) =>
       `# Report\n\nSome markdown...\n\n\`\`\`json\n${JSON.stringify({
