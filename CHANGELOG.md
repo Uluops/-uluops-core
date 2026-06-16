@@ -6,6 +6,12 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) 
 
 ## [Unreleased]
 
+## [0.22.7] - 2026-06-16
+
+### Dependencies
+
+- **Bump `@uluops/registry-sdk` 0.34.0 → 0.35.0, `@uluops/ops-sdk` 3.1.0 → 3.3.0, `@uluops/sdk-core` 0.12.0 → 0.13.0** (all exact). The registry/ops SDKs at these versions re-pin `@uluops/sdk-core` to `0.13.0`; core's own direct `sdk-core` pin moves in lockstep so the whole tree resolves a **single** `sdk-core` copy (avoids two error-class identities and the resulting `instanceof` breakage across the SDK boundary). Runtime fixes pulled in from `sdk-core` 0.13.0: `retries: 0` now makes one attempt and surfaces the real typed error instead of a contextless `Error('Request failed')`; a 401 with credentials present yields an actionable `UnauthorizedError` (server reason preserved + guidance); `isApiKey()` enforces the minimum key length. No core API change. 716 tests green against the new SDKs.
+
 ## [0.22.6] - 2026-06-16
 
 ### Internal
