@@ -525,6 +525,42 @@ describe('AIProvider', () => {
       expect(resultExact.toolChoice).toBe('none');
     });
 
+    it('releases the wrap-up latch once context recovers below 70% (hysteresis)', async () => {
+      const { generateText } = await import('ai');
+      const mockGenerateText = vi.mocked(generateText);
+
+      mockGenerateText.mockResolvedValueOnce({
+        text: 'done',
+        usage: { inputTokens: 50000, outputTokens: 2000 },
+        steps: [{ toolCalls: [] }],
+        finishReason: 'stop',
+        providerMetadata: {},
+      } as never);
+
+      const catalog = mockCatalog();
+      const provider = new AIProvider(mockConfig, catalog, noopLogger);
+      await provider.generate({
+        model: 'sonnet',
+        system: 'test',
+        prompt: 'test',
+        contextBudget: 100_000,
+      });
+
+      const call = mockGenerateText.mock.calls[0]?.[0] as any;
+
+      // Cross 80% → latch on
+      expect(call.prepareStep({ steps: [{ usage: { inputTokens: 85_000 } }] }).toolChoice).toBe('none');
+
+      // Still in the band (between 70% and 80%) → stays latched
+      expect(call.prepareStep({ steps: [{ usage: { inputTokens: 75_000 } }] }).toolChoice).toBe('none');
+
+      // Drop below 70% (e.g. provider context eviction) → latch releases, tools re-enabled
+      expect(call.prepareStep({ steps: [{ usage: { inputTokens: 65_000 } }] }).toolChoice).toBeUndefined();
+
+      // And it can re-latch if context climbs back over 80%
+      expect(call.prepareStep({ steps: [{ usage: { inputTokens: 90_000 } }] }).toolChoice).toBe('none');
+    });
+
     it('does not inject prepareStep when no contextBudget', async () => {
       const { generateText } = await import('ai');
       const mockGenerateText = vi.mocked(generateText);

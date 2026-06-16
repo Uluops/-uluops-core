@@ -4,6 +4,37 @@ All notable changes to `@uluops/core` will be documented in this file.
 
 This project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.21.1] - 2026-06-15
+
+Resilience hardening for the agent execution engine, addressing three high-severity findings from forecaster run `8dde22ed` (project `-uluops-core`). All three share one failure shape: a resource guard (retry / context-budget latch / step ceiling) that degraded toward silent, confident-looking wrong output instead of an explicit incomplete signal.
+
+### Added
+
+- **Global LLM-call concurrency limiter (SEM-INC/H).** A shared `Semaphore` (`src/ai/Semaphore.ts`) now gates **every** `AIProvider.generate()` call, so total in-flight LLM requests are bounded across the whole engine regardless of how wide any single fan-out is — workflow topological levels, parallel phase steps, and inline pipeline agents all draw from the same pool. This prevents unbounded fan-out × per-request retry from collectively sustaining a provider rate limit (the protective retry inverting into the dominant stressor). Configurable via `UluOpsConfig.maxConcurrency` → `ULUOPS_MAX_CONCURRENCY` env var → `DEFAULT_MAX_CONCURRENCY` (8). This is a global cap, distinct from the per-workflow `max_parallel` knob which only governs one fan-out layer. The `Semaphore` is internal (not part of the public export surface).
+- **`MaxStepsExhaustedError` (PRA-FRA/H).** New typed error (`src/errors/index.ts`, code `MAX_STEPS_EXHAUSTED`, extends `ExecutionError`) exported from the package root. `AgentExecutor.execute` now throws it when the model produces empty output **and** `finishReason === 'tool-calls'` — i.e. the tool loop was cut at the `maxSteps` ceiling while the model still wanted to call tools. Previously this empty output extracted to a low-confidence default decision (typically `FAIL`), indistinguishable at the result layer from a crash. The error carries `steps` and `finishReason`; callers can branch on `instanceof MaxStepsExhaustedError` or `error.code` to surface "raise maxSteps / narrow the target" guidance. A normal `stop` finish with empty text still flows through graceful extraction unchanged.
+
+### Changed
+
+- **Context-budget wrap-up latch is now releasable via hysteresis (PRA-FRA/H).** `buildBudgetPrepareStep` latches wrap-up on at 80% of the resolved-window budget and now releases it once context falls back below 70% (previously the latch was permanent for the remainder of the run). After provider-side context eviction — e.g. Anthropic context management clearing old tool uses — input size genuinely drops, and tool calls are re-enabled instead of forcing premature wrap-up for a run that has plenty of room again. The 10-point band prevents flapping at the boundary. (Decoupling "gathered-enough" from "out-of-room" and emitting a forced-wrap-up coverage marker remain open, tracked separately.)
+- **`ExecutionError.code`** is typed as the broader `UluOpsErrorCode` union (previously the bare `'EXECUTION_ERROR'` literal) so `MaxStepsExhaustedError` can override it with a more specific code. No runtime behavior change.
+
+### Internal
+
+- New `DEFAULT_MAX_CONCURRENCY` constant; `maxConcurrency` added to `UluOpsConfig` (optional) and `ResolvedConfig` (required, defaulted in `UluOpsClient`).
+- New tests: `Semaphore.test.ts` (concurrency bound, release-on-throw, FIFO drain, non-positive clamp), AIProvider latch-reset hysteresis, and AgentExecutor maxSteps-exhaustion throw + negative case. Suite → 690.
+- The universal output schema's `.nullable()` convention (PRA-FRA/H from the same run) was reviewed and **accepted as-is**: it is a hard OpenAI strict-mode constraint, the null→undefined remap is small and centralized, and the compile-time sync guard is a feature. Already documented in `src/parser/outputSchemas.ts`; routing evolution belongs in the model-capability catalog instead.
+
+## [0.21.0] - 2026-06-15
+
+### Changed
+
+- **Non-destructive extraction-confidence handling (Option B).** A correctly-parsed `decision` is no longer overwritten just because a low-confidence extraction method (e.g. 0.5 regex on structured text) produced it. The decision always reflects the actual parsed value; extraction trust is expressed separately via `extractionConfidence` / `extractionMethod` on the result. Whether a low-confidence result passes a gate is decided downstream by `SubmissionClient` (extraction-confidence threshold), not by erasing the decision in `AgentExecutor`. Removes the previous `EXTRACTION_FAILED` sentinel overwrite.
+- **Capability-gated structured-output-with-tools (Option C).** Whether a request uses structured output when tools are present is now driven by the model catalog's `structuredOutputWithTools` capability flag rather than a provider-name branch. Models that reject structured output and tool calling in the same request (e.g. Google/Gemini) are marked `structuredOutputWithTools=false` at model sync and fall back to free-form extraction; absence of the flag means allowed.
+
+### Internal
+
+- Locked `@uluops/registry-sdk` to `0.32.1` (the `structuredOutputWithTools` capability field).
+
 ## [0.20.0] - 2026-06-14
 
 ### Added

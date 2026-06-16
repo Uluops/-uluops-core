@@ -8,7 +8,8 @@ import { formatErrorMessage } from '../utils/formatError.js';
 import type { ResolvedConfig, ResolvedAIConfig } from '../types/config.js';
 import type { ModelCatalog, ResolvedModel } from './ModelCatalog.js';
 import { TokenBudgetTracker } from './TokenBudgetTracker.js';
-import { DEFAULT_MAX_STEPS, DEFAULT_MAX_TOKENS, ANTHROPIC_BASH_TOOL_VERSION, ANTHROPIC_CONTEXT_MANAGEMENT_TYPE, ANTHROPIC_CONTEXT_KEEP_TOOL_USES, DEFAULT_DYNAMIC_PROVIDERS, DEFAULT_CONTEXT_BUDGET } from '../constants.js';
+import { Semaphore } from './Semaphore.js';
+import { DEFAULT_MAX_STEPS, DEFAULT_MAX_TOKENS, ANTHROPIC_BASH_TOOL_VERSION, ANTHROPIC_CONTEXT_MANAGEMENT_TYPE, ANTHROPIC_CONTEXT_KEEP_TOOL_USES, DEFAULT_DYNAMIC_PROVIDERS, DEFAULT_CONTEXT_BUDGET, DEFAULT_MAX_CONCURRENCY } from '../constants.js';
 import { executeShellAsString, executeShellAsOpenAIResult } from './shellExecutor.js';
 import {
   SdkApiError,
@@ -139,11 +140,20 @@ export class AIProvider {
   /** OpenAI provider instance for accessing provider-defined tools */
   private openaiInstance?: OpenAIProvider;
 
+  /**
+   * Global ceiling on concurrent in-flight generate() calls. Shared across every
+   * executor (workflow phases, parallel steps, inline pipeline agents) that holds
+   * this AIProvider instance, so total request concurrency is bounded regardless
+   * of how wide any single fan-out is. See DEFAULT_MAX_CONCURRENCY.
+   */
+  private readonly concurrencyLimiter: Semaphore;
+
   constructor(
     private config: ResolvedConfig,
     private catalog: ModelCatalog,
     private logger: Logger,
   ) {
+    this.concurrencyLimiter = new Semaphore(config.maxConcurrency ?? DEFAULT_MAX_CONCURRENCY);
     // Validate additionalProviders are safe alphanumeric names before adding
     // to the dynamic import allowlist (CWE-829 defense)
     const PROVIDER_NAME_PATTERN = /^[a-z][a-z0-9-]{0,30}$/;
@@ -170,6 +180,14 @@ export class AIProvider {
    * 5. Call generateText with maxSteps for automatic tool loop
    */
   async generate(options: AIGenerateOptions): Promise<AIGenerateResult> {
+    // Gate every generation through the shared concurrency limiter so that
+    // wide fan-out (workflow levels, parallel steps, inline pipeline agents)
+    // plus per-request retries cannot collectively overrun a provider rate
+    // limit. The limiter bounds total in-flight calls, not per-executor calls.
+    return this.concurrencyLimiter.run(() => this.generateInner(options));
+  }
+
+  private async generateInner(options: AIGenerateOptions): Promise<AIGenerateResult> {
     // 1. Resolve model and prepare generation config
     const modelInput = this.config.ai.modelOverride ?? options.model;
     const resolved = await this.catalog.resolve(modelInput, {
@@ -592,20 +610,37 @@ export class AIProvider {
    * current context window size. We check that against the budget.
    */
   private buildBudgetPrepareStep(budget: number) {
+    // Hysteresis band: latch wrap-up on at 80% of budget, release it only once
+    // context falls back below 70%. The lower release threshold prevents the
+    // latch from flapping on/off around a single boundary, while still allowing
+    // recovery — e.g. after provider-side context eviction (Anthropic context
+    // management clears old tool uses) the input size can genuinely drop, and a
+    // permanently-stuck latch would otherwise force premature wrap-up for the
+    // rest of a run that has plenty of room again.
+    const upperThreshold = budget * 0.80;
+    const lowerThreshold = budget * 0.70;
     let wrapUpInjected = false;
     return ({ steps }: { steps: Array<{ usage: { inputTokens?: number; outputTokens?: number } }> }) => {
-      if (wrapUpInjected) {
-        // Already forced wrap-up, keep forcing no tools
-        return { toolChoice: 'none' as const };
-      }
-
       if (steps.length === 0) return {};
 
       // Last step's inputTokens = current context window size
       const lastStep = steps[steps.length - 1]!;
       const contextSize = lastStep.usage.inputTokens ?? 0;
 
-      if (contextSize >= budget * 0.80) {
+      if (wrapUpInjected) {
+        // Release the latch if context has recovered below the lower band.
+        if (contextSize < lowerThreshold) {
+          wrapUpInjected = false;
+          this.logger.info(
+            `Context budget recovered (${contextSize}/${budget}, <70%). Releasing wrap-up — tool calls re-enabled.`,
+          );
+          return {};
+        }
+        // Still in/above the band — keep forcing output.
+        return { toolChoice: 'none' as const };
+      }
+
+      if (contextSize >= upperThreshold) {
         wrapUpInjected = true;
         this.logger.warn(
           `Context budget 80% used (${contextSize}/${budget}). Forcing output — no more tool calls.`,

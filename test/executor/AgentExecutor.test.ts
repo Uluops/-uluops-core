@@ -3,6 +3,7 @@ import * as fs from 'node:fs/promises';
 import * as path from 'node:path';
 import * as os from 'node:os';
 import { AgentExecutor } from '../../src/executor/AgentExecutor.js';
+import { MaxStepsExhaustedError } from '../../src/errors/index.js';
 import type { AIProvider, AIGenerateResult } from '../../src/ai/AIProvider.js';
 import type { ResolvedConfig } from '../../src/types/config.js';
 import type { ResolvedDefinition, AgentRuntime, ExecutorRuntime } from '../../src/types/registry.js';
@@ -547,6 +548,27 @@ describe('AgentExecutor', () => {
         expect(result.score).toBe(0);
         expect(result.decision).toBeDefined();
       }
+    });
+
+    it('throws MaxStepsExhaustedError when the tool loop is cut mid-tool-call with empty output', async () => {
+      // finishReason 'tool-calls' + empty text = AI SDK stopped at the step
+      // ceiling while the model still wanted to call tools. This must surface as
+      // a distinct, typed error — not a silent FAIL default that looks like a crash.
+      const ai = mockAIProvider({ text: '', finishReason: 'tool-calls', steps: 50 });
+      const executor = new AgentExecutor(baseConfig, ai, noopLogger);
+
+      await expect(executor.execute(makeValidatorDef(), { target: tmpDir }))
+        .rejects.toBeInstanceOf(MaxStepsExhaustedError);
+    });
+
+    it('does NOT throw on empty output when the model finished normally', async () => {
+      // Empty text with a normal 'stop' finish is a content problem, not exhaustion —
+      // it must still flow through graceful extraction, not the exhaustion guard.
+      const ai = mockAIProvider({ text: '', finishReason: 'stop', steps: 3 });
+      const executor = new AgentExecutor(baseConfig, ai, noopLogger);
+
+      const result = await executor.execute(makeValidatorDef(), { target: tmpDir });
+      expect(result.type).toBe('agent');
     });
 
     it('handles non-JSON AI response gracefully', async () => {

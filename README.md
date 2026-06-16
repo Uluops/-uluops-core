@@ -576,6 +576,12 @@ const client = new UluOpsClient({
                                       // (registry `limits.context`) — e.g. 1M for Opus 4.6+, 128k for many GPT/Gemini —
                                       // falling back to 200k only when the window is unknown. When set, it caps the
                                       // budget at min(this, modelWindow). Set it to control cost on large-window models.
+  maxRetries: 2,                      // Retries for transient LLM errors (429/5xx); exponential backoff via AI SDK
+  maxConcurrency: 8,                  // Global ceiling on concurrent in-flight LLM calls across the whole engine
+                                      // (or ULUOPS_MAX_CONCURRENCY). Bounds total requests regardless of how many
+                                      // workflow phases, parallel steps, or inline pipeline agents fan out at once —
+                                      // the global throttle that stops fan-out × retry from amplifying a rate limit.
+                                      // Distinct from a workflow's per-level `max_parallel`, which caps one layer only.
   dashboardUrl: 'https://app.uluops.ai', // Dashboard link prefix for run URLs
 
   // Security
@@ -603,6 +609,7 @@ const client = new UluOpsClient({
 | `ULUOPS_LOCAL_DEFINITIONS` | Local definitions path | - |
 | `ULUOPS_DASHBOARD_URL` | Dashboard base URL for run links | `https://app.uluops.ai` |
 | `ULUOPS_ALLOWED_TOOLS` | Comma-separated tool allowlist (e.g., `bash`) | all except `bash` |
+| `ULUOPS_MAX_CONCURRENCY` | Global ceiling on concurrent in-flight LLM calls | `8` |
 | `ULUOPS_DEBUG` | Enable detailed execution logging | `false` |
 
 ## TypeScript Support
@@ -633,6 +640,7 @@ import {
   type UsageMetrics,
   // Error classes
   ExecutionError,
+  MaxStepsExhaustedError,
   ConfigurationError,
   ModelNotFoundError,
   // Error code narrowing
@@ -669,6 +677,7 @@ The SDK provides a structured error hierarchy:
 | `CapabilityError` | `ModelCatalog.resolve()` | Resolved model lacks a required capability (e.g. tools, vision, extendedThinking) |
 | `PreflightError` | `CommandExecutor` (preflight phase) | Preflight check failed — missing env var, file not found, command unavailable |
 | `ExecutionError` | `AgentExecutor.execute()`, `CommandExecutor.execute()` | Agent execution failure or definition type mismatch. Check `error.partialResult` for partial output |
+| `MaxStepsExhaustedError` | `AgentExecutor.execute()` | The tool loop hit the `maxSteps` ceiling while the model was still calling tools, leaving empty output. Subclass of `ExecutionError` (code `MAX_STEPS_EXHAUSTED`); carries `error.steps` and `error.finishReason`. Raise `maxSteps`, narrow the target, or lower the context budget so wrap-up triggers earlier |
 | `ParseError` | `OutputExtractor.extractWithMetadata()` | LLM output could not be parsed as structured JSON. Check `error.contentPreview` for raw output |
 | `SubmissionError` | `SubmissionClient` methods | Validation service rejected a submission. Use `SubmissionErrorCodes` to narrow by code |
 | `WorkflowError` | `WorkflowExecutor.execute()` | Phase gate failure. Check `error.context.partialResult` for completed phase results |
@@ -677,7 +686,7 @@ The SDK provides a structured error hierarchy:
 | `IntegrityError` | `RegistryClient.resolve()` (caller-pinned) | A pinned `expectedHash`/`expectedPromptHash` did not match the resolved content, or a prompt pin was supplied for a definition with no rendered prompt. Check `error.kind` (`'yaml'`/`'prompt'`/`'unavailable'`), `error.expected`, `error.actual`. Fail-closed — execution is refused |
 
 ```typescript
-import { ConfigurationError, ModelNotFoundError, ExecutionError, SubscriptionRequiredError } from '@uluops/core';
+import { ConfigurationError, ModelNotFoundError, ExecutionError, MaxStepsExhaustedError, SubscriptionRequiredError } from '@uluops/core';
 
 try {
   const result = await client.runAgent('code-validator', './src');
@@ -686,6 +695,9 @@ try {
     console.error('Check your config:', error.message);
   } else if (error instanceof ModelNotFoundError) {
     console.error('Unknown model alias:', error.message);
+  } else if (error instanceof MaxStepsExhaustedError) {
+    // Check this BEFORE ExecutionError — it is a subclass.
+    console.error(`Hit the step ceiling (${error.steps} steps) — raise maxSteps or narrow the target.`);
   } else if (error instanceof ExecutionError) {
     console.error('Execution failed:', error.message);
     console.log('Partial result:', error.partialResult);

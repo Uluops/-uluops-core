@@ -1,10 +1,12 @@
-import { UluOpsError } from './UluOpsError.js';
+import { UluOpsError, type UluOpsErrorCode } from './UluOpsError.js';
 
 export { UluOpsError, UluOpsErrorCodes, type UluOpsErrorCode } from './UluOpsError.js';
 
 /** Thrown when agent/command/workflow execution fails. May include a partial result. */
 export class ExecutionError extends UluOpsError {
-  readonly code = 'EXECUTION_ERROR' as const;
+  // Typed as the broader code union (not the bare literal) so subclasses such as
+  // MaxStepsExhaustedError can override with a more specific code.
+  override readonly code: UluOpsErrorCode = 'EXECUTION_ERROR';
 
   constructor(
     message: string,
@@ -17,6 +19,33 @@ export class ExecutionError extends UluOpsError {
 
   override toJSON(): Record<string, unknown> {
     return { ...super.toJSON(), ...(this.partialResult !== undefined ? { partialResult: this.partialResult } : {}) };
+  }
+}
+
+/**
+ * Thrown when an agent hits the maxSteps tool-loop ceiling while still mid-tool-call,
+ * leaving empty model output. Distinguishes a genuinely-incomplete run from a crash:
+ * without it, an exhausted run yields zero-length text that extraction maps to a
+ * low-confidence default decision (typically FAIL), indistinguishable at the result
+ * layer from a real failure. Extends ExecutionError so existing `catch (ExecutionError)`
+ * handlers still catch it; callers can branch on `instanceof MaxStepsExhaustedError`
+ * or `error.code === 'MAX_STEPS_EXHAUSTED'` to surface "raise maxSteps / narrow scope".
+ */
+export class MaxStepsExhaustedError extends ExecutionError {
+  override readonly code = 'MAX_STEPS_EXHAUSTED' as const;
+
+  constructor(
+    message: string,
+    public readonly steps: number,
+    public readonly finishReason: string,
+    options?: ErrorOptions,
+  ) {
+    super(message, undefined, options);
+    this.name = 'MaxStepsExhaustedError';
+  }
+
+  override toJSON(): Record<string, unknown> {
+    return { ...super.toJSON(), steps: this.steps, finishReason: this.finishReason };
   }
 }
 

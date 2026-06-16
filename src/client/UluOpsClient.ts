@@ -18,6 +18,7 @@ import type { PipelineHandle, PipelineResult } from '../types/pipeline.js';
 import type { DefinitionSummary, ResolvedDefinition } from '../types/registry.js';
 import type { DefinitionType } from '../types/execution.js';
 import { parseRef } from '../utils/parseRef.js';
+import { DEFAULT_MAX_CONCURRENCY } from '../constants.js';
 import type { RunSubmissionResponse, RunHistoryEntry, SubmissionQueryOptions } from '../types/submission.js';
 
 /** Default request timeout: 5 minutes. Allows for model cold-start + multi-step tool loops in agent execution. */
@@ -411,8 +412,19 @@ export class UluOpsClient {
       debug: config.debug ?? (process.env['ULUOPS_DEBUG'] === 'true'),
       contextBudget: config.contextBudget,
       maxRetries: config.maxRetries,
+      maxConcurrency: config.maxConcurrency ?? this.parseMaxConcurrency(process.env['ULUOPS_MAX_CONCURRENCY']) ?? DEFAULT_MAX_CONCURRENCY,
       allowedTools: config.allowedTools ?? this.parseAllowedTools(process.env['ULUOPS_ALLOWED_TOOLS']),
     };
+  }
+
+  /**
+   * Parse ULUOPS_MAX_CONCURRENCY env var into a positive integer, or undefined
+   * if unset/invalid (caller falls back to DEFAULT_MAX_CONCURRENCY).
+   */
+  private parseMaxConcurrency(envValue?: string): number | undefined {
+    if (!envValue) return undefined;
+    const n = Number.parseInt(envValue, 10);
+    return Number.isFinite(n) && n > 0 ? n : undefined;
   }
 
   /**

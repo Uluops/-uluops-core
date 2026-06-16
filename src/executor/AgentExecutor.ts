@@ -6,7 +6,7 @@ import { TokenBudgetTracker } from '../ai/TokenBudgetTracker.js';
 import { OutputExtractor } from '../parser/OutputExtractor.js';
 import { deriveContextBudget } from '../ai/contextBudget.js';
 import { agentOutputSchema } from '../parser/outputSchemas.js';
-import { ExecutionError } from '../errors/index.js';
+import { ExecutionError, MaxStepsExhaustedError } from '../errors/index.js';
 import { classifyDecision, buildVocabularyMap, type DecisionCategory } from './classifyDecision.js';
 import type { ResolvedConfig } from '../types/config.js';
 import type { ResolvedDefinition, AgentRuntime, ExecutorRuntime } from '../types/registry.js';
@@ -129,6 +129,22 @@ export class AgentExecutor {
     // 3. Parse and extract output
     const rawText = result.text ?? '';
     this.logRawOutput(rawText, result.finishReason);
+
+    // maxSteps exhaustion guard: when the tool loop is cut at the step ceiling
+    // while the model still wants to call tools, the AI SDK returns empty text
+    // with finishReason 'tool-calls'. Left alone, that empty output extracts to
+    // a low-confidence default decision (FAIL) — indistinguishable from a crash.
+    // Surface it as a distinct, typed error so callers can raise maxSteps or
+    // narrow the target instead of silently recording a bogus failure.
+    if (rawText.length === 0 && result.finishReason === 'tool-calls') {
+      throw new MaxStepsExhaustedError(
+        `Agent '${resolved.name}' exhausted the ${context.maxSteps}-step tool loop while still calling tools and produced no output. ` +
+          `Raise maxSteps, narrow the target, or lower the context budget so wrap-up triggers earlier.`,
+        result.steps,
+        result.finishReason,
+      );
+    }
+
     const { parsed, extraction } = this.parseOutput(result, agentType);
     this.logExtraction(parsed, extraction);
 

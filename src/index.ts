@@ -149,6 +149,7 @@ export {
   UluOpsErrorCodes,
   type UluOpsErrorCode,
   ExecutionError,
+  MaxStepsExhaustedError,
   PreflightError,
   ConfigurationError,
   ModelNotFoundError,

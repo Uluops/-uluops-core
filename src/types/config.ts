@@ -153,6 +153,17 @@ export interface UluOpsConfig {
   maxRetries?: number;
 
   /**
+   * Maximum number of concurrent in-flight LLM generation calls across the whole
+   * engine. A shared semaphore in AIProvider enforces this regardless of how many
+   * workflow phases, parallel steps, or inline pipeline agents fan out at once.
+   * This is the global throttle that prevents unbounded fan-out × retry from
+   * amplifying a provider rate limit. Falls back to the ULUOPS_MAX_CONCURRENCY
+   * env var, then DEFAULT_MAX_CONCURRENCY.
+   * @default 8
+   */
+  maxConcurrency?: number;
+
+  /**
    * Operator-controlled tool allowlist. Definitions can request tools (e.g., `tools: ['bash']`
    * in agent YAML), but the tool is only granted if it also appears in this allowlist.
    *
@@ -199,5 +210,7 @@ export interface ResolvedConfig {
    */
   contextBudget?: number;
   maxRetries?: number;
+  /** Global ceiling on concurrent in-flight LLM calls. Always set after resolution. */
+  maxConcurrency: number;
   allowedTools?: string[];
 }

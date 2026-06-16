@@ -47,6 +47,16 @@ export const EXTRACTION_CONFIDENCE_THRESHOLD = 0.7;
 /** Default maximum tool loop steps for agent execution. */
 export const DEFAULT_MAX_STEPS = 50;
 
+/**
+ * Default ceiling on concurrent in-flight LLM generation calls per AIProvider
+ * instance. Workflows and pipelines fan out agents/phases in parallel with no
+ * inherent bound; under provider rate limits, unbounded concurrent retries
+ * sustain the limit (the protective retry becomes the dominant stressor). A
+ * shared semaphore in AIProvider caps total in-flight calls regardless of how
+ * many executors fanned out. Override via UluOpsConfig.maxConcurrency or the
+ * ULUOPS_MAX_CONCURRENCY env var. */
+export const DEFAULT_MAX_CONCURRENCY = 8;
+
 /** Default maximum output tokens per LLM generation call.
  * 16384 gives verbose models (Gemini, GPT) enough headroom to emit full prose
  * reports + trailing JSON without truncation. Override per-agent via definition
