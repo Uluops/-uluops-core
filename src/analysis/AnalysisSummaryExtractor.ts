@@ -72,12 +72,38 @@ export class AnalysisSummaryExtractor {
    * @throws {Error} if the analysis block JSON is malformed (propagated from JSON.parse)
    */
   extract(result: AgentResult, resolved: ResolvedDefinition): AnalysisExtractionResult {
-    const analysisBlock = this.parseAnalysisBlock(result.rawOutput);
+    const analysisBlock = this.resolveAnalysisBlock(result);
 
     return {
       summary: this.buildSummary(result, resolved, analysisBlock),
       records: this.buildAnalysisRecords(result, analysisBlock),
     };
+  }
+
+  /**
+   * Resolve the analysis block, preferring the rawOutput ```json fence (the
+   * unchanged primary path) and falling back to the untruncated `rawJson.analysis`
+   * when the fence is absent.
+   *
+   * `rawOutput` is capped at MAX_RAW_OUTPUT_BYTES in AgentExecutor for storage/
+   * display; a report exceeding that cap is clipped at the END, dropping the closing
+   * ```json fence — so `parseAnalysisBlock` finds nothing and analysis_summary/
+   * analysis_records would silently vanish on an otherwise successful run. `rawJson`
+   * holds the SAME parsed fence object captured by OutputExtractor from the full,
+   * untruncated output, so `rawJson.analysis` recovers the block regardless of the
+   * cap. The fence stays primary so non-truncated runs are byte-for-byte unchanged.
+   * (tracker d03bdb43)
+   */
+  private resolveAnalysisBlock(result: AgentResult): AgentAnalysisBlock | null {
+    return this.parseAnalysisBlock(result.rawOutput) ?? this.analysisFromRawJson(result.rawJson);
+  }
+
+  /** Extract the `analysis` sub-object from the untruncated rawJson, if present. */
+  private analysisFromRawJson(rawJson: unknown): AgentAnalysisBlock | null {
+    if (!rawJson || typeof rawJson !== 'object') return null;
+    const analysis = (rawJson as Record<string, unknown>)['analysis'];
+    if (!analysis || typeof analysis !== 'object' || Array.isArray(analysis)) return null;
+    return analysis as AgentAnalysisBlock;
   }
 
   // ─── Summary ────────────────────────────────────────────────────────────

@@ -32,7 +32,10 @@ import { DEFAULT_PASS_THRESHOLD, DEFAULT_WARN_THRESHOLD, DEFAULT_MAX_STEPS, DEFA
  * Note: AnalysisSummaryExtractor.parseAnalysisBlock regexes a ```json fence
  * out of rawOutput. Lifting this ceiling improves — never degrades — its
  * ability to find the fence, because previous truncation at 32K frequently
- * clipped the closing ```.
+ * clipped the closing ```. The extractor no longer depends on this cap for
+ * correctness: if truncation clips the fence it falls back to the untruncated
+ * rawJson.analysis (captured by OutputExtractor from full output). The cap now
+ * bounds only the stored/displayed rawOutput string. (tracker d03bdb43)
  */
 const MAX_RAW_OUTPUT_BYTES = 512 * 1024;
 

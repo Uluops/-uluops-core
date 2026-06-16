@@ -6,6 +6,12 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) 
 
 ## [Unreleased]
 
+## [0.22.3] - 2026-06-16
+
+### Fixed
+
+- **Analysis analytics no longer silently lost when raw output is truncated.** `AnalysisSummaryExtractor` regexes the closing ```json analysis fence out of `rawOutput`, but `rawOutput` is capped at `MAX_RAW_OUTPUT_BYTES` (512 KiB) in `AgentExecutor` for storage/display. A report exceeding the cap is clipped at the end, dropping the closing fence — so `analysis_summary`/`analysis_records` would vanish on an otherwise successful run. The extractor now falls back to the untruncated `rawJson.analysis` (captured by `OutputExtractor` from the full output) when the fence is absent, eliminating the boundary entirely. Non-truncated runs are byte-for-byte unchanged (the `rawOutput` fence remains the primary path). (tracker d03bdb43, EPI-OVR/M)
+
 ## [0.22.2] - 2026-06-16
 
 ### Security

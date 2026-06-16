@@ -538,6 +538,42 @@ describe('AnalysisSummaryExtractor', () => {
       ]);
     });
 
+    it('recovers the analysis block from rawJson.analysis when rawOutput is truncated mid-fence (d03bdb43)', () => {
+      // rawOutput is capped at MAX_RAW_OUTPUT_BYTES in AgentExecutor; a report
+      // exceeding the cap is clipped at the end, dropping the closing ```json fence.
+      // OutputExtractor parsed the full (untruncated) output into rawJson, so
+      // rawJson.analysis still carries the complete block. Simulate a clipped fence
+      // (opening ```json present, closing ``` lost) and assert recovery.
+      const clippedFence = `# Report\n\nLong prose...\n\n\`\`\`json\n{"agent":{"name":"test-validator"},"result":{"score":82},"analysis":{"category_scores":[{"name":"Impression Inventory","weight":20,"sc`;
+      const result = makeAgentResult({
+        rawOutput: clippedFence,
+        rawJson: {
+          agent: { name: 'test-validator' },
+          result: { score: 82, decision: 'FACTUAL' },
+          analysis: {
+            category_scores: [
+              { name: 'Impression Inventory', weight: 20, score: 17 },
+              { name: 'Fact/Judgment Separation', weight: 30, score: 25 },
+            ],
+            records: [
+              { recordType: 'commitment', recordId: 'R-1', title: 'Recovered finding', data: { status: 'OK' } },
+            ],
+          },
+        },
+      });
+      const resolved = makeResolvedDefinition();
+      const { summary, records } = extractor.extract(result, resolved);
+
+      // The truncated fence yields no block; recovery comes from rawJson.analysis.
+      expect(summary.categoryScores).toEqual([
+        { name: 'Impression Inventory', weight: 20, score: 17 },
+        { name: 'Fact/Judgment Separation', weight: 30, score: 25 },
+      ]);
+      expect(records).toHaveLength(1);
+      expect(records[0].recordId).toBe('R-1');
+      expect(records[0].recordType).toBe('commitment');
+    });
+
     it('falls back to structured output when no analysis block', () => {
       const result = makeAgentResult({
         rawOutput: '# Just markdown, no JSON fence',
