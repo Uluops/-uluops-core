@@ -12,9 +12,12 @@ import {
   UluOpsClient,
   ConfigurationError,
   ModelNotFoundError,
+  CapabilityError,
   ExecutionError,
+  MaxStepsExhaustedError,
   WorkflowError,
   ParseError,
+  SubscriptionRequiredError,
   RateLimitError,
   UnauthorizedError,
 } from '@uluops/core';
@@ -33,12 +36,26 @@ try {
   } else if (error instanceof ModelNotFoundError) {
     // Model alias not in registry catalog
     console.error('Unknown model:', error.message);
+  } else if (error instanceof CapabilityError) {
+    // Resolved model lacks a required capability (tools, vision, extendedThinking)
+    console.error('Model lacks a required capability:', error.message);
+  } else if (error instanceof MaxStepsExhaustedError) {
+    // IMPORTANT: check this BEFORE ExecutionError — it is a subclass. If
+    // ExecutionError comes first it swallows step exhaustion and you lose
+    // error.steps / error.finishReason.
+    console.error(`Step ceiling hit (${error.steps} steps, finishReason=${error.finishReason}) — raise maxSteps or narrow the target.`);
   } else if (error instanceof ExecutionError) {
     // Agent execution failed — may have partial results
     console.error('Execution failed:', error.message);
     if (error.partialResult) {
       console.error('Partial result available:', error.partialResult);
     }
+  } else if (error instanceof WorkflowError) {
+    // Phase gate failure — completed phases are in error.context.partialResult
+    console.error('Workflow gate failed:', error.message);
+  } else if (error instanceof SubscriptionRequiredError) {
+    // Definition requires a higher subscription tier
+    console.error(`Upgrade required: needs "${error.requiredTier}". ${error.upgradeUrl}`);
   } else if (error instanceof ParseError) {
     // LLM output couldn't be parsed as structured JSON
     console.error('Parse error:', error.message);

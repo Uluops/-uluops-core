@@ -4,7 +4,7 @@ import * as path from 'node:path';
 import * as os from 'node:os';
 import * as yaml from 'yaml';
 import { RegistryClient } from '../../src/registry/RegistryClient.js';
-import { SubscriptionRequiredError } from '../../src/errors/index.js';
+import { SubscriptionRequiredError, ConfigurationError } from '../../src/errors/index.js';
 import type { ResolvedConfig } from '../../src/types/config.js';
 import type { Logger } from '@uluops/sdk-core';
 import { SdkApiError } from '@uluops/sdk-core/errors';
@@ -370,13 +370,24 @@ describe('RegistryClient', () => {
       }
     });
 
-    it('rethrows non-402 SdkApiError unchanged', async () => {
+    it('rethrows unhandled SdkApiError (non-402/404) unchanged', async () => {
+      const mocks = getMocks();
+      const apiError = new SdkApiError(500, 'Internal error', 'INTERNAL');
+      mocks.definitions.get.mockRejectedValueOnce(apiError);
+
+      const client = new RegistryClient(baseConfig, noopLogger);
+      await expect(client.resolve('boom', undefined, 'agent')).rejects.toBeInstanceOf(SdkApiError);
+    });
+
+    it('wraps 404 from the typed resolve path as a guided ConfigurationError', async () => {
       const mocks = getMocks();
       const apiError = new SdkApiError(404, 'Not found', 'NOT_FOUND');
       mocks.definitions.get.mockRejectedValueOnce(apiError);
 
       const client = new RegistryClient(baseConfig, noopLogger);
-      await expect(client.resolve('missing', undefined, 'agent')).rejects.toBeInstanceOf(SdkApiError);
+      await expect(client.resolve('missing', undefined, 'agent')).rejects.toBeInstanceOf(ConfigurationError);
+      mocks.definitions.get.mockRejectedValueOnce(new SdkApiError(404, 'Not found', 'NOT_FOUND'));
+      await expect(client.resolve('missing', undefined, 'agent')).rejects.toThrow(/client\.list\(\)/);
     });
   });
 

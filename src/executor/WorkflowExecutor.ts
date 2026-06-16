@@ -42,6 +42,9 @@ export class WorkflowExecutor {
    * occurs after each phase completes, and failure behavior determines
    * whether subsequent levels proceed.
    *
+   * @param resolved - Registry-resolved workflow definition (must have `type: 'workflow'`).
+   * @param input - Execution input; `target` is the absolute project path.
+   * @returns The {@link WorkflowResult} with per-phase results, aggregate score, decision, and metrics.
    * @throws {WorkflowError} on internal workflow failures (phase crashes, gate violations)
    * @throws {ConfigurationError} if the definition is not a valid workflow
    */

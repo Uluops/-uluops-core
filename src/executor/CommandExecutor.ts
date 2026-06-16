@@ -29,7 +29,18 @@ export class CommandExecutor {
   ) {}
 
   /**
-   * Execute a command definition
+   * Execute a command definition against a target.
+   *
+   * Runs preflight checks (if any), resolves the referenced agent(s), and
+   * either delegates to {@link AgentExecutor} (single-agent) or aggregates
+   * across agents (multi-agent) per the command's aggregation method.
+   *
+   * @param resolved - Registry-resolved command definition (must have `type: 'command'`).
+   * @param input - Execution input; `target` is the absolute project path.
+   * @param overrides - Optional runtime overrides; `model` wins over the definition's default model.
+   * @returns The aggregated {@link CommandResult} with per-agent scores, decision, and recommendations.
+   * @throws {ExecutionError} If the resolved definition is not a command.
+   * @throws {PreflightError} If a preflight check fails before agents run.
    */
   async execute(
     resolved: ResolvedDefinition,
@@ -56,7 +67,7 @@ export class CommandExecutor {
     // 3. Single-agent: delegate to AgentExecutor
     if (agentRefs.length === 1) {
       const ref = agentRefs[0];
-      if (!ref) throw new Error('Agent refs array is empty despite length check');
+      if (!ref) throw new ExecutionError('Agent refs array is empty despite length check');
       const [name, version] = parseRef(ref);
       const agentResolved = await this.registry.resolve(name, version, 'agent');
 

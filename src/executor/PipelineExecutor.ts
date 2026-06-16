@@ -31,7 +31,16 @@ export class PipelineExecutor {
 
   /**
    * Start pipeline execution asynchronously.
-   * Returns a PipelineHandle for monitoring progress and retrieving results.
+   *
+   * Launches stage execution in the background and returns immediately. Errors
+   * during background execution are captured into the handle's state rather than
+   * thrown here; await {@link PipelineHandle.wait} to surface the final result.
+   *
+   * @param resolved - Registry-resolved pipeline definition (must have `type: 'pipeline'`).
+   * @param input - Execution input; `target` is the absolute project path.
+   * @param options - Optional execution overrides (`timeoutMs`, `model`).
+   * @returns A {@link PipelineHandle} for polling status, waiting, and cancellation.
+   * @throws {PipelineError} If the resolved definition is not a pipeline.
    */
   async start(resolved: ResolvedDefinition, input: ExecutionInput, options?: ExecutionOptions): Promise<PipelineHandle> {
     const def = this.assertPipelineDefinition(resolved);
@@ -62,7 +71,16 @@ export class PipelineExecutor {
   }
 
   /**
-   * Execute pipeline synchronously (blocking).
+   * Execute a pipeline synchronously (blocking).
+   *
+   * Convenience wrapper that {@link PipelineExecutor.start}s the pipeline and
+   * awaits completion.
+   *
+   * @param resolved - Registry-resolved pipeline definition (must have `type: 'pipeline'`).
+   * @param input - Execution input; `target` is the absolute project path.
+   * @param options - Optional execution overrides (`timeoutMs`, `model`).
+   * @returns The final {@link PipelineResult} with per-stage results and aggregate metrics.
+   * @throws {PipelineError} If the resolved definition is not a pipeline, or a stage fails.
    */
   async execute(resolved: ResolvedDefinition, input: ExecutionInput, options?: ExecutionOptions): Promise<PipelineResult> {
     const handle = await this.start(resolved, input, options);

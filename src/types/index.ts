@@ -14,7 +14,6 @@ export type {
   ExecutionResult,
   ExecutionMetrics,
   ExecutionOptions,
-  ResolvedExecutionContext,
   Recommendation,
 } from './execution.js';
 
@@ -67,7 +66,6 @@ export type {
   StageResult,
   TriggerInfo,
   PipelineArtifact,
-  PipelineState,
   PipelineHandle,
 } from './pipeline.js';
 

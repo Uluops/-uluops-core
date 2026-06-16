@@ -52,7 +52,6 @@ export type {
   ExecutionResult,
   ExecutionMetrics,
   ExecutionOptions,
-  ResolvedExecutionContext,
   Recommendation,
 } from './types/execution.js';
 
@@ -106,7 +105,6 @@ export type {
   TriggerInfo,
   PipelineArtifact,
   PipelineHandle,
-  PipelineState,
 } from './types/pipeline.js';
 
 // ─── Types: Registry ──────────────────────────────────────────────────────────

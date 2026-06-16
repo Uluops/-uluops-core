@@ -20,7 +20,7 @@ This document traces the complete execution chain from definition resolution thr
 
 Every chain starts with `UluOpsClient.resolveByRef()`. This sub-chain is shared.
 
-```
+```text
 1. parseRef(name)
    Splits "code-validator@1.2.0" → [name, version]
 
@@ -52,7 +52,7 @@ Every chain starts with `UluOpsClient.resolveByRef()`. This sub-chain is shared.
 
 **Entry:** `UluOpsClient.runAgent(name, target, options?)`
 
-```
+```text
  1. Resolve definition (type='agent')                    → Definition Resolution
  2. AgentExecutor.execute(resolved, input, options)
  3. resolveContext() — merge options > agent defaults > config defaults
@@ -90,7 +90,7 @@ Every chain starts with `UluOpsClient.resolveByRef()`. This sub-chain is shared.
 
 **Entry:** `UluOpsClient.runCommand(name, input)`
 
-```
+```text
  1. Resolve definition (type='command')                  → Definition Resolution
  2. CommandExecutor.execute(resolved, input)
  3. [if preflight defined] Run checks:
@@ -121,7 +121,7 @@ Every chain starts with `UluOpsClient.resolveByRef()`. This sub-chain is shared.
 
 **Entry:** `UluOpsClient.runWorkflow(name, input)`
 
-```
+```text
  1. Resolve definition (type='workflow')                 → Definition Resolution
  2. WorkflowExecutor.execute(resolved, input)
  3. topoGroupLevels(phases) — topological sort into execution levels
@@ -168,7 +168,7 @@ Every chain starts with `UluOpsClient.resolveByRef()`. This sub-chain is shared.
 
 **Entry:** `UluOpsClient.startPipeline(name, input)`
 
-```
+```text
  1. Resolve definition (type='pipeline')                 → Definition Resolution
  2. PipelineExecutor.start(resolved, input)
  3. Generate pipelineId: "pipeline_${Date.now()}_${random7chars}"
@@ -204,7 +204,7 @@ NOTE: startPipeline() does NOT call trackIfEnabled().
 
 **Entry:** `UluOpsClient.run(name, input)`
 
-```
+```text
 1. Resolve definition (no type hint — searches all types)
    Local: tries all 8 candidate paths
    Remote: sdk.definitions.list({ search: name }) — must match exactly one
@@ -242,7 +242,7 @@ When `trackResults` is enabled (default: `config.trackingEnabled`), two API call
 
 ### 1. Tracker Submission (SubmissionClient)
 
-```
+```text
 UluOpsClient.trackIfEnabled()
   → SubmissionClient.submit({ project, workflowType, result })
     → transformToOpsInput():
@@ -263,7 +263,7 @@ UluOpsClient.trackIfEnabled()
 
 ### 2. Registry Execution Recording
 
-```
+```text
 UluOpsClient.trackIfEnabled()
   → [if resolved.version !== 'unknown']
     registrySdk.executions.record(type, name, version, { source: 'core-sdk', runId })

@@ -57,13 +57,43 @@ export class RegistryClient {
     });
   }
 
-  /**
-   * Resolve a definition by name and optional type.
-   * Priority: cache → local files → remote API
-   */
   /** Safe definition name pattern — alphanumeric, hyphens, underscores, dots, forward slashes */
   private static readonly SAFE_NAME_PATTERN = /^[a-zA-Z0-9][a-zA-Z0-9._\-/]*$/;
 
+  /**
+   * Resolve a definition by name and optional type.
+   *
+   * Resolution priority: in-memory cache → local files (if `localDefinitions`
+   * is configured) → remote registry API. The returned `ResolvedDefinition`
+   * carries the frozen `runtime.prompt` (`def.runtimeMd`) as published — it is
+   * not a live re-render of the YAML.
+   *
+   * @param name - Definition name (e.g. `'code-validator'`). Validated against
+   *   path-traversal before any filesystem or API use.
+   * @param version - Optional exact version; omit for the latest published version.
+   * @param type - Optional definition type (`agent`/`command`/`workflow`/`pipeline`).
+   *   When omitted, the registry is searched to infer it (errors if ambiguous).
+   * @param opts - Optional caller-pinned integrity hashes (`expectedHash`,
+   *   `expectedPromptHash`). Verification runs fail-closed on every return path,
+   *   including cache hits.
+   * @returns The resolved definition with source YAML, frozen runtime prompt, and metadata.
+   * @throws {ConfigurationError} If the name contains path-traversal sequences, or
+   *   the definition cannot be found / is ambiguous in the registry.
+   * @throws {IntegrityError} If a supplied `expectedHash`/`expectedPromptHash` does
+   *   not match, or a prompt pin is supplied for a definition with no rendered prompt.
+   * @throws {SubscriptionRequiredError} If the definition requires a higher subscription tier.
+   * @example
+   * ```typescript
+   * // Latest version, type inferred:
+   * const def = await registry.resolve('code-validator');
+   *
+   * // Pinned version + type, with fail-closed integrity verification:
+   * const pinned = await registry.resolve('code-validator', '1.2.0', 'agent', {
+   *   expectedHash: 'sha256:…',        // refuses execution if the YAML hash differs
+   *   expectedPromptHash: 'sha256:…',  // refuses if the frozen rendered prompt differs
+   * });
+   * ```
+   */
   async resolve(
     name: string,
     version?: string,
@@ -170,6 +200,11 @@ export class RegistryClient {
     }
 
     try {
+      // list() always queries the registry (even with local definitions configured)
+      // so the result reflects published definitions too. In an offline environment
+      // this attempt fails after the SDK's retry/backoff before falling back to the
+      // local results below — log it so a ULUOPS_DEBUG run can tell a retry from a hang.
+      this.logger.debug('Querying registry for definitions (falls back to local definitions on failure)');
       const remote = await this.listRemote(filter);
 
       // Merge, preferring local versions
@@ -292,7 +327,8 @@ export class RegistryClient {
       if (matches.length === 0) {
         throw new ConfigurationError(
           `Definition "${name}" not found in registry. ` +
-          `Verify the name is correct and the definition is published.`,
+          `Verify the name is correct and the definition is published. ` +
+          `Call client.list() to see available definitions, or set ULUOPS_API_KEY for registry access.`,
         );
       }
 
@@ -305,7 +341,7 @@ export class RegistryClient {
       }
 
       const match = matches[0];
-      if (!match) throw new ConfigurationError(`Definition "${name}" not found in registry`);
+      if (!match) throw new ConfigurationError(`Definition "${name}" not found in registry. Call client.list() to see available definitions, or set ULUOPS_API_KEY for registry access.`);
       resolvedType = match.type as DefinitionType;
     }
 
@@ -327,6 +363,17 @@ export class RegistryClient {
           (d.currentTier as string) ?? 'unknown',
           d.definition as { type: string; name: string; displayName?: string } | undefined,
           d.upgradeUrl as string | undefined,
+        );
+      }
+      // 404 = definition not found. The typed resolve path (runAgent/runCommand/
+      // runWorkflow) reaches here with a known type and would otherwise surface a
+      // terse SDK NotFoundError. Rewrap with the same guidance the type-inference
+      // path gives, so a misspelled name has a path forward.
+      if (error instanceof SdkApiError && error.statusCode === 404) {
+        throw new ConfigurationError(
+          `Definition "${name}" (${resolvedType}) not found in registry. ` +
+          `Verify the name and type are correct and the definition is published. ` +
+          `Call client.list() to see available definitions, or set ULUOPS_API_KEY for registry access.`,
         );
       }
       throw error;
@@ -600,7 +647,14 @@ export class RegistryClient {
       this.logger.debug(`Render via API: ${result.markdown.length} chars`);
       return result.markdown;
     } catch (error) {
-      this.logger.warn(`Render API unavailable: ${formatErrorMessage(error)}`);
+      // Falling back to raw YAML is non-fatal — the run continues. State that
+      // explicitly so a render-auth failure isn't mistaken for a hard error.
+      // When no API key is configured (offline/local-only usage) this path is
+      // fully expected, so log at debug; otherwise warn. The degradation marker
+      // is recorded either way.
+      const msg = `Render API unavailable (non-fatal — using raw YAML fallback): ${formatErrorMessage(error)}`;
+      if (this.config.apiKey) this.logger.warn(msg);
+      else this.logger.debug(msg);
       degradations.push('render:api-unavailable');
       return null;
     }

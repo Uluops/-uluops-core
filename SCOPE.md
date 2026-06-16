@@ -1,5 +1,16 @@
 # @uluops/core — Scope Definition
 
+## Table of Contents
+
+- [What This Package Is](#what-this-package-is)
+- [Why These Live Together](#why-these-live-together)
+- [What This Package Is NOT](#what-this-package-is-not)
+- [Scope Boundary Principle](#scope-boundary-principle)
+- [Known Structural Decisions](#known-structural-decisions)
+- [Relationship to Other Packages](#relationship-to-other-packages)
+- [Planned / Deferred](#planned--deferred)
+- [Inherent Tensions](#inherent-tensions)
+
 ## What This Package Is
 
 The foundational execution engine for UluOps. Orchestrates AI-powered code analysis through a 4-layer execution hierarchy, manages LLM tool loops via Vercel AI SDK, and integrates with UluOps Registry and Validation services.
@@ -16,7 +27,7 @@ Additionally:
 - **AI abstraction** — `AIProvider` wraps Vercel AI SDK v6 with multi-provider support (Anthropic, OpenAI, Google bundled; Mistral, Cohere, Groq, xAI, DeepSeek via dynamic import). Provider-specific option injection (thinking budgets, reasoning effort, context management) is handled via a registry of provider options builders.
 - **Filesystem sandboxing** — `ToolHandler` provides six LLM-accessible tools (read_file, list_files, search_content, get_file_info, get_directory_tree, get_symbols) with symlink-aware path validation to prevent directory traversal.
 - **Output extraction** — 4-strategy fallback: AI SDK structured output > JSON code fence > inline JSON > regex text parsing. The strategies are ordered by confidence; lower strategies activate only when higher ones fail.
-- **Registry integration** — `RegistryClient` resolves definitions by name/version from local YAML files or the remote registry API. Each resolved definition carries a SHA-256 content hash (`sha256:…` over normalized YAML, computed by the registry at publish time) surfaced as a content-address identifier; the client does not currently re-verify the hash against the returned YAML. `ModelCatalog` resolves model aliases (e.g., `sonnet` → `claude-sonnet-4-6`) via the registry.
+- **Registry integration** — `RegistryClient` resolves definitions by name/version from local YAML files or the remote registry API. Each resolved definition carries a SHA-256 content hash (`sha256:…` over normalized YAML, computed by the registry at publish time) surfaced as a content-address identifier. Callers may supply caller-pinned hashes (`expectedHash` / `expectedPromptHash`); when provided, `RegistryClient.verifyPins()` verifies them fail-closed on every resolve path (cache hit, local, remote) and throws `IntegrityError` on mismatch. `ModelCatalog` resolves model aliases (e.g., `sonnet` → `claude-sonnet-4-6`) via the registry.
 - **Validation tracking** — `SubmissionClient` submits execution results to the tracker API with issue correlation and regression detection.
 
 ## Why These Live Together

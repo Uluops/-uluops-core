@@ -79,6 +79,26 @@ export class UluOpsClient {
    *
    * Use for interactive/ad-hoc validation, experimentation, and development.
    * For reproducible CI runs, use `runCommand()` instead.
+   *
+   * @param name - Agent name or `name@version` ref (e.g. `'code-validator'` or `'code-validator@1.2.0'`).
+   * @param targetOrInput - Absolute path to the project directory, or a full {@link ExecutionInput} object.
+   * @param options - Optional runtime overrides: `model`, `maxTokens`, `thresholds`, `reportMode`,
+   *   and caller-pinned integrity hashes (`expectedHash`/`expectedPromptHash`).
+   * @returns The {@link AgentResult} — score, decision, category breakdown, `completeness`, and `degradationMarkers`.
+   * @throws {ConfigurationError} If the resolved definition is not an agent.
+   * @throws {IntegrityError} If integrity pins are supplied and do not match the resolved content.
+   * @throws {MaxStepsExhaustedError} If the tool loop exhausts its step ceiling with empty output.
+   * @example
+   * ```typescript
+   * const result = await client.runAgent('code-validator', './src');
+   * console.log(`${result.decision} · ${result.score}`);
+   *
+   * // With overrides and an integrity pin:
+   * await client.runAgent('security-analyst', { target: './src' }, {
+   *   model: 'opus',
+   *   expectedHash: 'sha256-…',
+   * });
+   * ```
    */
   async runAgent(
     name: string,
@@ -113,6 +133,14 @@ export class UluOpsClient {
    * Uses model, thresholds, and aggregation from the command definition.
    * Pass `overrides.model` to override the definition's default model at runtime.
    * Ideal for CI/CD pipelines and team-standardized validation.
+   *
+   * @param name - Command name or `name@version` ref.
+   * @param input - Execution input ({@link ExecutionInput}); `target` is the absolute project path.
+   * @param overrides - Optional runtime overrides; `model` overrides the definition's default model.
+   * @returns The aggregated {@link CommandResult} with per-agent scores, decision, and recommendations.
+   * @throws {ConfigurationError} If the resolved definition is not a command.
+   * @throws {PreflightError} If a preflight check fails.
+   * @throws {ExecutionError} If an underlying agent execution fails.
    */
   async runCommand(name: string, input: ExecutionInput, overrides?: { model?: string }): Promise<CommandResult> {
     const resolved = await this.resolveByRef(name, 'command');
@@ -128,6 +156,15 @@ export class UluOpsClient {
 
   /**
    * Execute a workflow with multi-phase orchestration.
+   *
+   * Phases run as a DAG with quality gates between them; a gate failure
+   * surfaces as a {@link WorkflowError} carrying partial phase results.
+   *
+   * @param name - Workflow name or `name@version` ref.
+   * @param input - Execution input ({@link ExecutionInput}); `target` is the absolute project path.
+   * @returns The {@link WorkflowResult} with per-phase results and aggregate metrics.
+   * @throws {ConfigurationError} If the resolved definition is not a workflow.
+   * @throws {WorkflowError} If a phase gate fails (`error.context.partialResult` holds completed phases).
    */
   async runWorkflow(name: string, input: ExecutionInput): Promise<WorkflowResult> {
     const resolved = await this.resolveByRef(name, 'workflow');
@@ -143,6 +180,15 @@ export class UluOpsClient {
 
   /**
    * Execute a pipeline with multi-stage orchestration.
+   *
+   * Runs synchronously to completion. For long-running pipelines you want to
+   * monitor or cancel, use {@link UluOpsClient.startPipeline} instead.
+   *
+   * @param name - Pipeline name or `name@version` ref.
+   * @param input - Execution input ({@link ExecutionInput}); `target` is the absolute project path.
+   * @returns The {@link PipelineResult} with per-stage results and aggregate metrics.
+   * @throws {ConfigurationError} If the resolved definition is not a pipeline.
+   * @throws {PipelineError} If a stage fails (`error.context` holds stage name/index).
    */
   async runPipeline(name: string, input: ExecutionInput): Promise<PipelineResult> {
     const resolved = await this.resolveByRef(name, 'pipeline');
@@ -163,7 +209,13 @@ export class UluOpsClient {
    * Universal execution — auto-routes based on definition type.
    *
    * Resolves the definition name and delegates to the appropriate executor.
-   * Agents are directly executable (wrapped as ExecutionResult).
+   * Use when the definition type is not known at the call site; prefer the
+   * typed `run*` methods when it is, for a precise return type.
+   *
+   * @param name - Definition name or `name@version` ref (any of the four types).
+   * @param input - Execution input ({@link ExecutionInput}); `target` is the absolute project path.
+   * @returns An {@link AgentResult} for agents, or an {@link ExecutionResult} for command/workflow/pipeline.
+   * @throws {ConfigurationError} If the resolved definition has an unknown type.
    */
   async run(name: string, input: ExecutionInput): Promise<ExecutionResult | AgentResult> {
     const resolved = await this.resolveByRef(name);
@@ -197,7 +249,15 @@ export class UluOpsClient {
 
   /**
    * Start an async pipeline execution.
-   * Returns a PipelineHandle for monitoring and control.
+   *
+   * Returns a {@link PipelineHandle} for monitoring and control. Calling
+   * `handle.wait()` resolves with the final {@link PipelineResult} and tracks
+   * it (when tracking is enabled), mirroring {@link UluOpsClient.runPipeline}.
+   *
+   * @param name - Pipeline name or `name@version` ref.
+   * @param input - Execution input ({@link ExecutionInput}); `target` is the absolute project path.
+   * @returns A {@link PipelineHandle} exposing `wait()`, status polling, and cancellation.
+   * @throws {ConfigurationError} If the resolved definition is not a pipeline.
    */
   async startPipeline(name: string, input: ExecutionInput): Promise<PipelineHandle> {
     const resolved = await this.resolveByRef(name, 'pipeline');
@@ -289,6 +349,12 @@ export class UluOpsClient {
    * @param version - Optional explicit version (overrides any suffix in `name`)
    * @param type - Optional definition type to disambiguate when the same name exists across types
    * @returns Resolved definition metadata including type, version, hash, and interface
+   * @example
+   * ```typescript
+   * // When a name is registered as more than one type, pass `type` to disambiguate:
+   * const meta = await client.describe('socrates-explorer', undefined, 'agent');
+   * console.log(meta.type, meta.version, meta.hash);
+   * ```
    */
   async describe(
     name: string,
@@ -315,7 +381,14 @@ export class UluOpsClient {
 
   // ─── Submission Service Delegation ──────────────────────────────────────
 
-  /** Query run history for a project. */
+  /**
+   * Query run history for a project. Delegates to {@link SubmissionClient.getHistory}.
+   *
+   * @param project - Target project name.
+   * @param options - Optional filters (`workflowType`, `limit`).
+   * @returns An array of {@link RunHistoryEntry} (most recent first).
+   * @throws {SdkApiError} For transport/auth failures from the submission service.
+   */
   async getHistory(
     project: string,
     options?: SubmissionQueryOptions,
@@ -323,12 +396,28 @@ export class UluOpsClient {
     return this.submission.getHistory(project, options);
   }
 
-  /** Get details for a specific run by ID. */
+  /**
+   * Get details for a specific run by ID. Delegates to {@link SubmissionClient.getRun}.
+   *
+   * @param runId - The run's UUID.
+   * @returns The {@link RunSubmissionResponse} for the run (correlation counts are zeroed).
+   * @throws {NotFoundError} If no run exists with that id.
+   * @throws {SdkApiError} For transport/auth failures from the submission service.
+   */
   async getRun(runId: string): Promise<RunSubmissionResponse> {
     return this.submission.getRun(runId);
   }
 
-  /** Preview what a submission would do without saving (dry run). */
+  /**
+   * Preview what a submission would do without saving (dry run).
+   * Delegates to {@link SubmissionClient.previewSubmission}.
+   *
+   * @param project - Target project name.
+   * @param workflowType - Workflow type (`agent`/`command`/`workflow`/`pipeline`).
+   * @param result - The execution result that would be submitted.
+   * @returns Whether the submit would create/update/regress, plus any validation errors.
+   * @throws {SdkApiError} For transport/auth failures from the submission service.
+   */
   async previewSubmission(
     project: string,
     workflowType: string,
@@ -337,7 +426,17 @@ export class UluOpsClient {
     return this.submission.previewSubmission(project, workflowType, result);
   }
 
-  /** Manually submit execution results to the submission service. */
+  /**
+   * Manually submit execution results to the submission service.
+   * Delegates to {@link SubmissionClient.submit}.
+   *
+   * @param project - Target project name.
+   * @param workflowType - Workflow type (`agent`/`command`/`workflow`/`pipeline`).
+   * @param result - The execution result to submit.
+   * @returns The {@link RunSubmissionResponse} — run id/number, dashboard URL, correlation counts.
+   * @throws {SubmissionError} If the service rejects the submission.
+   * @throws {SdkApiError} For transport/auth failures from the submission service.
+   */
   async submitResults(
     project: string,
     workflowType: string,
@@ -489,7 +588,7 @@ export class UluOpsClient {
     if (!shouldTrack) return;
 
     if (!this.config.apiKey) {
-      this.logger.debug('Tracking skipped: no UluOps API key configured. Set trackingEnabled: false to suppress this message.');
+      this.logger.debug('Tracking skipped: no UluOps API key configured. Set trackingEnabled: false to disable tracking (this is a debug log; it does not appear unless debug logging is on).');
       return;
     }
 
@@ -514,7 +613,7 @@ export class UluOpsClient {
       const errMsg = error instanceof Error ? error.message : String(error);
       const errName = error instanceof Error ? error.constructor.name : typeof error;
       const errCode = error instanceof Error && 'code' in error ? (error as { code: string }).code : undefined;
-      this.logger.warn(`Tracking submission failed (non-fatal): [${errName}${errCode ? `:${errCode}` : ''}] ${errMsg}`);
+      this.logger.warn(`Tracking submission failed (non-fatal): [${errName}${errCode ? `:${errCode}` : ''}] ${errMsg}. Set trackingEnabled: false in config to disable result tracking.`);
       // Log SdkApiError details for diagnosis
       if (error instanceof Error) {
         const e = error as { statusCode?: number; code?: string; details?: unknown; requestId?: string };

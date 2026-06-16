@@ -178,6 +178,18 @@ export class AIProvider {
    * 3. Get AI SDK LanguageModel from provider factory
    * 4. Build provider options (cache control, thinking, etc.)
    * 5. Call generateText with maxSteps for automatic tool loop
+   *
+   * Every call is gated through the shared concurrency limiter so wide fan-out
+   * plus per-request retries cannot collectively overrun a provider rate limit.
+   *
+   * @param options - Generation options ({@link AIGenerateOptions}): `model` alias, `system`,
+   *   `messages`/`prompt`, `tools`, `requiredCapabilities`, `providerOptions`, `contextBudget`, etc.
+   * @returns The {@link AIGenerateResult} — generated text, tool calls, usage metrics, and finish reason.
+   * @throws {ConfigurationError} If the requested provider is not configured.
+   * @throws {ModelNotFoundError} If the model alias cannot be resolved by the catalog.
+   * @throws {CapabilityError} If the resolved model lacks a required capability.
+   * @throws {RateLimitError} If the provider returns a 429 after retries are exhausted.
+   * @throws {SdkApiError} For other provider/API errors surfaced by the AI SDK.
    */
   async generate(options: AIGenerateOptions): Promise<AIGenerateResult> {
     // Gate every generation through the shared concurrency limiter so that

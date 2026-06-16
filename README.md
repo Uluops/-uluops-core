@@ -43,15 +43,20 @@ const result = await client.runAgent('code-validator', './src', {
 });
 
 console.log(`Score: ${result.score} | Decision: ${result.decision}`);
+
+// Or run a saved command configuration (model, thresholds, and aggregation
+// come from the command definition — ideal for CI):
+const cmd = await client.runCommand('validate', { target: './src' });
+console.log(`Score: ${cmd.score} | Decision: ${cmd.decision}`);
 ```
 
 ```bash
 npx tsx validate.ts
 ```
 
-### Offline Quick Start (No API Key)
+### Offline Quick Start (No UluOps API Key)
 
-Use the bundled starter agents without registry access:
+Use the bundled starter agents without registry access. An AI provider key (e.g. `ANTHROPIC_API_KEY`) is still required:
 
 ```typescript
 import { UluOpsClient, STARTER_DEFINITIONS_DIR } from '@uluops/core';
@@ -66,6 +71,8 @@ console.log(`Score: ${result.score} | Decision: ${result.decision}`);
 ```
 
 This still requires an AI provider key but no UluOps API key or network access to the registry.
+
+> **Note:** `runAgent`/`resolve` return immediately from local definitions when found. `client.list()`, however, always queries the registry first and only falls back to the bundled definitions after the request fails — in a genuinely offline environment that means a few seconds of retry/backoff before the local list returns.
 
 ## Table of Contents
 
@@ -98,7 +105,7 @@ The `@uluops/core` SDK provides:
 - **4-Layer Execution Hierarchy** - Agent > Command > Workflow > Pipeline orchestration
 - **AI SDK v6 Integration** - Vercel AI SDK for LLM communication with automatic tool loops (`maxSteps`) and built-in retry
 - **Registry-Backed Model Resolution** - Model aliases resolved via UluOps Registry with provider metadata
-- **Multi-Provider AI** - Anthropic-first with deepest optimization (caching, context management, bash tools); OpenAI + Google bundled; Mistral, Cohere, and 10+ others via dynamic `@ai-sdk/*` import. See [SCOPE.md](https://github.com/Uluops/-uluops-core/blob/main/SCOPE.md) for provider strategy.
+- **Multi-Provider AI** - Anthropic-first with deepest optimization (caching, context management, bash tools); OpenAI + Google bundled; Mistral, Cohere, and 10+ others via dynamic `@ai-sdk/*` import. See [SCOPE.md](https://github.com/Uluops/uluops-core/blob/main/SCOPE.md) for provider strategy.
 - **Filesystem Sandboxing** - ToolHandler restricts LLM file access to the target directory with symlink-aware path validation
 - **Content-Addressed Integrity Verification** - Registry-resolved definitions carry a SHA-256 YAML content hash (`sha256:…`) and, for agents/commands, a `promptHash` over the frozen rendered prompt. Hashing uses the shared `@uluops/sdk-core` implementation, so the client and registry hash identically. Remote resolution executes the **frozen `runtimeMd`** the `promptHash` certifies (not a live re-render). Callers can pin `expectedHash`/`expectedPromptHash` (from a trusted channel) on `resolve()`/`ExecutionOptions`; pins are verified **fail-closed** on every resolve path (cache/local/remote) and a mismatch throws `IntegrityError`. Verification is opt-in — unpinned resolves behave as before. See [Integrity Verification](#integrity-verification).
 - **Universal Agent Output** - Single `agentOutputSchema` with categories + artifacts for all 6 agent types (validator, executor, analyst, generator, explorer, forecaster)
@@ -426,7 +433,8 @@ try {
 } catch (err) {
   if (err instanceof IntegrityError) {
     // err.kind: 'yaml' | 'prompt' | 'unavailable'; err.expected / err.actual
-    console.error(`Execution refused (${err.kind}): ${err.message}`);
+    // err.definitionName / err.definitionVersion identify which definition failed
+    console.error(`Execution refused (${err.kind}) for ${err.definitionName}@${err.definitionVersion}: ${err.message}`);
   }
 }
 ```
@@ -441,7 +449,9 @@ try {
 
 ## Architecture
 
-```
+For a detailed, hop-by-hop trace of every execution chain (resolution → LLM generation → persistence), see [ARCHITECTURE.md](./ARCHITECTURE.md).
+
+```text
 UluOpsClient (facade)
   |
   +-- AgentExecutor        (single-agent LLM execution)
@@ -507,6 +517,24 @@ import {
   parseRef,            // Parse "name@version" reference strings
   classifyDecision,    // Classify decision strings into positive/negative/conditional/neutral
   buildVocabularyMap,  // Build custom decision vocabulary from agent definitions
+  deriveCompleteness,         // Recompute completeness from a DegradationMarker[]
+  resolutionMarkersFromLegacy, // Convert the deprecated degradations[] to DegradationMarker[]
+} from '@uluops/core';
+```
+
+### Exported Constants
+
+The default thresholds and limits used by the executors are exported for custom
+threshold logic, diagnostics, and tests:
+
+```typescript
+import {
+  DEFAULT_PASS_THRESHOLD,  // 75    — default validator pass threshold
+  DEFAULT_WARN_THRESHOLD,  // 50    — default warn threshold
+  DEFAULT_GATE_THRESHOLD,  // 70    — default workflow phase gate
+  DEFAULT_MAX_STEPS,       // 50    — default tool-loop step ceiling
+  DEFAULT_MAX_TOKENS,      // 16384 — default output tokens per generation call
+  STARTER_DEFINITIONS_DIR, // bundled starter definitions directory (offline quick start)
 } from '@uluops/core';
 ```
 
@@ -539,7 +567,7 @@ const catalog = new ModelCatalog(registrySdk);
 const resolved = await catalog.resolve('sonnet', {
   requiredCapabilities: ['tools', 'extendedThinking'],
 });
-// → { provider: 'anthropic', model: 'claude-sonnet-4-...' }
+// → { provider: 'anthropic', modelId: 'claude-sonnet-4-...', providerModelId: 'claude-sonnet-4-...' }
 
 // Enumerate available models and aliases
 const aliases = await catalog.listAliases();
@@ -622,6 +650,7 @@ const client = new UluOpsClient({
 | Variable | Description | Default |
 |----------|-------------|---------|
 | `ULUOPS_API_KEY` | Platform API key | (required) |
+| `ULU_API_KEY` | Platform API key (legacy alias; used only if `ULUOPS_API_KEY` is unset) | - |
 | `ANTHROPIC_API_KEY` | Anthropic provider key | - |
 | `OPENAI_API_KEY` | OpenAI provider key | - |
 | `GOOGLE_API_KEY` | Google/Gemini provider key | - |
@@ -657,15 +686,26 @@ import {
   type UluOpsConfig,
   type ExecutionInput,
   type ExecutionOptions,
+  // Async pipeline handle (return type of startPipeline)
+  type PipelineHandle,
   // Decision classification
   classifyDecision,
   type DecisionCategory,
+  type DecisionVocabularyMap,   // return type of buildVocabularyMap
+  // Analysis & AI layer companion types (for direct Advanced Exports usage)
+  type AnalysisExtractionResult, // return type of AnalysisSummaryExtractor
+  type ResolvedModel,            // return type of ModelCatalog.resolve
   // Completeness & degradation markers
   deriveCompleteness,
+  resolutionMarkersFromLegacy, // migrate the deprecated degradations[] field
   type Completeness,
   type DegradationMarker,
+  type DegradationPhase,        // 'resolution' | 'execution'
+  type DegradationSeverity,     // 'info' | 'degraded' | 'critical'
   // Usage metrics
-  type UsageMetrics,
+  type ExecutionMetrics,        // type of result.metrics on every result type (camelCase)
+  type UsageMetrics,            // raw AI-provider usage on AIGenerateResult.usage (advanced; snake_case)
+  type AIGenerateResult,        // return type of AIProvider.generate() (advanced)
   // Error classes
   ExecutionError,
   MaxStepsExhaustedError,
@@ -711,10 +751,10 @@ The SDK provides a structured error hierarchy:
 | `WorkflowError` | `WorkflowExecutor.execute()` | Phase gate failure. Check `error.context.partialResult` for completed phase results |
 | `PipelineError` | `PipelineExecutor.execute()` | Pipeline stage failure. Check `error.context` for stage name/index |
 | `SubscriptionRequiredError` | `RegistryClient.resolve()` | Definition requires a higher subscription tier. Check `error.requiredTier`, `error.currentTier`, and `error.upgradeUrl` for upgrade guidance |
-| `IntegrityError` | `RegistryClient.resolve()` (caller-pinned) | A pinned `expectedHash`/`expectedPromptHash` did not match the resolved content, or a prompt pin was supplied for a definition with no rendered prompt. Check `error.kind` (`'yaml'`/`'prompt'`/`'unavailable'`), `error.expected`, `error.actual`. Fail-closed — execution is refused |
+| `IntegrityError` | `RegistryClient.resolve()` (caller-pinned) | A pinned `expectedHash`/`expectedPromptHash` did not match the resolved content, or a prompt pin was supplied for a definition with no rendered prompt. Check `error.kind` (`'yaml'`/`'prompt'`/`'unavailable'`), `error.expected`, `error.actual`, and `error.definitionName`/`error.definitionVersion` (which definition failed). Fail-closed — execution is refused |
 
 ```typescript
-import { ConfigurationError, ModelNotFoundError, ExecutionError, MaxStepsExhaustedError, SubscriptionRequiredError } from '@uluops/core';
+import { ConfigurationError, ModelNotFoundError, CapabilityError, ExecutionError, MaxStepsExhaustedError, WorkflowError, SubscriptionRequiredError } from '@uluops/core';
 
 try {
   const result = await client.runAgent('code-validator', './src');
@@ -723,12 +763,19 @@ try {
     console.error('Check your config:', error.message);
   } else if (error instanceof ModelNotFoundError) {
     console.error('Unknown model alias:', error.message);
+  } else if (error instanceof CapabilityError) {
+    console.error('Model lacks a required capability:', error.message);
   } else if (error instanceof MaxStepsExhaustedError) {
     // Check this BEFORE ExecutionError — it is a subclass.
     console.error(`Hit the step ceiling (${error.steps} steps) — raise maxSteps or narrow the target.`);
   } else if (error instanceof ExecutionError) {
     console.error('Execution failed:', error.message);
     console.log('Partial result:', error.partialResult);
+  } else if (error instanceof WorkflowError) {
+    // Phase gate failure — completed phases are in error.context.partialResult
+    console.error('Workflow gate failed:', error.message);
+  } else if (error instanceof SubscriptionRequiredError) {
+    console.error(`Upgrade required: needs "${error.requiredTier}" (you have "${error.currentTier}"). ${error.upgradeUrl}`);
   }
 }
 ```

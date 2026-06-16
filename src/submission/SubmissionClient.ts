@@ -20,19 +20,41 @@ import { EXTRACTION_CONFIDENCE_THRESHOLD } from '../constants.js';
  * use `@uluops/ops-sdk` directly.
  */
 export class SubmissionClient {
-  private ops: OpsClient;
+  private _ops?: OpsClient;
   private readonly analysisExtractor = new AnalysisSummaryExtractor();
 
-  constructor(private config: ResolvedConfig) {
-    this.ops = new OpsClient({
-      apiKey: config.apiKey,
-      baseUrl: config.submissionUrl,
-      timeout: config.timeout,
-    });
+  constructor(private config: ResolvedConfig) {}
+
+  /**
+   * Lazily construct the underlying OpsClient on first API use.
+   *
+   * Deferring construction avoids emitting "No credentials found" warnings
+   * during offline usage: `submit()` short-circuits before any API call when
+   * `trackingEnabled` is false, so the OpsClient — and its credential check —
+   * is never instantiated.
+   */
+  private get ops(): OpsClient {
+    if (!this._ops) {
+      this._ops = new OpsClient({
+        apiKey: this.config.apiKey,
+        baseUrl: this.config.submissionUrl,
+        timeout: this.config.timeout,
+      });
+    }
+    return this._ops;
   }
 
   /**
-   * Submit execution results to submission service
+   * Submit execution results to the submission service.
+   *
+   * When `config.trackingEnabled` is false, returns a synthesized local response
+   * without any network call. Otherwise transforms the result and POSTs it.
+   *
+   * @param submission - The run to submit. `submission.resolvedDefinition`, when
+   *   present, enables richer per-agent analysis extraction.
+   * @returns The {@link RunSubmissionResponse} — run id/number, dashboard URL, and correlation counts.
+   * @throws {SubmissionError} If the service rejects the submission.
+   * @throws {SdkApiError} For transport/auth failures from the underlying OpsClient.
    */
   async submit(submission: RunSubmission): Promise<RunSubmissionResponse> {
     if (!this.config.trackingEnabled) {
@@ -62,6 +84,12 @@ export class SubmissionClient {
    * Preview what a submission would do without saving (dry run).
    *
    * Accepts individual parameters matching the public UluOpsClient API.
+   *
+   * @param project - Target project name.
+   * @param workflowType - Workflow type (`agent`/`command`/`workflow`/`pipeline`).
+   * @param result - The execution result that would be submitted.
+   * @returns Whether the submit would create/update/regress, plus any validation errors.
+   * @throws {SdkApiError} For transport/auth failures from the underlying OpsClient.
    */
   async previewSubmission(
     project: string,
@@ -85,7 +113,12 @@ export class SubmissionClient {
   }
 
   /**
-   * Get run history for a project
+   * Get run history for a project.
+   *
+   * @param project - Target project name.
+   * @param options - Optional filters: `workflowType`, `limit`.
+   * @returns An array of {@link RunHistoryEntry} ordered by the service default (most recent first).
+   * @throws {SdkApiError} For transport/auth failures from the underlying OpsClient.
    */
   async getHistory(
     project: string,
@@ -114,7 +147,13 @@ export class SubmissionClient {
   }
 
   /**
-   * Get details for a specific run by ID
+   * Get details for a specific run by ID.
+   *
+   * @param runId - The run's UUID.
+   * @returns The {@link RunSubmissionResponse} for the run. Correlation counts are
+   *   zeroed here — they are only meaningful on the original {@link SubmissionClient.submit}.
+   * @throws {NotFoundError} If no run exists with that id.
+   * @throws {SdkApiError} For transport/auth failures from the underlying OpsClient.
    */
   async getRun(runId: string): Promise<RunSubmissionResponse> {
     const run = await this.ops.runs.get(runId);
@@ -264,6 +303,9 @@ export class SubmissionClient {
   /**
    * Extract agent name+version pairs from a result for per-agent execution recording.
    * Reuses the same decomposition logic used for tracker submission.
+   *
+   * @internal Used by `UluOpsClient.recordExecutions()`. Not part of the stable
+   * public API — no semver guarantee; do not depend on it directly.
    */
   extractAgents(result: ExecutionResult | AgentResult): Array<{ name: string; version?: string }> {
     const entries = this.isWorkflowResult(result)

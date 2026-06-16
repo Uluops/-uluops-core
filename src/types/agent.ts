@@ -76,6 +76,11 @@ export interface AgentDefinition {
 // Interface Section
 // ─────────────────────────────────────────────────────────────────────────────
 
+/**
+ * Agent identity and metadata (the `agent.interface` section).
+ * Required on every agent — supplies name, version, type, domain, and discovery
+ * triggers/dependencies used by the registry and executors.
+ */
 export interface AgentInterface {
   name: string;
   version: string;
@@ -106,6 +111,10 @@ export interface AgentDependencies {
 // Defaults Section
 // ─────────────────────────────────────────────────────────────────────────────
 
+/**
+ * Default execution settings (the `agent.defaults` section).
+ * Call-time {@link ExecutionOptions} override these per run.
+ */
 export interface AgentDefaults {
   model?: string;
   timeout?: number;
@@ -129,6 +138,11 @@ export interface AgentContext {
 // Mission Section
 // ─────────────────────────────────────────────────────────────────────────────
 
+/**
+ * Agent identity, purpose framing, and behavioral boundaries
+ * (the `agent.mission` section). Shapes the rendered system prompt — the
+ * opener, stakes, role boundaries, and explicit prohibitions an agent operates under.
+ */
 export interface AgentMission {
   /** Present-tense immersive opening statement */
   opener?: string;
@@ -190,6 +204,11 @@ export interface FailureCodeExample {
 // Scoring Section (validators)
 // ─────────────────────────────────────────────────────────────────────────────
 
+/**
+ * Scoring configuration (the `agent.scoring` section).
+ * Required for validators, forbidden for executors. `maxScore` is the sum the
+ * weighted categories must reconcile to.
+ */
 export interface AgentScoring {
   maxScore: number;
   categories: ScoringCategory[];
@@ -197,6 +216,10 @@ export interface AgentScoring {
   constraints?: ScoringConstraints;
 }
 
+/**
+ * A weighted scoring category containing one or more criteria.
+ * `weight` is the category's share of `maxScore`.
+ */
 export interface ScoringCategory {
   id: string;
   name: string;
@@ -205,6 +228,11 @@ export interface ScoringCategory {
   criteria: ScoringCriterion[];
 }
 
+/**
+ * A single scored criterion within a {@link ScoringCategory}.
+ * `points` is its share of the category weight; `failure_taxonomy` ties a miss
+ * to a failure-domain/mode/severity for tracker classification.
+ */
 export interface ScoringCriterion {
   id: string;
   name: string;
@@ -251,6 +279,11 @@ export interface ScoringConstraints {
 // Decisions Section (validators)
 // ─────────────────────────────────────────────────────────────────────────────
 
+/**
+ * Decision vocabulary and score thresholds (the `agent.decisions` section).
+ * Required for validators — defines the positive/negative/conditional decision
+ * terms and the score bands that map to each.
+ */
 export interface AgentDecisions {
   vocabulary: {
     positive: string;
@@ -280,6 +313,11 @@ export interface DecisionThreshold {
 // Tasks Section (executors)
 // ─────────────────────────────────────────────────────────────────────────────
 
+/**
+ * Task definitions (the `agent.tasks` section).
+ * Required for executors, forbidden for validators — declares the inputs,
+ * ordered operations, and outputs that constitute the executor's work.
+ */
 export interface AgentTasks {
   inputs: TaskInput[];
   operations: TaskOperation[];
@@ -312,6 +350,11 @@ export interface TaskOutput {
 // Completion Section (executors)
 // ─────────────────────────────────────────────────────────────────────────────
 
+/**
+ * Completion criteria (the `agent.completion` section).
+ * Required for executors — defines the complete/partial/failed vocabulary and
+ * the criteria an executor run is judged against.
+ */
 export interface AgentCompletion {
   vocabulary: {
     complete: string;
@@ -370,6 +413,11 @@ export interface AgentProcess {
   }>;
 }
 
+/**
+ * Output specification (the `agent.output` section).
+ * Controls the rendered report's format, section ordering, token budget, and
+ * taxonomy-classification behavior.
+ */
 export interface AgentOutput {
   format: 'markdown' | 'json' | 'html' | 'structured';
   schema?: string;

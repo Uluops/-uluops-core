@@ -85,6 +85,8 @@ export class ModelCatalog {
    *
    * @param input - Alias ('sonnet'), tier ('premium'), or 'provider:modelId'
    * @param opts - Resolution options (capability checks, provider preference)
+   * @returns The fully-qualified {@link ResolvedModel} — `provider`, `modelId`,
+   *   `providerModelId`, tier, and the resolved capability set.
    * @throws {ModelNotFoundError} If alias/model cannot be resolved
    * @throws {CapabilityError} If model lacks required capabilities
    */
@@ -113,7 +115,9 @@ export class ModelCatalog {
   }
 
   /**
-   * List all available aliases
+   * List all available model aliases from the registry.
+   *
+   * @returns The array of {@link RegistryModelAlias} (alias → provider/model mappings).
    */
   async listAliases(): Promise<RegistryModelAlias[]> {
     const result = await this.sdk.models.listAliases();
@@ -121,7 +125,11 @@ export class ModelCatalog {
   }
 
   /**
-   * List available models, optionally filtered
+   * List available models, optionally filtered.
+   *
+   * @param filter - Optional filters: `provider`, `tier`, and `capability`
+   *   (a key of {@link ModelCapabilities}, e.g. `'tools'`, `'extendedThinking'`).
+   * @returns The matching array of {@link Model} entries from the registry.
    */
   async listModels(filter?: {
     provider?: string;

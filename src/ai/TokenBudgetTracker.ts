@@ -29,6 +29,8 @@ export class TokenBudgetTracker {
    * so the value reflects whether the run *ended* in forced wrap-up — a run
    * that latched then recovered is not left flagged. Read by AgentExecutor to
    * emit a `budget.forced-wrap-up` degradation marker.
+   *
+   * @param engaged - `true` if the wrap-up latch is currently engaged, `false` if released.
    */
   markForcedWrapUp(engaged: boolean): void {
     this.forcedWrapUpFlag = engaged;
@@ -42,8 +44,10 @@ export class TokenBudgetTracker {
   /**
    * Record token usage from a completed step.
    *
-   * `inputTokens` is the full context window size for the latest API call
-   * (replaces previous value). `outputTokens` is incremental (accumulated).
+   * @param inputTokens - Full context window size for the latest API call.
+   *   This **replaces** the prior value (it is the total, not a delta), because
+   *   it represents the whole input window the next call will carry.
+   * @param outputTokens - Output tokens for this step; **accumulated** across steps.
    */
   update(inputTokens: number, outputTokens: number): void {
     this.currentContextTokens = inputTokens;

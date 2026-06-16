@@ -2,7 +2,34 @@
 
 All notable changes to `@uluops/core` will be documented in this file.
 
-This project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
+The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html). In addition to the standard `Added`/`Changed`/`Deprecated`/`Removed`/`Fixed`/`Security` sections, some entries use a few informational sections — `Internal` (test/CI/build-only changes), `Supply chain` / `Dependencies`, `Design Notes`, and `Migration` — which carry no consumer-facing API impact.
+
+## [Unreleased]
+
+## [0.22.1] - 2026-06-16
+
+Documentation, transparency, and developer-experience hardening — the resolved output of four `consumer-validate` passes (60 findings fixed and verified). No change to the execution model; the only behavioral deltas are warning-noise reduction and a friendlier error class on the typed-resolve not-found path.
+
+### Changed
+
+- **Documentation sweep.** Added `@param`/`@returns`/`@throws` across the primary `UluOpsClient` execution methods and submission wrappers, all four executor `execute()` methods, `RegistryClient.resolve()`, `AIProvider.generate()`, `OutputExtractor`, `SubmissionClient`, `ModelCatalog`, and `TokenBudgetTracker`; added `@example` to `runAgent`, `describe`, `classifyDecision`, `buildVocabularyMap`, `RegistryClient.resolve`, and `OutputExtractor.extractWithMetadata`; added interface-level JSDoc to exported ADL schema types. README now documents the exported constants, `resolutionMarkersFromLegacy`, `PipelineHandle`, `ExecutionMetrics`/`DegradationPhase`/`DegradationSeverity`/`AIGenerateResult`, the `ULU_API_KEY` fallback, and links `ARCHITECTURE.md`; SCOPE.md corrected to describe caller-pinned fail-closed integrity verification.
+- `CommandExecutor` now throws the typed `ExecutionError` (instead of a raw `Error`) for the empty-agent-refs defensive assertion.
+- **Typed definition resolution now throws `ConfigurationError` (not a raw `NotFoundError`) when a definition is missing.** `runAgent`/`runCommand`/`runWorkflow` previously surfaced the underlying SDK `NotFoundError`; they now match the untyped `run()` path with a message pointing to `client.list()`/`ULUOPS_API_KEY`.
+- `SubmissionClient` no longer eagerly constructs the underlying `OpsClient` when tracking is disabled and no API key is configured — removes misleading "No credentials found" warnings during offline usage.
+- Registry not-found errors now point to `client.list()` and `ULUOPS_API_KEY` for remediation; the render-unavailable warning now reads "(non-fatal — using raw YAML fallback)"; the tracking-failure warning now includes a `trackingEnabled: false` suppression hint; `RegistryClient.list()` logs a debug line at the start of its remote attempt so offline retry/backoff is distinguishable from a hang.
+
+### Removed
+
+- **`PipelineState` and `ResolvedExecutionContext` are no longer exported.** Both were internal-only types (pipeline-execution tracking state and merged agent execution context); the public surfaces are `PipelineHandle` and `ExecutionOptions`/`AgentResult` respectively. (Type-only removals.)
+
+### Fixed
+
+- Removed a stale `dist/validation/ValidationClient.js` artifact from the published tarball.
+- Tagged the README Architecture ASCII diagram fence with a language identifier and added `text` tags to the `ARCHITECTURE.md` chain-trace blocks.
+
+### Internal
+
+- New test: typed-resolve 404 wrap (`ConfigurationError` with `client.list()` guidance). Suite → 707.
 
 ## [0.22.0] - 2026-06-15
 
@@ -546,3 +573,40 @@ const tool = aiProvider.createProviderShellTool(provider, targetDir, timeoutMs);
 - Operator precedence in `parseIssues` and `parseArtifacts` (`??` with `as` chains)
 - `AgentResult` discriminated union types added to `types/agent.ts`
 - `PipelineHandle` class implementation added to `client/PipelineHandle.ts`
+
+<!-- Version comparison links -->
+[Unreleased]: https://github.com/Uluops/uluops-core/compare/v0.22.1...HEAD
+[0.22.1]: https://github.com/Uluops/uluops-core/compare/v0.22.0...v0.22.1
+[0.22.0]: https://github.com/Uluops/uluops-core/compare/v0.21.1...v0.22.0
+[0.21.1]: https://github.com/Uluops/uluops-core/compare/v0.21.0...v0.21.1
+[0.21.0]: https://github.com/Uluops/uluops-core/compare/v0.20.0...v0.21.0
+[0.20.0]: https://github.com/Uluops/uluops-core/compare/v0.19.0...v0.20.0
+[0.19.0]: https://github.com/Uluops/uluops-core/compare/v0.18.5...v0.19.0
+[0.18.5]: https://github.com/Uluops/uluops-core/compare/v0.18.3...v0.18.5
+[0.18.3]: https://github.com/Uluops/uluops-core/compare/v0.18.2...v0.18.3
+[0.18.2]: https://github.com/Uluops/uluops-core/compare/v0.18.1...v0.18.2
+[0.18.1]: https://github.com/Uluops/uluops-core/compare/v0.18.0...v0.18.1
+[0.18.0]: https://github.com/Uluops/uluops-core/compare/v0.17.1...v0.18.0
+[0.17.1]: https://github.com/Uluops/uluops-core/compare/v0.17.0...v0.17.1
+[0.17.0]: https://github.com/Uluops/uluops-core/compare/v0.16.0...v0.17.0
+[0.16.0]: https://github.com/Uluops/uluops-core/compare/v0.15.2...v0.16.0
+[0.15.2]: https://github.com/Uluops/uluops-core/compare/v0.15.1...v0.15.2
+[0.15.1]: https://github.com/Uluops/uluops-core/compare/v0.15.0...v0.15.1
+[0.15.0]: https://github.com/Uluops/uluops-core/compare/v0.13.0...v0.15.0
+[0.13.0]: https://github.com/Uluops/uluops-core/compare/v0.12.1...v0.13.0
+[0.12.1]: https://github.com/Uluops/uluops-core/compare/v0.12.0...v0.12.1
+[0.12.0]: https://github.com/Uluops/uluops-core/compare/v0.11.1...v0.12.0
+[0.11.1]: https://github.com/Uluops/uluops-core/compare/v0.11.0...v0.11.1
+[0.11.0]: https://github.com/Uluops/uluops-core/compare/v0.10.1...v0.11.0
+[0.10.1]: https://github.com/Uluops/uluops-core/compare/v0.10.0...v0.10.1
+[0.10.0]: https://github.com/Uluops/uluops-core/compare/v0.8.2...v0.10.0
+[0.8.2]: https://github.com/Uluops/uluops-core/compare/v0.8.1...v0.8.2
+[0.8.1]: https://github.com/Uluops/uluops-core/compare/v0.8.0...v0.8.1
+[0.8.0]: https://github.com/Uluops/uluops-core/compare/v0.7.0...v0.8.0
+[0.7.0]: https://github.com/Uluops/uluops-core/compare/v0.6.0...v0.7.0
+[0.6.0]: https://github.com/Uluops/uluops-core/compare/v0.5.0...v0.6.0
+[0.5.0]: https://github.com/Uluops/uluops-core/compare/v0.4.0...v0.5.0
+[0.4.0]: https://github.com/Uluops/uluops-core/compare/v0.3.0...v0.4.0
+[0.3.0]: https://github.com/Uluops/uluops-core/compare/v0.2.0...v0.3.0
+[0.2.0]: https://github.com/Uluops/uluops-core/compare/v0.1.0...v0.2.0
+[0.1.0]: https://github.com/Uluops/uluops-core/releases/tag/v0.1.0

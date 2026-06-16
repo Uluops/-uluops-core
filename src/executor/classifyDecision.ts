@@ -31,6 +31,17 @@ export type DecisionVocabularyMap = ReadonlyMap<string, DecisionCategory>;
  * @param decision - The raw decision string from an agent result
  * @param vocabularyMap - Optional map built from the agent definition's vocabulary.
  *   When provided, checked before the hardcoded core vocabularies.
+ * @returns The canonical category: `'positive'`, `'negative'`, `'conditional'`, or `'neutral'`.
+ * @example
+ * ```typescript
+ * classifyDecision('PASS');        // 'positive'
+ * classifyDecision('FAIL');        // 'negative'
+ * classifyDecision('WARN');        // 'conditional'
+ *
+ * // Custom agent vocabulary:
+ * const vocab = buildVocabularyMap(agentDefinition);
+ * classifyDecision('BEWITCHED', vocab); // 'negative'
+ * ```
  */
 export function classifyDecision(
   decision: string | undefined,
@@ -58,6 +69,18 @@ export function classifyDecision(
 /**
  * Build a DecisionVocabularyMap from an agent definition's vocabulary fields.
  * Handles both validator (decisions.vocabulary) and executor (completion.vocabulary) shapes.
+ *
+ * @param definition - Partial agent definition carrying either (or both) vocabulary
+ *   sections. Validator terms map positive/negative/conditional; executor terms map
+ *   complete→positive, failed→negative, partial→conditional.
+ * @returns A {@link DecisionVocabularyMap} from decision string to category, or
+ *   `undefined` if neither section is present or populated. Pass it as the second
+ *   argument to {@link classifyDecision}.
+ * @example
+ * ```typescript
+ * const vocab = buildVocabularyMap(agentDefinition.agent);
+ * classifyDecision('HARMONIOUS', vocab); // resolves via the agent's custom vocabulary
+ * ```
  */
 export function buildVocabularyMap(definition: {
   decisions?: { vocabulary?: { positive?: string; negative?: string; conditional?: string | null } };

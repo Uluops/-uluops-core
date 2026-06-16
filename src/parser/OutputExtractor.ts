@@ -38,7 +38,17 @@ export class OutputExtractor {
   };
 
   /**
-   * Extract structured output from LLM response text
+   * Extract structured output from LLM response text.
+   *
+   * Convenience wrapper over {@link OutputExtractor.extractWithMetadata} that
+   * discards the extraction metadata and returns only the parsed output.
+   *
+   * @param content - The raw LLM response text.
+   * @param agentType - The agent type, used to shape normalization of the parsed output.
+   * @param options - Optional extraction options. When `options.structuredOutput` is supplied,
+   *   it short-circuits the fallback strategies (confidence 1.0).
+   * @returns The normalized {@link ParsedOutput}.
+   * @throws {ParseError} If no strategy can extract structured output from the content.
    */
   extract(
     content: string,
@@ -50,7 +60,27 @@ export class OutputExtractor {
   }
 
   /**
-   * Extract with full metadata about extraction method and confidence
+   * Extract with full metadata about extraction method and confidence.
+   *
+   * Tries four strategies in descending confidence and returns the first that
+   * succeeds, along with the method used and a confidence score:
+   * - `1.0` — AI SDK structured output (`options.structuredOutput`, short-circuits the rest)
+   * - `0.95` — JSON code fence
+   * - `0.9` — inline JSON detection
+   * - `0.5` — structured-text / regex pattern matching
+   *
+   * @param content - The raw LLM response text.
+   * @param agentType - The agent type, used to shape normalization of the parsed output.
+   * @param options - Optional extraction options (e.g. `structuredOutput`).
+   * @returns The {@link ExtractionResult} — `output`, `method`, `confidence`, and any `warnings`.
+   * @throws {ParseError} If no strategy can extract structured output from the content.
+   * @example
+   * ```typescript
+   * const r = extractor.extractWithMetadata(llmText, 'validator');
+   * // r.method:     'json_code_fence' | 'inline_json' | 'structured_text' | 'structured_output'
+   * // r.confidence: 1.0 (structured output) | 0.95 (fence) | 0.9 (inline) | 0.5 (regex)
+   * if (r.confidence < 0.9) console.warn('low-confidence extraction', r.warnings);
+   * ```
    */
   extractWithMetadata(
     content: string,
