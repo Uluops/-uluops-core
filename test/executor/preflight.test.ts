@@ -72,6 +72,8 @@ describe('runPreflightChecks', () => {
       ['command substitution', 'echo $(whoami)'],
       ['newline', 'echo ok\nrm -rf /'],
       ['carriage return', 'echo ok\rrm -rf /'],
+      ['backslash line continuation', 'echo ok\\'],
+      ['backslash word obfuscation', 'grep foo \\bar'],
     ])('rejects shell metacharacter: %s', async (_label, cmd) => {
       const checks: PreflightCheck[] = [{ check: 'command', command: cmd }];
       await expect(runPreflightChecks(checks, input)).rejects.toThrow('disallowed shell metacharacters');

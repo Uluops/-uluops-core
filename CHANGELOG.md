@@ -6,6 +6,16 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) 
 
 ## [Unreleased]
 
+## [0.22.2] - 2026-06-16
+
+### Security
+
+- **Preflight backslash rejection (honoring the 0.8.2 claim).** The `command` preflight metacharacter blocklist now rejects backslash (`\`), closing line-continuation and word-level obfuscation in command templates. The 0.8.2 changelog documented this guard as added, but it was never present in the regex (`/[;|&`\n\r]|\$\(/`); the code now matches the documented security guarantee. No legitimate preflight command (`test`/`git`/`grep`/`find` existence checks) uses an unquoted backslash, and quoted `$ARGUMENTS` backslashes are stripped before the check, so this is a no-op for valid commands.
+
+### Dependencies
+
+- Bumped `@uluops/registry-sdk` `0.32.1` → `0.34.0`.
+
 ## [0.22.1] - 2026-06-16
 
 Documentation, transparency, and developer-experience hardening — the resolved output of four `consumer-validate` passes (60 findings fixed and verified). No change to the execution model; the only behavioral deltas are warning-noise reduction and a friendlier error class on the typed-resolve not-found path.

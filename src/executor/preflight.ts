@@ -178,9 +178,13 @@ async function checkCommand(check: PreflightCheck, input: ExecutionInput): Promi
   // The allowlist checks only the first token; operators like ; && || and
   // command substitution $() or backticks allow arbitrary second commands.
   // Newlines (\n, \r) are also rejected — sh -c treats them as command separators.
+  // Backslash (\) is rejected too — it enables line continuation and word-level
+  // obfuscation that the changelog (0.8.2) documented as blocked. No legitimate
+  // preflight command (test/git/grep/find existence checks) needs an unquoted
+  // backslash; quoted $ARGUMENTS backslashes are stripped before this check.
   // Single-quoted strings from shellQuote($ARGUMENTS) are safe — the
   // rejection targets unquoted metacharacters in the original command template.
-  if (/[;|&`\n\r]|\$\(/.test(check.command.replace(/'[^']*'/g, ''))) {
+  if (/[;|&`\n\r\\]|\$\(/.test(check.command.replace(/'[^']*'/g, ''))) {
     throw new PreflightError(
       `Preflight command contains disallowed shell metacharacters. ` +
       `Commands must be simple (no chaining with ; && || or command substitution).`,
