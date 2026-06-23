@@ -99,11 +99,35 @@ export interface ExecutionResult {
   /** Set to true when tracking submission failed — dashboardUrl will be undefined */
   trackingFailed?: boolean;
 
+  /**
+   * Typed reason the tracking submission failed (set alongside `trackingFailed`).
+   * General — not PROJECT_LIMIT-specific. See {@link TrackingError}.
+   */
+  trackingError?: TrackingError;
+
   /** All recommendations (flattened for workflows/pipelines) */
   recommendations: Recommendation[];
 
   /** Execution metrics */
   metrics: ExecutionMetrics;
+}
+
+/**
+ * Typed reason a run's tracking submission failed (non-fatal). Attached to a
+ * result's `trackingError` when `trackingFailed` is set. General across failure
+ * kinds (PROJECT_LIMIT, SUBSCRIPTION_REQUIRED, 401/403/429/5xx, network, timeout).
+ */
+export interface TrackingError {
+  /** Stable machine token from the API/SDK (e.g. 'PROJECT_LIMIT'). THE contract. */
+  code?: string;
+  /** HTTP status when the failure came from the API (e.g. 402). */
+  statusCode?: number;
+  /** Human-readable message. NOT a contract — do not match on it. */
+  message: string;
+  /** API request id for tracing, when available. */
+  requestId?: string;
+  /** Structured context (e.g. upgradeUrl, currentCount, limit). */
+  details?: Record<string, unknown>;
 }
 
 /**

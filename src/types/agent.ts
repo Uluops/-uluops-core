@@ -1,4 +1,4 @@
-import type { Domain, AgentType, ExecutionMetrics, Recommendation, SubscriptionTier } from './execution.js';
+import type { Domain, AgentType, ExecutionMetrics, Recommendation, SubscriptionTier, TrackingError } from './execution.js';
 import type { Finding, ArtifactResult } from './command.js';
 import type { DegradationMarker, Completeness } from './degradation.js';
 
@@ -497,6 +497,12 @@ interface AgentResultBase {
 
   /** Set to true when tracking submission failed — dashboardUrl will be undefined */
   trackingFailed?: boolean;
+
+  /**
+   * Typed reason the tracking submission failed (set alongside `trackingFailed`).
+   * General — not PROJECT_LIMIT-specific. See {@link TrackingError}.
+   */
+  trackingError?: TrackingError;
 
   /** Execution metrics */
   metrics: ExecutionMetrics;

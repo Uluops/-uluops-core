@@ -631,6 +631,40 @@ describe('UluOpsClient', () => {
       expect(result.dashboardUrl).toBe('https://app.uluops.ai/runs/run-123');
     });
 
+    it('surfaces a typed trackingError (non-fatal) when submission returns 402 PROJECT_LIMIT', async () => {
+      const client = new UluOpsClient({ apiKey: 'ulr_test-key', trackingEnabled: true });
+      mockRegistryResolve.mockResolvedValue(makeResolvedDef('agent', 'code-validator'));
+      mockAgentExecutorExecute.mockResolvedValue(makeAgentResult());
+      const err = Object.assign(
+        new Error('Organization has reached its project limit (3). Upgrade your plan to create more projects.'),
+        {
+          statusCode: 402,
+          code: 'PROJECT_LIMIT',
+          requestId: 'req_test',
+          details: {
+            currentCount: 3,
+            limit: 3,
+            limitType: 'project',
+            upgradeUrl: 'https://registry.uluops.ai/orgs/acme/settings/billing?source=api',
+          },
+        },
+      );
+      mockSubmissionSubmit.mockRejectedValueOnce(err);
+
+      // Non-fatal: the agent run still resolves (no throw).
+      const result = await client.runAgent('code-validator', '/tmp/test');
+
+      expect(result.trackingFailed).toBe(true);
+      expect(result.dashboardUrl).toBeUndefined();
+      expect(result.trackingError?.code).toBe('PROJECT_LIMIT');
+      expect(result.trackingError?.statusCode).toBe(402);
+      expect(result.trackingError?.requestId).toBe('req_test');
+      expect(result.trackingError?.message).toContain('project limit');
+      expect(
+        (result.trackingError?.details as { upgradeUrl?: string } | undefined)?.upgradeUrl,
+      ).toContain('source=api');
+    });
+
     it('skips submission when trackingEnabled=false', async () => {
       const client = new UluOpsClient({ apiKey: 'ulr_test-key', trackingEnabled: false });
       mockRegistryResolve.mockResolvedValue(makeResolvedDef('agent'));
