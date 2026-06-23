@@ -481,7 +481,7 @@ UluOpsClient (facade)
 
 | Level | Definition | Description |
 |-------|-----------|-------------|
-| Agent | ADL | Atomic unit: single LLM with filesystem tools. 6 types: validator, executor, analyst, generator, explorer, forecaster — all produce a universal `AgentResult` with score, categories, and optional artifacts |
+| Agent | ADL | Atomic unit: single LLM with filesystem tools. 6 types: validator, executor, analyst, generator, explorer, forecaster — all produce a universal `AgentResult` (`score`/`maxScore` are `number \| null`: `null` for generators/executors that produce artifacts not scores), with categories and optional artifacts |
 | Command | CDL | Wraps 1+ agents with preflight checks and aggregation |
 | Workflow | WDL | Sequences commands into phases with quality gates (DAG-based parallel execution) |
 | Pipeline | PDL | Orchestrates workflows/commands across stages |

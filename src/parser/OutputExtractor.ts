@@ -157,9 +157,12 @@ export class OutputExtractor {
     }
 
     return {
+      // Hard parse failure produced no parseable output — it did not "score zero",
+      // it failed to score. Null is the honest signal; buildResult's pair rule then
+      // yields maxScore: null too. (score-nullability spec, confirmed decision.)
       output: {
         decision: 'ERROR',
-        score: 0,
+        score: null,
       },
       method: 'structured_text',
       confidence: 0,
@@ -345,14 +348,17 @@ export class OutputExtractor {
       // Extract issues from structured text (warning/suggestion lines with file:line references)
       const issues = this.extractIssuesFromText(content);
       if (issues.length > 0) {
+        // Pair-resolution: null pair for scoreless agents, else score with its scale.
+        const catScore = output.score ?? null;
+        const catMaxScore = catScore === null ? null : (output.maxScore ?? 100);
         output.categories = [{
           name: 'Extracted Issues',
-          score: output.score ?? 0,
-          maxScore: output.maxScore ?? 100,
+          score: catScore,
+          maxScore: catMaxScore,
           findings: [{
             criterion: 'Text-extracted findings',
-            pointsEarned: 0,
-            pointsPossible: 0,
+            pointsEarned: null,
+            pointsPossible: null,
             issues,
           }],
         }];

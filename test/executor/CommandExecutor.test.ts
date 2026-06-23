@@ -138,6 +138,28 @@ describe('CommandExecutor', () => {
       expect(result.decision).toBe('WARN'); // 60 >= 50 (warn) but < 75 (pass)
     });
 
+    it('excludes a scoreless (generator) agent from aggregation (V14)', async () => {
+      const results = [
+        makeValidatorResult({ name: 'agent-a', score: 80, maxScore: 100 }),
+        makeValidatorResult({ name: 'agent-b', score: null, maxScore: null, decision: 'COMPLETE' }),
+      ];
+      const agentExec = makeAgentExecutor(results);
+      const registry = makeRegistry();
+      const executor = new CommandExecutor(agentExec, registry);
+
+      const cmdDef = makeCommandDef({
+        agents: ['agent-a@1.0.0', 'agent-b@1.0.0'],
+        aggregation: { method: 'average' },
+      });
+
+      const result = await executor.execute(cmdDef, { target: '/tmp/test' });
+
+      // Only the scoring agent counts: score = avg([80]) = 80, scale = max([100]) = 100.
+      // The scoreless agent is not folded in as 0.
+      expect(result.score).toBe(80);
+      expect(result.maxScore).toBe(100);
+    });
+
     it('aggregates with weighted_average', async () => {
       const results = [
         makeValidatorResult({ name: 'agent-a', score: 100 }),

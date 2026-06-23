@@ -170,6 +170,9 @@ export class PipelineExecutor {
             definitionHash: '',
             agentType: 'analyst',
             decision: agentResults.every(r => r.decision !== 'FAIL') ? 'PASS' : 'FAIL',
+            // KEEP: avgScore is a real average over child agents; maxScore 100 is its scale,
+            // not a fabrication. (Caveat: aggregateScores floors an all-null-scoring stage to
+            // 0 — a residual fabricated zero routed to composition-aggregation-spec, not fixed here.)
             score: avgScore,
             maxScore: 100,
             recommendations: agentResults.flatMap(r => r.recommendations),
@@ -202,6 +205,9 @@ export class PipelineExecutor {
             definitionHash: '',
             agentType: 'analyst',
             decision: 'PASS',
+            // KEEP: synthetic full-score for a steps-only stage whose bash preconditions all
+            // passed — a semantic "all preconditions satisfied" signal, not agent output, not
+            // a fabrication. See agent-schema-score-nullability-spec.
             score: 100,
             maxScore: 100,
             recommendations: [],
@@ -284,8 +290,9 @@ export class PipelineExecutor {
           name: agents[i]?.ref ?? 'unknown',
           agentType: 'validator',
           decision: 'FAIL',
-          score: 0,
-          maxScore: 100,
+          // Crashed inline agent — no agent ran, so no score. Null pair, not fabricated 0/100.
+          score: null,
+          maxScore: null,
           recommendations: [{
             title: `Inline agent failed: ${agents[i]?.ref ?? 'unknown'}`,
             description: errorMsg,

@@ -141,6 +141,51 @@ describe('AgentExecutor', () => {
     await fs.rm(tmpDir, { recursive: true, force: true });
   });
 
+  describe('score nullability (Phase 3)', () => {
+    it('keeps numeric score/maxScore for a validator-shaped output (V7)', async () => {
+      const ai = mockAIProvider(); // default mock: score 85, maxScore 100
+      const executor = new AgentExecutor(baseConfig, ai, noopLogger);
+      const result = await executor.execute(makeValidatorDef(), { target: tmpDir });
+      expect(result.score).toBe(85);
+      expect(result.maxScore).toBe(100);
+    });
+
+    it('preserves null score/maxScore for a scoreless (generator-shaped) output (V8)', async () => {
+      const ai = mockAIProvider({
+        text: JSON.stringify({ decision: 'COMPLETE', score: null, maxScore: null, categories: null }),
+      });
+      const executor = new AgentExecutor(baseConfig, ai, noopLogger);
+      const result = await executor.execute(makeValidatorDef(), { target: tmpDir });
+      expect(result.score).toBeNull();
+      expect(result.maxScore).toBeNull();
+    });
+
+    it('warns on a half-filled score pair and normalizes to the null pair (V20)', async () => {
+      const warn = vi.fn();
+      const logger: Logger = { debug() {}, info() {}, warn, error() {} };
+      const ai = mockAIProvider({
+        text: JSON.stringify({ decision: 'COMPLETE', score: null, maxScore: 100, categories: null }),
+      });
+      const executor = new AgentExecutor(baseConfig, ai, logger);
+      const result = await executor.execute(makeValidatorDef(), { target: tmpDir });
+      expect(warn).toHaveBeenCalledWith(expect.stringContaining('half-filled score pair'));
+      expect(result.score).toBeNull();
+      expect(result.maxScore).toBeNull(); // invariant: score null iff maxScore null
+    });
+
+    it('clamps an out-of-range score and warns (range enforced here, not the schema — 0a)', async () => {
+      const warn = vi.fn();
+      const logger: Logger = { debug() {}, info() {}, warn, error() {} };
+      const ai = mockAIProvider({
+        text: JSON.stringify({ decision: 'PASS', score: 150, maxScore: 100, categories: null }),
+      });
+      const executor = new AgentExecutor(baseConfig, ai, logger);
+      const result = await executor.execute(makeValidatorDef(), { target: tmpDir });
+      expect(result.score).toBe(100);
+      expect(warn).toHaveBeenCalledWith(expect.stringContaining('out-of-range'));
+    });
+  });
+
   describe('validator execution', () => {
     it('executes a validator agent and returns ValidatorAgentResult', async () => {
       const ai = mockAIProvider();
@@ -190,7 +235,9 @@ describe('AgentExecutor', () => {
       expect(result.metrics.cacheReadTokens).toBe(MOCK_CACHE_READ_TOKENS);
       expect(result.metrics.totalEffectiveTokens).toBe(MOCK_TOTAL_EFFECTIVE_TOKENS);
       expect(result.metrics.model).toBe('anthropic:claude-sonnet-4-5-20250929');
-      expect(result.metrics.durationMs).toBeGreaterThan(0);
+      // Non-negative, not strictly positive: a sub-millisecond mock run can round to 0
+      // (pre-existing timing flake, exposed once faster tests run before this one).
+      expect(result.metrics.durationMs).toBeGreaterThanOrEqual(0);
     });
 
     it('includes thinking_tokens in totalEffectiveTokens for Google models', async () => {
@@ -543,9 +590,10 @@ describe('AgentExecutor', () => {
 
       const result = await executor.execute(makeValidatorDef(), { target: tmpDir });
 
-      // Should still return a result with defaults
+      // Empty response → no score produced → null pair (not fabricated 0/100).
       if (result.agentType === 'validator') {
-        expect(result.score).toBe(0);
+        expect(result.score).toBeNull();
+        expect(result.maxScore).toBeNull();
         expect(result.decision).toBeDefined();
       }
     });
@@ -583,7 +631,8 @@ describe('AgentExecutor', () => {
       expect(result.type).toBe('agent');
       expect(result.name).toBe('test-validator');
       if (result.agentType === 'validator') {
-        expect(result.score).toBe(0);
+        // Non-JSON → ERROR extraction → no score produced → null (not fabricated 0)
+        expect(result.score).toBeNull();
       }
     });
 

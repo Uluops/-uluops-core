@@ -131,7 +131,8 @@ export interface WorkflowMetrics extends ExecutionMetrics {
  */
 export interface CommandMetricsSummary {
   name: string;
-  score: number;
+  /** Command score; null for scoreless (generator/executor) commands */
+  score: number | null;
   decision: string;
   inputTokens: number;
   outputTokens: number;

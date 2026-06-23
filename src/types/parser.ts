@@ -7,11 +7,11 @@ export interface ParsedOutput {
   /** Decision outcome from the agent */
   decision: string;
 
-  /** Numeric score (0-100 for validators, may be undefined for executors) */
-  score?: number;
+  /** Numeric score (0-100 for validators; null for generators/executors). Null iff maxScore null. */
+  score?: number | null;
 
-  /** Maximum possible score (validators only) */
-  maxScore?: number;
+  /** Maximum possible score (null iff score is null) */
+  maxScore?: number | null;
 
   /** Category breakdown with findings (validators only) */
   categories?: ParsedCategory[];
@@ -33,11 +33,11 @@ export interface ParsedCategory {
   /** Category name */
   name: string;
 
-  /** Points earned in this category */
-  score: number;
+  /** Points earned in this category (null iff maxScore null) */
+  score: number | null;
 
-  /** Maximum points possible */
-  maxScore: number;
+  /** Maximum points possible (null for scoreless agents) */
+  maxScore: number | null;
 
   /** Findings within this category */
   findings: ParsedFinding[];
@@ -50,11 +50,11 @@ export interface ParsedFinding {
   /** Criterion being evaluated */
   criterion: string;
 
-  /** Points earned */
-  pointsEarned: number;
+  /** Points earned (null for scoreless agents / degenerate parses) */
+  pointsEarned: number | null;
 
-  /** Points possible */
-  pointsPossible: number;
+  /** Points possible (null for scoreless agents / degenerate parses) */
+  pointsPossible: number | null;
 
   /** Individual issues found */
   issues: Issue[];

@@ -70,7 +70,7 @@ export class SubmissionClient {
       projectId: response.run.projectId,
       dashboardUrl: this.buildDashboardUrl(response.run),
       allGatesPassed: response.run.allGatesPassed,
-      averageScore: response.run.averageScore ?? 0,
+      averageScore: response.run.averageScore ?? null, // preserve null (scoreless run), don't fabricate 0
       correlation: {
         newIssues: response.correlation?.newIssues ?? 0,
         recurringIssues: response.correlation?.recurringIssues ?? 0,
@@ -136,7 +136,7 @@ export class SubmissionClient {
       workflowType: r.workflowType,
       timestamp: r.timestamp,
       allGatesPassed: r.allGatesPassed,
-      averageScore: r.averageScore ?? 0,
+      averageScore: r.averageScore ?? null, // preserve null on read
       rawMarkdown: r.rawMarkdown ?? undefined,
       archivedAt: r.archivedAt ?? undefined,
       archiveReason: r.archiveReason ?? undefined,
@@ -163,7 +163,7 @@ export class SubmissionClient {
       projectId: run.projectId,
       dashboardUrl: this.buildDashboardUrl(run),
       allGatesPassed: run.allGatesPassed,
-      averageScore: run.averageScore ?? 0,
+      averageScore: run.averageScore ?? null, // preserve null on read
       correlation: { newIssues: 0, recurringIssues: 0, regressions: 0 },
       deduplicated: false,
     };
@@ -281,7 +281,9 @@ export class SubmissionClient {
       rawMarkdown: submission.rawMarkdown,
       summary: {
         allGatesPassed: this.isPositiveDecision(result),
-        averageScore: result.score ?? 0,
+        // OMIT when scoreless — the tracker computes the average over scored agents
+        // or stores null. Never fabricate 0. (score-nullability spec, averageScore decision.)
+        ...(result.score != null ? { averageScore: result.score } : {}),
       },
       definitionType: result.type,
       definitionName: result.name,
@@ -389,11 +391,19 @@ export class SubmissionClient {
    * Convert a single ExecutionResult or AgentResult into an agent tracker entry.
    */
   private resultToAgent(result: ExecutionResult | AgentResult) {
+    // Pair-resolution for the wire: score is null when scoreless (ops-sdk AgentInput.score
+    // is number|null), and the scale is OMITTED (undefined) — AgentInput.maxScore is
+    // number|undefined, and the tracker accepts an absent scale (column nullable). Never
+    // fabricate maxScore: 100. ExecutionResult (base) carries no maxScore; AgentResult does.
+    const score = result.score ?? null;
+    const maxScore = score === null
+      ? undefined
+      : (('maxScore' in result ? result.maxScore : undefined) ?? 100);
     return {
       name: result.name,
       definitionVersion: result.version !== 'unknown' ? result.version : undefined,
-      score: result.score ?? 0,
-      maxScore: 100,
+      score,
+      maxScore,
       decision: result.decision,
       summary: 'summary' in result ? (result as AgentResult).summary : undefined,
       model: result.metrics.model,
@@ -406,11 +416,14 @@ export class SubmissionClient {
    * Convert a CommandResult into an agent tracker entry.
    */
   private commandToAgent(cmd: CommandResult) {
+    const score = cmd.score ?? null;
+    // Omit the scale on the wire when scoreless (see resultToAgent).
+    const maxScore = score === null ? undefined : (cmd.maxScore ?? 100);
     return {
       name: cmd.name,
       definitionVersion: cmd.version !== 'unknown' ? cmd.version : undefined,
-      score: cmd.score ?? 0,
-      maxScore: cmd.maxScore ?? 100,
+      score,
+      maxScore,
       decision: cmd.decision,
       summary: undefined as string | undefined,
       model: cmd.metrics.model,
@@ -441,7 +454,9 @@ export class SubmissionClient {
       projectId: 'local',
       dashboardUrl: '',
       allGatesPassed: this.isPositiveDecision(submission.result),
-      averageScore: submission.result.score ?? 0,
+      // Local response is a read-type (RunSubmissionResponse) — preserve null, don't omit
+      // (only the wire payload to the tracker omits). No fabricated 0.
+      averageScore: submission.result.score ?? null,
       correlation: {
         newIssues: submission.result.recommendations.length,
         recurringIssues: 0,

@@ -114,7 +114,7 @@ export class WorkflowExecutor {
         commands: phaseResults.flatMap(p =>
           p.commands.map(c => ({
             name: c.name,
-            score: c.score ?? 0,
+            score: c.score ?? null, // preserve null for scoreless commands (no fabricated 0)
             decision: c.decision,
             inputTokens: c.metrics.inputTokens,
             outputTokens: c.metrics.outputTokens,
@@ -311,8 +311,9 @@ export class WorkflowExecutor {
             definitionHash: '',
             agentType: 'validator',
             decision: 'FAIL',
-            score: 0,
-            maxScore: 100,
+            // Crashed step — no agent ran, so no score. Null pair, not fabricated 0/100.
+            score: null,
+            maxScore: null,
             recommendations: [{
               title: `Step execution failed: ${stepRefs[j]!.ref}`,
               description: errorMsg,

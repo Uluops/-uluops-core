@@ -6,6 +6,22 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) 
 
 ## [Unreleased]
 
+## [0.23.0] - 2026-06-22
+
+### Changed
+
+- **`AgentResult.score`/`maxScore`, per-category `score`/`maxScore`, and `Finding.pointsEarned`/`pointsPossible` are now `number | null`.** Generators and executors produce artifacts, not scores — they emit `null` instead of a fabricated `0`/`100`. The pair-resolution invariant holds: **`score === null` iff `maxScore === null`**. Validators are unaffected — a present score keeps its scale. **Breaking for TypeScript consumers** that read these fields as `number`: narrow against `null` before arithmetic/formatting (the type now surfaces cases previously masked by fabrication). `agentOutputSchema` relaxes `score`/`maxScore` to `z.number().nullable()` — **no `.min/.max`** (a structured-output spike found Anthropic rejects numeric range constraints and OpenAI strict rejects `.optional()`); the 0-100 range is now enforced at the `AgentExecutor` mapping with a clamp + warn.
+- **Null is preserved end-to-end, not re-fabricated.** Permissive parsing (`OutputNormalizer`/`OutputExtractor`) no longer synthesizes `0`/`100` for scoreless output — real extracted category scores keep their `100` scale, the ERROR sentinel scores `null`. Pipeline/Workflow crash synthetics emit `null`; `CommandExecutor` **excludes** scoreless results from aggregation (no longer folded in as `0`). `SubmissionClient` sends `score: null` with the scale omitted, omits `summary.averageScore` when scoreless (the tracker computes the average over scored agents or stores null), and preserves null on read instead of coercing to `0`.
+
+### Added
+
+- `_AssertScoreShapedFieldsNullable` compile-time guard in `outputSchemas.ts` — hard-fails the build if any score-shaped field drifts from `number | null`.
+- Value-level `null`-iff invariant warning + out-of-range score clamp/warn at the `AgentExecutor` mapping (range enforcement's new home).
+
+### Design Notes
+
+- **Why `null`, not `0`.** The change preserves the distinction between *"scored zero"* (a real low score) and *"did not score"* (a generator/executor). Fabricating `0`/`100` conflated them; `null` keeps them separable for analytics, gating, and lineage. Origin: Zhuangzi finding on `-uluops-core` (EPI-OVR/M, run `f7f3d858`).
+
 ## [0.22.7] - 2026-06-16
 
 ### Dependencies

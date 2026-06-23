@@ -25,12 +25,12 @@ const issueSchema = z.object({
  */
 const categorySchema = z.object({
   name: z.string().describe('Category name (e.g., "Code Quality", "Security")'),
-  score: z.number().describe('Points earned in this category'),
-  maxScore: z.number().describe('Maximum score possible'),
+  score: z.number().nullable().describe('Points earned in this category (null iff maxScore null)'),
+  maxScore: z.number().nullable().describe('Maximum score possible (null for scoreless agents)'),
   findings: z.array(z.object({
     criterion: z.string().describe('What is being evaluated'),
-    pointsEarned: z.number(),
-    pointsPossible: z.number(),
+    pointsEarned: z.number().nullable(),
+    pointsPossible: z.number().nullable(),
     issues: z.array(issueSchema).describe('Issues found for this criterion'),
   })).describe('Findings within this category'),
 });
@@ -164,10 +164,15 @@ const domainMetricSchema = z.object({
 export const agentOutputSchema = z.object({
   decision: z.string()
     .describe('Overall decision (e.g., PASS, FAIL, EXAMINED, ALIGNED, VITAL)'),
-  score: z.number().min(0).max(100)
-    .describe('Overall score from 0 to 100'),
-  maxScore: z.number()
-    .describe('Maximum possible score (typically 100)'),
+  // Nullable for generators/executors that produce artifacts, not scores.
+  // No .min/.max here: structured-output spike (0a) found Anthropic rejects
+  // min/max on numbers and OpenAI strict rejects .optional(); required+nullable
+  // is the only cross-provider shape. Range (0-100) is enforced at the
+  // AgentExecutor mapping layer instead. Invariant: score null iff maxScore null.
+  score: z.number().nullable()
+    .describe('Overall score 0-100, or null for generators/executors producing artifacts not scores'),
+  maxScore: z.number().nullable()
+    .describe('Maximum possible score; null iff score is null'),
   summary: z.string().nullable()
     .describe('Brief human-readable summary of the result'),
   categories: z.array(categorySchema).nullable()
@@ -204,3 +209,22 @@ type ZodIssue = z.infer<typeof issueSchema>;
 export type _AssertIssueFieldsCovered = {
   [K in keyof Required<Issue>]: K extends keyof ZodIssue ? true : never;
 };
+
+/**
+ * Score-shaped fields (overall score/maxScore and per-category score/maxScore)
+ * must remain EXACTLY `number | null` — the null-iff invariant (score null iff
+ * maxScore null) and every `?? null` coercion site depend on it. This guard is a
+ * hard compile-fail if any of the four drifts (e.g. back to `number`, or widens
+ * to `number | undefined`). Added by agent-schema-score-nullability-spec.
+ */
+type _Equals<A, B> =
+  (<T>() => T extends A ? 1 : 2) extends (<T>() => T extends B ? 1 : 2) ? true : false;
+type _AssertTrue<T extends true> = T;
+type _AgentOutput = z.infer<typeof agentOutputSchema>;
+type _AgentCategory = NonNullable<_AgentOutput['categories']>[number];
+export type _AssertScoreShapedFieldsNullable = [
+  _AssertTrue<_Equals<_AgentOutput['score'], number | null>>,
+  _AssertTrue<_Equals<_AgentOutput['maxScore'], number | null>>,
+  _AssertTrue<_Equals<_AgentCategory['score'], number | null>>,
+  _AssertTrue<_Equals<_AgentCategory['maxScore'], number | null>>,
+];

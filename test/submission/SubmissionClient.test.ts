@@ -193,9 +193,9 @@ describe('SubmissionClient', () => {
       expect(summary.averageScore).toBe(85);
     });
 
-    it('defaults score to 0 when not provided', async () => {
+    it('sends null score and omits the scale for a scoreless result over the wire (V15)', async () => {
       mockSave.mockResolvedValueOnce({
-        run: { id: 'r', projectId: 'p', runNumber: 1, allGatesPassed: false, averageScore: 0 },
+        run: { id: 'r', projectId: 'p', runNumber: 1, allGatesPassed: false, averageScore: null },
         agents: [],
         correlation: { newIssues: 0, recurringIssues: 0, regressions: 0 },
         deduplicated: false,
@@ -208,7 +208,38 @@ describe('SubmissionClient', () => {
 
       const input = mockSave.mock.calls[0]![0] as Record<string, unknown>;
       const agents = input.agents as Array<Record<string, unknown>>;
-      expect(agents[0]!.score).toBe(0);
+      expect(agents[0]!.score).toBeNull();          // no fabricated 0
+      expect(agents[0]!.maxScore).toBeUndefined();  // scale omitted when scoreless
+      // averageScore omitted from the summary when scoreless (V16b)
+      const summary = input.summary as Record<string, unknown>;
+      expect(summary.averageScore).toBeUndefined();
+    });
+
+    it('against a bidirectional tracker that accepts null, submit succeeds and preserves null (V16)', async () => {
+      mockSave.mockResolvedValueOnce({
+        run: { id: 'r', projectId: 'p', runNumber: 1, allGatesPassed: false, averageScore: null },
+        agents: [],
+        correlation: { newIssues: 0, recurringIssues: 0, regressions: 0 },
+        deduplicated: false,
+      });
+
+      const client = new SubmissionClient(baseConfig);
+      const response = await client.submit(makeSubmission({
+        result: makeResult({ score: undefined }),
+      }));
+
+      // Tracker accepted the null payload; null is preserved end-to-end (not fabricated to 0).
+      expect(response.averageScore).toBeNull();
+    });
+
+    it('against a null-rejecting tracker, submit fails fast — does not silently swallow (V16)', async () => {
+      // A non-bidirectional tracker rejects the null-score payload.
+      mockSave.mockRejectedValueOnce(new Error('tracker rejected: score must be a number'));
+
+      const client = new SubmissionClient(baseConfig);
+      await expect(
+        client.submit(makeSubmission({ result: makeResult({ score: undefined }) })),
+      ).rejects.toThrow(/tracker rejected/);
     });
 
     it('passes definitionMinSubscription when result has minSubscription', async () => {
@@ -451,7 +482,7 @@ describe('SubmissionClient', () => {
       const client = new SubmissionClient(baseConfig);
       const history = await client.getHistory('test-project');
 
-      expect(history[0]!.averageScore).toBe(0); // null → 0
+      expect(history[0]!.averageScore).toBeNull(); // null preserved on read (no longer fabricated to 0)
       expect(history[0]!.rawMarkdown).toBe('# Report');
       expect(history[0]!.archivedAt).toBe('2026-02-08T00:00:00Z');
       expect(history[0]!.archiveReason).toBe('old');

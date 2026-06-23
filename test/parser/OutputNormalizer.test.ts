@@ -4,6 +4,36 @@ import { OutputNormalizer } from '../../src/parser/OutputNormalizer.js';
 describe('OutputNormalizer', () => {
   const normalizer = new OutputNormalizer();
 
+  // ─── score nullability (Phase 4) ────────────────────────────────────
+  describe('score nullability (Phase 4)', () => {
+    it('does not fabricate a score for a generator-shaped output with no score (V9)', () => {
+      const out = normalizer.normalizeOutput({ decision: 'COMPLETE' }, 'executor');
+      expect(out.score == null).toBe(true);   // absent, not fabricated 0
+      expect(out.maxScore == null).toBe(true);
+    });
+
+    it('keeps real per-category scores with their 100 scale (V10)', () => {
+      const out = normalizer.normalizeOutput(
+        { decision: 'PASS', scores: { 'Code Quality': 80, 'Security': 90 } },
+        'validator',
+      );
+      const cq = out.categories?.find(c => c.name === 'Code Quality');
+      expect(cq?.score).toBe(80);
+      expect(cq?.maxScore).toBe(100); // real score's scale is KEPT, not nulled
+    });
+
+    it('synthesizes a null-pair category for a scoreless output with flat issues (V10b)', () => {
+      const out = normalizer.normalizeOutput(
+        { decision: 'COMPLETE', issues: [{ title: 'Something', description: 'd', severity: 'medium' }] },
+        'executor',
+      );
+      const extracted = out.categories?.find(c => c.name === 'Extracted Issues');
+      expect(extracted).toBeDefined();
+      expect(extracted?.score).toBeNull();
+      expect(extracted?.maxScore).toBeNull();
+    });
+  });
+
   // ─── normalizeDecision ──────────────────────────────────────────────
 
   describe('normalizeDecision', () => {

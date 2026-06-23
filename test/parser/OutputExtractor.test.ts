@@ -229,7 +229,7 @@ After further analysis:
     it('returns ERROR output when extraction fails', () => {
       const result = extractor.extractWithMetadata('Random gibberish without any structure', 'validator');
       expect(result.output.decision).toBe('ERROR');
-      expect(result.output.score).toBe(0);
+      expect(result.output.score).toBeNull(); // ERROR sentinel: failed to score → null, not 0
       expect(result.confidence).toBe(0);
     });
 
@@ -242,14 +242,14 @@ After further analysis:
     it('handles empty string input', () => {
       const result = extractor.extractWithMetadata('', 'validator');
       expect(result.output.decision).toBe('ERROR');
-      expect(result.output.score).toBe(0);
+      expect(result.output.score).toBeNull(); // ERROR sentinel: failed to score → null, not 0
       expect(result.confidence).toBe(0);
     });
 
     it('handles whitespace-only input', () => {
       const result = extractor.extractWithMetadata('   \n\n\t  ', 'validator');
       expect(result.output.decision).toBe('ERROR');
-      expect(result.output.score).toBe(0);
+      expect(result.output.score).toBeNull(); // ERROR sentinel: failed to score → null, not 0
     });
 
     it('handles JSON with missing decision field', () => {

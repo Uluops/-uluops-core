@@ -112,9 +112,15 @@ export class OutputNormalizer {
     // Resolve categories
     output.categories = this.resolveCategories(obj, result, report, sources.validationSummary);
 
-    // If no score found but categories exist, sum category scores
+    // If no score found but categories exist, sum present (non-null) category scores.
+    // Scoreless categories (null) are skipped — not summed as 0 (no fabrication).
     if (output.score === undefined && output.categories && output.categories.length > 0) {
-      output.score = output.categories.reduce((sum, c) => sum + c.score, 0);
+      const present = output.categories
+        .map(c => c.score)
+        .filter((s): s is number => s !== null);
+      if (present.length > 0) {
+        output.score = present.reduce((sum, s) => sum + s, 0);
+      }
     }
 
     // Resolve flat issues and attach to categories
@@ -130,15 +136,19 @@ export class OutputNormalizer {
 
     const issuesFinding = {
       criterion: 'Extracted findings',
-      pointsEarned: 0,
-      pointsPossible: 0,
+      pointsEarned: null,
+      pointsPossible: null,
       issues: flatIssues,
     };
+    // Pair-resolution for the synthetic "Extracted Issues" category: a null pair for
+    // scoreless agents (generators), else the top-level score with its scale.
+    const catScore = output.score ?? null;
+    const catMaxScore = catScore === null ? null : (output.maxScore ?? 100);
     if (!output.categories || output.categories.length === 0) {
       output.categories = [{
         name: 'Extracted Issues',
-        score: output.score ?? 0,
-        maxScore: output.maxScore ?? 100,
+        score: catScore,
+        maxScore: catMaxScore,
         findings: [issuesFinding],
       }];
     } else {
@@ -148,8 +158,8 @@ export class OutputNormalizer {
       } else {
         output.categories.push({
           name: 'Extracted Issues',
-          score: output.score ?? 0,
-          maxScore: output.maxScore ?? 100,
+          score: catScore,
+          maxScore: catMaxScore,
           findings: [issuesFinding],
         });
       }
@@ -297,6 +307,9 @@ export class OutputNormalizer {
     }
 
     // Named scores object → synthetic categories (e.g., { scores: { "Code Quality": 23, ... } })
+    // KEEP: every `cats.push` below carries a REAL extracted numeric `score` (guarded by
+    // typeof === 'number'); `maxScore: 100` is that score's legitimate scale, not a
+    // fabrication, so both are kept (mirrors PipelineExecutor success aggregate).
     const scores = this.asRecord(obj['scores']) ?? this.asRecord(report?.['scores']);
     if (scores) {
       const cats: ParsedCategory[] = [];
@@ -454,14 +467,22 @@ export class OutputNormalizer {
       .filter((item): item is Record<string, unknown> =>
         typeof item === 'object' && item !== null,
       )
-      .map(item => ({
-        name: String(item['name'] ?? item['category'] ?? 'Unknown'),
-        score: Number(item['score'] ?? item['points'] ?? 0),
-        maxScore: Number(item['maxScore'] ?? item['maxPoints'] ?? item['max_points'] ?? item['total'] ?? 100),
-        findings: this.parseFindings(
-          Array.isArray(item['findings']) ? item['findings'] : [],
-        ),
-      }));
+      .map(item => {
+        // Pair-resolution with non-null Number() gating: null pair when no score key
+        // is present; else the score with its scale (default 100). Avoids null → NaN.
+        const sRaw = item['score'] ?? item['points'];
+        const score = sRaw == null ? null : Number(sRaw);
+        const mRaw = item['maxScore'] ?? item['maxPoints'] ?? item['max_points'] ?? item['total'];
+        const maxScore = score === null ? null : (mRaw == null ? 100 : Number(mRaw));
+        return {
+          name: String(item['name'] ?? item['category'] ?? 'Unknown'),
+          score,
+          maxScore,
+          findings: this.parseFindings(
+            Array.isArray(item['findings']) ? item['findings'] : [],
+          ),
+        };
+      });
   }
 
   private parseFindings(raw: unknown[]): ParsedFinding[] {
@@ -469,14 +490,20 @@ export class OutputNormalizer {
       .filter((item): item is Record<string, unknown> =>
         typeof item === 'object' && item !== null,
       )
-      .map(item => ({
-        criterion: String(item['criterion'] ?? item['name'] ?? 'Unknown'),
-        pointsEarned: Number(item['pointsEarned'] ?? item['points_earned'] ?? item['score'] ?? 0),
-        pointsPossible: Number(item['pointsPossible'] ?? item['points_possible'] ?? item['maxScore'] ?? item['maxPoints'] ?? 0),
-        issues: this.parseIssues(
-          Array.isArray(item['issues']) ? item['issues'] : [],
-        ),
-      }));
+      .map(item => {
+        // Finding points are an independent pair (not bound to score↔maxScore);
+        // null-gate each so an absent key stays null instead of fabricating 0.
+        const peRaw = item['pointsEarned'] ?? item['points_earned'] ?? item['score'];
+        const ppRaw = item['pointsPossible'] ?? item['points_possible'] ?? item['maxScore'] ?? item['maxPoints'];
+        return {
+          criterion: String(item['criterion'] ?? item['name'] ?? 'Unknown'),
+          pointsEarned: peRaw == null ? null : Number(peRaw),
+          pointsPossible: ppRaw == null ? null : Number(ppRaw),
+          issues: this.parseIssues(
+            Array.isArray(item['issues']) ? item['issues'] : [],
+          ),
+        };
+      });
   }
 
   private parseIssues(raw: unknown[]): Issue[] {

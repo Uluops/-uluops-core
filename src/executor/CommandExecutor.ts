@@ -235,7 +235,10 @@ export class CommandExecutor {
     const recommendations: Recommendation[] = results.flatMap(r => r.recommendations);
 
     // Aggregate scores from all scored agents
-    const scoredResults = results.filter(r => r.score !== undefined);
+    // Only score-bearing results aggregate. Scoreless (generator/executor) results have
+    // score === null and are excluded — so the command score is the average over real
+    // scores (not dragged toward 0), and an all-scoreless command stays unscored.
+    const scoredResults = results.filter(r => r.score != null);
 
     let score: number | undefined;
     let maxScore: number | undefined;
@@ -247,7 +250,10 @@ export class CommandExecutor {
         aggregation.weights,
       );
 
-      maxScore = Math.max(...scoredResults.map(r => r.maxScore ?? 100));
+      // Filter null scales (invariant: scored results have a scale, but be defensive);
+      // undefined when none present — never fabricate 100.
+      const presentMax = scoredResults.map(r => r.maxScore).filter((m): m is number => m != null);
+      maxScore = presentMax.length === 0 ? undefined : Math.max(...presentMax);
     }
 
     // Determine overall decision

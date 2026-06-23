@@ -156,7 +156,12 @@ describe('agentOutputSchema', () => {
   });
 
   describe('score validation', () => {
-    it('rejects score above 100', () => {
+    // Range (0-100) is NO LONGER enforced at the schema layer. The structured-output
+    // spike (0a) found Anthropic rejects min/max on numbers in structured mode, so
+    // agentOutputSchema uses bare z.number().nullable() and range enforcement moved to
+    // the AgentExecutor mapping layer. These tests now assert the schema is permissive;
+    // the clamp/warn behavior is tested in AgentExecutor.test.ts (Phase 3).
+    it('accepts score above 100 (range enforced downstream at AgentExecutor, not schema)', () => {
       expect(() => agentOutputSchema.parse({
         decision: 'PASS',
         score: 150,
@@ -165,10 +170,10 @@ describe('agentOutputSchema', () => {
         categories: null,
         artifacts: null,
         ...baseOutput,
-      })).toThrow();
+      })).not.toThrow();
     });
 
-    it('rejects score below 0', () => {
+    it('accepts score below 0 (range enforced downstream at AgentExecutor, not schema)', () => {
       expect(() => agentOutputSchema.parse({
         decision: 'PASS',
         score: -5,
@@ -177,7 +182,19 @@ describe('agentOutputSchema', () => {
         categories: null,
         artifacts: null,
         ...baseOutput,
-      })).toThrow();
+      })).not.toThrow();
+    });
+
+    it('accepts null score and null maxScore (generators/executors)', () => {
+      expect(() => agentOutputSchema.parse({
+        decision: 'COMPLETE',
+        score: null,
+        maxScore: null,
+        summary: null,
+        categories: null,
+        artifacts: null,
+        ...baseOutput,
+      })).not.toThrow();
     });
 
     it('rejects missing required fields', () => {

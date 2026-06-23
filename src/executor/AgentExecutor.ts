@@ -388,6 +388,31 @@ export class AgentExecutor {
     ];
     const completeness = deriveCompleteness(degradationMarkers);
 
+    // Score nullability — agent-schema-score-nullability-spec, Phase 3.
+    // Pair-resolution: score and maxScore are null together (generators/executors,
+    // which produce artifacts not scores) or numeric together (validators).
+    // Invariant: score === null iff maxScore === null.
+    const scorePresent = typeof parsed.score === 'number';
+    const maxScorePresent = typeof parsed.maxScore === 'number';
+    if (scorePresent !== maxScorePresent) {
+      this.logger.warn(
+        `Agent "${resolved.name}" returned a half-filled score pair ` +
+        `(score=${parsed.score ?? null}, maxScore=${parsed.maxScore ?? null}); ` +
+        `normalizing per the null-iff-null invariant.`,
+      );
+    }
+    let score = parsed.score ?? null;
+    // Range (0-100) is enforced here, not at the schema: the structured-output spike
+    // (0a) found providers reject min/max in structured mode, so agentOutputSchema is
+    // bare nullable. Clamp out-of-range present scores.
+    if (score !== null && (score < 0 || score > 100)) {
+      this.logger.warn(
+        `Agent "${resolved.name}" returned out-of-range score ${score}; clamping to [0,100].`,
+      );
+      score = Math.max(0, Math.min(100, score));
+    }
+    const maxScore = score === null ? null : (parsed.maxScore ?? 100);
+
     return {
       type: 'agent',
       agentType,
@@ -397,8 +422,8 @@ export class AgentExecutor {
       minSubscription: resolved.minSubscription,
       decision: effectiveDecision,
       decisionCategory,
-      score: parsed.score ?? 0,
-      maxScore: parsed.maxScore ?? 100,
+      score,
+      maxScore,
       threshold: context.thresholds?.pass,
       categories: parsed.categories?.map(mapCategory),
       artifacts: parsed.artifacts,
@@ -598,8 +623,10 @@ export class AgentExecutor {
       );
     }
     const o = parsed.data;
-    // Zod .nullable() produces `T | null`; ParsedOutput uses `T | undefined`.
-    // Coerce null → undefined via ?? and map arrays to strip nullable wrappers.
+    // Zod .nullable() produces `T | null`. Score-shaped fields (score, maxScore,
+    // per-category score/maxScore, finding points) PRESERVE null per the
+    // score-nullability spec — do NOT coerce to 0/100/undefined. Other nullable
+    // narrative fields still coerce null → undefined via ??.
     return {
       decision: o.decision,
       score: o.score,
@@ -607,12 +634,12 @@ export class AgentExecutor {
       summary: o.summary ?? undefined,
       categories: o.categories?.map(c => ({
         name: c.name,
-        score: c.score ?? 0,
-        maxScore: c.maxScore ?? 100,
+        score: c.score ?? null,
+        maxScore: c.maxScore ?? null,
         findings: (c.findings ?? []).map(f => ({
           criterion: f.criterion ?? '',
-          pointsEarned: f.pointsEarned ?? 0,
-          pointsPossible: f.pointsPossible ?? 0,
+          pointsEarned: f.pointsEarned ?? null,
+          pointsPossible: f.pointsPossible ?? null,
           issues: (f.issues ?? []).map(issue => ({
             title: issue.title,
             description: issue.description ?? '',

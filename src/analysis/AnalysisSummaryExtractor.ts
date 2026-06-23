@@ -205,9 +205,18 @@ export class AnalysisSummaryExtractor {
       }
     }
 
-    const equalWeight = definitionCategories ? undefined : Math.round(100 / result.categories.length);
+    // Only score-bearing categories can become a CategoryScore (its `score` is a number).
+    // Scoreless categories (score === null) are skipped — not fabricated to 0.
+    // INTERIM: when the companion spec relaxes ops-sdk CategoryScore.score to number|null,
+    // these can be preserved with a null score instead of dropped.
+    const scored = result.categories.filter(
+      (cat): cat is typeof cat & { score: number } => cat.score !== null,
+    );
+    if (scored.length === 0) return null;
 
-    return result.categories.map(cat => ({
+    const equalWeight = definitionCategories ? undefined : Math.round(100 / scored.length);
+
+    return scored.map(cat => ({
       name: cat.name,
       weight: weightMap.get(cat.name) ?? equalWeight ?? 1,
       score: cat.score,

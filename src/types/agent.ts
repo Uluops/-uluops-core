@@ -551,11 +551,11 @@ interface AgentResultBase {
  * produce categories; executors produce artifacts; some agents produce both.
  */
 export interface AgentResult extends AgentResultBase {
-  /** Score (0-100) */
-  score: number;
+  /** Score (0-100), or null for generators/executors that produce artifacts not scores. Null iff maxScore null. */
+  score: number | null;
 
-  /** Maximum possible score */
-  maxScore: number;
+  /** Maximum possible score, or null iff score is null */
+  maxScore: number | null;
 
   /** Pass threshold used (if applicable) */
   threshold?: number;
@@ -563,8 +563,8 @@ export interface AgentResult extends AgentResultBase {
   /** Scored categories with findings */
   categories?: Array<{
     name: string;
-    score: number;
-    maxScore: number;
+    score: number | null;
+    maxScore: number | null;
     findings: Finding[];
   }>;
 

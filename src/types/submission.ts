@@ -48,8 +48,8 @@ export interface RunSubmissionResponse {
   /** Whether all gates passed */
   allGatesPassed: boolean;
 
-  /** Average score across validators */
-  averageScore: number;
+  /** Average score across validators; null for scoreless (generator/executor) runs */
+  averageScore: number | null;
 
   /** Issue correlation counts from submission API */
   correlation: {
@@ -129,8 +129,8 @@ export interface RunHistoryEntry {
   /** Whether all gates passed */
   allGatesPassed: boolean;
 
-  /** Average score across validators */
-  averageScore: number;
+  /** Average score across validators; null for scoreless (generator/executor) runs */
+  averageScore: number | null;
 
   /** Raw markdown output (if stored) */
   rawMarkdown?: string;

@@ -105,8 +105,8 @@ export interface CommandResult extends ExecutionResult {
   /** Agent type that was executed */
   agentType: AgentType;
 
-  /** Maximum possible score (validators only) */
-  maxScore?: number;
+  /** Maximum possible score (validators only; null iff score null) */
+  maxScore?: number | null;
 
   /** Threshold for pass/fail (validators only) */
   threshold?: number;
@@ -136,11 +136,11 @@ export interface CategoryResult {
   /** Category name */
   name: string;
 
-  /** Points earned */
-  score: number;
+  /** Points earned (null iff maxScore null) */
+  score: number | null;
 
-  /** Maximum score possible */
-  maxScore: number;
+  /** Maximum score possible (null for scoreless agents) */
+  maxScore: number | null;
 
   /** Findings within category */
   findings: Finding[];
@@ -153,11 +153,11 @@ export interface Finding {
   /** Criterion evaluated */
   criterion: string;
 
-  /** Points earned */
-  pointsEarned: number;
+  /** Points earned (null for scoreless agents / degenerate parses) */
+  pointsEarned: number | null;
 
-  /** Points possible */
-  pointsPossible: number;
+  /** Points possible (null for scoreless agents / degenerate parses) */
+  pointsPossible: number | null;
 
   /** Issues found */
   issues: Issue[];

@@ -87,8 +87,8 @@ export interface ExecutionResult {
   /** Final decision */
   decision: string;
 
-  /** Aggregated score (0-100). Optional — not all execution types produce scores. */
-  score?: number;
+  /** Aggregated score (0-100). Optional/null — not all execution types produce scores. */
+  score?: number | null;
 
   /** Total execution duration */
   durationMs: number;

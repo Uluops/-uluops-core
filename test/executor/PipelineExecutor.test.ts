@@ -324,6 +324,29 @@ describe('PipelineExecutor', () => {
       expect(result.score).toBe(90); // avg of 80, 100
     });
 
+    it('excludes a scoreless stage from the pipeline average (Phase 6 null handling)', async () => {
+      const cmdResults = [
+        makeCommandResult({ score: 80 }),
+        makeCommandResult({ score: null }), // e.g. an all-generator stage — no score
+      ];
+      const wfExec = makeWorkflowExecutor();
+      const cmdExec = makeCommandExecutor(cmdResults);
+      const registry = makeRegistry();
+      const executor = new PipelineExecutor(wfExec, cmdExec, agentExec, registry, noopLogger);
+
+      const def = makePipelineDef({
+        stages: [
+          { id: 's1', name: 'S1', type: 'command', ref: 'a@1' },
+          { id: 's2', name: 'S2', type: 'command', ref: 'b@1' },
+        ],
+      });
+
+      const result = await executor.execute(def, { target: '/tmp/test' });
+
+      // The scoreless stage is filtered, not folded in as 0: avg([80]) = 80, not avg(80,0)=40.
+      expect(result.score).toBe(80);
+    });
+
     it('computes average score across 3 stages with non-symmetric scores', async () => {
       const cmdResults = [
         makeCommandResult({ score: 70 }),
