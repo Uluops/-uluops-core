@@ -15,6 +15,7 @@ export type {
   ExecutionMetrics,
   ExecutionOptions,
   Recommendation,
+  TrackingError,
 } from './execution.js';
 
 // Agent

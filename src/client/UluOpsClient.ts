@@ -497,11 +497,25 @@ export class UluOpsClient {
       result.trackingFailed = true;
       const errMsg = error instanceof Error ? error.message : String(error);
       const errName = error instanceof Error ? error.constructor.name : typeof error;
-      const errCode = error instanceof Error && 'code' in error ? (error as { code: string }).code : undefined;
+      // SdkApiError carries statusCode/code/details/requestId; duck-type to stay
+      // decoupled from the SDK error class.
+      const e = error as { statusCode?: number; code?: string; details?: unknown; requestId?: string };
+      const errCode = typeof e.code === 'string' ? e.code : undefined;
+      // Surface a typed reason on the result so hosts (e.g. the CLI) can render the
+      // failure (e.g. a PROJECT_LIMIT upgrade prompt) instead of it dying in the WARN
+      // log below. Non-fatal — the run already succeeded; only recording failed.
+      result.trackingError = {
+        message: errMsg,
+        ...(errCode !== undefined ? { code: errCode } : {}),
+        ...(typeof e.statusCode === 'number' ? { statusCode: e.statusCode } : {}),
+        ...(typeof e.requestId === 'string' ? { requestId: e.requestId } : {}),
+        ...(e.details !== null && typeof e.details === 'object'
+          ? { details: e.details as Record<string, unknown> }
+          : {}),
+      };
       this.logger.warn(`Tracking submission failed (non-fatal): [${errName}${errCode ? `:${errCode}` : ''}] ${errMsg}. Set trackingEnabled: false in config to disable result tracking.`);
       // Log SdkApiError details for diagnosis
       if (error instanceof Error) {
-        const e = error as { statusCode?: number; code?: string; details?: unknown; requestId?: string };
         this.logger.warn(`  statusCode=${e.statusCode} requestId=${e.requestId} details=${JSON.stringify(e.details ?? null)}`);
       }
     }
