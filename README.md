@@ -74,6 +74,8 @@ This still requires an AI provider key but no UluOps API key or network access t
 
 > **Note:** `runAgent`/`resolve` return immediately from local definitions when found. `client.list()`, however, always queries the registry first and only falls back to the bundled definitions after the request fails — in a genuinely offline environment that means a few seconds of retry/backoff before the local list returns.
 
+> **Workflows and pipelines.** Local resolution applies the same WDL/PDL authoring→runtime normalization (e.g. `steps[]` → `commands[]`/`agentRefs[]`) the registry applies server-side, so `runWorkflow`/`runPipeline` resolve from local definitions too — provided every definition they reference (sub-agents, commands) is itself resolvable, locally or from the registry.
+
 ## Table of Contents
 
 - [Overview](#overview)
@@ -501,7 +503,7 @@ import {
   PipelineExecutor,    // Multi-stage async pipelines
 
   // Service clients — talk to UluOps APIs directly
-  RegistryClient,      // Definition resolution, local/remote (server-side normalization via API, local via @uluops/definition-factory)
+  RegistryClient,      // Definition resolution, local/remote (normalization: server-side via API; local applies the same authoring→runtime transforms client-side)
   SubmissionClient,    // Run submission, history queries, regression detection
 
   // AI layer — provider management and model resolution
