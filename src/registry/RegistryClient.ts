@@ -7,6 +7,7 @@ import type { DefinitionType } from '../types/execution.js';
 import type { AgentDefinition } from '../types/agent.js';
 import type { ResolvedDefinition, DefinitionSummary } from '../types/registry.js';
 import { ConfigurationError, SubscriptionRequiredError, IntegrityError } from '../errors/index.js';
+import { normalizeDefinition, DefinitionValidationError } from './normalize.js';
 import { formatErrorMessage } from '../utils/formatError.js';
 import { DEFAULT_PASS_THRESHOLD, DEFAULT_MODEL_ALIAS } from '../constants.js';
 import type { Logger } from '@uluops/sdk-core';
@@ -516,33 +517,29 @@ export class RegistryClient {
   // Private: Local Rendering
   // ─────────────────────────────────────────────────────────────────────────────
 
-  private static readonly KNOWN_TOP_KEYS = ['agent', 'command', 'workflow', 'pipeline'] as const;
-
   /**
-   * Validate and pass through a parsed definition for local resolution.
+   * Normalize a parsed definition for local resolution (CDL/WDL/PDL
+   * authoring→runtime transforms), mirroring the server-side normalization the
+   * registry API applies on the remote path.
    *
-   * Detects the top-level key, validates the section is an object, and returns
-   * a cloned definition. Full normalization (CDL/WDL/PDL section transforms)
-   * is handled server-side by the registry API — this path is for offline mode
-   * and API fallback only.
+   * This is load-bearing for local/offline resolution: WorkflowExecutor reads
+   * `resolved.definition.workflow.orchestration.phases[].commands` directly, so
+   * an un-normalized workflow (raw `steps[]`) makes every phase BLOCK. The
+   * transforms live in {@link normalizeDefinition} (a faithful port of
+   * @uluops/definition-factory, which cannot be a public dependency — see
+   * registry/normalize.ts). Agent definitions pass through unchanged.
    */
   private normalizeLocally(parsed: Record<string, unknown>): ResolvedDefinition['definition'] {
-    const topKey = RegistryClient.KNOWN_TOP_KEYS.find(k => k in parsed);
-    if (!topKey) {
-      throw new ConfigurationError(
-        `Invalid definition: expected a top-level key of ${RegistryClient.KNOWN_TOP_KEYS.join(', ')}, ` +
-        `found: ${Object.keys(parsed).join(', ')}`,
-      );
+    try {
+      const { definition } = normalizeDefinition(parsed);
+      return definition as unknown as ResolvedDefinition['definition'];
+    } catch (error) {
+      // Surface normalization/structure failures with core's error taxonomy.
+      if (error instanceof DefinitionValidationError) {
+        throw new ConfigurationError(error.message);
+      }
+      throw error;
     }
-
-    const section = parsed[topKey];
-    if (!section || typeof section !== 'object') {
-      throw new ConfigurationError(
-        `Invalid definition: "${topKey}" must be an object`,
-      );
-    }
-
-    return structuredClone(parsed) as unknown as ResolvedDefinition['definition'];
   }
 
   /**

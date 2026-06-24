@@ -6,6 +6,22 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) 
 
 ## [Unreleased]
 
+## [0.24.3] - 2026-06-24
+
+### Fixed
+
+- **Workflow `command:` steps no longer block on agent/command name collisions.** `WorkflowExecutor.executeStep` resolved a `command:` step *untyped* ("resolve, then route by actual type") to support WDLs that use `command:` for agents. But a name published as BOTH an agent and its per-agent invocation command — every cognitive-lens analyst (`aristotle-analyst`, `popper-analyst`, …) — made that untyped resolve ambiguous (`Multiple definitions named "X" found (agent, command)`), blocking every phase. This was latent and ecosystem-wide (the executor path is identical for local and remote workflows); it surfaced only once 0.24.2 let locally-resolved workflows reach execution instead of failing earlier. Command-steps now resolve **command-first** and fall back to the agent definition only when no command by that name exists — preserving the documented `command:`→agent support without the ambiguity throw.
+
+## [0.24.2] - 2026-06-24
+
+### Fixed
+
+- **Locally-resolved workflows no longer silently BLOCK.** `RegistryClient.normalizeLocally()` passed the raw parsed YAML straight through (`structuredClone`) without applying the authoring→runtime transforms that the remote path gets server-side. A locally-resolved (`localDefinitions` / `--local-definitions`) **workflow** therefore reached `WorkflowExecutor` with WDL `steps[]` instead of `commands[]`/`agentRefs[]`; `executePhase` calls `phase.commands.map()` on `undefined`, every phase is caught as a blocked phase, and the workflow returns `Decision=BLOCK`, score 0, 0 agents run — looking like it executed and failed. Workflows were the only definition type affected (agents render via the API fallback; pipeline stages key off `agents[]` presence). Local resolution now applies the same CDL/WDL/PDL normalization as the registry: WDL `steps[].command`→`commands[]`, `steps[].agent`→`agentRefs[]`, `condition`→negated `skip_if`, `gate.aggregate` default; CDL `invokes.agent`→`agents[]`; PDL stage-type inference; plus structural validation (malformed local definitions now throw `ConfigurationError` instead of failing deep in execution).
+
+### Design Notes
+
+- The normalization transforms are a **faithful port** of `@uluops/definition-factory`'s `src/normalization/` module into `src/registry/normalize.ts`, NOT a dependency. `@uluops/definition-factory` is private IP (rendering engine, templates, scoring/translation) and `@uluops/core` publishes publicly to npm, so a dependency edge would force the factory's install tree public. Only the mundane authoring→runtime field mappings are reproduced; none of the factory's IP is involved. Keep the ported module in sync with the factory source (drift between local and server normalization reintroduces exactly this class of local≠remote bug).
+
 ## [0.24.1] - 2026-06-23
 
 ### Fixed
