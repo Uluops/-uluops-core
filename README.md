@@ -394,6 +394,8 @@ for (const entry of history) {
 const run = await client.getRun('run-uuid');
 ```
 
+On the auto-tracking path, a failed submission (e.g. a free-tier `402 PROJECT_LIMIT`, `SUBSCRIPTION_REQUIRED`, or a transient 5xx) is **non-fatal** — the agent run still resolves successfully. The result carries `trackingFailed: true` plus a typed `trackingError` (`{ code, statusCode, message, requestId, details }`), so callers can surface the reason — and any `details.upgradeUrl` — instead of silently dropping the dashboard link. `code` (e.g. `PROJECT_LIMIT`) is the stable contract; `message` is human-readable and should not be matched on.
+
 ### Usage Metrics
 
 All execution results include token usage metrics. Provider-specific token fields are mapped to a unified format:

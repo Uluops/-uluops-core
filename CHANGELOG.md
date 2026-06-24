@@ -6,6 +6,18 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) 
 
 ## [Unreleased]
 
+## [0.24.1] - 2026-06-23
+
+### Fixed
+
+- **`TrackingError` is now exported from the package root.** 0.24.0 defined `TrackingError` (in `src/types/execution.ts`) and added it to the `src/types` sub-barrel, but the package root (`src/index.ts`) re-exports types explicitly and was not updated — so `import { TrackingError } from '@uluops/core'` failed to resolve for consumers. Add it to the root execution export. 0.24.0 is otherwise functionally complete; upgrade to 0.24.1 to reference the type by name. (Caught by the `@uluops/cli` tracking-failure render before it shipped.)
+
+## [0.24.0] - 2026-06-23
+
+### Added
+
+- **Typed `trackingError?: TrackingError` on `AgentResult` and `ExecutionResult`** (alongside the retained `trackingFailed?: boolean`). When a run's result-submission to the tracker fails — `402 PROJECT_LIMIT`, `SUBSCRIPTION_REQUIRED`, 401/403/429, 5xx, network, timeout — the failure is no longer collapsed to a bare boolean: `trackingError` carries a stable machine `code` (the contract), `statusCode`, human-readable `message`, `requestId`, and structured `details` (e.g. `upgradeUrl`, `currentCount`, `limit`). Mirrors the `DegradationMarker` typed-marker convention — `code` is matched on, `message` is not. **Non-fatal**: the agent run still resolves successfully; only recording failed. Populated in `UluOpsClient`'s existing submission catch from the SDK API error. Lets consumers (e.g. `@uluops/cli`) surface the upgrade prompt instead of silently dropping the dashboard link.
+
 ## [0.23.0] - 2026-06-22
 
 ### Changed
