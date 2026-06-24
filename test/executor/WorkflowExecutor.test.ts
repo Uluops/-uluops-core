@@ -3,8 +3,9 @@ import { WorkflowExecutor } from '../../src/executor/WorkflowExecutor.js';
 import type { CommandExecutor } from '../../src/executor/CommandExecutor.js';
 import type { ResolvedDefinition } from '../../src/types/registry.js';
 import type { WorkflowDefinition } from '../../src/types/workflow.js';
-import { WorkflowError } from '../../src/errors/index.js';
-import { makeCommandResult, makeCommandExecutor, makeNamedCommandExecutor, makeRegistry } from './fixtures.js';
+import type { RegistryClient } from '../../src/registry/RegistryClient.js';
+import { WorkflowError, ConfigurationError } from '../../src/errors/index.js';
+import { makeCommandResult, makeCommandExecutor, makeNamedCommandExecutor, makeRegistry, makeAgentExecutor, makeValidatorResult } from './fixtures.js';
 
 function makeWorkflowDef(overrides?: Partial<WorkflowDefinition['workflow']>): ResolvedDefinition {
   return {
@@ -74,7 +75,74 @@ describe('WorkflowExecutor', () => {
 
       await executor.execute(makeWorkflowDef(), { target: '/tmp/test' });
 
-      expect(registry.resolve).toHaveBeenCalledWith('code-validator', undefined);
+      // Command steps resolve with an explicit 'command' type (not untyped) so a
+      // name that exists as both an agent and a command does not throw on
+      // ambiguity. See the collision regression test below.
+      expect(registry.resolve).toHaveBeenCalledWith('code-validator', undefined, 'command');
+    });
+
+    it('resolves a command-step whose name exists as BOTH an agent and a command (no ambiguity throw)', async () => {
+      // Regression: cognitive-lens WDLs reference `command: <analyst>@latest`, but
+      // `<analyst>` is published as both an agent AND its per-agent command. An
+      // untyped resolve threw "Multiple definitions named X found", blocking every
+      // phase. Command-first resolution must avoid that.
+      const cmdExec = makeCommandExecutor([makeCommandResult({ name: 'aristotle-analyst', score: 88 })]);
+      const registry = makeRegistry({
+        'aristotle-analyst': {
+          type: 'command', name: 'aristotle-analyst', version: '1.0.0', hash: 'sha256:c',
+          yaml: '', definition: {} as ResolvedDefinition['definition'],
+          runtime: {} as ResolvedDefinition['runtime'], domain: 'software',
+        },
+      });
+      const executor = new WorkflowExecutor(cmdExec, registry);
+
+      const def = makeWorkflowDef({
+        orchestration: {
+          phases: [{ id: 'aristotle', name: 'Aristotle', commands: ['aristotle-analyst@latest'], gate: { threshold: 70, aggregate: 'average', on_fail: 'warn' } }],
+          on_failure: 'continue',
+        },
+      } as Partial<WorkflowDefinition['workflow']>);
+
+      const result = await executor.execute(def, { target: '/tmp/test' });
+
+      // parseRef normalizes `@latest` to undefined (resolve to current latest).
+      expect(registry.resolve).toHaveBeenCalledWith('aristotle-analyst', undefined, 'command');
+      expect(result.phases[0]!.decision).toBe('passed');
+      expect(result.phases[0]!.score).toBe(88);
+    });
+
+    it('falls back to the agent definition when a command-step name has no command', async () => {
+      // command: ref that resolves only as an agent — resolve(type=command) throws
+      // ConfigurationError, executeStep retries as an agent and runs it directly.
+      const cmdExec = makeCommandExecutor();
+      const agentExec = makeAgentExecutor([makeValidatorResult({ name: 'agent-only', score: 77 })]);
+      const agentDef: ResolvedDefinition = {
+        type: 'agent', name: 'agent-only', version: '1.0.0', hash: 'sha256:a',
+        yaml: '', definition: {} as ResolvedDefinition['definition'],
+        runtime: {} as ResolvedDefinition['runtime'], domain: 'software', agentType: 'validator',
+      };
+      const registry = {
+        resolve: vi.fn().mockImplementation((name: string, version?: string, type?: string) => {
+          if (type === 'command') return Promise.reject(new ConfigurationError(`Definition "${name}" (command) not found in registry.`));
+          return Promise.resolve(agentDef);
+        }),
+      } as unknown as RegistryClient;
+      const executor = new WorkflowExecutor(cmdExec, registry, agentExec);
+
+      const def = makeWorkflowDef({
+        orchestration: {
+          phases: [{ id: 'p', name: 'P', commands: ['agent-only'], gate: { threshold: 70, aggregate: 'average', on_fail: 'warn' } }],
+          on_failure: 'continue',
+        },
+      } as Partial<WorkflowDefinition['workflow']>);
+
+      const result = await executor.execute(def, { target: '/tmp/test' });
+
+      expect(registry.resolve).toHaveBeenCalledWith('agent-only', undefined, 'command');
+      expect(registry.resolve).toHaveBeenCalledWith('agent-only', undefined, 'agent');
+      expect(agentExec.execute).toHaveBeenCalled();
+      expect(result.phases[0]!.decision).toBe('passed');
+      expect(result.phases[0]!.score).toBe(77);
     });
   });
 

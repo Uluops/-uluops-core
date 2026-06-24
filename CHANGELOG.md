@@ -6,6 +6,12 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) 
 
 ## [Unreleased]
 
+## [0.24.3] - 2026-06-24
+
+### Fixed
+
+- **Workflow `command:` steps no longer block on agent/command name collisions.** `WorkflowExecutor.executeStep` resolved a `command:` step *untyped* ("resolve, then route by actual type") to support WDLs that use `command:` for agents. But a name published as BOTH an agent and its per-agent invocation command — every cognitive-lens analyst (`aristotle-analyst`, `popper-analyst`, …) — made that untyped resolve ambiguous (`Multiple definitions named "X" found (agent, command)`), blocking every phase. This was latent and ecosystem-wide (the executor path is identical for local and remote workflows); it surfaced only once 0.24.2 let locally-resolved workflows reach execution instead of failing earlier. Command-steps now resolve **command-first** and fall back to the agent definition only when no command by that name exists — preserving the documented `command:`→agent support without the ambiguity throw.
+
 ## [0.24.2] - 2026-06-24
 
 ### Fixed

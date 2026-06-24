@@ -6,7 +6,7 @@ import type { WorkflowDefinition, WorkflowResult, PhaseResult, PhaseDefinition, 
 import type { CommandResult } from '../types/command.js';
 import type { AgentResult } from '../types/agent.js';
 import type { ExecutionInput, Recommendation } from '../types/execution.js';
-import { WorkflowError } from '../errors/index.js';
+import { WorkflowError, ConfigurationError } from '../errors/index.js';
 import { formatErrorMessage } from '../utils/formatError.js';
 import { DEFAULT_GATE_THRESHOLD } from '../constants.js';
 import { aggregateScores } from '../utils/aggregateScores.js';
@@ -369,8 +369,23 @@ export class WorkflowExecutor {
       return this.executeAgentRef(name, version, ref, input);
     }
 
-    // Command ref — resolve without type hint, then route by actual type
-    const resolved = await this.registry.resolve(name, version);
+    // Command ref — a WDL `command:` step may name a command OR an agent, and a
+    // single name can exist as BOTH (an agent and its per-agent invocation
+    // command, e.g. `aristotle-analyst`). An untyped resolve THROWS on that
+    // collision ("Multiple definitions named X found"), which previously blocked
+    // every cognitive-lens workflow. Resolve the command first; fall back to the
+    // agent definition only when no command by that name exists. This preserves
+    // the documented `command:`→agent support without the ambiguity throw.
+    let resolved: ResolvedDefinition;
+    try {
+      resolved = await this.registry.resolve(name, version, 'command');
+    } catch (error) {
+      if (error instanceof ConfigurationError) {
+        resolved = await this.registry.resolve(name, version, 'agent');
+      } else {
+        throw error;
+      }
+    }
     if (resolved.type === 'agent') {
       // WDL used command: but definition is actually an agent — route directly
       return this.executeAgentDirect(resolved, input, ref);
