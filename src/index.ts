@@ -53,6 +53,7 @@ export type {
   ExecutionMetrics,
   ExecutionOptions,
   Recommendation,
+  TrackingError,
 } from './types/execution.js';
 
 // ─── Types: Agent ─────────────────────────────────────────────────────────────
