@@ -203,6 +203,123 @@ describe('RegistryClient', () => {
       expect(result.name).toBe('remote-agent');
       expect(mocks.definitions.list).toHaveBeenCalled();
     });
+
+    // ───────────────────────────────────────────────────────────────────────
+    // Local normalization (authoring→runtime transforms)
+    //
+    // The remote path normalizes server-side; local resolution must apply the
+    // same transforms or executors receive the un-normalized authoring shape.
+    // Regression guard for: locally-resolved workflows BLOCK because
+    // normalizeLocally did not transform WDL steps[] → commands[]/agentRefs[].
+    // ───────────────────────────────────────────────────────────────────────
+
+    it('normalizes WDL steps[] → commands[]/agentRefs[] on local workflow resolve', async () => {
+      const wfYaml = yaml.stringify({
+        workflow: {
+          interface: { name: 'foundations', version: '1.0.0', domain: 'software' },
+          orchestration: {
+            on_failure: 'continue',
+            phases: [
+              {
+                id: 'analyze',
+                steps: [
+                  { agent: 'aristotle-analyst' },
+                  { agent: 'popper-analyst' },
+                  { command: 'code-validator' },
+                ],
+                gate: {},
+              },
+            ],
+          },
+        },
+      });
+
+      await fs.writeFile(path.join(tmpDir, 'foundations.workflow.yaml'), wfYaml);
+
+      const client = new RegistryClient({ ...baseConfig, localDefinitions: tmpDir }, noopLogger);
+      const result = await client.resolve('foundations', undefined, 'workflow');
+
+      expect(result.type).toBe('workflow');
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any
+      const phase = (result.definition as any).workflow.orchestration.phases[0];
+      // WorkflowExecutor.executePhase reads phase.commands.map() — undefined here
+      // is exactly what produced the silent BLOCK.
+      expect(phase.commands).toEqual(['code-validator']);
+      expect(phase.agentRefs).toEqual(['aristotle-analyst', 'popper-analyst']);
+      expect(phase.steps).toBeUndefined();
+      // gate.aggregate defaulted
+      expect(phase.gate.aggregate).toBe('average');
+    });
+
+    it('normalizes WDL condition → negated skip_if on local workflow resolve', async () => {
+      const wfYaml = yaml.stringify({
+        workflow: {
+          interface: { name: 'conditional', version: '1.0.0', domain: 'software' },
+          orchestration: {
+            phases: [
+              { id: 'p1', commands: ['x'], condition: 'has_frontend' },
+            ],
+          },
+        },
+      });
+      await fs.writeFile(path.join(tmpDir, 'conditional.workflow.yaml'), wfYaml);
+
+      const client = new RegistryClient({ ...baseConfig, localDefinitions: tmpDir }, noopLogger);
+      const result = await client.resolve('conditional', undefined, 'workflow');
+
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any
+      const phase = (result.definition as any).workflow.orchestration.phases[0];
+      expect(phase.skip_if).toBe('NOT (has_frontend)');
+      expect(phase.condition).toBeUndefined();
+    });
+
+    it('normalizes CDL invokes.agent → agents[] on local command resolve', async () => {
+      const cmdYaml = yaml.stringify({
+        command: {
+          interface: { name: 'invoke-cmd', version: '1.0.0', domain: 'software' },
+          invokes: { agent: 'code-validator@1.0.0' },
+          execution: { model: { default: 'sonnet' } },
+        },
+      });
+      await fs.writeFile(path.join(tmpDir, 'invoke-cmd.command.yaml'), cmdYaml);
+
+      const client = new RegistryClient({ ...baseConfig, localDefinitions: tmpDir }, noopLogger);
+      const result = await client.resolve('invoke-cmd', undefined, 'command');
+
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any
+      expect((result.definition as any).command.agents).toEqual(['code-validator@1.0.0']);
+    });
+
+    it('infers PDL stage type from structure on local pipeline resolve', async () => {
+      const pipeYaml = yaml.stringify({
+        pipeline: {
+          interface: { name: 'infer-pipe', version: '1.0.0', domain: 'software' },
+          stages: [
+            { id: 's1', agents: [{ ref: 'a1' }] },
+            { id: 's2', ref: 'some-command' },
+          ],
+        },
+      });
+      await fs.writeFile(path.join(tmpDir, 'infer-pipe.pipeline.yaml'), pipeYaml);
+
+      const client = new RegistryClient({ ...baseConfig, localDefinitions: tmpDir }, noopLogger);
+      const result = await client.resolve('infer-pipe', undefined, 'pipeline');
+
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any
+      const stages = (result.definition as any).pipeline.stages;
+      expect(stages[0].type).toBe('agents');
+      expect(stages[1].type).toBe('command');
+    });
+
+    it('throws ConfigurationError on a malformed local workflow (missing orchestration)', async () => {
+      const wfYaml = yaml.stringify({
+        workflow: { interface: { name: 'broken', version: '1.0.0' } },
+      });
+      await fs.writeFile(path.join(tmpDir, 'broken.workflow.yaml'), wfYaml);
+
+      const client = new RegistryClient({ ...baseConfig, localDefinitions: tmpDir }, noopLogger);
+      await expect(client.resolve('broken', undefined, 'workflow')).rejects.toThrow(ConfigurationError);
+    });
   });
 
   // ─────────────────────────────────────────────────────────────────────────────
