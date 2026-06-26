@@ -120,7 +120,7 @@ const analysisRecordSchema = z.object({
   recordType: z.string()
     .describe('Record type matching the agent\'s domain vocabulary (e.g., commitment, inquiry_question, evidence_claim, convention, tension, decay_vector, reification_candidate)'),
   recordId: z.string()
-    .describe('Short unique ID within this run (e.g., R-1, IQ-2, EC-3). Max 20 characters.'),
+    .describe('Agent-local ID within this run. Semantic, namespaced IDs allowed (e.g., R-1, foundations-api-aristotle-20260626). Max 100 characters.'),
   title: z.string()
     .describe('Human-readable title of the finding'),
   classification: z.string().nullable()

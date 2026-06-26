@@ -6,6 +6,19 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) 
 
 ## [Unreleased]
 
+## [0.25.0] - 2026-06-26
+
+### Changed
+
+- **Analysis recordId generation now targets 100 characters (was 20).**
+  `AnalysisSummaryExtractor.safeRecordId` preserves an agent-provided or failure-code
+  recordId verbatim when it is ≤ 100 chars, so semantic, namespaced IDs (e.g.
+  `foundations-api-aristotle-20260626`) survive instead of being hashed away. IDs over
+  100 chars still fall back to a bounded deterministic `r-<hash>`. The universal
+  output-schema `recordId` description is updated to match. Mirrors ops-api migration
+  058 and the SDK/MCP request schemas; kept as a local constant to avoid coupling
+  `@uluops/core` to a specific ops-sdk version.
+
 ## [0.24.3] - 2026-06-24
 
 ### Fixed

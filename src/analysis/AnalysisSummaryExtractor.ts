@@ -3,6 +3,14 @@ import type { AnalysisSummaryInput, AnalysisRecordInput, CategoryScore, Explorat
 import type { AgentResult, AgentDefinition } from '../types/agent.js';
 import type { ResolvedDefinition } from '../types/registry.js';
 
+/**
+ * Max length of the agent-local analysis recordId accepted by the tracker.
+ * Mirrors the API column (ops-api migration 058) and the SDK/MCP request schemas.
+ * Kept as a local constant to avoid coupling @uluops/core to a specific ops-sdk
+ * version for a single value.
+ */
+const ANALYSIS_RECORD_ID_MAX_LENGTH = 100;
+
 /** Valid recordType enum values accepted by the tracker API. */
 const VALID_RECORD_TYPES = new Set([
   'category_breakdown', 'criterion_deduction', 'auto_fail_check', 'convention',
@@ -634,11 +642,14 @@ export class AnalysisSummaryExtractor {
   }
 
   /**
-   * Produce a recordId that fits within the 20-char SDK limit.
-   * Uses failureCode if present and <=20 chars, otherwise hashes.
+   * Produce a recordId that fits within the tracker's recordId limit.
+   * Uses the candidate id (failureCode or an agent-provided recordId) verbatim when
+   * it fits, otherwise falls back to a bounded deterministic hash. The cap was 20;
+   * widening to 100 preserves semantic, namespaced IDs (e.g.
+   * `foundations-api-aristotle-20260626`) that previously got hashed away.
    */
   private safeRecordId(failureCode: string | undefined, fallbackInput: string): string {
-    if (failureCode && failureCode.length <= 20) return failureCode;
+    if (failureCode && failureCode.length <= ANALYSIS_RECORD_ID_MAX_LENGTH) return failureCode;
     return 'r-' + createHash('sha256').update(failureCode ?? fallbackInput).digest('hex').substring(0, 16);
   }
 }

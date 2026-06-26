@@ -415,6 +415,35 @@ describe('AnalysisSummaryExtractor', () => {
       expect(records[0].data).toEqual({ status: 'confirmed' });
     });
 
+    it('preserves a semantic recordId between 21 and 100 chars (no longer hashed)', () => {
+      const semanticId = 'foundations-api-aristotle-20260626'; // 34 chars, > old 20-char cap
+      expect(semanticId.length).toBeGreaterThan(20);
+      const result = makeAgentResult({
+        recommendations: [],
+        rawJson: {
+          analysisRecords: [
+            { recordType: 'commitment', recordId: semanticId, title: 'Long id', data: [] },
+          ],
+        },
+      });
+      const { records } = extractor.extract(result, makeResolvedDefinition());
+      expect(records[0].recordId).toBe(semanticId);
+    });
+
+    it('bounds an over-100-char recordId to a deterministic hash', () => {
+      const longId = 'x'.repeat(101);
+      const result = makeAgentResult({
+        recommendations: [],
+        rawJson: {
+          analysisRecords: [
+            { recordType: 'commitment', recordId: longId, title: 'Too long', data: [] },
+          ],
+        },
+      });
+      const { records } = extractor.extract(result, makeResolvedDefinition());
+      expect(records[0].recordId).toMatch(/^r-[0-9a-f]{16}$/);
+    });
+
     it('populates domainMetrics from rawJson when no analysis block', () => {
       const result = makeAgentResult({
         rawJson: {
