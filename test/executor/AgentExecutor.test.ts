@@ -240,7 +240,7 @@ describe('AgentExecutor', () => {
       expect(result.metrics.durationMs).toBeGreaterThanOrEqual(0);
     });
 
-    it('includes thinking_tokens in totalEffectiveTokens for Google models', async () => {
+    it('does not double-count thinking_tokens — they are already inside output_tokens (Google)', async () => {
       const THINKING_TOKENS = 100;
       const ai = mockAIProvider({
         usage: {
@@ -255,10 +255,13 @@ describe('AgentExecutor', () => {
 
       const result = await executor.execute(makeValidatorDef(), { target: tmpDir });
 
-      // thinking_tokens are charged separately by Google, so they are added to effective total
+      // The AI SDK folds Google thoughts into output_tokens, so thinking must NOT be
+      // re-added to the effective total (verified live on gemini-3-flash-preview).
       expect(result.metrics.totalEffectiveTokens).toBe(
-        MOCK_INPUT_TOKENS + MOCK_OUTPUT_TOKENS + MOCK_CACHE_CREATION_TOKENS + THINKING_TOKENS,
+        MOCK_INPUT_TOKENS + MOCK_OUTPUT_TOKENS + MOCK_CACHE_CREATION_TOKENS,
       );
+      // ...but it is still recorded as a component.
+      expect(result.metrics.thinkingTokens).toBe(THINKING_TOKENS);
     });
 
     it('passes threshold from options', async () => {

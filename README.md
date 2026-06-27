@@ -409,9 +409,9 @@ const { metrics } = result;
 console.log(`Input: ${metrics.inputTokens}, Output: ${metrics.outputTokens}`);
 console.log(`Cache: ${metrics.cacheCreationTokens ?? 0} created, ${metrics.cacheReadTokens ?? 0} read`);
 
-// Google Gemini 2.5+ models report thinking tokens separately from output tokens.
-// thinking_tokens are included in totalEffectiveTokens (unlike OpenAI reasoning_tokens
-// which are already counted within outputTokens).
+// thinkingTokens (Google) and reasoningTokens (OpenAI) are BOTH already counted
+// within outputTokens by the AI SDK, so neither is added to totalEffectiveTokens —
+// they are exposed as separate components for cost breakdown only.
 if (metrics.thinkingTokens) {
   console.log(`Thinking: ${metrics.thinkingTokens}`);
 }

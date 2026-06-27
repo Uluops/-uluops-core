@@ -6,6 +6,12 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) 
 
 ## [Unreleased]
 
+## [0.25.1] - 2026-06-28
+
+### Fixed
+
+- **`total_effective_tokens` no longer double-counts Google thinking tokens.** `calculateEffectiveTokens` added `+ thinking_tokens` on the premise that Google charges thoughts "separately from output." Verified live against `gemini-3-flash-preview`, this is false: the Vercel AI SDK folds thoughts **into** `res.usage.outputTokens` (`outputTokens = text + thoughts`, with `reasoningTokens` a subset). Adding `thinking_tokens` therefore counted them twice. The term is removed; the effective total is now `input + output + cache_creation` (output already gross — reasoning and thinking are both inside it). `thinking_tokens` remains a recorded component on `ExecutionMetrics`. **Behavioral:** Google runs' `total_effective_tokens` drop by their thinking amount (previously over-counted); non-Google runs are unaffected (`thinking_tokens` is Google-only). A separate, cascade-scoped fix (subtracting cached input) will lower Google/OpenAI effective further.
+
 ## [0.25.0] - 2026-06-26
 
 ### Changed
