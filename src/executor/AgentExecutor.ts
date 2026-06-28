@@ -689,10 +689,12 @@ export class AgentExecutor {
   }
 
   private calculateEffectiveTokens(usage: UsageMetrics): number {
-    // reasoning_tokens (OpenAI) excluded: already counted within output_tokens by OpenAI's billing.
-    // thinking_tokens (Google) included: charged separately from output_tokens by Google.
+    // reasoning_tokens (OpenAI) AND thinking_tokens (Google) are BOTH already counted
+    // within output_tokens by the AI SDK — it folds reasoning/thoughts into outputTokens.
+    // Adding either double-counts. Verified live against gemini-3-flash-preview:
+    // res.usage.outputTokens already includes thoughtsTokenCount (output = text + thoughts).
+    // thinking_tokens stays a recorded component on ExecutionMetrics; it is just not re-added here.
     return usage.input_tokens + usage.output_tokens
-      + (usage.cache_creation_input_tokens ?? 0)
-      + (usage.thinking_tokens ?? 0);
+      + (usage.cache_creation_input_tokens ?? 0);
   }
 }
