@@ -143,16 +143,26 @@ export interface ExecutionMetrics {
   /** Cache creation tokens */
   cacheCreationTokens?: number;
 
-  /** Cache read tokens */
+  /** Cache read tokens (genuine Anthropic-style cache reads only, post-disentangle §3.2) */
   cacheReadTokens?: number;
 
   /**
-   * Google Gemini thinking tokens (Gemini 2.5+ with extendedThinking).
-   * Charged separately from outputTokens by Google; already included in totalEffectiveTokens.
+   * Cached-input tokens: cache-served portion of gross input (OpenAI/Google),
+   * subtracted in the canonical total_effective. 0/undefined for Anthropic. §3.2.
+   */
+  cachedInputTokens?: number;
+
+  /** OpenAI reasoning tokens. Subset of GROSS outputTokens — stored, NOT added to totalEffectiveTokens. */
+  reasoningOutputTokens?: number;
+
+  /**
+   * Google Gemini thinking tokens (Gemini 2.5+).
+   * The AI SDK folds these INTO gross outputTokens — a subset, stored for
+   * cost/analytics and NOT re-added to totalEffectiveTokens (would double-count). §3.2.
    */
   thinkingTokens?: number;
 
-  /** Total effective tokens (for cost) */
+  /** Total effective tokens (for cost): (input − cached_input) + output_gross + cache_creation */
   totalEffectiveTokens: number;
 
   /** Execution duration in ms */
@@ -160,6 +170,12 @@ export interface ExecutionMetrics {
 
   /** Model used (or primary model for workflows) */
   model: string;
+
+  /**
+   * Producing harness/runtime. @uluops/core emits 'uluops-core' (vendor-derived,
+   * runs OpenAI/Google — not a constant 'claude-code'). Canonical vocabulary §2.4. (G4)
+   */
+  harness?: string;
 
   /** Number of LLM tool calls made during execution (agent-level) */
   toolCallCount?: number;

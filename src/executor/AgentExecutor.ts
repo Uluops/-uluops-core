@@ -286,10 +286,13 @@ export class AgentExecutor {
       outputTokens: result.usage.output_tokens,
       cacheCreationTokens: result.usage.cache_creation_input_tokens,
       cacheReadTokens: result.usage.cache_read_input_tokens,
+      cachedInputTokens: result.usage.cached_input_tokens,
+      reasoningOutputTokens: result.usage.reasoning_tokens,
       thinkingTokens: result.usage.thinking_tokens,
       totalEffectiveTokens: this.calculateEffectiveTokens(result.usage),
       durationMs,
       model: result.model,
+      harness: 'uluops-core',
       toolCallCount: result.toolCallCount,
     };
   }
@@ -689,12 +692,19 @@ export class AgentExecutor {
   }
 
   private calculateEffectiveTokens(usage: UsageMetrics): number {
-    // reasoning_tokens (OpenAI) AND thinking_tokens (Google) are BOTH already counted
-    // within output_tokens by the AI SDK — it folds reasoning/thoughts into outputTokens.
-    // Adding either double-counts. Verified live against gemini-3-flash-preview:
-    // res.usage.outputTokens already includes thoughtsTokenCount (output = text + thoughts).
-    // thinking_tokens stays a recorded component on ExecutionMetrics; it is just not re-added here.
-    return usage.input_tokens + usage.output_tokens
+    // Canonical: (input − cached_input) + output_gross + cache_creation. §2.3/§3.2.
+    //
+    // − cached_input: OpenAI/Google report GROSS input that includes cache-served
+    //   tokens billed at a steep discount. Subtract them (the analog of Anthropic's
+    //   excluded cache_read). Clamped at 0 — a provider could report cached > input.
+    //   0 for Anthropic/OpenCode (cached_input_tokens undefined).
+    //
+    // output_gross: reasoning_tokens (OpenAI) AND thinking_tokens (Google) are BOTH
+    //   already folded INTO output_tokens by the AI SDK — adding either double-counts
+    //   (verified live, gemini-3-flash-preview: outputTokens includes thoughtsTokenCount).
+    //   Both stay recorded components on ExecutionMetrics; neither is re-added here.
+    return Math.max(0, usage.input_tokens - (usage.cached_input_tokens ?? 0))
+      + usage.output_tokens
       + (usage.cache_creation_input_tokens ?? 0);
   }
 }

@@ -773,7 +773,9 @@ describe('AIProvider', () => {
         prompt: 'test',
       });
 
-      expect(result.usage.cache_read_input_tokens).toBe(100);
+      // Disentangle (§3.2): OpenAI cachedPromptTokens is cached INPUT, not a cache read.
+      expect(result.usage.cached_input_tokens).toBe(100);
+      expect(result.usage.cache_read_input_tokens).toBeUndefined();
       expect(result.usage.reasoning_tokens).toBe(75);
     });
 
@@ -1042,7 +1044,7 @@ describe('AIProvider', () => {
       expect(call.providerOptions?.google?.thinkingConfig).toBeUndefined();
     });
 
-    it('maps cachedContentTokenCount to cache_read_input_tokens', async () => {
+    it('maps cachedContentTokenCount to cached_input_tokens (disentangle §3.2)', async () => {
       const { generateText } = await import('ai');
       const mockGenerateText = vi.mocked(generateText);
 
@@ -1070,7 +1072,8 @@ describe('AIProvider', () => {
         prompt: 'test',
       });
 
-      expect(result.usage.cache_read_input_tokens).toBe(300);
+      expect(result.usage.cached_input_tokens).toBe(300);
+      expect(result.usage.cache_read_input_tokens).toBeUndefined();
     });
 
     it('maps thoughtsTokenCount to thinking_tokens', async () => {
@@ -1161,7 +1164,9 @@ describe('AIProvider', () => {
         prompt: 'test',
       });
 
-      expect(result.usage.cache_read_input_tokens).toBe(250);
+      // Disentangle (§3.2): unknown-provider cached input → cached_input_tokens.
+      expect(result.usage.cached_input_tokens).toBe(250);
+      expect(result.usage.cache_read_input_tokens).toBeUndefined();
     });
 
     it('does not override known provider cache values with generic scan', async () => {

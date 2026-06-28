@@ -264,6 +264,40 @@ describe('AgentExecutor', () => {
       expect(result.metrics.thinkingTokens).toBe(THINKING_TOKENS);
     });
 
+    it('subtracts cached_input from the effective total and records it as a component (§3.2)', async () => {
+      // Live shape (§1.5, gemini-3-flash-preview): gross input includes cache-served
+      // tokens; canonical effective = (input − cached_input) + output + cache_creation.
+      const ai = mockAIProvider({
+        usage: {
+          input_tokens: 15099,
+          output_tokens: 2334,
+          cached_input_tokens: 8098,
+          reasoning_tokens: 0,
+          thinking_tokens: 489,
+        },
+      });
+      const executor = new AgentExecutor(baseConfig, ai, noopLogger);
+
+      const result = await executor.execute(makeValidatorDef(), { target: tmpDir });
+
+      // (15099 − 8098) + 2334 + 0 = 9335 — NOT the old 17433 gross or 17922 over-count.
+      expect(result.metrics.totalEffectiveTokens).toBe(9335);
+      expect(result.metrics.cachedInputTokens).toBe(8098);
+      expect(result.metrics.harness).toBe('uluops-core');
+    });
+
+    it('clamps cached_input subtraction at zero when cached exceeds input', async () => {
+      const ai = mockAIProvider({
+        usage: { input_tokens: 100, output_tokens: 50, cached_input_tokens: 250 },
+      });
+      const executor = new AgentExecutor(baseConfig, ai, noopLogger);
+
+      const result = await executor.execute(makeValidatorDef(), { target: tmpDir });
+
+      // Math.max(0, 100 − 250) + 50 = 50 (never negative).
+      expect(result.metrics.totalEffectiveTokens).toBe(50);
+    });
+
     it('passes threshold from options', async () => {
       const ai = mockAIProvider();
       const executor = new AgentExecutor(baseConfig, ai, noopLogger);

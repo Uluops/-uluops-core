@@ -4,14 +4,17 @@ import { sumTokenMetrics } from '../../src/utils/sumTokenMetrics.js';
 describe('sumTokenMetrics', () => {
   it('sums token fields across multiple items', () => {
     const result = sumTokenMetrics([
-      { inputTokens: 100, outputTokens: 50, cacheCreationTokens: 10, cacheReadTokens: 20, totalEffectiveTokens: 180 },
-      { inputTokens: 200, outputTokens: 75, cacheCreationTokens: 15, cacheReadTokens: 30, totalEffectiveTokens: 320 },
+      { inputTokens: 100, outputTokens: 50, cacheCreationTokens: 10, cacheReadTokens: 20, cachedInputTokens: 5, reasoningOutputTokens: 8, thinkingTokens: 3, totalEffectiveTokens: 180 },
+      { inputTokens: 200, outputTokens: 75, cacheCreationTokens: 15, cacheReadTokens: 30, cachedInputTokens: 7, reasoningOutputTokens: 0, thinkingTokens: 12, totalEffectiveTokens: 320 },
     ]);
     expect(result).toEqual({
       inputTokens: 300,
       outputTokens: 125,
       cacheCreationTokens: 25,
       cacheReadTokens: 50,
+      cachedInputTokens: 12,
+      reasoningOutputTokens: 8,
+      thinkingTokens: 15,
       totalEffectiveTokens: 500,
     });
   });
@@ -23,6 +26,9 @@ describe('sumTokenMetrics', () => {
       outputTokens: 0,
       cacheCreationTokens: 0,
       cacheReadTokens: 0,
+      cachedInputTokens: 0,
+      reasoningOutputTokens: 0,
+      thinkingTokens: 0,
       totalEffectiveTokens: 0,
     });
   });

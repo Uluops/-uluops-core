@@ -806,7 +806,10 @@ export class AIProvider {
     // 5. Generic provider metadata scan for non-bundled providers.
     // Best-effort extraction of cache tokens from unknown provider metadata.
     // Uses ??= to never override values set by provider-specific tiers above.
-    if (providerMetadata && base.cache_read_input_tokens == null) {
+    // Guards on cached_input_tokens (not cache_read): the generic scan extracts
+    // an unknown provider's cached *input* (cachedPromptTokens/cachedContentTokenCount),
+    // which the disentangle (§3.2) routes to cached_input_tokens, not cache_read.
+    if (providerMetadata && base.cached_input_tokens == null) {
       this.extractGenericUsage(base, providerMetadata);
     }
 
@@ -823,14 +826,17 @@ export class AIProvider {
   private extractOpenAIUsage(base: UsageMetrics, providerMetadata?: Record<string, unknown>): void {
     const meta = (providerMetadata as { openai?: { cachedPromptTokens?: number; reasoningTokens?: number } } | undefined)?.openai;
     if (!meta) return;
-    base.cache_read_input_tokens ??= meta.cachedPromptTokens;
+    // DISENTANGLE (§3.2): OpenAI cachedPromptTokens is cached *input*, not a cache read.
+    // Route to cached_input_tokens so the canonical total_effective subtracts it.
+    base.cached_input_tokens ??= meta.cachedPromptTokens;
     if (meta.reasoningTokens) base.reasoning_tokens = meta.reasoningTokens;
   }
 
   private extractGoogleUsage(base: UsageMetrics, providerMetadata?: Record<string, unknown>): void {
     const gUsage = (providerMetadata as { google?: { usageMetadata?: { cachedContentTokenCount?: number; thoughtsTokenCount?: number } } } | undefined)?.google?.usageMetadata;
     if (!gUsage) return;
-    base.cache_read_input_tokens ??= gUsage.cachedContentTokenCount;
+    // DISENTANGLE (§3.2): Google cachedContentTokenCount is cached *input*, not a cache read.
+    base.cached_input_tokens ??= gUsage.cachedContentTokenCount;
     if (gUsage.thoughtsTokenCount) base.thinking_tokens = gUsage.thoughtsTokenCount;
   }
 
@@ -841,7 +847,8 @@ export class AIProvider {
       const meta = value as Record<string, unknown>;
       const cached = meta['cachedTokens'] ?? meta['cachedContentTokenCount'] ?? meta['cachedPromptTokens'];
       if (typeof cached === 'number' && cached > 0) {
-        base.cache_read_input_tokens = cached;
+        // DISENTANGLE (§3.2): unknown-provider cached input → cached_input_tokens, not cache_read.
+        base.cached_input_tokens = cached;
         break;
       }
     }

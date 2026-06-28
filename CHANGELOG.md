@@ -6,6 +6,28 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) 
 
 ## [Unreleased]
 
+## [0.26.0] - 2026-06-28
+
+### Added
+
+- **Cross-harness token components** (additive, non-breaking). `cached_input_tokens` on
+  `UsageMetrics`; `cachedInputTokens` + `reasoningOutputTokens` on `ExecutionMetrics`
+  (joining the existing `thinkingTokens`), aggregated by `sumTokenMetrics`. reasoning/thinking
+  are subsets of GROSS output — stored, never re-added to `totalEffectiveTokens`.
+- **`harness` on `ExecutionMetrics`** — `@uluops/core` emits `'uluops-core'` (vendor-derived;
+  core runs OpenAI/Google, not a constant `claude-code`). Canonical vocabulary §2.4 (G4).
+
+### Changed
+
+- **Cached-input disentangle (§3.2).** OpenAI `cachedPromptTokens`, Google
+  `cachedContentTokenCount`, and the generic-provider cached scan now populate the new
+  `cached_input_tokens` instead of aliasing into `cache_read_input_tokens`. `cache_read_input_tokens`
+  now holds only genuine Anthropic-style cache reads. **Behavioral** for OpenAI/Google cache fields.
+- **`total_effective` now subtracts cached input** — `calculateEffectiveTokens` →
+  `(input − cached_input) + output_gross + cache_creation` (clamped at 0). Completes the
+  v0.25.1 `+ thinking` removal; together they **lower** stored `total_effective` for
+  OpenAI/Google runs (the live sample 17922 → 9335). See cross-harness-token-normalization-spec §3.2/§4.1.
+
 ## [0.25.1] - 2026-06-28
 
 ### Fixed

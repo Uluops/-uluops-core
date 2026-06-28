@@ -408,14 +408,17 @@ const { metrics } = result;
 
 console.log(`Input: ${metrics.inputTokens}, Output: ${metrics.outputTokens}`);
 console.log(`Cache: ${metrics.cacheCreationTokens ?? 0} created, ${metrics.cacheReadTokens ?? 0} read`);
+console.log(`Harness: ${metrics.harness ?? 'unknown'}`); // producing runtime ('uluops-core'), v0.26.0
 
-// thinkingTokens (Google) and reasoningTokens (OpenAI) are BOTH already counted
-// within outputTokens by the AI SDK, so neither is added to totalEffectiveTokens —
-// they are exposed as separate components for cost breakdown only.
-if (metrics.thinkingTokens) {
-  console.log(`Thinking: ${metrics.thinkingTokens}`);
-}
+// Cross-harness components (v0.26.0). cachedInputTokens is the cache-served portion of
+// gross input (OpenAI/Google), SUBTRACTED in totalEffectiveTokens. reasoningOutputTokens
+// (OpenAI) and thinkingTokens (Google) are subsets of gross outputTokens — exposed for
+// cost breakdown only, NEVER added to totalEffectiveTokens (the AI SDK already folds them in).
+if (metrics.cachedInputTokens) console.log(`Cached input: ${metrics.cachedInputTokens}`);
+if (metrics.reasoningOutputTokens) console.log(`Reasoning: ${metrics.reasoningOutputTokens}`);
+if (metrics.thinkingTokens) console.log(`Thinking: ${metrics.thinkingTokens}`);
 
+// Canonical: (inputTokens − cachedInputTokens) + outputTokens (gross) + cacheCreationTokens.
 console.log(`Effective total: ${metrics.totalEffectiveTokens}`);
 ```
 
