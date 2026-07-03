@@ -195,7 +195,11 @@ describe('AnalysisSummaryExtractor', () => {
   });
 
   describe('system metrics', () => {
-    it('populates from execution metrics', () => {
+    it('is null when the agent produced no cognitive metrics — execution telemetry is NOT merged in', () => {
+      // system-metrics-contract spec v0.1.2 D4 (issue 762f58be): tokens/model/
+      // duration travel first-class on agents[] via SubmissionClient; the
+      // extraction facts move to epistemicAssessment. systemMetrics carries
+      // cognitive measurements only.
       const result = makeAgentResult({
         extractionConfidence: 1.0,
         extractionMethod: 'structured_output',
@@ -203,19 +207,31 @@ describe('AnalysisSummaryExtractor', () => {
       const resolved = makeResolvedDefinition();
       const { summary } = extractor.extract(result, resolved);
 
-      expect(summary.systemMetrics).toEqual({
-        inputTokens: 500,
-        outputTokens: 200,
-        cacheCreationTokens: 100,
-        cacheReadTokens: 50,
-        thinkingTokens: undefined,
-        totalEffectiveTokens: 750,
-        durationMs: 1200,
-        model: 'claude-sonnet-4-5-20250929',
-        toolCallCount: 3,
-        costUsd: undefined,
-        extractionConfidence: 1.0,
-        extractionMethod: 'structured_output',
+      expect(summary.systemMetrics).toBeNull();
+      expect(summary.epistemicAssessment).toEqual({
+        extraction_confidence: 1.0,
+        extraction_method: 'structured_output',
+      });
+    });
+
+    it('never clobbers agent-authored extraction keys in the epistemic assessment', () => {
+      const result = makeAgentResult({
+        extractionConfidence: 0.95,
+        extractionMethod: 'json_code_fence',
+        rawJson: {
+          decision: 'EXAMINED',
+          score: 72,
+          epistemicAssessment: { extraction_confidence: 0.4, ownSignal: 'low' },
+        },
+      });
+      const resolved = makeResolvedDefinition();
+      const { summary } = extractor.extract(result, resolved);
+
+      // Agent's own key WINS; core fills only what's absent
+      expect(summary.epistemicAssessment).toEqual({
+        extraction_confidence: 0.4,
+        ownSignal: 'low',
+        extraction_method: 'json_code_fence',
       });
     });
   });
@@ -456,12 +472,12 @@ describe('AnalysisSummaryExtractor', () => {
       const resolved = makeResolvedDefinition();
       const { summary } = extractor.extract(result, resolved);
 
-      // Numeric strings converted to numbers; enum strings preserved
-      expect(summary.systemMetrics).toMatchObject({
+      // Numeric strings converted to numbers; enum strings preserved.
+      // Execution telemetry is NOT merged in (spec v0.1.2 D4) — domain
+      // metrics only, exactly as submitted.
+      expect(summary.systemMetrics).toEqual({
         atomsFound: 42,
         decompositionFit: 'HIGH',
-        // Execution metrics still present
-        inputTokens: 500,
       });
     });
   });
@@ -525,7 +541,7 @@ describe('AnalysisSummaryExtractor', () => {
         analysis,
       })}\n\`\`\`\n\nMore text.`;
 
-    it('uses domain system_metrics from analysis block, merged with execution metrics', () => {
+    it('uses domain system_metrics from analysis block, with NO execution telemetry merged in', () => {
       const result = makeAgentResult({
         rawOutput: jsonFence({
           system_metrics: {
@@ -538,13 +554,11 @@ describe('AnalysisSummaryExtractor', () => {
       const resolved = makeResolvedDefinition();
       const { summary } = extractor.extract(result, resolved);
 
-      // Domain metrics override execution metrics
-      expect(summary.systemMetrics).toMatchObject({
+      // Cognitive metrics exactly as the agent submitted them (spec v0.1.2 D4)
+      expect(summary.systemMetrics).toEqual({
         alignmentLevel: 'substantially aligned',
         statedClassificationsCount: 6,
-        // Execution metrics still present
-        inputTokens: 500,
-        model: 'claude-sonnet-4-5-20250929',
+        alignedClassificationsCount: 4,
       });
     });
 
