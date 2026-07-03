@@ -39,6 +39,7 @@ export class SubmissionClient {
         apiKey: this.config.apiKey,
         baseUrl: this.config.submissionUrl,
         timeout: this.config.timeout,
+        onSecurityEvent: this.config.onSecurityEvent,
       });
     }
     return this._ops;

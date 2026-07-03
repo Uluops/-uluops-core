@@ -651,6 +651,8 @@ export function resolveConfig(config: UluOpsConfig, env: NodeJS.ProcessEnv = pro
     dashboardUrl,
     localDefinitions: config.localDefinitions ?? env['ULUOPS_LOCAL_DEFINITIONS'],
     trackingEnabled: config.trackingEnabled ?? (env['ULUOPS_TRACKING_ENABLED'] !== 'false'),
+    // Pass-through: a callback, nothing to default or resolve.
+    onSecurityEvent: config.onSecurityEvent,
     timeout: config.timeout ?? DEFAULT_TIMEOUT_MS,
     defaultProject: config.defaultProject ?? env['ULUOPS_PROJECT'],
     defaultThinkingBudget: config.defaultThinkingBudget ?? 10_000,

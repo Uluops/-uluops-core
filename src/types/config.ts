@@ -1,3 +1,5 @@
+import type { SecurityEventHandler } from '@uluops/sdk-core';
+
 /**
  * AI provider credentials
  */
@@ -110,6 +112,18 @@ export interface UluOpsConfig {
    */
   trackingEnabled?: boolean;
 
+  /**
+   * Called when a security-relevant event occurs during a UluOps API call —
+   * a rejected credential (`auth_failure`), a blocked upstream redirect
+   * (`redirect_rejected`, a possible MITM signal), a failed token refresh, or a
+   * credential swap. Forwarded to the underlying registry and submission SDK
+   * clients, so it covers both services. Structured, routable telemetry
+   * ({@link SecurityEvent}); best-effort and fire-and-forget. Notably surfaces
+   * events on the best-effort tracking-submission path, where failures are
+   * otherwise reduced to a non-fatal log line.
+   */
+  onSecurityEvent?: SecurityEventHandler;
+
   /** Request timeout in ms (default: 300000) */
   timeout?: number;
 
@@ -197,6 +211,8 @@ export interface ResolvedConfig {
   dashboardUrl: string;
   localDefinitions?: string;
   trackingEnabled: boolean;
+  /** Security-event handler forwarded to the SDK clients (see {@link UluOpsConfig.onSecurityEvent}). */
+  onSecurityEvent?: SecurityEventHandler;
   timeout: number;
   defaultProject?: string;
   defaultThinkingBudget: number;

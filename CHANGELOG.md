@@ -6,7 +6,24 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) 
 
 ## [Unreleased]
 
-## [0.26.1] - 2026-07-02
+## [0.27.0] - 2026-07-02
+
+Adopts `@uluops/sdk-core@0.14.0` across the SDK tree and exposes its structured
+security-event channel through core's config.
+
+### Added
+
+- **`UluOpsConfig.onSecurityEvent`** — a structured security-event handler
+  forwarded to both underlying SDK clients (registry + submission), so it covers
+  security-relevant events across all of core's UluOps API traffic: a rejected
+  credential (`auth_failure`), a blocked upstream redirect (`redirect_rejected`,
+  a possible-MITM signal), a failed token refresh, or a credential swap. Notably
+  it surfaces events on the **best-effort tracking-submission path**, where a
+  failure is otherwise softened into a non-fatal log line. Best-effort and
+  fire-and-forget (a throwing handler never breaks a run). The `SecurityEvent`
+  union and its member types are re-exported from the package root for typing
+  handlers. This is the first SDK operational callback core exposes — justified
+  because it is security telemetry, not operational tuning.
 
 ### Dependencies
 
@@ -14,9 +31,9 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) 
   `@uluops/registry-sdk` 0.36.0 → 0.38.0.** Adopts the sdk-core security-observability
   release (redirect hardening via `redirect: 'manual'`, `baseUrl` embedded-credential
   rejection, sanitized `requestId`) across core's entire SDK dependency tree, so
-  everything core resolves at runtime is on a single, current sdk-core. No core API
-  or behavior change — the affected SDK types (`maxScore` nullability from ops-sdk
-  5.0.0) are used internally and not re-exported. Patch-level dependency update.
+  everything core resolves at runtime is on a single, current sdk-core. The ops-sdk
+  5.0.0 breaking change (`maxScore` nullability) affects types core uses internally
+  and does not re-export — no core behavior change.
 
 ## [0.26.0] - 2026-06-28
 

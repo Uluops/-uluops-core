@@ -55,6 +55,7 @@ export class RegistryClient {
       apiKey: config.apiKey,
       baseUrl: config.registryUrl,
       timeout: config.timeout,
+      onSecurityEvent: config.onSecurityEvent,
     });
   }
 

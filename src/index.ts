@@ -144,6 +144,19 @@ export type { UsageMetrics } from './types/ai.js';
 // ─── Logger (re-exported from @uluops/sdk-core) ──────────────────────────────
 export type { Logger } from '@uluops/sdk-core';
 
+// ─── Security events (re-exported from @uluops/sdk-core) ─────────────────────
+// Consumers set UluOpsConfig.onSecurityEvent and type the handler with these.
+export type {
+  SecurityEvent,
+  SecurityEventType,
+  SecurityEventHandler,
+  AuthType,
+  AuthFailureEvent,
+  RedirectRejectedEvent,
+  TokenRefreshFailedEvent,
+  AuthStrategyReplacedEvent,
+} from '@uluops/sdk-core';
+
 // ─── Errors: Core SDK ─────────────────────────────────────────────────────────
 export {
   UluOpsError,
