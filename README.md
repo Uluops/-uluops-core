@@ -113,7 +113,7 @@ The `@uluops/core` SDK provides:
 - **Universal Agent Output** - Single `agentOutputSchema` with categories + artifacts for all 6 agent types (validator, executor, analyst, generator, explorer, forecaster)
 - **Structured Output Extraction** - 4-strategy fallback: AI SDK structured output > JSON code fence > inline JSON > regex text parsing
 - **Validation Tracking** - Automatic result submission with issue correlation, regression detection, per-agent execution recording, and analytics
-- **Analysis Summary Extraction** - Automatic extraction of category scores, system metrics, epistemic assessments, and exploration maps from agent results at submission time
+- **Analysis Summary Extraction** - Automatic extraction of category scores, cognitive system metrics, epistemic assessments, and exploration maps from agent results at submission time. Execution telemetry (tokens, model, duration) travels first-class on `agents[]`, never inside analysis data
 - **Local Development Support** - Load definitions from local YAML files with registry fallback
 - **Bundled Starter Agents** - 5 built-in agents for immediate use without registry access
 
@@ -397,6 +397,12 @@ const run = await client.getRun('run-uuid');
 ```
 
 On the auto-tracking path, a failed submission (e.g. a free-tier `402 PROJECT_LIMIT`, `SUBSCRIPTION_REQUIRED`, or a transient 5xx) is **non-fatal** — the agent run still resolves successfully. The result carries `trackingFailed: true` plus a typed `trackingError` (`{ code, statusCode, message, requestId, details }`), so callers can surface the reason — and any `details.upgradeUrl` — instead of silently dropping the dashboard link. `code` (e.g. `PROJECT_LIMIT`) is the stable contract; `message` is human-readable and should not be matched on.
+
+**What lands in analysis data.** At submission time, `AnalysisSummaryExtractor` builds the run's `analysisSummary` + `analysisRecords`:
+
+- `systemMetrics` carries the agent's **cognitive measurements only** — its analysis-block `system_metrics`, else structured-output `domainMetrics`, else `null`. Execution telemetry (tokens, model, duration) is never merged in; it travels on `agents[]`.
+- Extraction facts (`extraction_confidence`, `extraction_method`) are epistemic facts about the parse and merge into `epistemicAssessment` — the agent's own keys always win.
+- Record `severity` is sanitized onto the tracker enum (`critical`/`high`/`medium`/`low`/`info`): enum values are case-normalized; anything else (register-style severities like `structural` or `NOTABLE`) becomes `null` with the original preserved as `data.rawSeverity`. One off-vocabulary record can no longer reject the entire submission.
 
 ### Usage Metrics
 
