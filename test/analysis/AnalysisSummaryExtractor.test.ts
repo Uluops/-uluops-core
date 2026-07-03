@@ -484,6 +484,67 @@ describe('AnalysisSummaryExtractor', () => {
 
   // Locks the first-non-empty-tier-wins ordering of buildAnalysisRecords so a tier
   // reorder/removal is a loud failure rather than silent data loss for an agent class.
+  describe('record severity sanitization', () => {
+    const fenceWith = (analysis: Record<string, unknown>) =>
+      `# Report\n\n\`\`\`json\n${JSON.stringify({ agent: {}, result: {}, analysis })}\n\`\`\`\n`;
+
+    it('coerces off-vocabulary severity to null and preserves the raw value (Tier 1 analysis block)', () => {
+      const result = makeAgentResult({
+        rawOutput: fenceWith({
+          records: [
+            { recordType: 'commitment', recordId: 'R1', title: 'register-style', severity: 'structural', data: { note: 'kept' } },
+            { recordType: 'commitment', recordId: 'R2', title: 'valid', severity: 'high', data: {} },
+          ],
+        }),
+      });
+      const { records } = extractor.extract(result, makeResolvedDefinition());
+      expect(records[0].severity).toBeNull();
+      expect(records[0].data).toEqual({ note: 'kept', rawSeverity: 'structural' });
+      expect(records[1].severity).toBe('high');
+      expect(records[1].data).not.toHaveProperty('rawSeverity');
+    });
+
+    it('case-normalizes enum severities instead of nulling them', () => {
+      const result = makeAgentResult({
+        rawOutput: fenceWith({
+          records: [{ recordType: 'commitment', recordId: 'R1', title: 'cased', severity: 'HIGH', data: {} }],
+        }),
+      });
+      const { records } = extractor.extract(result, makeResolvedDefinition());
+      expect(records[0].severity).toBe('high');
+      expect(records[0].data).not.toHaveProperty('rawSeverity');
+    });
+
+    it('sanitizes Tier 2 structured records and Tier 4 recommendation records', () => {
+      const structured = makeAgentResult({
+        rawJson: {
+          analysisRecords: [{ recordType: 'commitment', recordId: 'T2', title: 'tier-2', severity: 'epistemic', data: [] }],
+        },
+      });
+      const { records: t2 } = extractor.extract(structured, makeResolvedDefinition());
+      expect(t2[0].severity).toBeNull();
+      expect(t2[0].data).toMatchObject({ rawSeverity: 'epistemic' });
+
+      const recs = makeAgentResult({
+        recommendations: [{ agent: 'test-validator', title: 'tier-4', priority: 'suggested', severity: 'tactical' }],
+      });
+      const { records: t4 } = extractor.extract(recs, makeResolvedDefinition());
+      expect(t4[0].severity).toBeNull();
+      expect(t4[0].data).toMatchObject({ rawSeverity: 'tactical' });
+    });
+
+    it('leaves null/absent severity untouched', () => {
+      const result = makeAgentResult({
+        rawOutput: fenceWith({
+          records: [{ recordType: 'commitment', recordId: 'R1', title: 'no severity', data: {} }],
+        }),
+      });
+      const { records } = extractor.extract(result, makeResolvedDefinition());
+      expect(records[0].severity ?? null).toBeNull();
+      expect(records[0].data).not.toHaveProperty('rawSeverity');
+    });
+  });
+
   describe('record tier precedence', () => {
     const fenceWith = (analysis: Record<string, unknown>) =>
       `# Report\n\n\`\`\`json\n${JSON.stringify({ agent: {}, result: {}, analysis })}\n\`\`\`\n`;

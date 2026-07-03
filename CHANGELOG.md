@@ -6,6 +6,21 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) 
 
 ## [Unreleased]
 
+## [0.28.1] - 2026-07-03
+
+### Fixed
+
+- **Off-vocabulary record severities no longer kill the tracking save**
+  (tracker issue `9e15b469`). Cognitive lens agents emit register-style
+  severities (`structural`, `epistemic`, `tactical`, …) in their analysis
+  records; the SDK's input validation rejects the whole `save_run` when any
+  record's `severity` is outside `critical/high/medium/low/info` — one
+  off-vocabulary record meant the entire run went unrecorded (observed live
+  on both `laozi-analyst` and `anxiety-reader`). All record tiers now funnel
+  through a sanitizer at extraction: enum values are case-normalized, and
+  anything else is coerced to `null` with the original preserved as
+  `data.rawSeverity` — the save always goes through, and no signal is lost.
+
 ## [0.28.0] - 2026-07-02
 
 `systemMetrics` means cognitive measurements again — execution telemetry

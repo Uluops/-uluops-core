@@ -27,6 +27,8 @@ const VALID_RECORD_TYPES = new Set([
   'evidence_finding',
 ]);
 
+const VALID_SEVERITIES = new Set(['critical', 'high', 'medium', 'low', 'info']);
+
 
 /**
  * Result of analysis extraction from an agent execution.
@@ -458,6 +460,34 @@ export class AnalysisSummaryExtractor {
    *    of the above (evidence_finding, hash IDs).
    */
   private buildAnalysisRecords(
+    result: AgentResult,
+    analysisBlock: AgentAnalysisBlock | null,
+  ): AnalysisRecordInput[] {
+    return this.collectAnalysisRecords(result, analysisBlock).map(r => this.sanitizeRecordSeverity(r));
+  }
+
+  /**
+   * Coerce record severity onto the tracker enum (critical/high/medium/low/info).
+   * Lens agents emit register-style severities ("structural", "epistemic", …) that the
+   * SDK's input validation rejects wholesale — one off-vocabulary record killed the
+   * entire tracking save. Case-normalize onto the enum; anything else becomes null with
+   * the original preserved in data.rawSeverity, so the save always goes through.
+   */
+  private sanitizeRecordSeverity(record: AnalysisRecordInput): AnalysisRecordInput {
+    const raw = record.severity;
+    if (raw == null) return record;
+    const normalized = String(raw).toLowerCase();
+    if (VALID_SEVERITIES.has(normalized)) {
+      return normalized === raw ? record : { ...record, severity: normalized };
+    }
+    return {
+      ...record,
+      severity: null,
+      data: { ...(record.data ?? {}), rawSeverity: String(raw) },
+    };
+  }
+
+  private collectAnalysisRecords(
     result: AgentResult,
     analysisBlock: AgentAnalysisBlock | null,
   ): AnalysisRecordInput[] {
