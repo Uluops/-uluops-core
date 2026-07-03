@@ -6,6 +6,37 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) 
 
 ## [Unreleased]
 
+## [0.28.0] - 2026-07-02
+
+`systemMetrics` means cognitive measurements again — execution telemetry
+separated out of analysis data.
+
+### Changed
+
+- **`AnalysisSummaryExtractor` no longer merges the execution envelope into
+  `systemMetrics`** (tracker issue `762f58be`; system-metrics-contract spec
+  v0.1.2 D4). `systemMetrics` now carries the agent's cognitive measurements
+  only — analysis-block `system_metrics`, else structured-output
+  `domainMetrics`, else **`null`** (a run with no cognitive metrics has no
+  system metrics). Tokens/model/duration were always redundant here — they
+  travel first-class on `agents[]` via `SubmissionClient.resultToAgent`.
+  `costUsd` (derivable from tokens + pricing) and `toolCallCount` (execution
+  fact) are dropped from analysis data.
+- **Extraction facts move to `epistemicAssessment`** as
+  `extraction_confidence` / `extraction_method` — they are epistemic facts
+  about the parse. Merged after resolution across both branches; the agent's
+  own keys always win; results with undefined extraction fields contribute
+  nothing (an empty merge stays `null`).
+
+### Design Notes
+
+- Consequence: `epistemicAssessment` is non-null for any summary whose result
+  carries extraction facts (previously null without an agent epistemic
+  block); `systemMetrics` is nullable (previously always an envelope-bearing
+  object). Downstream tracker rows written by ≤0.27.0 carry the old envelope
+  — no backfill (spec D5); the ops-api ingest floor (1.65.0) annotates
+  wrong-shaped values but deliberately does not strip these all-scalar keys.
+
 ## [0.27.0] - 2026-07-02
 
 Adopts `@uluops/sdk-core@0.14.0` across the SDK tree and exposes its structured

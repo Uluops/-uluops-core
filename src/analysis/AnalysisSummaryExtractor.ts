@@ -62,8 +62,13 @@ interface AgentAnalysisBlock {
  *    explorationMaps, epistemicAssessment, auditImplications added in v0.10.0.
  *    Used as fallback when the analysis block doesn't have them.
  *
- * 3. **Execution envelope** (from AgentResult.metrics) — tokens, duration,
- *    model. Always included in systemMetrics alongside domain metrics.
+ * Execution telemetry (tokens, duration, model) is deliberately NOT part of
+ * analysis data — it travels first-class on `agents[]` via
+ * SubmissionClient.resultToAgent. systemMetrics carries the agent's cognitive
+ * measurements only, and is null when the agent produced none
+ * (system-metrics-contract spec v0.1.2 D4; previously an execution envelope
+ * was always merged in — tracker issue 762f58be). The two extraction facts
+ * (confidence, method) live in epistemicAssessment.
  */
 export class AnalysisSummaryExtractor {
   /**
@@ -130,7 +135,10 @@ export class AnalysisSummaryExtractor {
       decisionVocabulary: this.buildDecisionVocabulary(definition),
       categoryScores: analysisBlock?.category_scores ?? this.buildCategoryScores(result, definition),
       systemMetrics: this.buildSystemMetrics(result, analysisBlock),
-      epistemicAssessment: this.resolveEpistemicAssessment(analysisBlock, result.rawJson),
+      epistemicAssessment: this.withExtractionFacts(
+        this.resolveEpistemicAssessment(analysisBlock, result.rawJson),
+        result,
+      ),
       auditImplications: this.resolveAuditImplications(analysisBlock, result.rawJson),
       explorationMaps: this.extractExplorationMaps(result.rawJson),
     };
@@ -234,40 +242,28 @@ export class AnalysisSummaryExtractor {
   // ─── System Metrics ─────────────────────────────────────────────────────
 
   /**
-   * Build system metrics by merging domain metrics with execution metrics.
+   * Build system metrics — the agent's COGNITIVE measurements only.
    *
-   * Priority: analysis block system_metrics > structured output domainMetrics > execution metrics only.
-   * Domain metrics (e.g., "Promising: 3", "Candidates Identified: 5") are what the
-   * dashboard displays. Execution metrics (tokens, duration, model) always included.
+   * Priority: analysis block system_metrics > structured output domainMetrics
+   * > null. A run whose agent produced no cognitive metrics has no system
+   * metrics — that is the honest state, not an execution envelope.
+   *
+   * Execution telemetry deliberately does NOT live here
+   * (system-metrics-contract spec v0.1.2 D4, tracker issue 762f58be): tokens,
+   * model, and duration are already first-class on the wire via
+   * SubmissionClient.resultToAgent; extraction confidence/method are epistemic
+   * facts and live in epistemicAssessment (see buildSummary); costUsd is
+   * derivable from tokens + pricing; toolCallCount is an execution fact with
+   * no analysis meaning.
    */
-  private buildSystemMetrics(result: AgentResult, analysisBlock: AgentAnalysisBlock | null): Record<string, unknown> {
-    const executionMetrics: Record<string, unknown> = {
-      inputTokens: result.metrics.inputTokens,
-      outputTokens: result.metrics.outputTokens,
-      cacheCreationTokens: result.metrics.cacheCreationTokens,
-      cacheReadTokens: result.metrics.cacheReadTokens,
-      thinkingTokens: result.metrics.thinkingTokens,
-      totalEffectiveTokens: result.metrics.totalEffectiveTokens,
-      durationMs: result.metrics.durationMs,
-      model: result.metrics.model,
-      toolCallCount: result.metrics.toolCallCount,
-      costUsd: result.metrics.costUsd,
-      extractionConfidence: result.extractionConfidence,
-      extractionMethod: result.extractionMethod,
-    };
-
+  private buildSystemMetrics(result: AgentResult, analysisBlock: AgentAnalysisBlock | null): Record<string, unknown> | null {
     // Prefer analysis block domain metrics (from JSON code fence)
     if (analysisBlock?.system_metrics && typeof analysisBlock.system_metrics === 'object') {
-      return { ...executionMetrics, ...analysisBlock.system_metrics };
+      return analysisBlock.system_metrics;
     }
 
     // Fall back to structured output domainMetrics (from agentOutputSchema)
-    const domainMetrics = this.extractDomainMetrics(result.rawJson);
-    if (domainMetrics) {
-      return { ...executionMetrics, ...domainMetrics };
-    }
-
-    return executionMetrics;
+    return this.extractDomainMetrics(result.rawJson);
   }
 
   /**
@@ -305,6 +301,36 @@ export class AnalysisSummaryExtractor {
     }
     const raw = this.extractJsonField(rawJson, 'epistemicAssessment', 'epistemic_assessment');
     return raw && typeof raw === 'object' && !Array.isArray(raw) ? raw as Record<string, unknown> : null;
+  }
+
+  /**
+   * Merge extraction facts into the RESOLVED epistemic assessment — applied
+   * after resolveEpistemicAssessment returns, wrapping BOTH its branches
+   * (agent-block early return and structured-output fallback), never inside
+   * one branch (system-metrics-contract spec v0.1.2 D4).
+   *
+   * Precedence: the agent's own keys WIN — extraction_confidence /
+   * extraction_method are filled only when the resolved assessment lacks
+   * them; agent-authored values are never clobbered.
+   *
+   * Consequence (spec, refined here): epistemicAssessment is non-null for
+   * any core-produced summary whose result carries extraction facts — the
+   * mirror of systemMetrics becoming nullable. Results with UNDEFINED
+   * extraction fields contribute nothing (no junk `{key: undefined}` maps);
+   * an empty merge stays null.
+   */
+  private withExtractionFacts(
+    resolved: Record<string, unknown> | null,
+    result: AgentResult,
+  ): Record<string, unknown> | null {
+    const merged: Record<string, unknown> = { ...(resolved ?? {}) };
+    if (!('extraction_confidence' in merged) && result.extractionConfidence !== undefined) {
+      merged['extraction_confidence'] = result.extractionConfidence;
+    }
+    if (!('extraction_method' in merged) && result.extractionMethod !== undefined) {
+      merged['extraction_method'] = result.extractionMethod;
+    }
+    return Object.keys(merged).length > 0 ? merged : null;
   }
 
   // ─── Audit Implications ─────────────────────────────────────────────────
