@@ -6,6 +6,18 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) 
 
 ## [Unreleased]
 
+## [0.26.1] - 2026-07-02
+
+### Dependencies
+
+- **Bump `@uluops/sdk-core` 0.13.0 → 0.14.0, `@uluops/ops-sdk` 4.0.0 → 5.4.0,
+  `@uluops/registry-sdk` 0.36.0 → 0.38.0.** Adopts the sdk-core security-observability
+  release (redirect hardening via `redirect: 'manual'`, `baseUrl` embedded-credential
+  rejection, sanitized `requestId`) across core's entire SDK dependency tree, so
+  everything core resolves at runtime is on a single, current sdk-core. No core API
+  or behavior change — the affected SDK types (`maxScore` nullability from ops-sdk
+  5.0.0) are used internally and not re-exported. Patch-level dependency update.
+
 ## [0.26.0] - 2026-06-28
 
 ### Added
