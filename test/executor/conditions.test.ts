@@ -65,9 +65,15 @@ describe('evaluateConditionExpr', () => {
       expect(evaluateConditionExpr('!!params.skip_behavior', ctx)).toBe(true);
     });
 
-    it('returns unknown for an absent param, and !unknown stays unknown', () => {
-      expect(evaluateConditionExpr('params.nope', ctx)).toBeNull();
-      expect(evaluateConditionExpr('!params.nope', ctx)).toBeNull();
+    it('treats an absent param as false, not unknown (D5 amendment)', () => {
+      // Absence is a normal caller state — the corpus gates agents with
+      // `params.x || <detect>` expecting absent→false (live finding e9399a31).
+      expect(evaluateConditionExpr('params.nope', ctx)).toBe(false);
+      expect(evaluateConditionExpr('!params.nope', ctx)).toBe(true);
+      expect(evaluateConditionExpr("params.nope == 'anything'", ctx)).toBe(false);
+      expect(evaluateConditionExpr("params.nope != 'anything'", ctx)).toBe(true);
+      // Ordering over an absent param stays ill-formed (unknown).
+      expect(evaluateConditionExpr('params.nope >= 5', ctx)).toBeNull();
     });
 
     it('supports bracket access', () => {
@@ -124,13 +130,25 @@ describe('evaluateConditionExpr', () => {
     });
 
     it('OR short-circuits true past an unknown; unknown survives otherwise', () => {
-      expect(evaluateConditionExpr("params.nope || stages.validate.score >= 70", ctx)).toBe(true);
-      expect(evaluateConditionExpr('params.nope || params.frontend', ctx)).toBeNull();
+      // stages.ghost.* is the genuine unknown source (missing stage = typo signal).
+      expect(evaluateConditionExpr("stages.ghost.failed || stages.validate.score >= 70", ctx)).toBe(true);
+      expect(evaluateConditionExpr('stages.ghost.failed || params.frontend', ctx)).toBeNull();
     });
 
-    it('AND short-circuits false past an unknown; unknown survives otherwise', () => {
-      expect(evaluateConditionExpr('params.nope && params.frontend', ctx)).toBe(false);
-      expect(evaluateConditionExpr('params.nope && params.skip_behavior', ctx)).toBeNull();
+    it('AND yields false past an unknown when any term is false; unknown survives otherwise', () => {
+      // Kleene: false dominates unknown in AND, regardless of term order.
+      expect(evaluateConditionExpr('stages.ghost.failed && params.frontend', ctx)).toBe(false);
+      expect(evaluateConditionExpr('params.frontend && stages.ghost.failed', ctx)).toBe(false);
+      expect(evaluateConditionExpr('stages.ghost.failed && params.skip_behavior', ctx)).toBeNull();
+    });
+
+    it('gates the live-finding form correctly: absent param || false detection is false', () => {
+      // The exact shape from the $11.46 live run: frontend-validator must gate
+      // OFF when params.frontend is unset and detection says NOT_DETECTED.
+      expect(evaluateConditionExpr(
+        "params.frontend_missing || stages.preflight.steps['Detect frontend'].output == 'DETECTED'",
+        ctx,
+      )).toBe(false);
     });
 
     it('does not split on || inside quoted strings', () => {

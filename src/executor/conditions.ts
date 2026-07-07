@@ -17,13 +17,21 @@
  *              | stages.<id>.<field>
  *              | <id>.<field>                       (legacy, pre-Phase-3 form)
  *
- * Evaluation is THREE-VALUED (Kleene): true / false / null-unknown. A path
- * that cannot be resolved (missing stage, undefined param, or an unsupported
+ * Evaluation is THREE-VALUED (Kleene): true / false / null-unknown. A stage or
+ * step path that cannot be resolved (missing stage, or an unsupported
  * namespace such as the PDL spec's `trigger.`/`context.` families) yields
  * unknown, which propagates: unknown || true == true, unknown && false ==
  * false, otherwise unknown survives to the top. Callers treat a top-level
  * unknown as FAIL-OPEN (run the stage/agent, warn) — flipping to fail-closed
  * is a corpus-audited decision deferred to PDL v1.3.0 (spec OQ3).
+ *
+ * EXCEPTION — the params namespace (spec D5 amendment, live-test finding
+ * e9399a31): an ABSENT param is a value, not an unknown. Bare `params.x` with
+ * x unset is false, `!params.x` is true, `== literal` is false, `!= literal`
+ * is true; only ordering comparators over an absent param stay unknown.
+ * Absence of a param is a normal caller state (the corpus gates agents with
+ * `params.frontend || <detect>` expecting absent→false); absence of a stage
+ * path is a typo signal, where running-anyway is the safety property.
  */
 
 import type { StageResult } from '../types/pipeline.js';
@@ -159,8 +167,20 @@ function evaluateTerm(term: string, ctx: ConditionContext): ConditionVerdict {
     // (group 2) are mandatory captures, and exactly one literal alternative
     // (str1/str2/num/bool) is defined iff exec matched.
     const [, pathRaw, op, str1, str2, num, bool] = cmp;
-    const actual = resolvePath(pathRaw!.trim(), ctx);
-    if (actual === undefined || actual === null) return null;
+    const path = pathRaw!.trim();
+    const actual = resolvePath(path, ctx);
+    if (actual === undefined || actual === null) {
+      // D5 amendment: within the params namespace, ABSENCE IS A VALUE, not an
+      // unknown — an unset param equals no literal (== false, != true).
+      // Stage/step path absence stays unknown: there it signals a typo or a
+      // missing stage, where fail-open is the safety property. Ordering over
+      // an absent param remains ill-formed (unknown).
+      if (PARAMS_PATH_RE.test(path)) {
+        if (op === '==') return negate(false);
+        if (op === '!=') return negate(true);
+      }
+      return null;
+    }
     const expected: string | number | boolean =
       num !== undefined ? Number(num)
       : bool !== undefined ? bool === 'true'
@@ -186,7 +206,13 @@ function evaluateTerm(term: string, ctx: ConditionContext): ConditionVerdict {
   }
 
   // Bare path truthiness (params.frontend, stages.deploy.failed).
-  if (PARAMS_PATH_RE.test(rest) || STEPS_PATH_RE.test(rest) || STAGE_FIELD_RE.test(rest)) {
+  // D5 amendment: an absent param is false (so !params.x is true) — the
+  // corpus idiom `params.frontend || <detect>` expects absent→false, and the
+  // harness path reads unset params the same way. Stage/step absence → unknown.
+  if (PARAMS_PATH_RE.test(rest)) {
+    return negate(truthy(resolvePath(rest, ctx)) ?? false);
+  }
+  if (STEPS_PATH_RE.test(rest) || STAGE_FIELD_RE.test(rest)) {
     return negate(truthy(resolvePath(rest, ctx)));
   }
 
