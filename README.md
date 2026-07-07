@@ -652,6 +652,10 @@ const client = new UluOpsClient({
   // Security
   allowedTools: ['bash'],             // Operator tool allowlist (or ULUOPS_ALLOWED_TOOLS)
                                       // Default: all tools except 'bash' are allowed
+  allowStageSteps: false,             // Permit engine execution of PDL stage `steps:` blocks
+                                      // (host shell; or ULUOPS_ALLOW_STAGE_STEPS=true). Off by
+                                      // default — steps-only stages pass through with a null
+                                      // score when disabled. See Security > Stage Steps.
 
   // Local Development
   localDefinitions: './definitions',  // Load YAML definitions from local dir
@@ -675,6 +679,7 @@ const client = new UluOpsClient({
 | `ULUOPS_LOCAL_DEFINITIONS` | Local definitions path | - |
 | `ULUOPS_DASHBOARD_URL` | Dashboard base URL for run links | `https://app.uluops.ai` |
 | `ULUOPS_ALLOWED_TOOLS` | Comma-separated tool allowlist (e.g., `bash`) | all except `bash` |
+| `ULUOPS_ALLOW_STAGE_STEPS` | Permit engine execution of PDL stage `steps:` blocks (host shell; exact string `true`) | `false` |
 | `ULUOPS_MAX_CONCURRENCY` | Global ceiling on concurrent in-flight LLM calls | `8` |
 | `ULUOPS_DEBUG` | Enable detailed execution logging | `false` |
 
@@ -872,6 +877,20 @@ CDL command definitions can declare prerequisite checks (file existence, git sta
 - Quote `$ARGUMENTS` substitutions via `shellQuote()` to prevent CWE-78 injection
 
 Package managers (`npm`, `pip`), orchestrators (`docker`, `kubectl`), build tools (`make`, `cargo`), and interpreters (`node`, `python`) are **not permitted** in preflight — they have broad side-effect authority that doesn't belong in prerequisite checks. The security boundary for preflight commands is supply-chain trust in the definition author, not runtime effect confinement.
+
+### Stage Steps (opt-in)
+
+PDL pipeline stages can declare inline shell `steps:` blocks (detection preflights, build gates). The engine executes them **only when the operator opts in** via `allowStageSteps: true` (or `ULUOPS_ALLOW_STAGE_STEPS=true` — the exact string `true`). This is the same trust boundary as the `bash` tool: step commands come from resolved definitions, so running them is definition-author-controlled shell on your host. **The opt-in is the boundary — there is no command allowlist.** With the opt-in off (the default), steps-only stages pass through as `PASS` with a `null` score (excluded from pipeline score aggregation) and their steps are not run.
+
+Confinements applied to executed steps:
+
+- **Secret scrubbing** — env vars matching secret-class patterns (`*_API_KEY`, `*_TOKEN`, `*_SECRET`, `*_PASSWORD`, `*_CREDENTIALS`, `AWS_*`, `GOOGLE_*`, `AZURE_*`, `ANTHROPIC_*`, `OPENAI_*`) are removed from the environment steps inherit
+- **`step.env` restrictions** — keys overriding loader vectors or lookup paths (`LD_*`, `DYLD_*`, `NODE_OPTIONS`, `PATH`) fail the step
+- **`working_dir` containment** — resolved within the target root and verified via `realpath`; execution occurs at the resolved real path
+- **Resource caps** — per-step timeout (default 60s), `retries` capped at 10, `retry_delay` capped at 60s, output retained up to 8KB per step
+- **Template quoting** — `{{ params.x }}` / `{{ params.x || fallback }}` substitutions (from `ExecutionInput.params`; `target` is implied) are shell-quoted (CWE-78); commands with unresolved templates fail the step rather than executing literal braces
+
+Per-step results (`name`, `status`, `exitCode`, `output`, `durationMs`) are returned on `StageResult.steps`. A step failure fails the stage's decision unless the step declares `continue_on_error`; steps marked `always_run` execute even after an earlier hard failure. Note: the opt-in is a **config/env** control — the per-run `ExecutionOptions.allowStageSteps` override applies only to direct `PipelineExecutor` callers (Advanced Exports), not to `runPipeline()`/`startPipeline()`/`run()`.
 
 ## Dependencies
 

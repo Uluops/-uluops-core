@@ -6,6 +6,23 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) 
 
 ## [Unreleased]
 
+### Added
+
+- **Engine execution of PDL stage `steps:` blocks, behind an opt-in** (`allowStageSteps` config / `ULUOPS_ALLOW_STAGE_STEPS=true`; default off). New internal `StepsExecutor` runs steps sequentially via `sh -c` honoring the full PDL step contract (timeout, retries, `retry_delay`, `continue_on_error`, `always_run`, `expect_empty`, `expect_match`, per-step `env`, `working_dir`). Per-step results surface on `StageResult.steps`. Confinements: secret-class env vars scrubbed from the step environment; `step.env` keys overriding `LD_*`/`DYLD_*`/`NODE_OPTIONS`/`PATH` rejected; `working_dir` realpath-contained to the target root; `retries` capped at 10 and `retry_delay` at 60s; `{{ params.x }}` substitutions shell-quoted (CWE-78) with unresolved templates failing the step. (pdl-steps-execution-spec-v0_1_1 Phase 2; pre-impl run #49 PROCEED.)
+- `ExecutionInput.params` — run-parameter channel consumed by step-command template substitution (`{{ params.x }}`, `{{ params.x || fallback }}`; `target` implied). Condition-expression evaluation over params is Phase 3.
+- Exported types `StepDefinition` and `StepResult`; `StageDefinition.type` widened with `'steps'`; `workflows?`/`commands?` typed `@reserved` on `StageDefinition`.
+
+### Changed
+
+- **Steps-only pipeline stages no longer fabricate `score: 100`** — without the opt-in they pass through as `decision: PASS` with a `null` score pair, excluded from pipeline-level score aggregation. Pipeline averages that previously included the synthetic 100 will shift down; `depends_on` chains over preflight stages are unaffected (stage remains `completed`). Root cause: steps-block investigation run #48 (G1) — the fabricated 100 inflated averages, incremented `stagesPassed`, and satisfied downstream gates for work that never ran.
+- **Stages with no executable content now fail loud** — a stage with no `ref`, no `agents`, and no `steps` (e.g. a multi-entry `workflows:`/`commands:` array the engine cannot run) throws `PipelineError` instead of auto-passing (spec D7).
+- **Single-entry `workflows:` arrays are hoisted** — `normalizePipelineSection` infers `type: 'workflow'` and hoists the entry's `ref` so the stage executes (un-breaks `api-server-validate`'s validation stage; entry `args` are not threaded — pre-existing gap). Steps-only stages are inferred as `type: 'steps'`.
+- `StageResult.type` mapping made total: `agents`/`steps`/untyped stages map to `'command'` in results (public union unchanged).
+
+### Design Notes
+
+- The D2 interim posture (null score but `completed`/`PASS` for unexecuted steps stages) deliberately retains one dishonesty — a PASS that verified nothing — to avoid cascading `depends_on:[preflight]` skips across the 30 detection pipelines. Full honesty arrives when steps execute under the opt-in. See pdl-steps-execution-spec-v0_1_1 D2.
+
 ## [0.28.2] - 2026-07-06
 
 ### Dependencies
