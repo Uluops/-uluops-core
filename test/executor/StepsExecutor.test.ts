@@ -108,6 +108,28 @@ describe('StepsExecutor', () => {
     expect(results[0]!.error).toContain('did not match');
   });
 
+  it('fails the single step on an invalid expect_match regex instead of throwing', async () => {
+    const results = await executor.execute(
+      [
+        { name: 'bad-regex', command: 'echo out', expect_match: '(' },
+        { name: 'cleanup', command: 'echo ok', always_run: true },
+      ],
+      { target: makeTarget() },
+    );
+    expect(results[0]!.status).toBe('failed');
+    expect(results[0]!.error).toContain('invalid expect_match regex');
+    // Later always_run step still executes — the stage contract survives.
+    expect(results[1]!.status).toBe('passed');
+  });
+
+  it('fails a step whose output exceeds the 1MB maxBuffer guard', async () => {
+    const results = await executor.execute(
+      [{ name: 'flood', command: 'head -c 2097152 /dev/zero | tr "\\0" "x"' }],
+      { target: makeTarget() },
+    );
+    expect(results[0]!.status).toBe('failed');
+  });
+
   it('enforces expect_empty', async () => {
     const results = await executor.execute(
       [{ name: 'empty', command: 'echo dirty', expect_empty: true }],

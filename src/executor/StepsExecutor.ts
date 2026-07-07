@@ -195,9 +195,19 @@ export class StepsExecutor {
       status = 'failed';
       error = 'expected empty output';
     }
-    if (status === 'passed' && step.expect_match && !new RegExp(step.expect_match).test(output)) {
-      status = 'failed';
-      error = `output did not match /${step.expect_match}/`;
+    if (status === 'passed' && step.expect_match) {
+      // Author-supplied pattern: a compile failure fails THIS step with an
+      // actionable message, like every other per-step failure path — it must
+      // not throw past the stage and discard accumulated step results.
+      try {
+        if (!new RegExp(step.expect_match).test(output)) {
+          status = 'failed';
+          error = `output did not match /${step.expect_match}/`;
+        }
+      } catch (e) {
+        status = 'failed';
+        error = `invalid expect_match regex /${step.expect_match}/: ${(e as Error).message}`;
+      }
     }
 
     return {
