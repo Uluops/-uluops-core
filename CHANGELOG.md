@@ -14,7 +14,7 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) 
 
 ### Added (Phase 3 — condition evaluation)
 
-- **Condition-expression evaluator** (`src/executor/conditions.ts`): three-valued (Kleene) evaluation of `||`/`&&` compositions, unary `!` negation, bare-path truthiness, and comparators over `params.<name>`, `stages.<id>.<field>`, `stages.<id>.steps['<name>'].<field>`, and the legacy `<id>.<field>` form. Unresolvable paths (missing stage/param, unsupported `trigger.`/`context.` namespaces) yield unknown → FAIL OPEN (run + warn); fail-closed is deferred to a corpus-audited PDL v1.3.0 decision (spec OQ3).
+- **Condition-expression evaluator** (`src/executor/conditions.ts`): three-valued (Kleene) evaluation of `||`/`&&` compositions, unary `!` negation, bare-path truthiness, and comparators over `params.<name>`, `stages.<id>.<field>`, `stages.<id>.steps['<name>'].<field>`, and the legacy `<id>.<field>` form. Unresolvable paths (missing stage/param, unsupported `trigger.`/`context.` namespaces) yield unknown → FAIL OPEN (run + warn); fail-closed is deferred to a corpus-audited PDL v1.3.0 decision (spec OQ3). Expressions longer than 512 chars (`MAX_CONDITION_LENGTH`) are likewise treated as unknown → fail open.
 - **Per-agent `condition` gating**: inline-agent entries (`stage.agents[].condition`) are evaluated against prior-stage results and run params before dispatch — unmet conditions mean the agent is not dispatched and not scored (no fabricated result). This is what makes detection preflights actually gate: verified against post-implementation's real conditions (type-safety dispatches on `Detect TypeScript == DETECTED`; mcp/frontend validators gate off).
 
 ### Changed
