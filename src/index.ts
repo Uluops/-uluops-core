@@ -102,6 +102,8 @@ export type {
   PipelineMetrics,
   StageDefinition,
   StageResult,
+  StepDefinition,
+  StepResult,
   TriggerDefinition,
   TriggerInfo,
   PipelineArtifact,

@@ -3,7 +3,8 @@ import type { CommandExecutor } from './CommandExecutor.js';
 import type { WorkflowExecutor } from './WorkflowExecutor.js';
 import type { RegistryClient } from '../registry/RegistryClient.js';
 import type { ResolvedDefinition } from '../types/registry.js';
-import type { PipelineDefinition, StageDefinition, PipelineResult, StageResult, PipelineState, PipelineHandle as IPipelineHandle } from '../types/pipeline.js';
+import type { PipelineDefinition, StageDefinition, PipelineResult, StageResult, StepResult, PipelineState, PipelineHandle as IPipelineHandle } from '../types/pipeline.js';
+import { StepsExecutor } from './StepsExecutor.js';
 import type { ExecutionInput, ExecutionOptions } from '../types/execution.js';
 import type { AgentResult } from '../types/agent.js';
 import { PipelineError } from '../errors/index.js';
@@ -21,13 +22,20 @@ import type { Logger } from '@uluops/sdk-core';
  * mix of workflow and command stages, and state tracking.
  */
 export class PipelineExecutor {
+  private stepsExecutor: StepsExecutor;
+
   constructor(
     private workflowExecutor: WorkflowExecutor,
     private commandExecutor: CommandExecutor,
     private agentExecutor: AgentExecutor,
     private registry: RegistryClient,
     private logger: Logger,
-  ) {}
+    /** Config-level opt-in for executing PDL stage steps (host shell access).
+     *  Per-run ExecutionOptions.allowStageSteps overrides. Default false. */
+    private allowStageSteps: boolean = false,
+  ) {
+    this.stepsExecutor = new StepsExecutor(logger);
+  }
 
   /**
    * Start pipeline execution asynchronously.
@@ -189,38 +197,25 @@ export class PipelineExecutor {
         };
       }
 
-      // Steps-only stages (PDL shell preflight) — not yet executed by the engine
-      // (pdl-steps-execution-spec-v0_1_0 Phase 2 adds the opt-in StepsExecutor).
-      // Interim posture (spec D2): keep status:completed + decision:PASS so the
-      // pipelines with depends_on:[preflight] chains keep flowing, but contribute
-      // score:null so the unexecuted stage is EXCLUDED from pipeline-level
-      // aggregation instead of injecting a fabricated 100 that inflates the
-      // average and satisfies downstream gates (steps-block investigation, G1).
+      // Steps stages (PDL shell preflight / build gates).
       if (stage.type === 'steps' || (Array.isArray(stage.steps) && stage.steps.length > 0 && !stage.ref && !stage.agents)) {
-        this.logger.warn(`Stage "${stage.id}" has steps — engine does not execute steps yet; passing through with null score`);
-        return {
-          id: stage.id,
-          name: stage.name,
-          type: 'command' as const,
-          status: 'completed',
-          result: {
-            type: 'command',
-            name: stage.name,
-            version: '1.0.0',
-            definitionHash: '',
-            agentType: 'analyst',
-            decision: 'PASS',
-            // null pair (null iff null, score-nullability spec): nothing was
-            // evaluated, so nothing is scored. PASS without a score is the
-            // honest interim — dependency chains flow, aggregation untouched.
-            score: null,
-            maxScore: null,
-            recommendations: [],
-            durationMs: Date.now() - startTime,
-            metrics: { durationMs: Date.now() - startTime, model: 'none', toolCalls: 0, inputTokens: 0, outputTokens: 0, totalEffectiveTokens: 0 },
-          },
-          durationMs: Date.now() - startTime,
-        };
+        const allowSteps = options?.allowStageSteps ?? this.allowStageSteps;
+
+        // Opt-in gate (spec D3): step commands come from resolved definitions,
+        // so running them is host shell access. Without the opt-in, keep the
+        // spec D2 interim posture — status:completed + decision:PASS so
+        // depends_on:[preflight] chains keep flowing, but score:null so the
+        // unexecuted stage is EXCLUDED from pipeline-level aggregation instead
+        // of injecting a fabricated 100 (steps-block investigation, G1).
+        if (!allowSteps || !stage.steps?.length) {
+          this.logger.warn(`Stage "${stage.id}" has steps — allowStageSteps is off; passing through with null score`);
+          return this.buildStepsStageResult(stage, 'PASS', undefined, startTime);
+        }
+
+        const stepResults = await this.stepsExecutor.execute(stage.steps, input);
+        const failed = stepResults.some(s => s.status === 'failed' &&
+          !stage.steps!.find(d => d.name === s.name)?.continue_on_error);
+        return this.buildStepsStageResult(stage, failed ? 'FAIL' : 'PASS', stepResults, startTime);
       }
 
       // Stages with no content the engine can run (no ref, no agents, no steps —
@@ -372,6 +367,42 @@ export class PipelineExecutor {
   /** Safely access a field on an object via runtime narrowing (avoids double assertion). */
   private getField(obj: object, field: string): unknown {
     return field in obj ? (obj as Record<string, unknown>)[field] : undefined;
+  }
+
+  /**
+   * StageResult for a steps stage — executed (stepResults present, decision
+   * derived from step outcomes) or passed through under the D2 interim posture
+   * (no stepResults, decision PASS). Score is null either way: steps verify
+   * preconditions, they do not score (null iff null, score-nullability spec).
+   */
+  private buildStepsStageResult(
+    stage: StageDefinition,
+    decision: 'PASS' | 'FAIL',
+    stepResults: StepResult[] | undefined,
+    startTime: number,
+  ): StageResult {
+    const durationMs = Date.now() - startTime;
+    return {
+      id: stage.id,
+      name: stage.name,
+      type: 'command' as const,
+      status: 'completed',
+      ...(stepResults ? { steps: stepResults } : {}),
+      result: {
+        type: 'command',
+        name: stage.name,
+        version: '1.0.0',
+        definitionHash: '',
+        agentType: 'analyst',
+        decision,
+        score: null,
+        maxScore: null,
+        recommendations: [],
+        durationMs,
+        metrics: { durationMs, model: 'none', toolCalls: 0, inputTokens: 0, outputTokens: 0, totalEffectiveTokens: 0 },
+      },
+      durationMs,
+    };
   }
 
   private createSkippedStage(stage: StageDefinition, reason: string): StageResult {

@@ -158,6 +158,27 @@ export interface PipelineMetrics extends ExecutionMetrics {
 }
 
 /**
+ * Result of a single executed shell step (pdl-steps-execution-spec D4).
+ */
+export interface StepResult {
+  /** Step name from the definition */
+  name: string;
+  /** Raw (un-substituted) command from the definition */
+  command: string;
+  /** passed = ran clean (incl. expectation checks); failed = non-zero exit,
+   *  timeout, expectation mismatch, or unresolved template; skipped = not run
+   *  because an earlier step hard-failed (and this step is not always_run). */
+  status: 'passed' | 'failed' | 'skipped';
+  /** Process exit code when the step ran */
+  exitCode?: number;
+  /** Captured stdout, trimmed and truncated to 8KB */
+  output: string;
+  /** Failure detail when status is failed */
+  error?: string;
+  durationMs: number;
+}
+
+/**
  * Result for a single stage
  */
 export interface StageResult {
@@ -178,6 +199,10 @@ export interface StageResult {
 
   /** Individual agent results for inline-agent stages (preserved for tracker decomposition) */
   agentResults?: AgentResult[];
+
+  /** Per-step results for steps stages executed under allowStageSteps
+   *  (pdl-steps-execution-spec D4). Absent when steps were not executed. */
+  steps?: StepResult[];
 
   /** Reason if stage was skipped */
   skipReason?: string;

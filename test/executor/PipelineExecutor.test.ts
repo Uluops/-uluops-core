@@ -386,6 +386,73 @@ describe('PipelineExecutor', () => {
       expect(cmdExec.execute).toHaveBeenCalledTimes(1);
     });
 
+    it('executes steps for real under allowStageSteps and derives the decision', async () => {
+      const wfExec = makeWorkflowExecutor();
+      const cmdExec = makeCommandExecutor();
+      const registry = makeRegistry();
+      const executor = new PipelineExecutor(wfExec, cmdExec, agentExec, registry, noopLogger, true);
+
+      const def = makePipelineDef({
+        stages: [
+          {
+            id: 'preflight', name: 'Preflight', type: 'steps',
+            steps: [{ name: 'Detect', command: 'echo DETECTED' }],
+          },
+        ],
+      });
+
+      const result = await executor.execute(def, { target: '/tmp' });
+
+      const stage = result.stages[0]!;
+      expect(stage.status).toBe('completed');
+      expect(stage.result!.decision).toBe('PASS');
+      expect(stage.result!.score).toBeNull();
+      expect(stage.steps).toHaveLength(1);
+      expect(stage.steps![0]!.output).toBe('DETECTED');
+      expect(stage.steps![0]!.status).toBe('passed');
+    });
+
+    it('fails the stage when a step hard-fails under allowStageSteps', async () => {
+      const wfExec = makeWorkflowExecutor();
+      const cmdExec = makeCommandExecutor();
+      const registry = makeRegistry();
+      const executor = new PipelineExecutor(wfExec, cmdExec, agentExec, registry, noopLogger, true);
+
+      const def = makePipelineDef({
+        stages: [
+          {
+            id: 'gate', name: 'Build Gate', type: 'steps',
+            steps: [{ name: 'compile', command: 'exit 2' }],
+          },
+        ],
+      });
+
+      const result = await executor.execute(def, { target: '/tmp' });
+
+      expect(result.stages[0]!.result!.decision).toBe('FAIL');
+      expect(result.stages[0]!.steps![0]!.status).toBe('failed');
+      expect(result.stages[0]!.result!.score).toBeNull();
+    });
+
+    it('honors the per-run allowStageSteps override over the config default', async () => {
+      const wfExec = makeWorkflowExecutor();
+      const cmdExec = makeCommandExecutor();
+      const registry = makeRegistry();
+      // Config-level: disabled
+      const executor = new PipelineExecutor(wfExec, cmdExec, agentExec, registry, noopLogger, false);
+
+      const def = makePipelineDef({
+        stages: [
+          { id: 'preflight', name: 'Preflight', type: 'steps', steps: [{ name: 'Detect', command: 'echo DETECTED' }] },
+        ],
+      });
+
+      const result = await executor.execute(def, { target: '/tmp' }, { allowStageSteps: true });
+
+      expect(result.stages[0]!.steps).toHaveLength(1);
+      expect(result.stages[0]!.steps![0]!.output).toBe('DETECTED');
+    });
+
     it('fails loud on a stage with no ref, agents, or steps instead of fabricating a PASS', async () => {
       const wfExec = makeWorkflowExecutor();
       const cmdExec = makeCommandExecutor();

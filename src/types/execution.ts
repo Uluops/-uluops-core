@@ -61,6 +61,14 @@ export interface ExecutionInput {
    */
   prompt?: string;
 
+  /**
+   * Run parameters for definition templates. Currently consumed by step-command
+   * substitution ({{ params.x }}, StepsExecutor); `target` is implied from the
+   * target field and need not be repeated. Condition-expression evaluation over
+   * params is Phase 3 of pdl-steps-execution-spec.
+   */
+  params?: Record<string, string | number | boolean>;
+
   /** Execution options */
   options?: Record<string, unknown>;
 }
@@ -190,6 +198,10 @@ export interface ExecutionMetrics {
 export interface ExecutionOptions {
   /** Model override: alias ('sonnet'), tier ('premium'), or 'provider:modelId' */
   model?: string;
+
+  /** Per-run override for executing PDL stage steps (host shell access).
+   *  Defaults to the config-level allowStageSteps (default false). */
+  allowStageSteps?: boolean;
 
   /** Maximum tokens for response */
   maxTokens?: number;

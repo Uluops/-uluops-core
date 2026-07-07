@@ -69,6 +69,7 @@ export class UluOpsClient {
       this.agentExecutor,
       this.registry,
       logger,
+      this.config.allowStageSteps,
     );
   }
 
@@ -661,6 +662,7 @@ export function resolveConfig(config: UluOpsConfig, env: NodeJS.ProcessEnv = pro
     maxRetries: config.maxRetries,
     maxConcurrency: config.maxConcurrency ?? parseMaxConcurrency(env['ULUOPS_MAX_CONCURRENCY']) ?? DEFAULT_MAX_CONCURRENCY,
     allowedTools: config.allowedTools ?? parseAllowedTools(env['ULUOPS_ALLOWED_TOOLS']),
+    allowStageSteps: config.allowStageSteps ?? (env['ULUOPS_ALLOW_STAGE_STEPS'] === 'true'),
   };
 }
 

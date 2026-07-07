@@ -197,6 +197,17 @@ export interface UluOpsConfig {
    * @default undefined (bash blocked, all other tools allowed)
    */
   allowedTools?: string[];
+
+  /**
+   * Permit engine execution of PDL stage `steps:` blocks (host shell access).
+   * Same trust boundary as allowedTools bash: step commands come from resolved
+   * definitions, so running them is definition-author-controlled shell on the
+   * operator's host. Blocked by default; steps-only stages pass through with a
+   * null score when disabled. See pdl-steps-execution-spec-v0_1_0 D3.
+   *
+   * @default false (env: ULUOPS_ALLOW_STAGE_STEPS=true)
+   */
+  allowStageSteps?: boolean;
 }
 
 /**
@@ -229,4 +240,6 @@ export interface ResolvedConfig {
   /** Global ceiling on concurrent in-flight LLM calls. Always set after resolution. */
   maxConcurrency: number;
   allowedTools?: string[];
+  /** Engine execution of PDL stage steps. Always resolved; default false. */
+  allowStageSteps: boolean;
 }
