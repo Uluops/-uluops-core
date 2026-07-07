@@ -194,8 +194,12 @@ Every chain starts with `UluOpsClient.resolveByRef()`. This sub-chain is shared.
       decision: any FAIL/BLOCK → FAIL; any WARN/HOLD → WARN; else PASS
 15. Return PipelineResult
 
-NOTE: startPipeline() does NOT call trackIfEnabled().
-      Use UluOpsClient.run() for tracked pipeline execution.
+NOTE: startPipeline() tracks via a wrapped handle.wait() — trackIfEnabled()
+      fires when the caller awaits the handle, not at start time. A caller
+      that never awaits the handle gets no tracking. PipelineExecutor.start()
+      itself never tracks; tracking is a UluOpsClient concern. startPipeline()
+      also passes no {model, timeoutMs} options to the executor — only
+      run()/runPipeline() thread them.
 ```
 
 ---
