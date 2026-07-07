@@ -81,6 +81,14 @@ describe('evaluateConditionExpr', () => {
       expect(evaluateConditionExpr("stages.validate.decision == 'PASS'", ctx)).toBe(true);
     });
 
+    it('evaluates exact-boundary numeric comparisons correctly', () => {
+      // score is exactly 85 — pins >= vs > (and <= vs <) off-by-one mutations.
+      expect(evaluateConditionExpr('stages.validate.score >= 85', ctx)).toBe(true);
+      expect(evaluateConditionExpr('stages.validate.score > 85', ctx)).toBe(false);
+      expect(evaluateConditionExpr('stages.validate.score <= 85', ctx)).toBe(true);
+      expect(evaluateConditionExpr('stages.validate.score < 85', ctx)).toBe(false);
+    });
+
     it('supports the legacy <id>.<field> form (pre-Phase-3 back-compat)', () => {
       expect(evaluateConditionExpr('validate.score >= 70', ctx)).toBe(true);
       expect(evaluateConditionExpr('validate.score > 90', ctx)).toBe(false);

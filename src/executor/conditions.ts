@@ -38,15 +38,28 @@ export interface ConditionContext {
 /** true / false / null = unknown (unresolvable path or unparseable term). */
 export type ConditionVerdict = boolean | null;
 
-const COMPARISON_RE =
-  /^(.+?)\s*(==|!=|>=|<=|>|<)\s*(?:'([^']*)'|"([^"]*)"|(-?\d+(?:\.\d+)?)|(true|false))$/;
+/** Expressions longer than this are rejected as unknown (fail-open) before
+ *  any regex runs. Condition strings are definition-controlled and evaluated
+ *  WITHOUT any opt-in, so their processing cost must be hard-bounded
+ *  (security review: reachable quadratic backtracking, CWE-1333/400).
+ *  512 chars is ~4x the longest corpus condition. */
+export const MAX_CONDITION_LENGTH = 512;
 
-const PARAMS_PATH_RE = /^params(?:\.([\w-]+)|\['([^']+)'\]|\["([^"]+)"\])$/;
+// REGEX SAFETY: no quantifier here competes with an adjacent quantifier over
+// an overlapping character set — the lazy path capture (.+?) abuts the
+// operator alternation directly (whitespace before the operator lands in the
+// capture and is trimmed by the caller). The earlier `(.+?)\s*(==|…)` shape
+// backtracked quadratically on long whitespace runs. All four patterns are
+// covered by test/executor/regex-safety.test.ts (safe-regex2 + timing).
+export const COMPARISON_RE =
+  /^(.+?)(==|!=|>=|<=|>|<)\s*(?:'([^']*)'|"([^"]*)"|(-?\d+\.\d+|-?\d+)|(true|false))$/;
 
-const STEPS_PATH_RE =
-  /^(?:stages?\.)([\w-]+)\.steps\[(?:'([^']+)'|"([^"]+)")\]\.([\w]+)$/;
+export const PARAMS_PATH_RE = /^params(?:\.([\w-]+)|\['([^']+)'\]|\["([^"]+)"\])$/;
 
-const STAGE_FIELD_RE = /^(?:stages?\.)?([\w-]+)\.([\w]+)$/;
+export const STEPS_PATH_RE =
+  /^(?:stages\.|stage\.)([\w-]+)\.steps\[(?:'([^']+)'|"([^"]+)")\]\.([\w]+)$/;
+
+export const STAGE_FIELD_RE = /^(?:stages\.|stage\.)?([\w-]+)\.([\w]+)$/;
 
 /** Split on a delimiter at top level only (never inside quoted strings). */
 function splitTopLevel(expr: string, delimiter: '||' | '&&'): string[] {
@@ -190,6 +203,7 @@ function evaluateTerm(term: string, ctx: ConditionContext): ConditionVerdict {
  * needed path is unresolvable — the caller decides fail-open vs fail-closed.
  */
 export function evaluateConditionExpr(expr: string, ctx: ConditionContext): ConditionVerdict {
+  if (expr.length > MAX_CONDITION_LENGTH) return null;
   const trimmed = expr.trim();
   if (!trimmed) return null;
 

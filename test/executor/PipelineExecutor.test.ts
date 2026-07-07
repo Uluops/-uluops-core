@@ -727,7 +727,7 @@ describe('PipelineExecutor', () => {
       expect(cmdExec.execute).not.toHaveBeenCalled();
     });
 
-    it('gates inline agents on step outputs (G8 markdown/engine parity)', async () => {
+    it('gates inline agents on real step outputs (dispatch-vs-skip is the behavior; markdown-side parity asserted by the corpus smoke, not here)', async () => {
       const wfExec = makeWorkflowExecutor();
       const cmdExec = makeCommandExecutor();
       const agentExecutor = makeAgentExecutor();

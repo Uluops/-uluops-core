@@ -271,18 +271,6 @@ describe('UluOpsClient', () => {
       expect(resolveConfig({ apiKey: 'ulr_k' }, { ULUOPS_ALLOW_STAGE_STEPS: 'TRUE' }).allowStageSteps).toBe(false);
     });
 
-    // Trust-boundary invariant (security review, run #50): no definition- or
-    // input-derived field may reach ExecutionOptions — options are built from
-    // config only. If this test breaks, definition content may have gained a
-    // path to flip allowStageSteps or other execution controls.
-    it('builds ExecutionOptions from config only (definition data cannot reach it)', () => {
-      const config = resolveConfig({ apiKey: 'ulr_k', timeout: 1234, ai: { modelOverride: 'sonnet' } }, {});
-      // The options shape every client entry point constructs:
-      const options = { timeoutMs: config.timeout, model: config.ai.modelOverride };
-      expect(Object.keys(options).sort()).toEqual(['model', 'timeoutMs']);
-      expect('allowStageSteps' in options).toBe(false);
-    });
-
     it('lets explicit config allowStageSteps override the env var', () => {
       const config = resolveConfig(
         { apiKey: 'ulr_k', allowStageSteps: false },
@@ -947,6 +935,30 @@ describe('UluOpsClient', () => {
 
       expect(result.type).toBe('pipeline');
       expect(mockPipelineExecutorExecute).toHaveBeenCalled();
+    });
+
+    // Trust-boundary invariant (security review, run #50): ExecutionOptions
+    // is built from CONFIG ONLY — no field from the resolved definition may
+    // reach it (a definition must never be able to flip allowStageSteps or
+    // other execution controls). This drives the real client path and asserts
+    // on the options the executor ACTUALLY receives.
+    it('builds ExecutionOptions from config only — definition fields never reach the executor options', async () => {
+      const client = new UluOpsClient({ apiKey: 'ulr_test-key', trackingEnabled: false, timeout: 1234 });
+      // A hostile definition carrying execution-control-shaped fields at every
+      // plausible level; none of them may surface in the options argument.
+      const hostile = makeResolvedDef('pipeline');
+      (hostile as unknown as Record<string, unknown>)['allowStageSteps'] = true;
+      (hostile.definition as unknown as Record<string, Record<string, unknown>>)['pipeline']!['allowStageSteps'] = true;
+      (hostile.definition as unknown as Record<string, Record<string, unknown>>)['pipeline']!['options'] = { allowStageSteps: true };
+      mockRegistryResolve.mockResolvedValue(hostile);
+      mockPipelineExecutorExecute.mockResolvedValue(makePipelineResult());
+
+      await client.runPipeline('hostile-pipeline', { target: '/tmp/test' });
+
+      const optionsArg = mockPipelineExecutorExecute.mock.calls.at(-1)?.[2] as Record<string, unknown>;
+      expect(Object.keys(optionsArg).sort()).toEqual(['model', 'timeoutMs']);
+      expect(optionsArg['timeoutMs']).toBe(1234);
+      expect('allowStageSteps' in optionsArg).toBe(false);
     });
 
     it('throws for unknown definition type', async () => {

@@ -65,7 +65,12 @@ function truncate(s: string): string {
   return s.length > MAX_OUTPUT_BYTES ? s.slice(0, MAX_OUTPUT_BYTES) + '…[truncated]' : s;
 }
 
-const TEMPLATE_RE = /\{\{\s*params\.([A-Za-z_][\w]*)\s*(?:\|\|\s*([^}]+?)\s*)?\}\}/g;
+/** Matches any {{ … }} template span; the inner text is parsed in plain JS
+ *  (name + optional || fallback) to keep this pattern star-height 1 for
+ *  safe-regex2. Exported for test/executor/regex-safety.test.ts. */
+export const TEMPLATE_RE = /\{\{([^}]*)\}\}/g;
+
+const PARAM_NAME_RE = /^params\.([A-Za-z_]\w*)$/;
 
 /**
  * Substitute `{{ params.x }}` / `{{ params.x || fallback }}` in a step command.
@@ -78,13 +83,23 @@ export function substituteStepTemplates(
 ): { command: string } | { unresolved: string } {
   const params: Record<string, unknown> = { target: input.target, ...(input.params ?? {}) };
   let unresolved: string | undefined;
-  const substituted = command.replace(TEMPLATE_RE, (whole, name: string, fallback?: string) => {
-    let value = params[name];
-    if (value === undefined && fallback !== undefined) {
+  const substituted = command.replace(TEMPLATE_RE, (whole, innerRaw: string) => {
+    // Inner text parsed in plain JS: `params.<name>` with optional `|| fallback`.
+    // Anything else inside {{ }} is an unsupported construct — fail the step.
+    const inner = innerRaw.trim();
+    const sep = inner.indexOf('||');
+    const pathPart = (sep < 0 ? inner : inner.slice(0, sep)).trim();
+    const fallbackPart = sep < 0 ? undefined : inner.slice(sep + 2).trim();
+    const nameMatch = PARAM_NAME_RE.exec(pathPart);
+    if (!nameMatch) {
+      unresolved = whole;
+      return whole;
+    }
+    let value = params[nameMatch[1]!];
+    if (value === undefined && fallbackPart !== undefined) {
       // Fallback is a YAML-side literal: strip matching quotes if present.
-      const trimmed = fallback.trim();
-      const quoted = /^(['"])(.*)\1$/.exec(trimmed);
-      value = quoted ? quoted[2] : trimmed;
+      const quoted = /^(['"])(.*)\1$/.exec(fallbackPart);
+      value = quoted ? quoted[2] : fallbackPart;
     }
     if (value === undefined) {
       unresolved = whole;
