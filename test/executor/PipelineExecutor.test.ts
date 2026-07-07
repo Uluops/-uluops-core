@@ -434,6 +434,32 @@ describe('PipelineExecutor', () => {
       expect(result.stages[0]!.result!.score).toBeNull();
     });
 
+    it('keeps decision PASS when the only failing step is continue_on_error', async () => {
+      const wfExec = makeWorkflowExecutor();
+      const cmdExec = makeCommandExecutor();
+      const registry = makeRegistry();
+      const executor = new PipelineExecutor(wfExec, cmdExec, agentExec, registry, noopLogger, true);
+
+      const def = makePipelineDef({
+        stages: [
+          {
+            id: 'gate', name: 'Soft Gate', type: 'steps',
+            steps: [
+              { name: 'soft-check', command: 'exit 1', continue_on_error: true },
+              { name: 'hard-check', command: 'echo ok' },
+            ],
+          },
+        ],
+      });
+
+      const result = await executor.execute(def, { target: '/tmp' });
+
+      // The soft failure is recorded on the step but must not fail the stage —
+      // locks the stage-decision continue_on_error filter (mutation-survivor fix).
+      expect(result.stages[0]!.steps![0]!.status).toBe('failed');
+      expect(result.stages[0]!.result!.decision).toBe('PASS');
+    });
+
     it('honors the per-run allowStageSteps override over the config default', async () => {
       const wfExec = makeWorkflowExecutor();
       const cmdExec = makeCommandExecutor();

@@ -257,6 +257,28 @@ describe('UluOpsClient', () => {
       expect(config.apiKey).toBe('ulr_from-env');
     });
 
+    // allowStageSteps is the D3 security opt-in boundary — the resolution
+    // (default false, exact-'true' env coercion, config precedence) is the gate.
+    it('defaults allowStageSteps to false', () => {
+      const config = resolveConfig({ apiKey: 'ulr_k' }, {});
+      expect(config.allowStageSteps).toBe(false);
+    });
+
+    it('enables allowStageSteps only for the exact env string "true"', () => {
+      expect(resolveConfig({ apiKey: 'ulr_k' }, { ULUOPS_ALLOW_STAGE_STEPS: 'true' }).allowStageSteps).toBe(true);
+      expect(resolveConfig({ apiKey: 'ulr_k' }, { ULUOPS_ALLOW_STAGE_STEPS: '1' }).allowStageSteps).toBe(false);
+      expect(resolveConfig({ apiKey: 'ulr_k' }, { ULUOPS_ALLOW_STAGE_STEPS: 'yes' }).allowStageSteps).toBe(false);
+      expect(resolveConfig({ apiKey: 'ulr_k' }, { ULUOPS_ALLOW_STAGE_STEPS: 'TRUE' }).allowStageSteps).toBe(false);
+    });
+
+    it('lets explicit config allowStageSteps override the env var', () => {
+      const config = resolveConfig(
+        { apiKey: 'ulr_k', allowStageSteps: false },
+        { ULUOPS_ALLOW_STAGE_STEPS: 'true' },
+      );
+      expect(config.allowStageSteps).toBe(false);
+    });
+
     it('falls back to ULU_API_KEY env var', () => {
       const config = resolveConfig({}, { ULU_API_KEY: 'ulr_from-ulu-env' });
       expect(config.apiKey).toBe('ulr_from-ulu-env');

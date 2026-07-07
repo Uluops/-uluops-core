@@ -33,6 +33,29 @@ const execFileAsync = promisify(execFile);
 const DEFAULT_STEP_TIMEOUT = 60_000;
 /** Step output retention cap (spec D4). */
 const MAX_OUTPUT_BYTES = 8 * 1024;
+/** Caps on author-supplied retry knobs: unbounded retries × retry_delay would
+ *  otherwise defeat the per-step timeout — the one resource control this
+ *  executor implements (security review, PRA-FRA/M CWE-400). */
+const MAX_STEP_RETRIES = 10;
+const MAX_RETRY_DELAY = 60_000;
+
+/** Secret-class env vars are scrubbed from the environment inherited by
+ *  definition-authored step commands (defense-in-depth against exfil from
+ *  registry-sourced pipelines; security review SEM-INC/M CWE-200). Steps do
+ *  not receive operator credentials — a step that legitimately needs one is a
+ *  capability question for a future PDL tier, not an inheritance default. */
+const SECRET_ENV_RE = /(_API_KEY|_TOKEN|_SECRET|_PASSWORD|_CREDENTIALS?)$|^(AWS_|GOOGLE_|AZURE_|ANTHROPIC_|OPENAI_)/;
+
+/** step.env may not override loader/interpreter hijack vectors or PATH. */
+const BLOCKED_STEP_ENV_RE = /^(LD_|DYLD_)|^(NODE_OPTIONS|PATH)$/;
+
+function scrubEnv(env: NodeJS.ProcessEnv): NodeJS.ProcessEnv {
+  const out: NodeJS.ProcessEnv = {};
+  for (const [k, v] of Object.entries(env)) {
+    if (!SECRET_ENV_RE.test(k)) out[k] = v;
+  }
+  return out;
+}
 
 function shellQuote(s: string): string {
   return "'" + s.replace(/'/g, "'\\''") + "'";
@@ -87,6 +110,7 @@ export class StepsExecutor {
   async execute(steps: StepDefinition[], input: ExecutionInput): Promise<StepResult[]> {
     const results: StepResult[] = [];
     const targetRoot = path.resolve(input.target);
+    const baseEnv = scrubEnv(process.env);
     let hardFailed = false;
 
     for (const step of steps) {
@@ -101,7 +125,7 @@ export class StepsExecutor {
         continue;
       }
 
-      const result = await this.runStep(step, input, targetRoot);
+      const result = await this.runStep(step, input, targetRoot, baseEnv);
       results.push(result);
       if (result.status === 'failed' && !step.continue_on_error) {
         hardFailed = true;
@@ -111,7 +135,7 @@ export class StepsExecutor {
     return results;
   }
 
-  private async runStep(step: StepDefinition, input: ExecutionInput, targetRoot: string): Promise<StepResult> {
+  private async runStep(step: StepDefinition, input: ExecutionInput, targetRoot: string, baseEnv: NodeJS.ProcessEnv): Promise<StepResult> {
     const start = Date.now();
     const fail = (error: string, extra?: Partial<StepResult>): StepResult => ({
       name: step.name,
@@ -130,6 +154,12 @@ export class StepsExecutor {
     }
     const command = substituted.command;
 
+    // step.env may not override loader/interpreter hijack vectors or PATH.
+    const blockedKey = step.env && Object.keys(step.env).find(k => BLOCKED_STEP_ENV_RE.test(k));
+    if (blockedKey) {
+      return fail(`step.env key "${blockedKey}" is not permitted (loader/PATH override)`);
+    }
+
     // working_dir containment: resolve within the target root and verify the
     // real path stays inside it (dual-path idiom, see ToolHandler.isPathSafe).
     let cwd = targetRoot;
@@ -140,21 +170,24 @@ export class StepsExecutor {
         if (realCandidate !== realRoot && !realCandidate.startsWith(realRoot + path.sep)) {
           return fail(`working_dir "${step.working_dir}" escapes the target root`);
         }
-        cwd = candidate;
+        // Execute at the resolved real path — shrinks the check→use symlink
+        // window (TOCTOU, security review PRA-FRA/L).
+        cwd = realCandidate;
       } catch {
         return fail(`working_dir "${step.working_dir}" does not exist under the target root`);
       }
     }
 
     const timeout = step.timeout ?? DEFAULT_STEP_TIMEOUT;
-    const maxAttempts = 1 + Math.max(0, step.retries ?? 0);
+    const maxAttempts = 1 + Math.min(MAX_STEP_RETRIES, Math.max(0, step.retries ?? 0));
+    const retryDelay = Math.min(step.retry_delay ?? 0, MAX_RETRY_DELAY);
 
     let lastResult: StepResult | undefined;
     for (let attempt = 1; attempt <= maxAttempts; attempt++) {
-      if (attempt > 1 && step.retry_delay) {
-        await new Promise(resolve => setTimeout(resolve, step.retry_delay));
+      if (attempt > 1 && retryDelay > 0) {
+        await new Promise(resolve => setTimeout(resolve, retryDelay));
       }
-      lastResult = await this.attempt(step, command, cwd, timeout, start);
+      lastResult = await this.attempt(step, command, cwd, timeout, start, baseEnv);
       if (lastResult.status === 'passed') return lastResult;
       this.logger.debug(`Step "${step.name}" attempt ${attempt}/${maxAttempts} failed`);
     }
@@ -167,6 +200,7 @@ export class StepsExecutor {
     cwd: string,
     timeout: number,
     start: number,
+    baseEnv: NodeJS.ProcessEnv,
   ): Promise<StepResult> {
     let stdout = '';
     let exitCode = 0;
@@ -176,7 +210,7 @@ export class StepsExecutor {
       const out = await execFileAsync('sh', ['-c', command], {
         cwd,
         timeout,
-        env: step.env ? { ...process.env, ...step.env } : process.env,
+        env: step.env ? { ...baseEnv, ...step.env } : baseEnv,
         maxBuffer: 1024 * 1024,
       });
       stdout = out.stdout;

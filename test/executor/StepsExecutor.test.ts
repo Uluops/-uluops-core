@@ -138,6 +138,48 @@ describe('StepsExecutor', () => {
     expect(results[0]!.status).toBe('failed');
   });
 
+  it('scrubs secret-class env vars from the step environment', async () => {
+    process.env['TEST_SCRUB_API_KEY'] = 'sk-secret';
+    process.env['TEST_SCRUB_PLAIN'] = 'visible';
+    try {
+      const results = await executor.execute(
+        [{ name: 'leak-probe', command: 'echo "key=[$TEST_SCRUB_API_KEY] plain=[$TEST_SCRUB_PLAIN]"' }],
+        { target: makeTarget() },
+      );
+      expect(results[0]!.output).toBe('key=[] plain=[visible]');
+    } finally {
+      delete process.env['TEST_SCRUB_API_KEY'];
+      delete process.env['TEST_SCRUB_PLAIN'];
+    }
+  });
+
+  it('rejects step.env keys that override loader vectors or PATH', async () => {
+    const results = await executor.execute(
+      [
+        { name: 'hijack', command: 'echo x', env: { LD_PRELOAD: '/tmp/evil.so' } },
+        { name: 'path-hijack', command: 'echo x', env: { PATH: '/tmp/evil' }, always_run: true },
+      ],
+      { target: makeTarget() },
+    );
+    expect(results[0]!.status).toBe('failed');
+    expect(results[0]!.error).toContain('not permitted');
+    expect(results[1]!.status).toBe('failed');
+    expect(results[1]!.error).toContain('not permitted');
+  });
+
+  it('caps retries so an unbounded retry count cannot hang the step', async () => {
+    const target = makeTarget();
+    // Each attempt appends a line; with retries far above the cap, attempts = 1 + MAX (11).
+    const results = await executor.execute(
+      [{ name: 'runaway', command: 'echo attempt >> attempts.log; exit 1', retries: 1_000_000 }],
+      { target },
+    );
+    expect(results[0]!.status).toBe('failed');
+    const { execSync } = await import('node:child_process');
+    const attempts = execSync('wc -l < attempts.log', { cwd: target }).toString().trim();
+    expect(Number(attempts)).toBe(11);
+  });
+
   it('retries a flaky step until it passes', async () => {
     const target = makeTarget();
     // Passes only once the marker file exists; first attempt creates it.
