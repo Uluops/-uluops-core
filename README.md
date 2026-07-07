@@ -306,7 +306,7 @@ for (const stage of result.stages) {
 }
 ```
 
-**Stage & agent conditions.** A stage's `condition` (and per-agent `agents[].condition` in inline-agent stages) is a **run-gate**: the stage or agent runs when the expression holds and is skipped when it is definitively false. Conditions can read run parameters (`params.frontend`, passed via `ExecutionInput.params`) and prior-stage results, including executed step outputs (`stages.preflight.steps['Detect TypeScript'].output == 'DETECTED'`). Unresolvable expressions — missing param or stage, unsupported namespace, or over the length cap — **fail open**: the stage runs and a warning is logged. `skip_if` is deprecated (skip-if-true semantics). See the PDL spec for the full expression grammar.
+**Stage & agent conditions.** A stage's `condition` (and per-agent `agents[].condition` in inline-agent stages) is a **run-gate**: the stage or agent runs when the expression holds and is skipped when it is definitively false. Conditions can read run parameters (`params.frontend`, passed via `ExecutionInput.params`) and prior-stage results, including executed step outputs (`stages.preflight.steps['Detect TypeScript'].output == 'DETECTED'`). **An absent param is `false`** (so `!params.x` is `true` and `params.x || <detection>` gates on detection alone when `x` is unset) — param absence is a normal caller state. Unresolvable expressions of other kinds — missing stage/step path, unsupported namespace, or over the length cap — **fail open**: the stage runs and a warning is logged. `skip_if` is deprecated (skip-if-true semantics). See the PDL spec for the full expression grammar.
 
 Async execution with handle-based control:
 

@@ -6,6 +6,12 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) 
 
 ## [Unreleased]
 
+## [0.29.1] - 2026-07-07
+
+### Changed
+
+- **Absent params in condition expressions are `false`, not unknown** (spec D5 amendment). Within the `params` namespace, absence is a value: a bare `params.x` with `x` unset evaluates `false` (so `!params.x` is `true`), `params.x == <literal>` is `false`, and `params.x != <literal>` is `true`. Ordering comparators over an absent param remain unknown (fail-open). Stage/step path absence keeps fail-open unknown semantics — there absence signals a typo or missing stage, where running-anyway is the safety property. Aligns engine gating with the rendered-markdown/harness path (unset params read as false) and stops params-gated agents from dispatching on every engine run. Origin: first live engine run dispatched `frontend-validator` against a frontend-less target because `params.frontend || <detect>` failed open (tracker issue `e9399a31`).
+
 ## [0.29.0] - 2026-07-07
 
 ### Added
