@@ -41,20 +41,58 @@ export interface PipelineDefinition {
 }
 
 /**
+ * Inline shell step within a pipeline stage (PDL `steps:` block).
+ * Mirrors the PDL schema step contract (pdl-schema-v1.2.0 $defs/step) and the
+ * factory's PDLStep. NOT yet executed by the engine — steps-only stages pass
+ * through with a null score until the opt-in StepsExecutor lands
+ * (pdl-steps-execution-spec-v0_1_0 Phase 2).
+ */
+export interface StepDefinition {
+  name: string;
+  command: string;
+  working_dir?: string;
+  env?: Record<string, string>;
+  timeout?: number;
+  retries?: number;
+  retry_delay?: number;
+  continue_on_error?: boolean;
+  always_run?: boolean;
+  expect_empty?: boolean;
+  expect_match?: string;
+}
+
+/**
  * Stage definition within a pipeline
  */
 export interface StageDefinition {
   id: string;
   name: string;
 
-  /** Explicit type of the referenced definition */
-  type: 'workflow' | 'command' | 'agents';
+  /** Explicit type of the referenced definition. 'steps' is inferred by
+   *  normalizePipelineSection for steps-only stages; steps stages map to
+   *  type:'command' in StageResult (agents precedent) until the engine
+   *  executes steps for real. */
+  type: 'workflow' | 'command' | 'agents' | 'steps';
 
   /** Reference to command or workflow (name@version format) */
   ref?: string;
 
   /** Inline agent refs — PDL stages can list agents directly instead of ref */
   agents?: Array<{ ref: string }>;
+
+  /** Inline shell steps (PDL shell preflight). Preserved through normalization;
+   *  not yet executed — see StepDefinition. */
+  steps?: StepDefinition[];
+
+  /** @reserved — typed for schema fidelity. A single-entry workflows array is
+   *  hoisted to ref by normalizePipelineSection (entry args are NOT threaded —
+   *  stage args reach no executor, a pre-existing gap); multi-entry arrays fail
+   *  loud in executeStage instead of auto-passing (pdl-steps-execution-spec D7). */
+  workflows?: Array<{ ref: string; args?: Record<string, unknown> }>;
+
+  /** @reserved — typed for schema fidelity; not executed. Arrays with no
+   *  hoistable ref fail loud in executeStage (pdl-steps-execution-spec D7). */
+  commands?: Array<{ ref: string; args?: Record<string, unknown> }>;
 
   /** Stage dependencies */
   depends_on?: string[];

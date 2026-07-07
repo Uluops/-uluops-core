@@ -189,10 +189,15 @@ export class PipelineExecutor {
         };
       }
 
-      // Steps-only stages (PDL shell preflight) — not yet executed by the engine.
-      // Treat as auto-pass so downstream stages can proceed.
-      if (!stage.ref && !stage.agents) {
-        this.logger.warn(`Stage "${stage.id}" has no ref or agents — treating as auto-pass`);
+      // Steps-only stages (PDL shell preflight) — not yet executed by the engine
+      // (pdl-steps-execution-spec-v0_1_0 Phase 2 adds the opt-in StepsExecutor).
+      // Interim posture (spec D2): keep status:completed + decision:PASS so the
+      // pipelines with depends_on:[preflight] chains keep flowing, but contribute
+      // score:null so the unexecuted stage is EXCLUDED from pipeline-level
+      // aggregation instead of injecting a fabricated 100 that inflates the
+      // average and satisfies downstream gates (steps-block investigation, G1).
+      if (stage.type === 'steps' || (Array.isArray(stage.steps) && stage.steps.length > 0 && !stage.ref && !stage.agents)) {
+        this.logger.warn(`Stage "${stage.id}" has steps — engine does not execute steps yet; passing through with null score`);
         return {
           id: stage.id,
           name: stage.name,
@@ -205,17 +210,30 @@ export class PipelineExecutor {
             definitionHash: '',
             agentType: 'analyst',
             decision: 'PASS',
-            // KEEP: synthetic full-score for a steps-only stage whose bash preconditions all
-            // passed — a semantic "all preconditions satisfied" signal, not agent output, not
-            // a fabrication. See agent-schema-score-nullability-spec.
-            score: 100,
-            maxScore: 100,
+            // null pair (null iff null, score-nullability spec): nothing was
+            // evaluated, so nothing is scored. PASS without a score is the
+            // honest interim — dependency chains flow, aggregation untouched.
+            score: null,
+            maxScore: null,
             recommendations: [],
             durationMs: Date.now() - startTime,
             metrics: { durationMs: Date.now() - startTime, model: 'none', toolCalls: 0, inputTokens: 0, outputTokens: 0, totalEffectiveTokens: 0 },
           },
           durationMs: Date.now() - startTime,
         };
+      }
+
+      // Stages with no content the engine can run (no ref, no agents, no steps —
+      // e.g. multi-entry workflows:/commands: arrays): fail loud instead of
+      // fabricating a PASS (pdl-steps-execution-spec D7). Single-entry workflows
+      // arrays are hoisted to ref by normalizePipelineSection and never land here.
+      if (!stage.ref && !stage.agents) {
+        throw new PipelineError(
+          `Stage "${stage.id}" has no executable content the engine supports ` +
+          `(no ref, no agents, no steps). Multi-entry workflows/commands arrays ` +
+          `are not executed — give the stage a stage-level ref.`,
+          {},
+        );
       }
 
       // Standard ref-based stages
@@ -254,7 +272,9 @@ export class PipelineExecutor {
       return {
         id: stage.id,
         name: stage.name,
-        type: stage.type === 'agents' ? 'command' : stage.type,
+        // StageResult.type is 'workflow' | 'command'; agents and steps stages
+        // (and untyped no-content stages) map to 'command' (agents precedent).
+        type: stage.type === 'workflow' ? 'workflow' : 'command',
         status: 'failed',
         skipReason: formatErrorMessage(error),
         durationMs: Date.now() - startTime,
@@ -358,7 +378,8 @@ export class PipelineExecutor {
     return {
       id: stage.id,
       name: stage.name,
-      type: stage.type === 'agents' ? 'command' : stage.type,
+      // StageResult.type is 'workflow' | 'command'; agents/steps map to 'command'.
+      type: stage.type === 'workflow' ? 'workflow' : 'command',
       status: 'skipped',
       skipReason: reason,
       durationMs: 0,

@@ -301,6 +301,115 @@ describe('PipelineExecutor', () => {
     });
   });
 
+  describe('steps and no-content stages (pdl-steps-execution-spec Phase 0)', () => {
+    it('passes a steps-only stage through with PASS and a null score pair', async () => {
+      const wfExec = makeWorkflowExecutor();
+      const cmdExec = makeCommandExecutor();
+      const registry = makeRegistry();
+      const executor = new PipelineExecutor(wfExec, cmdExec, agentExec, registry, noopLogger);
+
+      const def = makePipelineDef({
+        stages: [
+          {
+            id: 'preflight', name: 'Preflight', type: 'steps',
+            steps: [{ name: 'Detect TypeScript', command: 'test -f tsconfig.json && echo DETECTED || echo NOT_DETECTED' }],
+          },
+        ],
+      });
+
+      const result = await executor.execute(def, { target: '/tmp/test' });
+
+      expect(result.stages[0]!.status).toBe('completed');
+      const stageResult = result.stages[0]!.result!;
+      expect(stageResult.decision).toBe('PASS');
+      expect(stageResult.score).toBeNull();
+      expect(stageResult.maxScore).toBeNull();
+      expect(cmdExec.execute).not.toHaveBeenCalled();
+    });
+
+    it('recognizes a steps stage without an explicit type (pre-normalization shape)', async () => {
+      const wfExec = makeWorkflowExecutor();
+      const cmdExec = makeCommandExecutor();
+      const registry = makeRegistry();
+      const executor = new PipelineExecutor(wfExec, cmdExec, agentExec, registry, noopLogger);
+
+      const def = makePipelineDef({
+        stages: [
+          {
+            id: 'preflight', name: 'Preflight',
+            steps: [{ name: 'Check', command: '[ -d "." ] && echo DETECTED' }],
+          } as unknown as PipelineDefinition['pipeline']['stages'][number],
+        ],
+      });
+
+      const result = await executor.execute(def, { target: '/tmp/test' });
+
+      expect(result.stages[0]!.status).toBe('completed');
+      expect(result.stages[0]!.result!.score).toBeNull();
+    });
+
+    it('excludes the steps stage from the pipeline average instead of injecting 100', async () => {
+      const wfExec = makeWorkflowExecutor();
+      const cmdExec = makeCommandExecutor([makeCommandResult({ score: 80 })]);
+      const registry = makeRegistry();
+      const executor = new PipelineExecutor(wfExec, cmdExec, agentExec, registry, noopLogger);
+
+      const def = makePipelineDef({
+        stages: [
+          { id: 'preflight', name: 'Preflight', type: 'steps', steps: [{ name: 'Check', command: 'true' }] },
+          { id: 'validate', name: 'Validate', type: 'command', ref: 'a@1' },
+        ],
+      });
+
+      const result = await executor.execute(def, { target: '/tmp/test' });
+
+      // Previously avg(100, 80) = 90 — the fabricated 100 inflated the pipeline.
+      expect(result.score).toBe(80);
+    });
+
+    it('keeps depends_on chains flowing across a steps stage', async () => {
+      const wfExec = makeWorkflowExecutor();
+      const cmdExec = makeCommandExecutor([makeCommandResult({ score: 75 })]);
+      const registry = makeRegistry();
+      const executor = new PipelineExecutor(wfExec, cmdExec, agentExec, registry, noopLogger);
+
+      const def = makePipelineDef({
+        stages: [
+          { id: 'preflight', name: 'Preflight', type: 'steps', steps: [{ name: 'Check', command: 'true' }] },
+          { id: 'validate', name: 'Validate', type: 'command', ref: 'a@1', depends_on: ['preflight'] },
+        ],
+      });
+
+      const result = await executor.execute(def, { target: '/tmp/test' });
+
+      expect(result.stages[1]!.status).toBe('completed');
+      expect(cmdExec.execute).toHaveBeenCalledTimes(1);
+    });
+
+    it('fails loud on a stage with no ref, agents, or steps instead of fabricating a PASS', async () => {
+      const wfExec = makeWorkflowExecutor();
+      const cmdExec = makeCommandExecutor();
+      const registry = makeRegistry();
+      const executor = new PipelineExecutor(wfExec, cmdExec, agentExec, registry, noopLogger);
+
+      const def = makePipelineDef({
+        stages: [
+          // Multi-entry workflows array: normalization cannot hoist, engine cannot run.
+          {
+            id: 'multi', name: 'Multi',
+            workflows: [{ ref: 'ship@1.0.0' }, { ref: 'other@1.0.0' }],
+          } as unknown as PipelineDefinition['pipeline']['stages'][number],
+        ],
+      });
+
+      const result = await executor.execute(def, { target: '/tmp/test' });
+
+      expect(result.stages[0]!.status).toBe('failed');
+      expect(result.stages[0]!.skipReason).toMatch(/no executable content/);
+      expect(result.stages[0]!.result).toBeUndefined();
+    });
+  });
+
   describe('result computation', () => {
     it('computes average score across stages', async () => {
       const cmdResults = [

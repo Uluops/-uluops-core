@@ -149,6 +149,23 @@ export function normalizePipelineSection(section: Record<string, unknown>): Reco
     if (Array.isArray(stage['agents']) && !stage['ref'] && !stage['type']) {
       stage['type'] = 'agents';
     }
+    // Single-entry workflows array: hoist the ref so the stage executes instead
+    // of hitting the no-content guard (pdl-steps-execution-spec D7 — this alone
+    // un-breaks api-server-validate's validation stage). Entry args are NOT
+    // threaded: stage-level args reach no executor (pre-existing gap).
+    const workflows = stage['workflows'];
+    if (Array.isArray(workflows) && workflows.length === 1 && !stage['ref'] && !stage['type']) {
+      const entry = workflows[0] as Record<string, unknown> | undefined;
+      if (entry && typeof entry['ref'] === 'string') {
+        stage['ref'] = entry['ref'];
+        stage['type'] = 'workflow';
+      }
+    }
+    // Steps-only stages get an explicit type so the executor branches on intent
+    // rather than falling through to the no-content guard (pdl-steps-execution-spec D6).
+    if (Array.isArray(stage['steps']) && !stage['ref'] && !stage['type'] && !Array.isArray(stage['agents'])) {
+      stage['type'] = 'steps';
+    }
     if (stage['ref'] && !stage['type']) {
       stage['type'] = 'command';
     }
