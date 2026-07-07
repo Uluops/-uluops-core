@@ -80,6 +80,7 @@ function splitTopLevel(expr: string, delimiter: '||' | '&&'): string[] {
 function resolvePath(path: string, ctx: ConditionContext): unknown {
   const paramsMatch = PARAMS_PATH_RE.exec(path);
   if (paramsMatch) {
+    // Mandatory alternation: exactly one of groups 1-3 is defined iff exec matched.
     const name = paramsMatch[1] ?? paramsMatch[2] ?? paramsMatch[3]!;
     return ctx.params?.[name];
   }
@@ -90,7 +91,7 @@ function resolvePath(path: string, ctx: ConditionContext): unknown {
     const stage = ctx.stages.find(s => s.id === stageId);
     const step = stage?.steps?.find(s => s.name === (name1 ?? name2));
     if (!step) return undefined;
-    return (step as unknown as Record<string, unknown>)[field!];
+    return getField(step, field!);
   }
 
   const stageMatch = STAGE_FIELD_RE.exec(path);
@@ -100,14 +101,24 @@ function resolvePath(path: string, ctx: ConditionContext): unknown {
     if (!stage) return undefined;
     // Prefer the inner result (score, decision, ...), fall back to the
     // StageResult envelope (status, durationMs).
-    const fromResult = stage.result
-      ? (stage.result as unknown as Record<string, unknown>)[field!]
-      : undefined;
+    const fromResult = stage.result ? getField(stage.result, field!) : undefined;
     if (fromResult !== undefined) return fromResult;
-    return (stage as unknown as Record<string, unknown>)[field!];
+    return getField(stage, field!);
   }
 
   return undefined;
+}
+
+/**
+ * Dynamic field access on internally-produced objects (StepResult,
+ * CommandResult/WorkflowResult, StageResult). SAFETY: single type-erasing
+ * cast to an unknown-valued record — no concrete structure is fabricated,
+ * and every caller narrows the result through truthy()/String()/Number().
+ * (Restores the single-assertion discipline of the pre-Phase-3 getField.)
+ */
+function getField(obj: object, field: string): unknown {
+  if (!(field in obj)) return undefined;
+  return (obj as Record<string, unknown>)[field];
 }
 
 function truthy(value: unknown): ConditionVerdict {
@@ -131,6 +142,9 @@ function evaluateTerm(term: string, ctx: ConditionContext): ConditionVerdict {
 
   const cmp = COMPARISON_RE.exec(rest);
   if (cmp) {
+    // Non-null assertions here are regex invariants: path (group 1) and op
+    // (group 2) are mandatory captures, and exactly one literal alternative
+    // (str1/str2/num/bool) is defined iff exec matched.
     const [, pathRaw, op, str1, str2, num, bool] = cmp;
     const actual = resolvePath(pathRaw!.trim(), ctx);
     if (actual === undefined || actual === null) return null;
