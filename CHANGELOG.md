@@ -6,6 +6,17 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) 
 
 ## [Unreleased]
 
+## [0.28.2] - 2026-07-06
+
+### Dependencies
+
+- **Advanced the `@uluops/*` pins to the sdk-core 0.15.0 coherent set:** `sdk-core`
+  `0.14.0` → `0.15.0`, `ops-sdk` `5.4.0` → `5.6.0`, `registry-sdk` `0.38.0` →
+  `0.39.0`. sdk-core 0.15.0 adds the streaming transport (`requestStream`/`getStream`);
+  core does not consume it, so this is a pin-alignment patch — it collapses the tree
+  to a single `sdk-core@0.15.0` (no nested duplicate) and carries no consumer-facing
+  API change. `request()` behavior is unchanged.
+
 ## [0.28.1] - 2026-07-03
 
 ### Fixed
