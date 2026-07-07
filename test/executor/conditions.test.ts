@@ -130,6 +130,18 @@ describe('evaluateConditionExpr', () => {
     });
   });
 
+  describe('ill-formed numeric comparisons fail open, not false', () => {
+    it('returns unknown when an ordering operand is non-numeric', () => {
+      // false would silently SKIP a stage under run-gate semantics.
+      expect(evaluateConditionExpr('stages.validate.decision > 5', ctx)).toBeNull();
+      expect(evaluateConditionExpr("stages.validate.score >= 'high'", ctx)).toBeNull();
+    });
+
+    it('still evaluates equality on strings normally', () => {
+      expect(evaluateConditionExpr("stages.validate.decision == 'PASS'", ctx)).toBe(true);
+    });
+  });
+
   describe('unparseable expressions', () => {
     it('returns unknown for unsupported namespaces and garbage', () => {
       expect(evaluateConditionExpr("trigger.type == 'git_push'", ctx)).toBeNull();

@@ -10,6 +10,8 @@
  *   comparison  := path op literal
  *   op          := '==' | '!=' | '>=' | '<=' | '>' | '<'
  *   literal     := 'str' | "str" | number | true | false
+ *                  (string literals are NON-ESCAPABLE — there is no backslash
+ *                  escape; to embed one quote style, use the other)
  *   path        := params.<name> | params['<name>']
  *              | stages.<id>.steps['<name>'].<field>
  *              | stages.<id>.<field>
@@ -136,13 +138,23 @@ function evaluateTerm(term: string, ctx: ConditionContext): ConditionVerdict {
       num !== undefined ? Number(num)
       : bool !== undefined ? bool === 'true'
       : (str1 ?? str2)!;
+    // Ordering comparators over a non-numeric operand are ill-formed: yield
+    // unknown (fail-open) rather than NaN-comparison false — a false verdict
+    // under run-gate semantics would silently SKIP the stage on a typo.
+    if (op !== '==' && op !== '!=') {
+      const a = Number(actual);
+      const e = Number(expected);
+      if (Number.isNaN(a) || Number.isNaN(e)) return null;
+      switch (op) {
+        case '>=': return negate(a >= e);
+        case '<=': return negate(a <= e);
+        case '>':  return negate(a > e);
+        case '<':  return negate(a < e);
+      }
+    }
     switch (op) {
       case '==': return negate(String(actual) === String(expected));
       case '!=': return negate(String(actual) !== String(expected));
-      case '>=': return negate(Number(actual) >= Number(expected));
-      case '<=': return negate(Number(actual) <= Number(expected));
-      case '>':  return negate(Number(actual) > Number(expected));
-      case '<':  return negate(Number(actual) < Number(expected));
     }
   }
 
