@@ -6,6 +6,8 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) 
 
 ## [Unreleased]
 
+## [0.29.0] - 2026-07-07
+
 ### Added
 
 - **Engine execution of PDL stage `steps:` blocks, behind an opt-in** (`allowStageSteps` config / `ULUOPS_ALLOW_STAGE_STEPS=true`; default off). New internal `StepsExecutor` runs steps sequentially via `sh -c` honoring the full PDL step contract (timeout, retries, `retry_delay`, `continue_on_error`, `always_run`, `expect_empty`, `expect_match`, per-step `env`, `working_dir`). Per-step results surface on `StageResult.steps`. Confinements: secret-class env vars scrubbed from the step environment; `step.env` keys overriding `LD_*`/`DYLD_*`/`NODE_OPTIONS`/`PATH` rejected; `working_dir` realpath-contained to the target root; `retries` capped at 10 and `retry_delay` at 60s; `{{ params.x }}` substitutions shell-quoted (CWE-78) with unresolved templates failing the step. (pdl-steps-execution-spec-v0_1_1 Phase 2; pre-impl run #49 PROCEED.)
