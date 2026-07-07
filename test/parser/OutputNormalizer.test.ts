@@ -137,6 +137,67 @@ describe('OutputNormalizer', () => {
     });
   });
 
+  // ─── parseCategories — provider max-key and score-shape variants ─────
+  // Regression for issue 185be486: gpt-5.x category output rendered /100
+  // with max 0 because 'max'/'max_score' keys were unrecognized.
+  describe('category max-score variants', () => {
+    it('accepts max as the category scale key', () => {
+      const result = normalizer.normalizeOutput({
+        decision: 'PASS',
+        score: 86,
+        categories: [{ name: 'structural_completeness', score: 21, max: 25 }],
+      }, 'validator');
+      expect(result.categories?.[0]?.maxScore).toBe(25);
+    });
+
+    it('accepts max_score as the category scale key', () => {
+      const result = normalizer.normalizeOutput({
+        decision: 'PASS',
+        score: 86,
+        categories: [{ name: 'Quality', score: 18, max_score: 20 }],
+      }, 'validator');
+      expect(result.categories?.[0]?.maxScore).toBe(20);
+    });
+
+    it('parses fraction-string category scores with denominator as scale', () => {
+      const result = normalizer.normalizeOutput({
+        decision: 'PASS',
+        score: 86,
+        categories: [{ name: 'Quality', score: '21/25' }],
+      }, 'validator');
+      expect(result.categories?.[0]?.score).toBe(21);
+      expect(result.categories?.[0]?.maxScore).toBe(25);
+    });
+
+    it('prefers an explicit max key over a fraction denominator', () => {
+      const result = normalizer.normalizeOutput({
+        decision: 'PASS',
+        score: 86,
+        categories: [{ name: 'Quality', score: '21/25', max: 30 }],
+      }, 'validator');
+      expect(result.categories?.[0]?.maxScore).toBe(30);
+    });
+
+    it('treats a zero max as broken scale data and defaults to 100', () => {
+      const result = normalizer.normalizeOutput({
+        decision: 'PASS',
+        score: 86,
+        categories: [{ name: 'Quality', score: 21, max: 0 }],
+      }, 'validator');
+      expect(result.categories?.[0]?.maxScore).toBe(100);
+    });
+
+    it('nulls the pair for an unparseable non-fraction score string', () => {
+      const result = normalizer.normalizeOutput({
+        decision: 'PASS',
+        score: 86,
+        categories: [{ name: 'Quality', score: 'excellent' }],
+      }, 'validator');
+      expect(result.categories?.[0]?.score).toBeNull();
+      expect(result.categories?.[0]?.maxScore).toBeNull();
+    });
+  });
+
   // ─── normalizeOutput — issue resolution via categories ──────────────
 
   describe('normalizeOutput issue resolution', () => {

@@ -123,6 +123,13 @@ private calculateEffectiveTokens(usage: UsageMetrics): number {
 represent billable computation. OpenAI `reasoning_tokens` are already included in `output_tokens`
 and should NOT be double-counted here.
 
+> **SUPERSEDED (2026-06-28, v0.25.1):** The Google premise above was falsified in a live test
+> against `gemini-3-flash-preview` — the Vercel AI SDK folds thinking tokens into
+> `outputTokens`, so adding `thinking_tokens` counted them twice. The `+ thinking_tokens`
+> term was removed from `calculateEffectiveTokens`; see CHANGELOG 0.25.1 and the current
+> formula comment in `src/executor/AgentExecutor.ts` (~702-706). Frozen plan text retained
+> for the historical record.
+
 ---
 
 ### Phase 2: AIProvider Google Integration

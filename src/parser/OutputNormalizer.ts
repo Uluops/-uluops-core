@@ -471,9 +471,21 @@ export class OutputNormalizer {
         // Pair-resolution with non-null Number() gating: null pair when no score key
         // is present; else the score with its scale (default 100). Avoids null → NaN.
         const sRaw = item['score'] ?? item['points'];
-        const score = sRaw == null ? null : Number(sRaw);
-        const mRaw = item['maxScore'] ?? item['maxPoints'] ?? item['max_points'] ?? item['total'];
-        const maxScore = score === null ? null : (mRaw == null ? 100 : Number(mRaw));
+        let score = sRaw == null ? null : Number(sRaw);
+        let mRaw = item['maxScore'] ?? item['max_score'] ?? item['maxPoints'] ?? item['max_points'] ?? item['max'] ?? item['total'];
+        // Fraction-string scores ("21/25") carry their own scale; an explicit max key wins over the denominator.
+        if (typeof sRaw === 'string' && Number.isNaN(score)) {
+          const frac = /^\s*(\d+(?:\.\d+)?)\s*\/\s*(\d+(?:\.\d+)?)\s*$/.exec(sRaw);
+          if (frac) {
+            score = Number(frac[1]);
+            mRaw ??= Number(frac[2]);
+          }
+        }
+        // Unparseable score stays null (null-iff-null pair invariant, score-nullability spec);
+        // a non-positive or non-numeric max is broken scale data, not a scale — default it.
+        if (score !== null && Number.isNaN(score)) score = null;
+        const mNum = mRaw == null ? null : Number(mRaw);
+        const maxScore = score === null ? null : (mNum != null && Number.isFinite(mNum) && mNum > 0 ? mNum : 100);
         return {
           name: String(item['name'] ?? item['category'] ?? 'Unknown'),
           score,
