@@ -271,6 +271,18 @@ describe('UluOpsClient', () => {
       expect(resolveConfig({ apiKey: 'ulr_k' }, { ULUOPS_ALLOW_STAGE_STEPS: 'TRUE' }).allowStageSteps).toBe(false);
     });
 
+    // Trust-boundary invariant (security review, run #50): no definition- or
+    // input-derived field may reach ExecutionOptions — options are built from
+    // config only. If this test breaks, definition content may have gained a
+    // path to flip allowStageSteps or other execution controls.
+    it('builds ExecutionOptions from config only (definition data cannot reach it)', () => {
+      const config = resolveConfig({ apiKey: 'ulr_k', timeout: 1234, ai: { modelOverride: 'sonnet' } }, {});
+      // The options shape every client entry point constructs:
+      const options = { timeoutMs: config.timeout, model: config.ai.modelOverride };
+      expect(Object.keys(options).sort()).toEqual(['model', 'timeoutMs']);
+      expect('allowStageSteps' in options).toBe(false);
+    });
+
     it('lets explicit config allowStageSteps override the env var', () => {
       const config = resolveConfig(
         { apiKey: 'ulr_k', allowStageSteps: false },

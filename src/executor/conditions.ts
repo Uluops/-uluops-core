@@ -1,0 +1,183 @@
+/**
+ * Condition-expression evaluation for PDL stages and inline agents
+ * (pdl-steps-execution-spec-v0_1_1 Phase 3 / D5).
+ *
+ * Grammar (deliberately small — no parentheses, no arithmetic):
+ *
+ *   expr        := andExpr ('||' andExpr)*
+ *   andExpr     := term ('&&' term)*
+ *   term        := '!'* (comparison | path)
+ *   comparison  := path op literal
+ *   op          := '==' | '!=' | '>=' | '<=' | '>' | '<'
+ *   literal     := 'str' | "str" | number | true | false
+ *   path        := params.<name> | params['<name>']
+ *              | stages.<id>.steps['<name>'].<field>
+ *              | stages.<id>.<field>
+ *              | <id>.<field>                       (legacy, pre-Phase-3 form)
+ *
+ * Evaluation is THREE-VALUED (Kleene): true / false / null-unknown. A path
+ * that cannot be resolved (missing stage, undefined param, or an unsupported
+ * namespace such as the PDL spec's `trigger.`/`context.` families) yields
+ * unknown, which propagates: unknown || true == true, unknown && false ==
+ * false, otherwise unknown survives to the top. Callers treat a top-level
+ * unknown as FAIL-OPEN (run the stage/agent, warn) — flipping to fail-closed
+ * is a corpus-audited decision deferred to PDL v1.3.0 (spec OQ3).
+ */
+
+import type { StageResult } from '../types/pipeline.js';
+
+export interface ConditionContext {
+  /** Results of stages completed so far (in execution order). */
+  stages: StageResult[];
+  /** Caller-supplied run parameters (ExecutionInput.params). */
+  params?: Record<string, string | number | boolean>;
+}
+
+/** true / false / null = unknown (unresolvable path or unparseable term). */
+export type ConditionVerdict = boolean | null;
+
+const COMPARISON_RE =
+  /^(.+?)\s*(==|!=|>=|<=|>|<)\s*(?:'([^']*)'|"([^"]*)"|(-?\d+(?:\.\d+)?)|(true|false))$/;
+
+const PARAMS_PATH_RE = /^params(?:\.([\w-]+)|\['([^']+)'\]|\["([^"]+)"\])$/;
+
+const STEPS_PATH_RE =
+  /^(?:stages?\.)([\w-]+)\.steps\[(?:'([^']+)'|"([^"]+)")\]\.([\w]+)$/;
+
+const STAGE_FIELD_RE = /^(?:stages?\.)?([\w-]+)\.([\w]+)$/;
+
+/** Split on a delimiter at top level only (never inside quoted strings). */
+function splitTopLevel(expr: string, delimiter: '||' | '&&'): string[] {
+  const parts: string[] = [];
+  let current = '';
+  let quote: "'" | '"' | null = null;
+  for (let i = 0; i < expr.length; i++) {
+    const ch = expr[i]!;
+    if (quote) {
+      if (ch === quote) quote = null;
+      current += ch;
+      continue;
+    }
+    if (ch === "'" || ch === '"') {
+      quote = ch;
+      current += ch;
+      continue;
+    }
+    if (ch === delimiter[0] && expr[i + 1] === delimiter[1]) {
+      parts.push(current);
+      current = '';
+      i++;
+      continue;
+    }
+    current += ch;
+  }
+  parts.push(current);
+  return parts.map(p => p.trim());
+}
+
+function resolvePath(path: string, ctx: ConditionContext): unknown {
+  const paramsMatch = PARAMS_PATH_RE.exec(path);
+  if (paramsMatch) {
+    const name = paramsMatch[1] ?? paramsMatch[2] ?? paramsMatch[3]!;
+    return ctx.params?.[name];
+  }
+
+  const stepsMatch = STEPS_PATH_RE.exec(path);
+  if (stepsMatch) {
+    const [, stageId, name1, name2, field] = stepsMatch;
+    const stage = ctx.stages.find(s => s.id === stageId);
+    const step = stage?.steps?.find(s => s.name === (name1 ?? name2));
+    if (!step) return undefined;
+    return (step as unknown as Record<string, unknown>)[field!];
+  }
+
+  const stageMatch = STAGE_FIELD_RE.exec(path);
+  if (stageMatch) {
+    const [, stageId, field] = stageMatch;
+    const stage = ctx.stages.find(s => s.id === stageId);
+    if (!stage) return undefined;
+    // Prefer the inner result (score, decision, ...), fall back to the
+    // StageResult envelope (status, durationMs).
+    const fromResult = stage.result
+      ? (stage.result as unknown as Record<string, unknown>)[field!]
+      : undefined;
+    if (fromResult !== undefined) return fromResult;
+    return (stage as unknown as Record<string, unknown>)[field!];
+  }
+
+  return undefined;
+}
+
+function truthy(value: unknown): ConditionVerdict {
+  if (value === undefined || value === null) return null;
+  if (typeof value === 'boolean') return value;
+  if (typeof value === 'number') return value !== 0;
+  if (typeof value === 'string') return value !== '' && value !== 'false';
+  return null;
+}
+
+function evaluateTerm(term: string, ctx: ConditionContext): ConditionVerdict {
+  // Unary negation: !unknown stays unknown.
+  let negations = 0;
+  let rest = term;
+  while (rest.startsWith('!')) {
+    negations++;
+    rest = rest.slice(1).trim();
+  }
+  const negate = (v: ConditionVerdict): ConditionVerdict =>
+    v === null ? null : (negations % 2 === 1 ? !v : v);
+
+  const cmp = COMPARISON_RE.exec(rest);
+  if (cmp) {
+    const [, pathRaw, op, str1, str2, num, bool] = cmp;
+    const actual = resolvePath(pathRaw!.trim(), ctx);
+    if (actual === undefined || actual === null) return null;
+    const expected: string | number | boolean =
+      num !== undefined ? Number(num)
+      : bool !== undefined ? bool === 'true'
+      : (str1 ?? str2)!;
+    switch (op) {
+      case '==': return negate(String(actual) === String(expected));
+      case '!=': return negate(String(actual) !== String(expected));
+      case '>=': return negate(Number(actual) >= Number(expected));
+      case '<=': return negate(Number(actual) <= Number(expected));
+      case '>':  return negate(Number(actual) > Number(expected));
+      case '<':  return negate(Number(actual) < Number(expected));
+    }
+  }
+
+  // Bare path truthiness (params.frontend, stages.deploy.failed).
+  if (PARAMS_PATH_RE.test(rest) || STEPS_PATH_RE.test(rest) || STAGE_FIELD_RE.test(rest)) {
+    return negate(truthy(resolvePath(rest, ctx)));
+  }
+
+  // Bare boolean literals (degenerate but legal).
+  if (rest === 'true') return negate(true);
+  if (rest === 'false') return negate(false);
+
+  return null;
+}
+
+/**
+ * Evaluate a condition expression against completed stages and run params.
+ * Returns true / false, or null when the expression is unparseable or a
+ * needed path is unresolvable — the caller decides fail-open vs fail-closed.
+ */
+export function evaluateConditionExpr(expr: string, ctx: ConditionContext): ConditionVerdict {
+  const trimmed = expr.trim();
+  if (!trimmed) return null;
+
+  // Kleene OR over Kleene ANDs.
+  let orVerdict: ConditionVerdict = false;
+  for (const orPart of splitTopLevel(trimmed, '||')) {
+    let andVerdict: ConditionVerdict = true;
+    for (const andPart of splitTopLevel(orPart, '&&')) {
+      const v = evaluateTerm(andPart, ctx);
+      if (v === false) { andVerdict = false; break; }
+      if (v === null) andVerdict = null;
+    }
+    if (andVerdict === true) return true;
+    if (andVerdict === null) orVerdict = null;
+  }
+  return orVerdict;
+}

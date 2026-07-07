@@ -5,6 +5,7 @@ import type { RegistryClient } from '../registry/RegistryClient.js';
 import type { ResolvedDefinition } from '../types/registry.js';
 import type { PipelineDefinition, StageDefinition, PipelineResult, StageResult, StepResult, PipelineState, PipelineHandle as IPipelineHandle } from '../types/pipeline.js';
 import { StepsExecutor } from './StepsExecutor.js';
+import { evaluateConditionExpr } from './conditions.js';
 import type { ExecutionInput, ExecutionOptions } from '../types/execution.js';
 import type { AgentResult } from '../types/agent.js';
 import { PipelineError } from '../errors/index.js';
@@ -117,15 +118,36 @@ export class PipelineExecutor {
           continue;
         }
 
-        // Evaluate execution condition (condition takes precedence over deprecated skip_if)
-        const skipCondition = stage.condition ?? stage.skip_if;
-        if (skipCondition && this.evaluateCondition(skipCondition, state.stageResults)) {
-          state.stageResults.push(this.createSkippedStage(stage, 'condition_met'));
-          continue;
+        // Evaluate execution condition. SEMANTICS (Phase 3, spec D5):
+        // `condition` is a RUN-gate per the PDL spec — the stage runs when it
+        // holds and is skipped when it is definitively false. This flips the
+        // engine's pre-Phase-3 skip-if reading, which never actually fired for
+        // any corpus condition (the old grammar could not parse them).
+        // `skip_if` (deprecated) keeps skip-if-true semantics. Unknown verdicts
+        // (unresolvable path / unparseable expression) FAIL OPEN: run + warn.
+        const conditionCtx = { stages: state.stageResults, params: input.params };
+        if (stage.condition) {
+          const verdict = evaluateConditionExpr(stage.condition, conditionCtx);
+          if (verdict === false) {
+            state.stageResults.push(this.createSkippedStage(stage, 'condition_not_met'));
+            continue;
+          }
+          if (verdict === null) {
+            this.logger.warn(`Condition "${stage.condition}" on stage "${stage.id}" could not be resolved — running stage (fail-open)`);
+          }
+        } else if (stage.skip_if) {
+          const verdict = evaluateConditionExpr(stage.skip_if, conditionCtx);
+          if (verdict === true) {
+            state.stageResults.push(this.createSkippedStage(stage, 'condition_met'));
+            continue;
+          }
+          if (verdict === null) {
+            this.logger.warn(`skip_if "${stage.skip_if}" on stage "${stage.id}" could not be resolved — running stage (fail-open)`);
+          }
         }
 
         // Execute stage
-        const stageResult = await this.executeStage(stage, input, options);
+        const stageResult = await this.executeStage(stage, input, options, state.stageResults);
         state.stageResults.push(stageResult);
       }
 
@@ -148,13 +170,13 @@ export class PipelineExecutor {
     return resolved.definition as PipelineDefinition;
   }
 
-  private async executeStage(stage: StageDefinition, input: ExecutionInput, options?: ExecutionOptions): Promise<StageResult> {
+  private async executeStage(stage: StageDefinition, input: ExecutionInput, options?: ExecutionOptions, priorResults: StageResult[] = []): Promise<StageResult> {
     const startTime = Date.now();
 
     try {
       // Inline agents — PDL stages with agents[] run each agent directly in parallel
       if (stage.type === 'agents' && stage.agents) {
-        const agentResults = await this.executeInlineAgents(stage.agents, input, options);
+        const agentResults = await this.executeInlineAgents(stage.agents, input, options, priorResults);
         // Exclude crashed agents (decision=FAIL, score=0) from average to prevent
         // one crash from poisoning the entire stage score (e.g., 1 pass at 90 + 2 crashes → 30).
         const successResults = agentResults.filter(r => r.decision !== 'FAIL' || (r.score ?? 0) > 0);
@@ -281,12 +303,32 @@ export class PipelineExecutor {
    * Execute inline agent refs in parallel, resolving each from the registry.
    */
   private async executeInlineAgents(
-    agents: Array<{ ref: string }>,
+    agents: Array<{ ref: string; condition?: string }>,
     input: ExecutionInput,
     options?: ExecutionOptions,
+    priorResults: StageResult[] = [],
   ): Promise<AgentResult[]> {
+    // Per-agent condition gate (Phase 3, spec D5): agents whose condition is
+    // definitively false are not dispatched and not scored — no fabricated
+    // result is recorded for them. Unknown verdicts fail open (run + warn),
+    // matching stage-level semantics. Conditions read prior-stage results
+    // (e.g. stages.preflight.steps['Detect TypeScript'].output) and params.
+    const conditionCtx = { stages: priorResults, params: input.params };
+    const dispatched = agents.filter((a) => {
+      if (!a.condition) return true;
+      const verdict = evaluateConditionExpr(a.condition, conditionCtx);
+      if (verdict === false) {
+        this.logger.info(`Skipping inline agent "${a.ref}" — condition not met: ${a.condition}`);
+        return false;
+      }
+      if (verdict === null) {
+        this.logger.warn(`Condition "${a.condition}" on inline agent "${a.ref}" could not be resolved — running agent (fail-open)`);
+      }
+      return true;
+    });
+
     const settled = await Promise.allSettled(
-      agents.map(async (a) => {
+      dispatched.map(async (a) => {
         const [name, version] = parseRef(a.ref);
         const resolved = await this.registry.resolve(name, version, 'agent');
         return this.agentExecutor.execute(resolved, input, options);
@@ -302,14 +344,14 @@ export class PipelineExecutor {
         // Surface rejected inline agents as failed results instead of silently dropping them
         const errorMsg = outcome.reason instanceof Error ? outcome.reason.message : String(outcome.reason);
         results.push({
-          name: agents[i]?.ref ?? 'unknown',
+          name: dispatched[i]?.ref ?? 'unknown',
           agentType: 'validator',
           decision: 'FAIL',
           // Crashed inline agent — no agent ran, so no score. Null pair, not fabricated 0/100.
           score: null,
           maxScore: null,
           recommendations: [{
-            title: `Inline agent failed: ${agents[i]?.ref ?? 'unknown'}`,
+            title: `Inline agent failed: ${dispatched[i]?.ref ?? 'unknown'}`,
             description: errorMsg,
             severity: 'high',
             failureCode: 'PRA-FRA/H',
@@ -328,46 +370,6 @@ export class PipelineExecutor {
     );
   }
 
-  /**
-   * Safe condition evaluator for stage conditions.
-   * Supports: "stage.field op value" expressions
-   */
-  private evaluateCondition(condition: string, results: StageResult[]): boolean {
-    const context = Object.fromEntries(results.map(r => [r.id, r.result]));
-
-    const match = condition.match(
-      /^([\w-]+)\.([\w]+)\s*(==|!=|>=|<=|>|<)\s*(?:'([^']*)'|"([^"]*)"|(\d+(?:\.\d+)?))$/,
-    );
-
-    if (!match) {
-      // Unrecognized condition format — return false (don't skip) but surface
-      // a recommendation so operators notice typos in condition expressions.
-      this.logger.warn(`Unrecognized condition: "${condition}" — stage will not be skipped`);
-      return false;
-    }
-
-    const [, stageId, field, op, strVal1, strVal2, numVal] = match;
-    const stageResult = stageId ? context[stageId] : undefined;
-    if (!stageResult || typeof stageResult !== 'object') return false;
-
-    const actual = this.getField(stageResult, field!);
-    const expected = numVal !== undefined ? Number(numVal) : (strVal1 ?? strVal2);
-
-    switch (op) {
-      case '==': return String(actual) === String(expected);
-      case '!=': return String(actual) !== String(expected);
-      case '>=': return Number(actual) >= Number(expected);
-      case '<=': return Number(actual) <= Number(expected);
-      case '>':  return Number(actual) > Number(expected);
-      case '<':  return Number(actual) < Number(expected);
-      default:   return false;
-    }
-  }
-
-  /** Safely access a field on an object via runtime narrowing (avoids double assertion). */
-  private getField(obj: object, field: string): unknown {
-    return field in obj ? (obj as Record<string, unknown>)[field] : undefined;
-  }
 
   /**
    * StageResult for a steps stage — executed (stepResults present, decision

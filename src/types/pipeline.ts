@@ -77,8 +77,10 @@ export interface StageDefinition {
   /** Reference to command or workflow (name@version format) */
   ref?: string;
 
-  /** Inline agent refs — PDL stages can list agents directly instead of ref */
-  agents?: Array<{ ref: string }>;
+  /** Inline agent refs — PDL stages can list agents directly instead of ref.
+   *  Per-agent `condition` is a run-gate evaluated against prior-stage results
+   *  and run params (Phase 3); unmet → agent not dispatched, not scored. */
+  agents?: Array<{ ref: string; condition?: string }>;
 
   /** Inline shell steps (PDL shell preflight). Preserved through normalization;
    *  not yet executed — see StepDefinition. */
@@ -97,10 +99,15 @@ export interface StageDefinition {
   /** Stage dependencies */
   depends_on?: string[];
 
-  /** Skip condition expression — stage is skipped when this evaluates to true. Takes precedence over skip_if. */
+  /** Run-gate expression (PDL semantics): the stage runs when this holds and
+   *  is skipped when it is definitively false; unresolvable expressions fail
+   *  open (run + warn). Takes precedence over skip_if. NOTE (Phase 3): this
+   *  flipped from the engine's earlier skip-if reading to match the PDL spec —
+   *  the old grammar never parsed a corpus condition, so nothing depended on
+   *  the inverted semantics. */
   condition?: string;
 
-  /** @deprecated Use condition instead. */
+  /** @deprecated Use condition instead. Skip-if-true semantics (unchanged). */
   skip_if?: string;
 
   /** Stage-specific options. @reserved — typed for schema fidelity; not yet passed to executors. */

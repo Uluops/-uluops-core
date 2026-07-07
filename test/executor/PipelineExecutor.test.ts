@@ -11,6 +11,7 @@ import {
   makeWorkflowResult,
   makeWorkflowExecutor,
   makeCommandExecutor,
+  makeAgentExecutor,
   makeRegistry,
 } from './fixtures.js';
 
@@ -638,6 +639,129 @@ describe('PipelineExecutor', () => {
       expect(result.metrics.stagesExecuted).toBe(2);
       expect(result.metrics.stagesFailed).toBe(0);
       expect(result.metrics.stagesSkipped).toBe(0);
+    });
+  });
+
+  describe('run-gate conditions (Phase 3)', () => {
+    it('skips a stage whose condition is definitively false (run-if semantics)', async () => {
+      const wfExec = makeWorkflowExecutor();
+      const cmdExec = makeCommandExecutor([makeCommandResult({ score: 80 })]);
+      const registry = makeRegistry();
+      const executor = new PipelineExecutor(wfExec, cmdExec, agentExec, registry, noopLogger);
+
+      const def = makePipelineDef({
+        stages: [
+          { id: 'build', name: 'Build', type: 'command', ref: 'a@1' },
+          { id: 'forecast', name: 'Forecast', type: 'command', ref: 'b@1', condition: '!params.skip_forecasting' },
+        ],
+      });
+
+      const result = await executor.execute(def, { target: '/tmp/test', params: { skip_forecasting: true } });
+
+      expect(result.stages[1]!.status).toBe('skipped');
+      expect(result.stages[1]!.skipReason).toBe('condition_not_met');
+    });
+
+    it('runs a stage whose condition holds', async () => {
+      const wfExec = makeWorkflowExecutor();
+      const cmdExec = makeCommandExecutor([makeCommandResult({ score: 80 }), makeCommandResult({ score: 90 })]);
+      const registry = makeRegistry();
+      const executor = new PipelineExecutor(wfExec, cmdExec, agentExec, registry, noopLogger);
+
+      const def = makePipelineDef({
+        stages: [
+          { id: 'build', name: 'Build', type: 'command', ref: 'a@1' },
+          { id: 'forecast', name: 'Forecast', type: 'command', ref: 'b@1', condition: '!params.skip_forecasting' },
+        ],
+      });
+
+      const result = await executor.execute(def, { target: '/tmp/test', params: { skip_forecasting: false } });
+
+      expect(result.stages[1]!.status).toBe('completed');
+    });
+
+    it('fails open (runs) when a condition cannot be resolved', async () => {
+      const wfExec = makeWorkflowExecutor();
+      const cmdExec = makeCommandExecutor([makeCommandResult(), makeCommandResult()]);
+      const registry = makeRegistry();
+      const executor = new PipelineExecutor(wfExec, cmdExec, agentExec, registry, noopLogger);
+
+      const def = makePipelineDef({
+        stages: [
+          { id: 'build', name: 'Build', type: 'command', ref: 'a@1' },
+          { id: 'deploy', name: 'Deploy', type: 'command', ref: 'b@1', condition: "trigger.type == 'git_push'" },
+        ],
+      });
+
+      const result = await executor.execute(def, { target: '/tmp/test' });
+
+      expect(result.stages[1]!.status).toBe('completed');
+    });
+
+    it('gates stages on step outputs end-to-end (detection preflight)', async () => {
+      const wfExec = makeWorkflowExecutor();
+      const cmdExec = makeCommandExecutor([makeCommandResult({ score: 88 })]);
+      const registry = makeRegistry();
+      const executor = new PipelineExecutor(wfExec, cmdExec, agentExec, registry, noopLogger, true);
+
+      const def = makePipelineDef({
+        stages: [
+          {
+            id: 'preflight', name: 'Preflight', type: 'steps',
+            steps: [{ name: 'Detect frontend', command: 'echo NOT_DETECTED' }],
+          },
+          {
+            id: 'frontend-checks', name: 'Frontend Checks', type: 'command', ref: 'fe@1',
+            depends_on: ['preflight'],
+            condition: "stages.preflight.steps['Detect frontend'].output == 'DETECTED'",
+          },
+        ],
+      });
+
+      const result = await executor.execute(def, { target: '/tmp' });
+
+      // The step ran, emitted NOT_DETECTED, and the dependent stage was gated off it.
+      expect(result.stages[0]!.steps![0]!.output).toBe('NOT_DETECTED');
+      expect(result.stages[1]!.status).toBe('skipped');
+      expect(result.stages[1]!.skipReason).toBe('condition_not_met');
+      expect(cmdExec.execute).not.toHaveBeenCalled();
+    });
+
+    it('gates inline agents on step outputs (G8 markdown/engine parity)', async () => {
+      const wfExec = makeWorkflowExecutor();
+      const cmdExec = makeCommandExecutor();
+      const agentExecutor = makeAgentExecutor();
+      const registry = makeRegistry();
+      const executor = new PipelineExecutor(wfExec, cmdExec, agentExecutor, registry, noopLogger, true);
+
+      const def = makePipelineDef({
+        stages: [
+          {
+            id: 'preflight', name: 'Preflight', type: 'steps',
+            steps: [
+              { name: 'Detect TypeScript', command: 'echo DETECTED' },
+              { name: 'Detect frontend', command: 'echo NOT_DETECTED' },
+            ],
+          },
+          {
+            id: 'validation', name: 'Validation', type: 'agents',
+            depends_on: ['preflight'],
+            agents: [
+              { ref: 'code-validator' },
+              { ref: 'type-safety-validator', condition: "stages.preflight.steps['Detect TypeScript'].output == 'DETECTED'" },
+              { ref: 'frontend-validator', condition: "params.frontend || stages.preflight.steps['Detect frontend'].output == 'DETECTED'" },
+            ],
+          },
+        ],
+      });
+
+      const result = await executor.execute(def, { target: '/tmp', params: { frontend: false } });
+
+      // code-validator (unconditional) + type-safety (TS detected) dispatch;
+      // frontend-validator (params false, not detected) does not.
+      expect(agentExecutor.execute).toHaveBeenCalledTimes(2);
+      expect(result.stages[1]!.status).toBe('completed');
+      expect(result.stages[1]!.agentResults).toHaveLength(2);
     });
   });
 
