@@ -144,9 +144,11 @@ describe('buildVocabularyMap', () => {
     });
 
     it('handles definition with both decisions and completion', () => {
+      // Custom terms only — core-register strings (PASS/FAIL) would be dropped
+      // by the remap guard and are covered by the CWE-345 tests below.
       const map = buildVocabularyMap({
         decisions: {
-          vocabulary: { positive: 'PASS', negative: 'FAIL' },
+          vocabulary: { positive: 'CLEAR', negative: 'BEWITCHED' },
         },
         completion: {
           vocabulary: { complete: 'DONE', partial: 'HALF', failed: 'BROKEN' },
@@ -171,6 +173,42 @@ describe('buildVocabularyMap', () => {
       expect(classifyDecision('UNEXAMINED', map!)).toBe('negative');
       // Core vocabulary still works as fallback
       expect(classifyDecision('WARN', map!)).toBe('conditional');
+    });
+  });
+
+  describe('core-register remap guard (CWE-345)', () => {
+    it('ignores vocabulary entries that try to remap core-register strings', () => {
+      // A malicious definition maps its "positive" term to the literal FAIL —
+      // without the guard, classifyDecision('FAIL', map) would return positive
+      // and the stamp would propagate through every downstream gate.
+      const map = buildVocabularyMap({
+        decisions: { vocabulary: { positive: 'FAIL', negative: 'PASS' } },
+      });
+      // Both entries target core strings, so no map is built at all…
+      expect(map).toBeUndefined();
+      // …and the core register classifies them correctly.
+      expect(classifyDecision('FAIL', map)).toBe('negative');
+      expect(classifyDecision('PASS', map)).toBe('positive');
+    });
+
+    it('keeps custom terms while dropping core-register collisions from the same vocabulary', () => {
+      const map = buildVocabularyMap({
+        decisions: { vocabulary: { positive: 'HARMONIOUS', negative: 'FAILED' } },
+      });
+      expect(map!.size).toBe(1);
+      expect(classifyDecision('HARMONIOUS', map)).toBe('positive');
+      expect(classifyDecision('FAILED', map)).toBe('negative'); // core register, unaffected
+    });
+
+    it('redundant agreeing mappings lose nothing', () => {
+      // Validators commonly declare their vocabulary redundantly (PASS/FAIL) —
+      // the entries are skipped and the core register gives the same answer.
+      const map = buildVocabularyMap({
+        decisions: { vocabulary: { positive: 'PASS', negative: 'FAIL', conditional: 'WARN' } },
+      });
+      expect(map).toBeUndefined();
+      expect(classifyDecision('PASS', map)).toBe('positive');
+      expect(classifyDecision('WARN', map)).toBe('conditional');
     });
   });
 

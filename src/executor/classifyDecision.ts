@@ -111,26 +111,48 @@ export function resolveDecisionCategory(
  * classifyDecision('HARMONIOUS', vocab); // resolves via the agent's custom vocabulary
  * ```
  */
+/**
+ * Core-register decision strings that vocabulary maps may not remap.
+ *
+ * classifyDecision checks the vocabulary map before the core register, so
+ * without this guard a definition could declare e.g.
+ * `decisions.vocabulary.positive: "FAIL"` and have a literal FAIL classify —
+ * and be stamped, and propagate — as positive through every downstream gate
+ * (CWE-345; security-analyst F-1, ship cycle 0.30.0). The vocabulary mechanism
+ * exists to classify CUSTOM decision words (HARMONIOUS, BEWITCHED), never to
+ * reassign the stable core register. Entries targeting these strings are
+ * ignored; the core register then classifies them correctly, and definitions
+ * that redundantly declare an agreeing mapping (positive: 'PASS') lose nothing.
+ */
+const CORE_REGISTER_DECISIONS: ReadonlySet<string> = new Set([
+  'PASS', 'SHIP', 'COMPLETE', 'EXPLORED',
+  'FAIL', 'FAILED', 'BLOCK',
+  'WARN', 'HOLD', 'PARTIAL',
+]);
+
 export function buildVocabularyMap(definition: {
   decisions?: { vocabulary?: { positive?: string; negative?: string; conditional?: string | null } };
   completion?: { vocabulary?: { complete?: string; partial?: string; failed?: string } };
 }): DecisionVocabularyMap | undefined {
   const map = new Map<string, DecisionCategory>();
+  const set = (term: string | null | undefined, category: DecisionCategory) => {
+    if (term && !CORE_REGISTER_DECISIONS.has(term)) map.set(term, category);
+  };
 
   // Validator vocabulary: positive/negative/conditional
   const dv = definition.decisions?.vocabulary;
   if (dv) {
-    if (dv.positive) map.set(dv.positive, 'positive');
-    if (dv.negative) map.set(dv.negative, 'negative');
-    if (dv.conditional) map.set(dv.conditional, 'conditional');
+    set(dv.positive, 'positive');
+    set(dv.negative, 'negative');
+    set(dv.conditional, 'conditional');
   }
 
   // Executor vocabulary: complete/partial/failed
   const cv = definition.completion?.vocabulary;
   if (cv) {
-    if (cv.complete) map.set(cv.complete, 'positive');
-    if (cv.failed) map.set(cv.failed, 'negative');
-    if (cv.partial) map.set(cv.partial, 'conditional');
+    set(cv.complete, 'positive');
+    set(cv.failed, 'negative');
+    set(cv.partial, 'conditional');
   }
 
   return map.size > 0 ? map : undefined;
