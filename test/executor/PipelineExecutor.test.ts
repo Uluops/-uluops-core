@@ -935,6 +935,7 @@ describe('PipelineExecutor', () => {
       const result = await executor.execute(makePipelineDef(), { target: '/tmp/test' });
 
       expect(result.decision).toBe('FAIL');
+      expect(result.decisionCategory).toBe('negative'); // buildResult stamps the pipeline result too
       expect(result.metrics.stagesFailed).toBe(1);
     });
 

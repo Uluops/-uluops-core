@@ -228,6 +228,7 @@ if (result.completeness !== 'complete') {
 - **`completeness`**: `'complete' | 'partial' | 'failed'`, derived from degradation markers (any `critical` ⇒ `failed`; any `degraded` ⇒ `partial`; else `complete`). Absent ⇒ treat as `complete`. A `PASS` + `partial` result is a positive verdict reached on incomplete evidence — worth surfacing.
 - **`degradationMarkers`**: typed `{ code, phase, severity, detail? }[]`. `code` is the stable contract (e.g. `budget.forced-wrap-up`, `steps.near-exhaustion`, `extraction.low-confidence`, `render.raw-yaml-fallback`); `detail` is human-only — never match on it. `phase` is `'resolution' | 'execution'`.
 - The engine *observes* completeness from how the run actually executed; agents never self-report it. `deriveCompleteness(markers)` is exported if you want to recompute it.
+- **`decisionCategory`**: the vocabulary-resolved category of `decision` (`'positive' | 'negative' | 'conditional' | 'neutral'`), stamped on every result. For custom-vocabulary agents (cognitive lens agents, WDL-remapped workflow decisions) gate on this — or on `resolveDecisionCategory(result)` — instead of the raw decision string. See [Decision Classification](#decision-classification).
 - `degradations: string[]` is the deprecated legacy alias (resolution-phase strings only), retained for compatibility — prefer `degradationMarkers`.
 
 > Empty-output step exhaustion is a thrown [`MaxStepsExhaustedError`](#error-handling), not a marker; near-exhaustion *with* output is the `steps.near-exhaustion` marker.
@@ -532,6 +533,7 @@ import {
   parseRef,            // Parse "name@version" reference strings
   classifyDecision,    // Classify decision strings into positive/negative/conditional/neutral
   buildVocabularyMap,  // Build custom decision vocabulary from agent definitions
+  resolveDecisionCategory, // Aggregation-safe gating — prefers the result's stamped decisionCategory over raw-string classification
   deriveCompleteness,         // Recompute completeness from a DegradationMarker[]
   resolutionMarkersFromLegacy, // Convert the deprecated degradations[] to DegradationMarker[]
 } from '@uluops/core';
@@ -595,7 +597,7 @@ catalog.refresh();
 ### Decision Classification
 
 ```typescript
-import { classifyDecision, buildVocabularyMap } from '@uluops/core';
+import { classifyDecision, buildVocabularyMap, resolveDecisionCategory } from '@uluops/core';
 
 // Core vocabularies — covers all execution layers
 classifyDecision('PASS');     // → 'positive'
@@ -609,6 +611,15 @@ classifyDecision('MAYBE');    // → 'neutral' (unknown)
 const vocab = buildVocabularyMap(agentDefinition);
 classifyDecision('EXAMINED', vocab);  // → 'positive' (Socrates)
 classifyDecision('VITAL', vocab);     // → 'positive' (Nietzsche)
+
+// Gating on a result? Use resolveDecisionCategory — every result carries a
+// decisionCategory stamped by the executor that had the definition's vocabulary
+// in hand. Raw-string comparisons (result.decision !== 'FAIL') silently pass
+// custom-vocabulary negatives like EXPOSED or a WDL-remapped BLOCK.
+const category = resolveDecisionCategory(result); // stamped category, else classifyDecision fallback
+if (category === 'negative') {
+  // handle failure — works for PASS/FAIL agents AND cognitive lens agents
+}
 ```
 
 ## Configuration
@@ -710,6 +721,7 @@ import {
   type PipelineHandle,
   // Decision classification
   classifyDecision,
+  resolveDecisionCategory,
   type DecisionCategory,
   type DecisionVocabularyMap,   // return type of buildVocabularyMap
   // Analysis & AI layer companion types (for direct Advanced Exports usage)

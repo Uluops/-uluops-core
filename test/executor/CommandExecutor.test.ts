@@ -431,7 +431,7 @@ describe('CommandExecutor', () => {
       expect(result.decisionCategory).toBe('negative');
     });
 
-    it('keeps literal executor-register semantics in scoreless aggregation (backwards compatible)', async () => {
+    it('scoreless aggregation: PARTIAL without stamped category resolves to conditional via classifyDecision fallback', async () => {
       const agentExec = makeAgentExecutor([
         makeValidatorResult({ name: 'agent-a', decision: 'PARTIAL', decisionCategory: undefined, score: null, maxScore: null }),
         makeValidatorResult({ name: 'agent-b', decision: 'COMPLETE', decisionCategory: undefined, score: null, maxScore: null }),

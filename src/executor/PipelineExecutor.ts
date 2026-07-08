@@ -490,6 +490,15 @@ class PipelineHandle implements IPipelineHandle {
       .flatMap(s => s.result?.recommendations ?? []);
 
     const decision = this.computeDecision();
+    // Pipeline decisions live in the core register, but stamp the category anyway
+    // so the result is self-describing like every other ExecutionResult — and so
+    // CANCELLED is deliberately 'neutral' rather than an accident of the
+    // classifyDecision default branch.
+    const decisionCategory =
+      decision === 'PASS' ? 'positive' as const :
+      decision === 'WARN' ? 'conditional' as const :
+      decision === 'CANCELLED' ? 'neutral' as const :
+      'negative' as const;
 
     return {
       type: 'pipeline',
@@ -498,6 +507,7 @@ class PipelineHandle implements IPipelineHandle {
       definitionHash: this.state.definitionHash,
       minSubscription: this.state.minSubscription,
       decision,
+      decisionCategory,
       score,
       durationMs,
       status: mapPipelineStatus(this.state.status),

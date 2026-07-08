@@ -80,6 +80,13 @@ export function classifyDecision(
  *
  * @param result - Any result carrying `decision` and optionally `decisionCategory`;
  *   `undefined` (e.g. a thrown-error stage with no result) resolves to `'neutral'`.
+ * @example
+ * ```typescript
+ * resolveDecisionCategory({ decision: 'EXPOSED', decisionCategory: 'negative' }); // 'negative' — stamped category wins
+ * resolveDecisionCategory({ decision: 'FAIL' });      // 'negative' — classifyDecision fallback (core register)
+ * resolveDecisionCategory({ decision: 'BEWITCHED' }); // 'neutral' — unstamped custom vocabulary is unknowable here
+ * resolveDecisionCategory(undefined);                 // 'neutral' — thrown-error stage with no result
+ * ```
  */
 export function resolveDecisionCategory(
   result: { decision?: string; decisionCategory?: DecisionCategory } | undefined,

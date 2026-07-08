@@ -115,7 +115,9 @@ describe('WorkflowExecutor', () => {
       // command: ref that resolves only as an agent — resolve(type=command) throws
       // ConfigurationError, executeStep retries as an agent and runs it directly.
       const cmdExec = makeCommandExecutor();
-      const agentExec = makeAgentExecutor([makeValidatorResult({ name: 'agent-only', score: 77 })]);
+      const agentExec = makeAgentExecutor([makeValidatorResult({
+        name: 'agent-only', score: 77, decision: 'EXAMINED', decisionCategory: 'positive',
+      })]);
       const agentDef: ResolvedDefinition = {
         type: 'agent', name: 'agent-only', version: '1.0.0', hash: 'sha256:a',
         yaml: '', definition: {} as ResolvedDefinition['definition'],
@@ -143,6 +145,11 @@ describe('WorkflowExecutor', () => {
       expect(agentExec.execute).toHaveBeenCalled();
       expect(result.phases[0]!.decision).toBe('passed');
       expect(result.phases[0]!.score).toBe(77);
+      // wrapAgentResult threads the agent's raw decision AND its vocabulary-resolved
+      // category into the phase command result — the category is the only gateable
+      // signal for custom vocabularies like EXAMINED.
+      expect(result.phases[0]!.commands[0]!.decision).toBe('EXAMINED');
+      expect(result.phases[0]!.commands[0]!.decisionCategory).toBe('positive');
     });
   });
 
@@ -477,6 +484,30 @@ describe('WorkflowExecutor', () => {
       const result = await executor.execute(def, { target: '/tmp/test' });
 
       expect(result.decision).toBe('DEPLOY');
+      // The category derives from phase outcomes, not the remapped string —
+      // 'DEPLOY' is unknowable to classifyDecision, so the stamp is load-bearing.
+      expect(result.decisionCategory).toBe('positive');
+    });
+
+    it('stamps a negative decisionCategory on a blocked outcome with remapped labels', async () => {
+      const cmdExec = makeCommandExecutor([makeCommandResult({ score: 40 })]);
+      const registry = makeRegistry();
+      const executor = new WorkflowExecutor(cmdExec, registry);
+
+      const def = makeWorkflowDef({
+        aggregation: {
+          score: { method: 'average' },
+          decision: { SHIP: 'DEPLOY', HOLD: 'REVIEW', BLOCK: 'REJECTED' },
+        },
+      });
+
+      const result = await executor.execute(def, { target: '/tmp/test' });
+
+      // score 40 < gate threshold 70 with on_fail 'stop' → blocked phase → BLOCK,
+      // remapped to 'REJECTED'. Downstream gates (pipeline computeDecision) can only
+      // recognize this as negative through the stamped category.
+      expect(result.decision).toBe('REJECTED');
+      expect(result.decisionCategory).toBe('negative');
     });
   });
 

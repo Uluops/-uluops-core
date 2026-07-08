@@ -15,7 +15,7 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) 
 
 ### Added
 
-- `ExecutionResult.decisionCategory` — optional normalized category, populated at all producing sites: `CommandExecutor.wrapAgentResult` (agent passthrough), `CommandExecutor.aggregateResults` (aggregation outcome), `WorkflowExecutor.aggregate` (derived from phase outcomes, so WDL-remapped SHIP/HOLD/BLOCK strings stay gateable), `WorkflowExecutor.wrapAgentResult`, and the pipeline inline-agents/steps stage synthesizers.
+- `ExecutionResult.decisionCategory` — optional normalized category, populated at all producing sites: `CommandExecutor.wrapAgentResult` (agent passthrough), `CommandExecutor.aggregateResults` (aggregation outcome), `WorkflowExecutor.aggregate` (derived from phase outcomes, so WDL-remapped SHIP/HOLD/BLOCK strings stay gateable), `WorkflowExecutor.wrapAgentResult`, the pipeline inline-agents/steps stage synthesizers, and the pipeline result itself (`buildResult`, where CANCELLED is deliberately `neutral`).
 - `resolveDecisionCategory(result)` (exported) — aggregation-safe category resolution: prefers the stamped `decisionCategory` (only the producing executor had the definition's vocabulary in hand), falls back to `classifyDecision(decision)` over the core registers.
 
 ### Design Notes
