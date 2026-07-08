@@ -268,6 +268,16 @@ export class CommandExecutor {
       if (score >= threshold) { decision = 'PASS'; decisionCategory = 'positive'; }
       else if (score >= warnThreshold) { decision = 'WARN'; decisionCategory = 'conditional'; }
       else { decision = 'FAIL'; decisionCategory = 'negative'; }
+      // Scoreless children have no channel into the aggregate score, so their
+      // negative completions must gate here or they are silently swallowed —
+      // a passing scored validator must not mask a scoreless executor's failure.
+      // (Scored negatives already flow through the average; this is only for
+      // children the score branch cannot see.)
+      if (decisionCategory !== 'negative' &&
+          results.some(r => r.score == null && resolveDecisionCategory(r) === 'negative')) {
+        decision = 'FAIL';
+        decisionCategory = 'negative';
+      }
     } else {
       // Scoreless aggregation gates on vocabulary-resolved categories, not literal
       // FAILED/PARTIAL — a scoreless agent with a custom negative vocabulary

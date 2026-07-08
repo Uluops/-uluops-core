@@ -184,8 +184,10 @@ export class AgentExecutor {
     // ASSUMPTION (2026-04-16): downstream consumers use `decisionCategory` for
     // gate logic, not the raw `decision` string. If any consumer pattern-matches
     // on raw decision strings, vocabulary drift across agent types will cause
-    // silent misclassification. SubmissionClient.allGatesPassed is the known
-    // exception — it checks for literal 'PASS' | 'SHIP'. See issue A3 in tracker.
+    // silent misclassification. As of 0.30.0 all in-package gates comply:
+    // executors resolve via resolveDecisionCategory(), and SubmissionClient.
+    // isPositiveDecision prefers decisionCategory with a literal 'PASS'|'SHIP'
+    // fallback only when the category is absent (closes tracker issue A3).
     const effectiveDecision = parsed.decision ?? 'FAIL';
     const decisionCategory = this.classifyAgentDecision(resolved, effectiveDecision);
 

@@ -431,6 +431,26 @@ describe('CommandExecutor', () => {
       expect(result.decisionCategory).toBe('negative');
     });
 
+    it('fails a mixed command when a scoreless child is negative, even if the scored child passes', async () => {
+      const agentExec = makeAgentExecutor([
+        makeValidatorResult({ name: 'agent-a', decision: 'PASS', decisionCategory: 'positive', score: 90 }),
+        makeValidatorResult({ name: 'agent-b', decision: 'MUTILATED', decisionCategory: 'negative', score: null, maxScore: null }),
+      ]);
+      const executor = new CommandExecutor(agentExec, makeRegistry());
+
+      const result = await executor.execute(makeCommandDef({
+        agents: ['agent-a@1.0.0', 'agent-b@1.0.0'],
+        aggregation: { method: 'average' },
+      }), { target: '/tmp/test' });
+
+      // The aggregate score (90, from the sole scored child) clears the pass
+      // threshold, but the scoreless negative has no channel into the score —
+      // it must gate the command directly rather than be silently swallowed.
+      expect(result.score).toBe(90);
+      expect(result.decision).toBe('FAIL');
+      expect(result.decisionCategory).toBe('negative');
+    });
+
     it('scoreless aggregation: PARTIAL without stamped category resolves to conditional via classifyDecision fallback', async () => {
       const agentExec = makeAgentExecutor([
         makeValidatorResult({ name: 'agent-a', decision: 'PARTIAL', decisionCategory: undefined, score: null, maxScore: null }),
