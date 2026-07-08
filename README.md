@@ -612,6 +612,11 @@ const vocab = buildVocabularyMap(agentDefinition);
 classifyDecision('EXAMINED', vocab);  // → 'positive' (Socrates)
 classifyDecision('VITAL', vocab);     // → 'positive' (Nietzsche)
 
+// A definition's vocabulary can only classify CUSTOM terms — it cannot remap
+// the core register. A vocabulary entry targeting a core string (e.g.
+// positive: 'FAIL') is ignored, so a definition cannot relabel its own failure
+// as a pass.
+
 // Gating on a result? Use resolveDecisionCategory — every result carries a
 // decisionCategory stamped by the executor that had the definition's vocabulary
 // in hand. Raw-string comparisons (result.decision !== 'FAIL') silently pass
