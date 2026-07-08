@@ -319,7 +319,6 @@ export class AgentExecutor {
       // injection in the target); strip control characters so it cannot forge
       // log lines or inject ANSI/structured-log payloads (CWE-117). Cap length
       // for the same reason. resolved.name is SAFE_NAME_PATTERN-validated.
-      // eslint-disable-next-line no-control-regex
       const safeDecision = decision.slice(0, 80).replace(/[\x00-\x1f\x7f]/g, '_');
       this.logger.warn(
         `Decision "${safeDecision}" from agent "${resolved.name}" is not in the core register or the definition's vocabulary — ` +

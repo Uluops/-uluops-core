@@ -25,6 +25,10 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) 
 - `ExecutionResult.decisionCategory` — optional normalized category, populated at all producing sites: `CommandExecutor.wrapAgentResult` (agent passthrough), `CommandExecutor.aggregateResults` (aggregation outcome), `WorkflowExecutor.aggregate` (derived from phase outcomes, so WDL-remapped SHIP/HOLD/BLOCK strings stay gateable), `WorkflowExecutor.wrapAgentResult`, the pipeline inline-agents/steps stage synthesizers, and the pipeline result itself (`buildResult`, where CANCELLED is deliberately `neutral`).
 - `resolveDecisionCategory(result)` (exported) — aggregation-safe category resolution: prefers the stamped `decisionCategory` (only the producing executor had the definition's vocabulary in hand), falls back to `classifyDecision(decision)` over the core registers.
 
+### Dependencies
+
+- Bump `@uluops/ops-sdk` 5.6.0 → 5.7.0 (exact pin). Type/`OpsClient` surface consumed by `SubmissionClient` and `AnalysisSummaryExtractor` remains compatible — no threading changes; build and full suite green against the new version.
+
 ### Design Notes
 
 - Unstamped custom decision strings still resolve `neutral` — the fallback boundary is explicit and tested. Producers must stamp; consumers must resolve. SCOPE.md's "Error propagation across layers" tension moves from Unexamined to Partially examined (decision propagation closed; thrown-error propagation remains open).
