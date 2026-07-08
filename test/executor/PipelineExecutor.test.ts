@@ -8,6 +8,7 @@ import type { CommandExecutor } from '../../src/executor/CommandExecutor.js';
 import type { RegistryClient } from '../../src/registry/RegistryClient.js';
 import {
   makeCommandResult,
+  makeValidatorResult,
   makeWorkflowResult,
   makeWorkflowExecutor,
   makeCommandExecutor,
@@ -855,6 +856,123 @@ describe('PipelineExecutor', () => {
 
       expect(result.stages[0]!.status).toBe('failed');
       expect(result.stages[0]!.skipReason).toContain('Registry unavailable');
+    });
+  });
+
+  // Vocabulary-aware gating (tracker run #55, SEM-INC/H): custom-vocabulary
+  // negatives must fail stages and pipelines. Producers stamp decisionCategory;
+  // aggregation resolves it in preference to raw-string comparison.
+  describe('decision category threading', () => {
+    function inlineAgentsDef() {
+      return makePipelineDef({
+        stages: [{
+          id: 'lens', name: 'Lens', type: 'agents' as const,
+          agents: [{ ref: 'seneca-forecaster' }, { ref: 'code-validator' }],
+        }],
+      });
+    }
+
+    it('fails an inline-agents stage when a lens agent returns a custom negative verdict', async () => {
+      const agentExecutor = makeAgentExecutor([
+        makeValidatorResult({ name: 'seneca-forecaster', decision: 'EXPOSED', decisionCategory: 'negative', score: 55 }),
+        makeValidatorResult({ name: 'code-validator', decision: 'PASS', decisionCategory: 'positive', score: 90 }),
+      ]);
+      const executor = new PipelineExecutor(makeWorkflowExecutor(), makeCommandExecutor(), agentExecutor, makeRegistry(), noopLogger);
+
+      const result = await executor.execute(inlineAgentsDef(), { target: '/tmp/test' });
+
+      expect(result.stages[0]!.result!.decision).toBe('FAIL');
+      expect(result.stages[0]!.result!.decisionCategory).toBe('negative');
+      expect(result.decision).toBe('FAIL');
+    });
+
+    it('keeps a negative-verdict agent with a real score in the stage average (crash filter untouched)', async () => {
+      const agentExecutor = makeAgentExecutor([
+        makeValidatorResult({ name: 'seneca-forecaster', decision: 'EXPOSED', decisionCategory: 'negative', score: 50 }),
+        makeValidatorResult({ name: 'code-validator', decision: 'PASS', decisionCategory: 'positive', score: 90 }),
+      ]);
+      const executor = new PipelineExecutor(makeWorkflowExecutor(), makeCommandExecutor(), agentExecutor, makeRegistry(), noopLogger);
+
+      const result = await executor.execute(inlineAgentsDef(), { target: '/tmp/test' });
+
+      expect(result.stages[0]!.result!.score).toBe(70); // (50 + 90) / 2 — EXPOSED is not a crash
+    });
+
+    it('still fails an inline-agents stage on a crashed agent (literal FAIL, no category)', async () => {
+      const agentExecutor = {
+        execute: vi.fn()
+          .mockResolvedValueOnce(makeValidatorResult({ name: 'seneca-forecaster', decision: 'PASS', score: 90 }))
+          .mockRejectedValueOnce(new Error('boom')),
+      } as unknown as AgentExecutor;
+      const executor = new PipelineExecutor(makeWorkflowExecutor(), makeCommandExecutor(), agentExecutor, makeRegistry(), noopLogger);
+
+      const result = await executor.execute(inlineAgentsDef(), { target: '/tmp/test' });
+
+      expect(result.stages[0]!.result!.decision).toBe('FAIL');
+      expect(result.decision).toBe('FAIL');
+    });
+
+    it('unstamped custom verdicts remain neutral and pass — the documented fallback boundary', async () => {
+      // Without decisionCategory the pipeline cannot know EXPOSED is negative;
+      // AgentExecutor always stamps it, so this only arises for hand-built results.
+      const agentExecutor = makeAgentExecutor([
+        makeValidatorResult({ name: 'seneca-forecaster', decision: 'EXPOSED', score: 55 }),
+        makeValidatorResult({ name: 'code-validator', decision: 'PASS', score: 90 }),
+      ]);
+      const executor = new PipelineExecutor(makeWorkflowExecutor(), makeCommandExecutor(), agentExecutor, makeRegistry(), noopLogger);
+
+      const result = await executor.execute(inlineAgentsDef(), { target: '/tmp/test' });
+
+      expect(result.stages[0]!.result!.decision).toBe('PASS');
+    });
+
+    it('fails the pipeline when a command-ref stage carries a custom negative decision', async () => {
+      const cmdExec = makeCommandExecutor([
+        makeCommandResult({ decision: 'BEWITCHED', decisionCategory: 'negative', score: 40 }),
+      ]);
+      const executor = new PipelineExecutor(makeWorkflowExecutor(), cmdExec, agentExec, makeRegistry(), noopLogger);
+
+      const result = await executor.execute(makePipelineDef(), { target: '/tmp/test' });
+
+      expect(result.decision).toBe('FAIL');
+      expect(result.metrics.stagesFailed).toBe(1);
+    });
+
+    it('warns the pipeline when a command-ref stage carries a custom conditional decision', async () => {
+      const cmdExec = makeCommandExecutor([
+        makeCommandResult({ decision: 'NEEDS_POLISH', decisionCategory: 'conditional', score: 72 }),
+      ]);
+      const executor = new PipelineExecutor(makeWorkflowExecutor(), cmdExec, agentExec, makeRegistry(), noopLogger);
+
+      const result = await executor.execute(makePipelineDef(), { target: '/tmp/test' });
+
+      expect(result.decision).toBe('WARN');
+      expect(result.metrics.stagesWarned).toBe(1);
+    });
+
+    it('fails the pipeline when a workflow-ref stage carries a WDL-remapped negative decision', async () => {
+      const wfExec = makeWorkflowExecutor([
+        makeWorkflowResult({ decision: 'REJECTED', decisionCategory: 'negative', score: 30 }),
+      ]);
+      const executor = new PipelineExecutor(wfExec, makeCommandExecutor(), agentExec, makeRegistry(), noopLogger);
+
+      const def = makePipelineDef({
+        stages: [{ id: 'wf', name: 'WF', type: 'workflow' as const, ref: 'ship-workflow@1.0.0' }],
+      });
+      const result = await executor.execute(def, { target: '/tmp/test' });
+
+      expect(result.decision).toBe('FAIL');
+    });
+
+    it('classifies core-register decisions without a stamped category (backwards compatible)', async () => {
+      const cmdExec = makeCommandExecutor([
+        makeCommandResult({ decision: 'FAIL', decisionCategory: undefined, score: 40 }),
+      ]);
+      const executor = new PipelineExecutor(makeWorkflowExecutor(), cmdExec, agentExec, makeRegistry(), noopLogger);
+
+      const result = await executor.execute(makePipelineDef(), { target: '/tmp/test' });
+
+      expect(result.decision).toBe('FAIL');
     });
   });
 });

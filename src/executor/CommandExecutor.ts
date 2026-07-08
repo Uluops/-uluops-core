@@ -11,6 +11,7 @@ import { parseRef } from '../utils/parseRef.js';
 import { sumTokenMetrics } from '../utils/sumTokenMetrics.js';
 import { DEFAULT_PASS_THRESHOLD, DEFAULT_WARN_THRESHOLD } from '../constants.js';
 import { mapCategory } from './mapCategory.js';
+import { resolveDecisionCategory, type DecisionCategory } from './classifyDecision.js';
 import { aggregateScores, type AggregationMethod } from '../utils/aggregateScores.js';
 
 /**
@@ -207,6 +208,7 @@ export class CommandExecutor {
       minSubscription,
       agentType: agentResult.agentType,
       decision: agentResult.decision,
+      decisionCategory: agentResult.decisionCategory,
       score: agentResult.score,
       maxScore: agentResult.maxScore,
       threshold: def.command.execution.thresholds?.pass,
@@ -260,15 +262,20 @@ export class CommandExecutor {
     const threshold = def.command.execution.thresholds?.pass ?? DEFAULT_PASS_THRESHOLD;
     const warnThreshold = def.command.execution.thresholds?.warn ?? DEFAULT_WARN_THRESHOLD;
     let decision: string;
+    let decisionCategory: DecisionCategory;
 
     if (score !== undefined) {
-      if (score >= threshold) decision = 'PASS';
-      else if (score >= warnThreshold) decision = 'WARN';
-      else decision = 'FAIL';
+      if (score >= threshold) { decision = 'PASS'; decisionCategory = 'positive'; }
+      else if (score >= warnThreshold) { decision = 'WARN'; decisionCategory = 'conditional'; }
+      else { decision = 'FAIL'; decisionCategory = 'negative'; }
     } else {
-      const failed = results.some(r => r.decision === 'FAILED');
-      const partial = results.some(r => r.decision === 'PARTIAL');
+      // Scoreless aggregation gates on vocabulary-resolved categories, not literal
+      // FAILED/PARTIAL — a scoreless agent with a custom negative vocabulary
+      // (completion.vocabulary.failed = 'MUTILATED') must still fail the command.
+      const failed = results.some(r => resolveDecisionCategory(r) === 'negative');
+      const partial = results.some(r => resolveDecisionCategory(r) === 'conditional');
       decision = failed ? 'FAILED' : partial ? 'PARTIAL' : 'COMPLETE';
+      decisionCategory = failed ? 'negative' : partial ? 'conditional' : 'positive';
     }
 
     // Aggregate metrics
@@ -288,6 +295,7 @@ export class CommandExecutor {
       minSubscription,
       agentType: results[0]?.agentType ?? 'validator',
       decision,
+      decisionCategory,
       score,
       maxScore,
       threshold,

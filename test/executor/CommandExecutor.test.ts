@@ -384,4 +384,67 @@ describe('CommandExecutor', () => {
       ).rejects.toThrow('NONEXISTENT_VAR_XYZZY_12345');
     });
   });
+
+  // Vocabulary-aware decision propagation (tracker run #55, SEM-INC/H)
+  describe('decision category threading', () => {
+    it('passes the agent decisionCategory through single-agent wrapping', async () => {
+      const agentExec = makeAgentExecutor([
+        makeValidatorResult({ decision: 'EXPOSED', decisionCategory: 'negative', score: 55 }),
+      ]);
+      const executor = new CommandExecutor(agentExec, makeRegistry());
+
+      const result = await executor.execute(makeCommandDef(), { target: '/tmp/test' });
+
+      expect(result.decision).toBe('EXPOSED');
+      expect(result.decisionCategory).toBe('negative');
+    });
+
+    it('stamps decisionCategory on score-based aggregation', async () => {
+      const agentExec = makeAgentExecutor([
+        makeValidatorResult({ name: 'agent-a', score: 60 }),
+        makeValidatorResult({ name: 'agent-b', score: 62 }),
+      ]);
+      const executor = new CommandExecutor(agentExec, makeRegistry());
+
+      const result = await executor.execute(makeCommandDef({
+        agents: ['agent-a@1.0.0', 'agent-b@1.0.0'],
+        aggregation: { method: 'average' },
+      }), { target: '/tmp/test' });
+
+      expect(result.decision).toBe('WARN');
+      expect(result.decisionCategory).toBe('conditional');
+    });
+
+    it('fails scoreless aggregation on a custom negative completion vocabulary', async () => {
+      const agentExec = makeAgentExecutor([
+        makeValidatorResult({ name: 'agent-a', decision: 'MUTILATED', decisionCategory: 'negative', score: null, maxScore: null }),
+        makeValidatorResult({ name: 'agent-b', decision: 'PRESERVED', decisionCategory: 'positive', score: null, maxScore: null }),
+      ]);
+      const executor = new CommandExecutor(agentExec, makeRegistry());
+
+      const result = await executor.execute(makeCommandDef({
+        agents: ['agent-a@1.0.0', 'agent-b@1.0.0'],
+        aggregation: { method: 'average' },
+      }), { target: '/tmp/test' });
+
+      expect(result.decision).toBe('FAILED');
+      expect(result.decisionCategory).toBe('negative');
+    });
+
+    it('keeps literal executor-register semantics in scoreless aggregation (backwards compatible)', async () => {
+      const agentExec = makeAgentExecutor([
+        makeValidatorResult({ name: 'agent-a', decision: 'PARTIAL', decisionCategory: undefined, score: null, maxScore: null }),
+        makeValidatorResult({ name: 'agent-b', decision: 'COMPLETE', decisionCategory: undefined, score: null, maxScore: null }),
+      ]);
+      const executor = new CommandExecutor(agentExec, makeRegistry());
+
+      const result = await executor.execute(makeCommandDef({
+        agents: ['agent-a@1.0.0', 'agent-b@1.0.0'],
+        aggregation: { method: 'average' },
+      }), { target: '/tmp/test' });
+
+      expect(result.decision).toBe('PARTIAL');
+      expect(result.decisionCategory).toBe('conditional');
+    });
+  });
 });

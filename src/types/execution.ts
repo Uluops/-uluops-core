@@ -95,6 +95,14 @@ export interface ExecutionResult {
   /** Final decision */
   decision: string;
 
+  /** Normalized decision category. For command results wrapping a single agent this is
+   * the agent's vocabulary-resolved category; for aggregated results it reflects the
+   * aggregation outcome. Consumers gating on decisions should read this (falling back to
+   * `classifyDecision(decision)` when absent) rather than pattern-matching raw strings —
+   * raw decisions carry per-definition vocabularies (EXPOSED, BEWITCHED, remapped
+   * SHIP/HOLD/BLOCK) that literal comparisons silently misclassify. */
+  decisionCategory?: import('../executor/classifyDecision.js').DecisionCategory;
+
   /** Aggregated score (0-100). Optional/null — not all execution types produce scores. */
   score?: number | null;
 

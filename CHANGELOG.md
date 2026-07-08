@@ -6,6 +6,22 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) 
 
 ## [Unreleased]
 
+## [0.30.0] - 2026-07-08
+
+### Fixed
+
+- **Custom-vocabulary negative verdicts now fail pipeline stages and pipelines** (tracker run #55, `SEM-INC/H`). The inline-agents stage decision was a literal `decision !== 'FAIL'` test, so a cognitive-lens agent's negative verdict (EXPOSED, BEWITCHED, BLOCKED, REJECT) counted as passing and the stage resolved PASS; `computeDecision`/`computeStageMetrics` had the same blindness for command/workflow-ref stages carrying non-core decision strings. Aggregation now gates on the vocabulary-resolved category: AgentExecutor's stamped `decisionCategory` propagates through every wrap/aggregate site and is consumed via `resolveDecisionCategory()`. The crash-exclusion score filter intentionally keeps its literal check — that is the crash signature stamped by the inline rejection path, not a gate.
+- **Scoreless multi-agent command aggregation gates on categories** — previously literal `FAILED`/`PARTIAL` only, so a scoreless agent with a custom `completion.vocabulary` negative aggregated to `COMPLETE`.
+
+### Added
+
+- `ExecutionResult.decisionCategory` — optional normalized category, populated at all producing sites: `CommandExecutor.wrapAgentResult` (agent passthrough), `CommandExecutor.aggregateResults` (aggregation outcome), `WorkflowExecutor.aggregate` (derived from phase outcomes, so WDL-remapped SHIP/HOLD/BLOCK strings stay gateable), `WorkflowExecutor.wrapAgentResult`, and the pipeline inline-agents/steps stage synthesizers.
+- `resolveDecisionCategory(result)` (exported) — aggregation-safe category resolution: prefers the stamped `decisionCategory` (only the producing executor had the definition's vocabulary in hand), falls back to `classifyDecision(decision)` over the core registers.
+
+### Design Notes
+
+- Unstamped custom decision strings still resolve `neutral` — the fallback boundary is explicit and tested. Producers must stamp; consumers must resolve. SCOPE.md's "Error propagation across layers" tension moves from Unexamined to Partially examined (decision propagation closed; thrown-error propagation remains open).
+
 ## [0.29.1] - 2026-07-07
 
 ### Changed

@@ -12,7 +12,7 @@ import { PipelineError } from '../errors/index.js';
 import { parseRef } from '../utils/parseRef.js';
 import { formatErrorMessage } from '../utils/formatError.js';
 import { sumTokenMetrics } from '../utils/sumTokenMetrics.js';
-import { classifyDecision } from './classifyDecision.js';
+import { resolveDecisionCategory } from './classifyDecision.js';
 import { aggregateScores } from '../utils/aggregateScores.js';
 import type { Logger } from '@uluops/sdk-core';
 
@@ -179,10 +179,18 @@ export class PipelineExecutor {
         const agentResults = await this.executeInlineAgents(stage.agents, input, options, priorResults);
         // Exclude crashed agents (decision=FAIL, score=0) from average to prevent
         // one crash from poisoning the entire stage score (e.g., 1 pass at 90 + 2 crashes → 30).
+        // Literal 'FAIL' is intentional here: it is the crash signature stamped by
+        // executeInlineAgents' rejection path, not a gating check — a lens agent's
+        // custom negative (EXPOSED) with a real score stays in the average.
         const successResults = agentResults.filter(r => r.decision !== 'FAIL' || (r.score ?? 0) > 0);
         const avgScore = aggregateScores(
           successResults.map(r => ({ key: r.name, score: r.score ?? null })),
         );
+        // Gate on vocabulary-resolved categories, not raw strings: lens agents emit
+        // custom negatives (EXPOSED, BEWITCHED) that a literal-'FAIL' test reads as
+        // passing (tracker run #55, SEM-INC/H). AgentExecutor stamps decisionCategory
+        // from the definition's vocabulary; crashed agents fall back via classifyDecision.
+        const stageFailed = agentResults.some(r => resolveDecisionCategory(r) === 'negative');
 
         const stageEnd = Date.now() - startTime;
 
@@ -199,7 +207,8 @@ export class PipelineExecutor {
             version: '1.0.0',
             definitionHash: '',
             agentType: 'analyst',
-            decision: agentResults.every(r => r.decision !== 'FAIL') ? 'PASS' : 'FAIL',
+            decision: stageFailed ? 'FAIL' : 'PASS',
+            decisionCategory: stageFailed ? 'negative' as const : 'positive' as const,
             // KEEP: avgScore is a real average over child agents; maxScore 100 is its scale,
             // not a fabrication. (Caveat: aggregateScores floors an all-null-scoring stage to
             // 0 — a residual fabricated zero routed to composition-aggregation-spec, not fixed here.)
@@ -397,6 +406,7 @@ export class PipelineExecutor {
         definitionHash: '',
         agentType: 'analyst',
         decision,
+        decisionCategory: decision === 'FAIL' ? 'negative' as const : 'positive' as const,
         score: null,
         maxScore: null,
         recommendations: [],
@@ -519,7 +529,7 @@ class PipelineHandle implements IPipelineHandle {
       stagesExecuted++;
       // Thrown-error stages have status='failed' but no result — count as failed
       if (s.status === 'failed') { stagesFailed++; continue; }
-      const category = classifyDecision(s.result?.decision);
+      const category = resolveDecisionCategory(s.result);
       if (category === 'positive') stagesPassed++;
       else if (category === 'negative') stagesFailed++;
       else if (category === 'conditional') stagesWarned++;
@@ -532,14 +542,17 @@ class PipelineHandle implements IPipelineHandle {
     if (this.state.status === 'cancelled') return 'CANCELLED';
     if (this.state.status === 'failed') return 'FAIL';
 
-    // Thrown-error stages have status='failed' but no result.decision
+    // Thrown-error stages have status='failed' but no result.decision.
+    // resolveDecisionCategory prefers the stage result's propagated decisionCategory
+    // (vocabulary-resolved at the producing executor) over raw-string classification,
+    // so custom-vocabulary negatives from command/workflow refs gate correctly.
     const hasFailures = this.state.stageResults.some(s =>
-      s.status === 'failed' || classifyDecision(s.result?.decision) === 'negative',
+      s.status === 'failed' || resolveDecisionCategory(s.result) === 'negative',
     );
     if (hasFailures) return 'FAIL';
 
     const hasWarnings = this.state.stageResults.some(s =>
-      classifyDecision(s.result?.decision) === 'conditional',
+      resolveDecisionCategory(s.result) === 'conditional',
     );
     if (hasWarnings) return 'WARN';
 

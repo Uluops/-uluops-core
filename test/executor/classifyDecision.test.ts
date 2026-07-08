@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest';
-import { classifyDecision, buildVocabularyMap, type DecisionVocabularyMap } from '../../src/executor/classifyDecision.js';
+import { classifyDecision, buildVocabularyMap, resolveDecisionCategory, type DecisionVocabularyMap } from '../../src/executor/classifyDecision.js';
 
 describe('classifyDecision', () => {
   describe('core vocabularies (no vocabulary map)', () => {
@@ -171,6 +171,32 @@ describe('buildVocabularyMap', () => {
       expect(classifyDecision('UNEXAMINED', map!)).toBe('negative');
       // Core vocabulary still works as fallback
       expect(classifyDecision('WARN', map!)).toBe('conditional');
+    });
+  });
+
+  describe('resolveDecisionCategory', () => {
+    it('returns neutral for undefined result (thrown-error stage with no result)', () => {
+      expect(resolveDecisionCategory(undefined)).toBe('neutral');
+    });
+
+    it('prefers the pre-resolved decisionCategory over raw-string classification', () => {
+      // EXPOSED is not in the core register — only the stamped category knows it is negative
+      expect(resolveDecisionCategory({ decision: 'EXPOSED', decisionCategory: 'negative' })).toBe('negative');
+      // The stamped category wins even when it contradicts the raw string:
+      // the producing executor had the definition's vocabulary; we do not.
+      expect(resolveDecisionCategory({ decision: 'FAIL', decisionCategory: 'positive' })).toBe('positive');
+    });
+
+    it('falls back to classifyDecision over the raw string when no category is stamped', () => {
+      expect(resolveDecisionCategory({ decision: 'FAIL' })).toBe('negative');
+      expect(resolveDecisionCategory({ decision: 'HOLD' })).toBe('conditional');
+      expect(resolveDecisionCategory({ decision: 'SHIP' })).toBe('positive');
+    });
+
+    it('resolves unstamped custom-vocabulary strings to neutral (the fallback boundary)', () => {
+      // Without the stamped category the vocabulary is unknowable here — this is
+      // exactly why producers must stamp decisionCategory (tracker run #55).
+      expect(resolveDecisionCategory({ decision: 'BEWITCHED' })).toBe('neutral');
     });
   });
 });

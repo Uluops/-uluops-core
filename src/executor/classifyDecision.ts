@@ -67,6 +67,28 @@ export function classifyDecision(
 }
 
 /**
+ * Resolve the canonical category for any execution result.
+ *
+ * Priority (mirrors the module contract above): the result's pre-resolved
+ * `decisionCategory` — stamped by AgentExecutor from the definition's vocabulary
+ * and propagated through the wrap/aggregate sites — wins over re-classification,
+ * because only the producing executor had the definition's vocabulary in hand.
+ * Absent that, falls back to {@link classifyDecision} over the raw string
+ * (core vocabularies only). This is the aggregation-safe way to gate: literal
+ * comparisons like `decision !== 'FAIL'` silently pass custom-vocabulary
+ * negatives (EXPOSED, BEWITCHED, remapped BLOCK).
+ *
+ * @param result - Any result carrying `decision` and optionally `decisionCategory`;
+ *   `undefined` (e.g. a thrown-error stage with no result) resolves to `'neutral'`.
+ */
+export function resolveDecisionCategory(
+  result: { decision?: string; decisionCategory?: DecisionCategory } | undefined,
+): DecisionCategory {
+  if (!result) return 'neutral';
+  return result.decisionCategory ?? classifyDecision(result.decision);
+}
+
+/**
  * Build a DecisionVocabularyMap from an agent definition's vocabulary fields.
  * Handles both validator (decisions.vocabulary) and executor (completion.vocabulary) shapes.
  *

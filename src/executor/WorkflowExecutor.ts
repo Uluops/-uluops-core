@@ -13,6 +13,7 @@ import { aggregateScores } from '../utils/aggregateScores.js';
 import { sumTokenMetrics } from '../utils/sumTokenMetrics.js';
 import { topoGroupLevels } from '../utils/topoSort.js';
 import { parseRef } from '../utils/parseRef.js';
+import type { DecisionCategory } from './classifyDecision.js';
 
 /**
  * Executes workflows as quality-gated directed acyclic graphs.
@@ -94,6 +95,7 @@ export class WorkflowExecutor {
       definitionHash: resolved.hash,
       minSubscription: resolved.minSubscription,
       decision: aggregated.decision,
+      decisionCategory: aggregated.decisionCategory,
       score: aggregated.score,
       phases: phaseResults,
       recommendations: this.deduplicateRecommendations(allRecommendations),
@@ -428,6 +430,7 @@ export class WorkflowExecutor {
       definitionHash: resolved.hash,
       agentType: (resolved.agentType ?? 'analyst') as CommandResult['agentType'],
       decision: agent.decision,
+      decisionCategory: agent.decisionCategory,
       score: agent.score,
       maxScore: agent.maxScore,
       recommendations: agent.recommendations,
@@ -465,7 +468,7 @@ export class WorkflowExecutor {
   private aggregate(
     config: WorkflowDefinition['workflow']['aggregation'],
     phases: PhaseResult[],
-  ): { decision: WorkflowDecision; score: number } {
+  ): { decision: WorkflowDecision; decisionCategory: DecisionCategory; score: number } {
     const scorable = phases.filter(
       p => p.decision !== 'skipped' && p.decision !== 'aborted',
     );
@@ -481,16 +484,25 @@ export class WorkflowExecutor {
     const hasWarned = phases.some(p => p.decision === 'warned');
     const hasAborted = phases.some(p => p.decision === 'aborted');
 
+    // The category is derived from the phase outcomes, not the decision string —
+    // WDL aggregation.decision config can remap SHIP/HOLD/BLOCK to arbitrary
+    // strings, which downstream classifyDecision cannot recognize. Carrying the
+    // category alongside keeps remapped vocabularies gateable (e.g. by
+    // PipelineExecutor.computeDecision for workflow-ref stages).
     let decision: WorkflowDecision;
+    let decisionCategory: DecisionCategory;
     if (hasBlocked || hasAborted) {
       decision = config?.decision?.BLOCK ?? 'BLOCK';
+      decisionCategory = 'negative';
     } else if (hasWarned) {
       decision = config?.decision?.HOLD ?? 'HOLD';
+      decisionCategory = 'conditional';
     } else {
       decision = config?.decision?.SHIP ?? 'SHIP';
+      decisionCategory = 'positive';
     }
 
-    return { decision, score };
+    return { decision, decisionCategory, score };
   }
 
   private createBlockedPhase(phase: PhaseDefinition, error?: unknown): PhaseResult {
