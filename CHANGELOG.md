@@ -6,6 +6,30 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) 
 
 ## [Unreleased]
 
+## [0.31.0] - 2026-07-08
+
+### Changed — BEHAVIOR
+
+- **Pipeline stages now forward upstream results into downstream agents' prompts.** Any inline-agent stage with `depends_on` automatically receives an `## Upstream Analysis` section in each agent's initial message — a severity-sorted slice (decision, decisionCategory, score, summary, top-5 recommendations) of every dependency's results. **This changes the initial message of every multi-stage pipeline run** (77/77 fleet pipelines use `depends_on`; the 68 synthesis pipelines are the intended beneficiaries — dao-li run #10's 3/100 FRAGMENTED "no upstream analyses available" is the motivating defect). Defaults and opt-outs:
+  - Producer-side `forward: auto | none | full` and consumer-side `receives: auto | none` on PDL stage definitions (`StageDefinition`); absent fields mean `auto` — forwarding is ON by default.
+  - `forward: full` additionally forwards head+tail-retained `rawOutput` (16K head + 8K tail chars, elided middle). Ref-based stages carry no `rawOutput` and degrade to `auto`.
+  - Global kill switch: `ULUOPS_DISABLE_STAGE_FORWARDING=1` (or `true`) disables forwarding engine-wide.
+  - Caps (provisional, char-based): 8K/stage slice, 24K/stage under `full`, 32K total with a deterministic three-step reduction (findings → narrative → header-only floor; headers and verdicts are never dropped). All truncation is marked in-place.
+  (stage-output-forwarding-spec v0.3.1; pre-implementation run #31.)
+
+### Added
+
+- `ExecutionInput.upstreamContext?: UpstreamStageContext[]` — engine-populated transport for the forwarded slices; **not an operator surface** (attached via a per-stage shallow clone, never by mutating a shared input — run #31 A6). New exported type `UpstreamStageContext` (`types/execution.ts`).
+- `StageDefinition.forward` / `StageDefinition.receives` (`types/pipeline.ts`) — survive `normalizePipelineSection` untouched (structuredClone; no field allowlist).
+- `src/executor/upstreamContext.ts` — pure `buildUpstreamContext` / `renderUpstreamSection` helpers plus exported cap constants (`UPSTREAM_STAGE_SLICE_CAP`, `UPSTREAM_STAGE_FULL_CAP`, `UPSTREAM_TOTAL_CAP`, …).
+
+### Design Notes
+
+- **The slice is severity-sorted by the engine** (critical > high > medium > low > info > unknown, stable within tiers) because `flattenRecommendations` produces category-declaration order, not rank — trusting it as ranked would silently drop a critical finding from a late rubric category out of the top-5 (run #31 A2/F2, the pre-impl run's top finding).
+- Forwarding is **one hop** (direct `depends_on` only, no transitive closure) and **inline-agent stages only** on the receiving side; forwarding into command/workflow ref executions is the workflow-twin phase (spec §3.6). Fleet grep 2026-07-08: all 68 synthesis stages are inline-agent, so Phase 1 covers every synthesis consumer.
+- Labeled-absence entries (`### <stage> — no output (…)`) are reachable only in partial multi-dependency topologies — `checkStageDependencies` skips a downstream stage whenever any dependency is non-completed, so the single-dependency crash case cannot occur by construction. Kept as defensive coverage.
+- Steps-only upstream stages forward nothing (their signal already flows through `condition:` expressions). Parallel sibling slices concatenate in declaration order (pinned by an ordering-contract test); siblings never see each other.
+
 ## [0.30.0] - 2026-07-08
 
 ### Fixed

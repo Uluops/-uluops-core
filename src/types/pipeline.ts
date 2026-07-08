@@ -99,6 +99,21 @@ export interface StageDefinition {
   /** Stage dependencies */
   depends_on?: string[];
 
+  /** Producer-side forwarding mode (stage-output-forwarding spec §3.1).
+   *  What this stage's outputs offer to stages that depend_on it:
+   *  - 'auto' (default, absent): the standard severity-sorted slice
+   *  - 'none': never forwarded (ordering-only stages, gates)
+   *  - 'full': slice plus head+tail-retained rawOutput — the explicit
+   *    escalation for consumers that need full narrative. Ref-based stages
+   *    have no rawOutput and degrade to 'auto'. */
+  forward?: 'auto' | 'none' | 'full';
+
+  /** Consumer-side forwarding mode (stage-output-forwarding spec §3.1).
+   *  - 'auto' (default): this stage's agents receive slices of all
+   *    non-suppressed depends_on outputs in their initial message
+   *  - 'none': depend for ordering only; agents get a clean context. */
+  receives?: 'auto' | 'none';
+
   /** Run-gate expression (PDL semantics): the stage runs when this holds and
    *  is skipped when it is definitively false; unresolvable expressions fail
    *  open (run + warn). Takes precedence over skip_if. NOTE (Phase 3): this

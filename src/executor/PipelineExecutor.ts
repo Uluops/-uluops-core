@@ -6,7 +6,8 @@ import type { ResolvedDefinition } from '../types/registry.js';
 import type { PipelineDefinition, StageDefinition, PipelineResult, StageResult, StepResult, PipelineState, PipelineHandle as IPipelineHandle } from '../types/pipeline.js';
 import { StepsExecutor } from './StepsExecutor.js';
 import { evaluateConditionExpr } from './conditions.js';
-import type { ExecutionInput, ExecutionOptions } from '../types/execution.js';
+import { buildUpstreamContext } from './upstreamContext.js';
+import type { ExecutionInput, ExecutionOptions, UpstreamStageContext } from '../types/execution.js';
 import type { AgentResult } from '../types/agent.js';
 import { PipelineError } from '../errors/index.js';
 import { parseRef } from '../utils/parseRef.js';
@@ -146,8 +147,16 @@ export class PipelineExecutor {
           }
         }
 
-        // Execute stage
-        const stageResult = await this.executeStage(stage, input, options, state.stageResults);
+        // Execute stage. Upstream forwarding (stage-output-forwarding spec §3.4):
+        // slices of depends_on results, built per-stage, honoring forward/receives
+        // opt-outs and the kill switch. Empty for non-dependent stages.
+        const upstreamContext = buildUpstreamContext(
+          stage,
+          def.pipeline.stages,
+          state.stageResults,
+          (msg) => this.logger.debug(msg),
+        );
+        const stageResult = await this.executeStage(stage, input, options, state.stageResults, upstreamContext);
         state.stageResults.push(stageResult);
       }
 
@@ -170,13 +179,19 @@ export class PipelineExecutor {
     return resolved.definition as PipelineDefinition;
   }
 
-  private async executeStage(stage: StageDefinition, input: ExecutionInput, options?: ExecutionOptions, priorResults: StageResult[] = []): Promise<StageResult> {
+  private async executeStage(stage: StageDefinition, input: ExecutionInput, options?: ExecutionOptions, priorResults: StageResult[] = [], upstreamContext: UpstreamStageContext[] = []): Promise<StageResult> {
     const startTime = Date.now();
 
     try {
-      // Inline agents — PDL stages with agents[] run each agent directly in parallel
+      // Inline agents — PDL stages with agents[] run each agent directly in parallel.
+      // Upstream context rides a per-stage shallow CLONE — never set on the shared
+      // `input` reference (in-place mutation leaks context across stages and races
+      // parallel agents; stage-output-forwarding spec §3.4, pre-impl run #31 A6).
+      // Ref-based stages below deliberately receive the original input: forwarding
+      // INTO command/workflow executions is the workflow-twin phase (spec §3.6).
       if (stage.type === 'agents' && stage.agents) {
-        const agentResults = await this.executeInlineAgents(stage.agents, input, options, priorResults);
+        const agentInput = upstreamContext.length > 0 ? { ...input, upstreamContext } : input;
+        const agentResults = await this.executeInlineAgents(stage.agents, agentInput, options, priorResults);
         // Exclude crashed agents (decision=FAIL, score=0) from average to prevent
         // one crash from poisoning the entire stage score (e.g., 1 pass at 90 + 2 crashes → 30).
         // Literal 'FAIL' is intentional here: it is the crash signature stamped by

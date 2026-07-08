@@ -71,6 +71,52 @@ export interface ExecutionInput {
 
   /** Execution options */
   options?: Record<string, unknown>;
+
+  /**
+   * ENGINE-POPULATED — not an operator surface. Slices of upstream stage
+   * results forwarded by PipelineExecutor when this execution runs inside a
+   * pipeline stage with `depends_on` (stage-output-forwarding spec §3.4).
+   * Rendered as the `## Upstream Analysis` section of the initial message.
+   * MUST be attached via a per-stage shallow clone (`{ ...input, upstreamContext }`),
+   * never set on a shared ExecutionInput reference — in-place mutation leaks
+   * context across stages and races parallel agents (pre-impl run #31 A6).
+   * CLI/SDK do not expose this field.
+   */
+  upstreamContext?: UpstreamStageContext[];
+}
+
+/**
+ * One forwarded upstream result slice (stage-output-forwarding spec §3.3).
+ * Produced by buildUpstreamContext (PipelineExecutor side); consumed by
+ * renderUpstreamSection (AgentExecutor side).
+ */
+export interface UpstreamStageContext {
+  /** Upstream stage id (provenance header). */
+  stageId: string;
+  /** Agent name for inline-agent results; absent for ref-stage results. */
+  agentName?: string;
+  /** Ref-stage label, e.g. `command: security-analyst@1.2.0` — used in place
+   *  of agentName in the header for command/workflow ref stages. */
+  refLabel?: string;
+  /** Agent's native decision string (PASS, HARMONIOUS, FORCED, …). */
+  decision?: string;
+  /** Vocabulary-resolved category; rendered as `unclassified` when absent. */
+  decisionCategory?: string;
+  score?: number | null;
+  maxScore?: number | null;
+  /** Agent-provided summary, or the first 500 chars of rawOutput as fallback. */
+  summary?: string;
+  /** Severity-sorted top-5 recommendation slice (critical > high > medium >
+   *  low > info > unknown; stable within a tier by original order). */
+  recommendations?: Array<{ severity?: string; title: string; filePath?: string; lineNumber?: number | null }>;
+  /** Head+tail-retained rawOutput (16K head + 8K tail + elision marker) —
+   *  present only when the producer stage declared `forward: full`. */
+  fullText?: string;
+  /** Labeled absence: the upstream member produced no forwardable output.
+   *  Reachable only in partial multi-dependency topologies (spec §3.1). */
+  absent?: boolean;
+  /** skipReason verbatim for skipped stages; error message ≤200 chars for failed. */
+  absentReason?: string;
 }
 
 /**
