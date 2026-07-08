@@ -13,7 +13,7 @@ import { aggregateScores } from '../utils/aggregateScores.js';
 import { sumTokenMetrics } from '../utils/sumTokenMetrics.js';
 import { topoGroupLevels } from '../utils/topoSort.js';
 import { parseRef } from '../utils/parseRef.js';
-import type { DecisionCategory } from './classifyDecision.js';
+import { resolveDecisionCategory, type DecisionCategory } from './classifyDecision.js';
 
 /**
  * Executes workflows as quality-gated directed acyclic graphs.
@@ -345,7 +345,20 @@ export class WorkflowExecutor {
       phase.gate?.aggregate ?? 'average',
     );
 
-    const decision = this.evaluateGate(aggregateScore, phase.gate);
+    let decision = this.evaluateGate(aggregateScore, phase.gate);
+    // Scoreless children have no channel into the score gate: aggregatePhaseScore
+    // drops them, and an all-scoreless phase yields score null → evaluateGate
+    // passes unconditionally. Mirror CommandExecutor.aggregateResults — a
+    // scoreless child whose decision resolves negative gates the phase
+    // categorically, honoring the phase's declared failure posture (on_fail).
+    // Scored negatives flow through the score gate by design; the scored-lens-
+    // negative case (negative decision alongside a passing score) is an open
+    // aggregation question routed to the composition-aggregation spec, not
+    // silently decided here.
+    if (decision === 'passed' &&
+        commandResults.some(r => r.score == null && resolveDecisionCategory(r) === 'negative')) {
+      decision = phase.gate?.on_fail === 'warn' ? 'warned' : 'blocked';
+    }
 
     return {
       id: phase.id,

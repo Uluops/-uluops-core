@@ -184,6 +184,37 @@ describe('AgentExecutor', () => {
       expect(result.score).toBe(100);
       expect(warn).toHaveBeenCalledWith(expect.stringContaining('out-of-range'));
     });
+
+    it('warns when a custom decision resolves neutral because the definition has no vocabulary', async () => {
+      const warn = vi.fn();
+      const logger: Logger = { debug() {}, info() {}, warn, error() {} };
+      const ai = mockAIProvider({
+        text: JSON.stringify({ decision: 'BEWITCHED', score: 40, maxScore: 100, categories: null }),
+      });
+      const executor = new AgentExecutor(baseConfig, ai, logger);
+      const result = await executor.execute(makeValidatorDef(), { target: tmpDir });
+      // The neutral stamp is authoritative downstream — the classification gap
+      // must be surfaced, not silently laundered into a non-gating neutral.
+      expect(result.decision).toBe('BEWITCHED');
+      expect(result.decisionCategory).toBe('neutral');
+      expect(warn).toHaveBeenCalledWith(expect.stringContaining('not in the core register'));
+    });
+
+    it('does not warn when the definition vocabulary classifies the custom decision', async () => {
+      const warn = vi.fn();
+      const logger: Logger = { debug() {}, info() {}, warn, error() {} };
+      const ai = mockAIProvider({
+        text: JSON.stringify({ decision: 'BEWITCHED', score: 40, maxScore: 100, categories: null }),
+      });
+      const executor = new AgentExecutor(baseConfig, ai, logger);
+      const def = makeValidatorDef();
+      (def.definition as { decisions?: unknown }).decisions = {
+        vocabulary: { positive: 'CLEAR', negative: 'BEWITCHED' },
+      };
+      const result = await executor.execute(def, { target: tmpDir });
+      expect(result.decisionCategory).toBe('negative');
+      expect(warn).not.toHaveBeenCalledWith(expect.stringContaining('not in the core register'));
+    });
   });
 
   describe('validator execution', () => {

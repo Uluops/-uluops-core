@@ -12,6 +12,8 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) 
 
 - **Custom-vocabulary negative verdicts now fail pipeline stages and pipelines** (tracker run #55, `SEM-INC/H`). The inline-agents stage decision was a literal `decision !== 'FAIL'` test, so a cognitive-lens agent's negative verdict (EXPOSED, BEWITCHED, BLOCKED, REJECT) counted as passing and the stage resolved PASS; `computeDecision`/`computeStageMetrics` had the same blindness for command/workflow-ref stages carrying non-core decision strings. Aggregation now gates on the vocabulary-resolved category: AgentExecutor's stamped `decisionCategory` propagates through every wrap/aggregate site and is consumed via `resolveDecisionCategory()`. The crash-exclusion score filter intentionally keeps its literal check — that is the crash signature stamped by the inline rejection path, not a gate.
 - **Scoreless multi-agent command aggregation gates on categories** — previously literal `FAILED`/`PARTIAL` only, so a scoreless agent with a custom `completion.vocabulary` negative aggregated to `COMPLETE`.
+- **Scoreless negatives gate mixed commands and workflow phases** (ship-cycle findings, code-auditor `SEM-COM/H` + anxiety-reader `SEM-INC/H`). A scoreless child has no channel into an aggregate score, so previously: a passing scored validator masked a scoreless executor's negative in a mixed command, and a workflow phase with scoreless-negative children gated `passed` (null aggregate score passes `evaluateGate` unconditionally). Both boundaries now gate scoreless negatives categorically, the phase honoring its declared `on_fail` posture. SCOPE LINE (deliberate, documented in both sites): *scored* negatives flow through the score gate — the scored-lens-negative case (categorical negative alongside a passing score, e.g. DISORDERED@82) is an open aggregation-semantics question routed to the composition-aggregation spec, not silently decided.
+- **Missing-vocabulary classification is no longer silent** — a non-empty decision resolving `neutral` (neither core register nor definition vocabulary — almost always a missing `decisions.vocabulary`/`completion.vocabulary` block) now logs a warning at stamp time, since the neutral stamp is authoritative downstream. Closes the run #52 fail-open-telemetry recommendation.
 
 ### Added
 
@@ -21,6 +23,9 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) 
 ### Design Notes
 
 - Unstamped custom decision strings still resolve `neutral` — the fallback boundary is explicit and tested. Producers must stamp; consumers must resolve. SCOPE.md's "Error propagation across layers" tension moves from Unexamined to Partially examined (decision propagation closed; thrown-error propagation remains open).
+- **Mixed-version contract:** `decisionCategory` is optional, so results produced by 0.29.x (or hand-built without the stamp) fall back to `classifyDecision` over the raw string — custom-vocabulary negatives from unstamped results resolve `neutral` and do not gate. Custom-negative gating is only as strong as the producing side's version.
+- **Gate polarity is deliberately asymmetric:** executor gates fail open on ambiguity (must resolve `negative` to block), submission's `allGatesPassed` fails closed (must affirmatively resolve `positive`). An ambiguous result flows through stages but is never reported as a pass. Documented at `SubmissionClient.isPositiveDecision`.
+- Consumers relying on the old literal `PASS|SHIP` fallback should note: scoreless `COMPLETE` commands and WDL-remapped positive workflow decisions now correctly report `allGatesPassed: true` (Aporia A3 closed for non-PASS positives).
 
 ## [0.29.1] - 2026-07-07
 

@@ -307,7 +307,20 @@ export class AgentExecutor {
       decisions?: { vocabulary?: { positive?: string; negative?: string; conditional?: string | null } };
       completion?: { vocabulary?: { complete?: string; partial?: string; failed?: string } };
     });
-    return classifyDecision(decision, vocabularyMap);
+    const category = classifyDecision(decision, vocabularyMap);
+    // A non-empty decision resolving 'neutral' means it is neither in the core
+    // register nor in the definition's vocabulary — almost always a missing
+    // decisions.vocabulary/completion.vocabulary block in the YAML. The stamp is
+    // authoritative downstream (resolveDecisionCategory prefers it over
+    // re-classification), so surface the gap instead of laundering a possible
+    // negative into a non-gating neutral silently.
+    if (category === 'neutral' && decision) {
+      this.logger.warn(
+        `Decision "${decision}" from agent "${resolved.name}" is not in the core register or the definition's vocabulary — ` +
+        `stamping decisionCategory 'neutral' (non-gating). Declare it in decisions.vocabulary or completion.vocabulary.`,
+      );
+    }
+    return category;
   }
 
   /**

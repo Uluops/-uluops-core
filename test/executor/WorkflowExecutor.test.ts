@@ -257,6 +257,55 @@ describe('WorkflowExecutor', () => {
       expect(result.decision).toBe('HOLD');
     });
 
+    it('blocks a phase whose scoreless child resolves negative (null score cannot pass the gate silently)', async () => {
+      // A scoreless child is dropped by aggregatePhaseScore, and evaluateGate
+      // passes a null score unconditionally — the categorical guard must gate it.
+      const cmdExec = makeCommandExecutor([
+        makeCommandResult({ decision: 'MUTILATED', decisionCategory: 'negative', score: null, maxScore: null }),
+      ]);
+      const executor = new WorkflowExecutor(cmdExec, makeRegistry());
+
+      const result = await executor.execute(makeWorkflowDef(), { target: '/tmp/test' });
+
+      expect(result.phases[0]!.decision).toBe('blocked');
+      expect(result.decision).toBe('BLOCK');
+      expect(result.decisionCategory).toBe('negative');
+    });
+
+    it('honors on_fail warn for a scoreless-negative child', async () => {
+      const cmdExec = makeCommandExecutor([
+        makeCommandResult({ decision: 'MUTILATED', decisionCategory: 'negative', score: null, maxScore: null }),
+      ]);
+      const executor = new WorkflowExecutor(cmdExec, makeRegistry());
+
+      const def = makeWorkflowDef({
+        orchestration: {
+          phases: [
+            { id: 'gen', name: 'Generate', commands: ['cmd'], gate: { threshold: 70, aggregate: 'average', on_fail: 'warn' } },
+          ],
+          on_failure: 'continue',
+        },
+      });
+      const result = await executor.execute(def, { target: '/tmp/test' });
+
+      expect(result.phases[0]!.decision).toBe('warned');
+      expect(result.decision).toBe('HOLD');
+      expect(result.decisionCategory).toBe('conditional');
+    });
+
+    it('still passes a phase whose scoreless child is positive', async () => {
+      const cmdExec = makeCommandExecutor([
+        makeCommandResult({ decision: 'PRESERVED', decisionCategory: 'positive', score: null, maxScore: null }),
+      ]);
+      const executor = new WorkflowExecutor(cmdExec, makeRegistry());
+
+      const result = await executor.execute(makeWorkflowDef(), { target: '/tmp/test' });
+
+      expect(result.phases[0]!.decision).toBe('passed');
+      expect(result.decision).toBe('SHIP');
+      expect(result.decisionCategory).toBe('positive');
+    });
+
     it('passes when score equals threshold exactly (>= boundary)', async () => {
       const cmdExec = makeCommandExecutor([makeCommandResult({ score: 70 })]);
       const registry = makeRegistry();

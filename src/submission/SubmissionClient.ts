@@ -202,6 +202,14 @@ export class SubmissionClient {
    * analytics/reporting; gating simply refuses to treat it as a pass. This
    * scopes to agent results only — `extractionConfidence` is absent on command/
    * workflow ExecutionResults, so their gating is unchanged.
+   *
+   * POLARITY (deliberate asymmetry with executor gating): executor gates fail
+   * OPEN on ambiguity — a result must resolve 'negative' to block, so an
+   * unclassifiable decision does not halt a pipeline. This gate fails CLOSED —
+   * a result must affirmatively resolve 'positive' (or literal PASS/SHIP when
+   * unstamped) to report allGatesPassed. Blocking wants evidence of failure;
+   * asserting success wants evidence of success. An ambiguous result therefore
+   * flows through stages but is never reported as a pass.
    */
   private isPositiveDecision(result: ExecutionResult | AgentResult): boolean {
     if (

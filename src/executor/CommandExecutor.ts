@@ -271,8 +271,12 @@ export class CommandExecutor {
       // Scoreless children have no channel into the aggregate score, so their
       // negative completions must gate here or they are silently swallowed —
       // a passing scored validator must not mask a scoreless executor's failure.
-      // (Scored negatives already flow through the average; this is only for
-      // children the score branch cannot see.)
+      // SCOPE OF THIS GUARD: scored negatives flow through the average, which is
+      // correct for validators (decision derives from score) but undecided for
+      // lens agents where a categorical negative can coexist with a passing
+      // score (e.g. DISORDERED@82). That case is deliberately NOT gated here —
+      // it is an aggregation-semantics question routed to the
+      // composition-aggregation spec, alongside the all-null floor above.
       if (decisionCategory !== 'negative' &&
           results.some(r => r.score == null && resolveDecisionCategory(r) === 'negative')) {
         decision = 'FAIL';
