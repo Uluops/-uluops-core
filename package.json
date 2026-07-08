@@ -21,8 +21,12 @@
   },
   "files": [
     "dist",
-    "definitions"
+    "definitions",
+    "CHANGELOG.md"
   ],
+  "publishConfig": {
+    "access": "public"
+  },
   "scripts": {
     "build": "tsc",
     "typecheck": "tsc --noEmit",
