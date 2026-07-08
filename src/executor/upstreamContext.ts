@@ -132,7 +132,8 @@ export function buildUpstreamContext(
         decision: r.decision,
         decisionCategory: r.decisionCategory,
         score: r.score ?? null,
-        maxScore: 'maxScore' in r ? ((r as { maxScore?: number | null }).maxScore ?? null) : null,
+        // Discriminant narrowing: only CommandResult carries maxScore (run #57).
+        maxScore: r.type === 'command' ? (r.maxScore ?? null) : null,
         recommendations: sliceRecommendations(r.recommendations ?? []),
       });
     }
@@ -187,7 +188,7 @@ interface RenderedEntry {
   narrative?: string;
   findings: string[];
   fullText?: string;
-  entry: UpstreamStageContext;
+  readonly entry: UpstreamStageContext;
   /** Truncation bookkeeping — lives here, NOT on the input entry (the context
    *  object may be shared across parallel agents and must stay immutable). */
   truncated?: boolean;
@@ -294,9 +295,13 @@ function renderEntry(e: UpstreamStageContext): RenderedEntry {
 }
 
 function entryLength(r: RenderedEntry): number {
+  // Label overheads: 9 = 'Summary: ', 21 = 'Top recommendations:\n',
+  // 13 = 'Full output:\n'. Keeping these in the accounting means the caps
+  // bound the RENDERED size, not just the content (run #57 SEM-COM/L).
   return (
     r.header.length +
     (r.narrative ? r.narrative.length + 9 : 0) +
+    (r.findings.length > 0 ? 21 : 0) +
     r.findings.reduce((s, f) => s + f.length + 1, 0) +
     (r.fullText ? r.fullText.length + 13 : 0)
   );
@@ -332,6 +337,7 @@ function shrinkFullText(r: RenderedEntry, budget: number): void {
   } else {
     const head = Math.floor(budget * (UPSTREAM_FULL_HEAD_CHARS / (UPSTREAM_FULL_HEAD_CHARS + UPSTREAM_FULL_TAIL_CHARS)));
     const tail = budget - head;
+    // +100 = headroom for the elision marker headTailRetain inserts.
     r.fullText = headTailRetain(r.fullText, head, tail).slice(0, budget + 100);
   }
   markTruncated(r, original);

@@ -39,6 +39,8 @@ function stage(id: string, overrides?: Partial<StageDefinition>): StageDefinitio
   return { id, name: id, type: 'agents', agents: [{ ref: `${id}-agent@1.0.0` }], ...overrides };
 }
 
+// StageResult.type for inline-agent stages is 'command' — the engine maps
+// agents-stages to type:'command' in results (PipelineExecutor agents branch).
 function completedAgentStage(id: string, agentOverrides?: Parameters<typeof makeValidatorResult>[0]): StageResult {
   return {
     id,
@@ -85,7 +87,7 @@ describe('buildUpstreamContext', () => {
     const s = stage('synthesis', { depends_on: ['deep'] });
     const all = [stage('deep', { forward: 'full' }), s];
     const raw = 'H'.repeat(20_000) + 'MIDDLE' + 'T'.repeat(20_000);
-    const prior = [completedAgentStage('deep', { rawOutput: raw } as never)];
+    const prior = [completedAgentStage('deep', { rawOutput: raw })];
     const ctx = buildUpstreamContext(s, all, prior);
     expect(ctx[0]!.fullText).toBeDefined();
     expect(ctx[0]!.fullText).toContain('elided');
@@ -99,7 +101,7 @@ describe('buildUpstreamContext', () => {
     const all = [stage('preflight', { type: 'steps', agents: undefined }), s];
     const prior: StageResult[] = [{
       id: 'preflight', name: 'preflight', type: 'command', status: 'completed',
-      steps: [{ name: 'detect', status: 'completed', output: 'DETECTED', durationMs: 5 }],
+      steps: [{ name: 'detect', status: 'passed', output: 'DETECTED', durationMs: 5 }],
       result: { ...makeCommandResult({ score: null, maxScore: null }), recommendations: [] },
       durationMs: 5,
     }];
@@ -144,6 +146,35 @@ describe('buildUpstreamContext', () => {
     const ctx = buildUpstreamContext(s, [stage('analysis'), s], [completedAgentStage('analysis')]);
     expect(ctx).toHaveLength(0);
   });
+
+  it("kill switch also accepts the 'true' string form (run #57 EPI-VAL/H)", () => {
+    process.env[UPSTREAM_KILL_SWITCH_ENV] = 'true';
+    const s = stage('synthesis', { depends_on: ['analysis'] });
+    const ctx = buildUpstreamContext(s, [stage('analysis'), s], [completedAgentStage('analysis')]);
+    expect(ctx).toHaveLength(0);
+  });
+
+  it('skipped-stage absentReason is skipReason VERBATIM — no 200-char cap (spec §3.1 asymmetry)', () => {
+    const long = 'skip '.repeat(100).trim(); // 599 chars
+    const s = stage('synthesis', { depends_on: ['ok', 'gone'] });
+    const all = [stage('ok'), stage('gone'), s];
+    const prior: StageResult[] = [
+      completedAgentStage('ok'),
+      { id: 'gone', name: 'gone', type: 'command', status: 'skipped', skipReason: long, durationMs: 0 },
+    ];
+    const absent = buildUpstreamContext(s, all, prior).find((e) => e.stageId === 'gone')!;
+    expect(absent.absent).toBe(true);
+    expect(absent.absentReason).toBe(long); // verbatim, longer than the failed-stage cap
+    expect(absent.absentReason!.length).toBeGreaterThan(200);
+  });
+
+  it('summary falls back to the first 500 chars of rawOutput in auto mode (run #57 SEM-COM/M)', () => {
+    const s = stage('synthesis', { depends_on: ['analysis'] });
+    const prior = [completedAgentStage('analysis', { summary: undefined, rawOutput: 'x'.repeat(1_000) })];
+    const ctx = buildUpstreamContext(s, [stage('analysis'), s], prior);
+    expect(ctx[0]!.summary).toBe('x'.repeat(500));
+    expect(ctx[0]!.fullText).toBeUndefined(); // auto mode: fallback summary, no full text
+  });
 });
 
 // ─── Group 2: severity sort ──────────────────────────────────────────────
@@ -163,7 +194,7 @@ describe('severity sort (run #31 A2/F2)', () => {
       { title: 'THE-CRITICAL', priority: 'critical' as const, severity: 'critical' as const },
     ];
     const s = stage('synthesis', { depends_on: ['analysis'] });
-    const ctx = buildUpstreamContext(s, [stage('analysis'), s], [completedAgentStage('analysis', { recommendations: recs } as never)]);
+    const ctx = buildUpstreamContext(s, [stage('analysis'), s], [completedAgentStage('analysis', { recommendations: recs })]);
     const slice = ctx[0]!.recommendations!;
     expect(slice).toHaveLength(5);
     expect(slice[0]!.title).toBe('THE-CRITICAL');
@@ -175,7 +206,7 @@ describe('severity sort (run #31 A2/F2)', () => {
       { title: 'high-second', priority: 'critical' as const, severity: 'high' as const },
     ];
     const s = stage('x', { depends_on: ['a'] });
-    const ctx = buildUpstreamContext(s, [stage('a'), s], [completedAgentStage('a', { recommendations: recs } as never)]);
+    const ctx = buildUpstreamContext(s, [stage('a'), s], [completedAgentStage('a', { recommendations: recs })]);
     expect(ctx[0]!.recommendations!.map((r) => r.title)).toEqual(['high-first', 'high-second']);
   });
 });
@@ -217,6 +248,21 @@ describe('caps and truncation', () => {
     const out = renderUpstreamSection(entries);
     expect(out.length).toBeLessThanOrEqual(UPSTREAM_TOTAL_CAP + 2_000);
     for (let i = 0; i < 8; i++) expect(out).toContain(`### up-${i} / agent-${i}`);
+    expect(out).toContain('[upstream context truncated');
+  });
+
+  it('total-cap tie-break drops findings BEFORE narratives (spec §3.3 step order, run #57 EPI-VAL/M)', () => {
+    // Two entries whose findings alone push past the total cap while
+    // narratives are small: the correct reduction exhausts findings first
+    // and leaves both narratives intact.
+    const entries: UpstreamStageContext[] = Array.from({ length: 4 }, (_, i) => ({
+      stageId: `up-${i}`, agentName: `agent-${i}`, decision: 'PASS', decisionCategory: 'positive',
+      score: 80, maxScore: 100,
+      summary: `narrative-${i}-KEEPME`,
+      recommendations: Array.from({ length: 5 }, (_, j) => ({ title: `f-${i}-${j} ` + 'x'.repeat(2_400), severity: 'medium' })),
+    }));
+    const out = renderUpstreamSection(entries); // ~48K findings vs 32K cap
+    for (let i = 0; i < 4; i++) expect(out).toContain(`narrative-${i}-KEEPME`);
     expect(out).toContain('[upstream context truncated');
   });
 
@@ -390,7 +436,7 @@ describe('PipelineExecutor forwarding integration', () => {
   });
 
   it('parallel sibling results keep declaration order even when the first is slowest (spec §5.6)', async () => {
-    const { executor: agentExec } = makeCapturingAgentExecutor({ delayFor: { 'agent-a': 50 } });
+    const { executor: agentExec, inputs } = makeCapturingAgentExecutor({ delayFor: { 'agent-a': 50 } });
     const pipeline = new PipelineExecutor(makeWorkflowExecutor(), makeCommandExecutor(), agentExec, makeRegistry(), noopLogger);
     const result = await pipeline.execute(makeForwardingPipeline(), { target: '/tmp/proj' });
 
@@ -399,6 +445,12 @@ describe('PipelineExecutor forwarding integration', () => {
 
     const synthesis = result.stages.find((s) => s.id === 'synthesis')!;
     expect(synthesis.status).toBe('completed');
+
+    // The load-bearing pin (run #57 EPI-VAL/H): the FORWARDED context also
+    // holds declaration order under timing pressure — a sort-by-completion
+    // mutation cannot evade this jointly with the agentResults assertion.
+    const synthInput = inputs.find((c) => c.name === 'synth')!.input;
+    expect(synthInput.upstreamContext!.map((e) => e.agentName)).toEqual(['agent-a', 'agent-b']);
   });
 });
 

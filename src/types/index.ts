@@ -11,6 +11,7 @@ export type {
   Domain,
   AgentType,
   ExecutionInput,
+  UpstreamStageContext,
   ExecutionResult,
   ExecutionMetrics,
   ExecutionOptions,

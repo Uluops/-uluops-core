@@ -19,9 +19,9 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) 
 
 ### Added
 
-- `ExecutionInput.upstreamContext?: UpstreamStageContext[]` — engine-populated transport for the forwarded slices; **not an operator surface** (attached via a per-stage shallow clone, never by mutating a shared input — run #31 A6). New exported type `UpstreamStageContext` (`types/execution.ts`).
+- `ExecutionInput.upstreamContext?: UpstreamStageContext[]` — engine-populated transport for the forwarded slices; **not an operator surface** (attached via a per-stage shallow clone, never by mutating a shared input — run #31 A6). New exported type `UpstreamStageContext`, re-exported from the package root and the `/types` subpath (run #57 closed the barrel gap).
 - `StageDefinition.forward` / `StageDefinition.receives` (`types/pipeline.ts`) — survive `normalizePipelineSection` untouched (structuredClone; no field allowlist).
-- `src/executor/upstreamContext.ts` — pure `buildUpstreamContext` / `renderUpstreamSection` helpers plus exported cap constants (`UPSTREAM_STAGE_SLICE_CAP`, `UPSTREAM_STAGE_FULL_CAP`, `UPSTREAM_TOTAL_CAP`, …).
+- `src/executor/upstreamContext.ts` — pure `buildUpstreamContext` / `renderUpstreamSection` helpers plus cap constants (`UPSTREAM_STAGE_SLICE_CAP`, `UPSTREAM_STAGE_FULL_CAP`, `UPSTREAM_TOTAL_CAP`, `UPSTREAM_KILL_SWITCH_ENV`, …) exported from the package root. README gained a Stage Output Forwarding section and the kill-switch env-table row.
 
 ### Design Notes
 

@@ -309,6 +309,21 @@ for (const stage of result.stages) {
 
 **Stage & agent conditions.** A stage's `condition` (and per-agent `agents[].condition` in inline-agent stages) is a **run-gate**: the stage or agent runs when the expression holds and is skipped when it is definitively false. Conditions can read run parameters (`params.frontend`, passed via `ExecutionInput.params`) and prior-stage results, including executed step outputs (`stages.preflight.steps['Detect TypeScript'].output == 'DETECTED'`). **An absent param is `false`** (so `!params.x` is `true` and `params.x || <detection>` gates on detection alone when `x` is unset) — param absence is a normal caller state. Unresolvable expressions of other kinds — missing stage/step path, unsupported namespace, or over the length cap — **fail open**: the stage runs and a warning is logged. `skip_if` is deprecated (skip-if-true semantics). See the PDL spec for the full expression grammar.
 
+**Stage output forwarding (0.31.0, ON by default).** Any inline-agent stage with `depends_on` automatically receives an `## Upstream Analysis` section in each of its agents' initial messages — a severity-sorted slice (decision, `decisionCategory`, score, summary, top-5 recommendations) of every dependency's results, placed after the operator `Directive:` and before the project context. Forwarding is one hop (direct dependencies only) and never flows between parallel siblings. Controls:
+
+```yaml
+stages:
+  - id: gate            # producer-side opt-out: this stage's outputs are never forwarded
+    forward: none
+  - id: deep-analysis   # escalation: also forward head+tail-retained rawOutput (16K+8K chars)
+    forward: full
+  - id: synthesis
+    depends_on: [deep-analysis]
+    # receives: none    # consumer-side opt-out: depend for ordering only
+```
+
+Caps (provisional; exported as `UPSTREAM_STAGE_SLICE_CAP` 8K / `UPSTREAM_STAGE_FULL_CAP` 24K / `UPSTREAM_TOTAL_CAP` 32K chars) reduce deterministically — findings first, then narratives; stage headers and verdict lines are never dropped, and all truncation is marked in-place. Fleet-wide kill switch: `ULUOPS_DISABLE_STAGE_FORWARDING=1` (or `true`). The forwarded slices ride `ExecutionInput.upstreamContext` (type `UpstreamStageContext`) — engine-populated; not an operator input.
+
 Async execution with handle-based control:
 
 ```typescript
@@ -698,6 +713,7 @@ const client = new UluOpsClient({
 | `ULUOPS_DASHBOARD_URL` | Dashboard base URL for run links | `https://app.uluops.ai` |
 | `ULUOPS_ALLOWED_TOOLS` | Comma-separated tool allowlist (e.g., `bash`) | all except `bash` |
 | `ULUOPS_ALLOW_STAGE_STEPS` | Permit engine execution of PDL stage `steps:` blocks (host shell; exact string `true`) | `false` |
+| `ULUOPS_DISABLE_STAGE_FORWARDING` | Disable upstream stage-result forwarding engine-wide (`1` or `true`) | `false` |
 | `ULUOPS_MAX_CONCURRENCY` | Global ceiling on concurrent in-flight LLM calls | `8` |
 | `ULUOPS_DEBUG` | Enable detailed execution logging | `false` |
 
