@@ -6,6 +6,8 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) 
 
 ## [Unreleased]
 
+## [0.32.0] - 2026-07-10
+
 ### Changed — BEHAVIOR
 
 - **PDL stage gates are now enacted** (tracker G5, issue cf83cd47 — "hard build gate silently auto-passes"). The `gate:` block on pipeline stages (`threshold`, `aggregate`, `on_failure`, `on_success` — PDL `$defs/gate`, schema v1.2.0) was previously parsed but never read: `on_failure: abort` flowed on exactly like `warn`. Now, after each executed stage:
