@@ -48,6 +48,17 @@ export interface AIGenerateResult<TOutput = unknown> {
   /** Finish reason */
   finishReason: string;
 
+  /**
+   * Providers whose usage metadata arrived in an unrecognized shape (issue
+   * adaaa4b9). mapUsage reaches into undocumented provider-metadata fields via
+   * casts; when a provider-SDK renames them, the casts silently resolve
+   * undefined and token/cache/thinking metrics read zero. This field converts
+   * that silent-zero into a signal — AgentExecutor emits an info-severity
+   * `usage.provider-metadata-shape-drift` degradation marker from it.
+   * Absent/empty means no drift detected.
+   */
+  usageShapeDrift?: string[];
+
   /** Structured output object, if output schema was provided and model supports it.
    *  When present, this is already validated against the schema — no extraction needed.
    *  Generic type parameter allows callers to preserve Zod schema output types. */
@@ -343,6 +354,10 @@ export class AIProvider {
       (usage.thinking_tokens ? ` / thinking=${usage.thinking_tokens}` : ''),
     );
 
+    const usageShapeDrift = this.detectUsageShapeDrift(
+      result.providerMetadata as Record<string, unknown> | undefined,
+    );
+
     return {
       text: result.text,
       usage,
@@ -352,6 +367,7 @@ export class AIProvider {
       steps: result.steps.length,
       finishReason: result.finishReason,
       structuredOutput: useStructuredOutput ? result.output : undefined,
+      ...(usageShapeDrift.length > 0 ? { usageShapeDrift } : {}),
     };
   }
 
@@ -416,9 +432,16 @@ export class AIProvider {
       // Direct property access uses the SDK's own ProviderToolFactory type — no any needed.
       const bashTool = this.anthropicInstance.tools[ANTHROPIC_BASH_TOOL_VERSION];
       if (!bashTool) {
+        // Date-stamped identifiers are the fastest-decaying surface (issue
+        // f90fbbbc): this fires when the constant and the installed SDK have
+        // moved apart in EITHER direction — name both remedies, since the
+        // likelier one (SDK bumped ahead, old tool key dropped) is fixed by
+        // updating the constant, not the package.
         throw new ConfigurationError(
           `Anthropic bash tool ${ANTHROPIC_BASH_TOOL_VERSION} not found on provider instance. ` +
-          `The @ai-sdk/anthropic package may need updating to support this tool version.`,
+          `Either update ANTHROPIC_BASH_TOOL_VERSION in constants.ts to the current tool version ` +
+          `exposed by the installed @ai-sdk/anthropic (SDK moved ahead of the constant), ` +
+          `or update @ai-sdk/anthropic (constant moved ahead of the SDK).`,
         );
       }
       return {
@@ -814,6 +837,53 @@ export class AIProvider {
     }
 
     return base;
+  }
+
+  /**
+   * Recognized provider-metadata keys per provider — the fields the extract
+   * tiers below reach for, plus benign envelope keys the SDKs are known to
+   * send. Drift detection (issue adaaa4b9) fires when a provider's metadata
+   * object is present and non-empty but contains NONE of these: the likely
+   * cause is a provider-SDK rename, after which the extraction casts silently
+   * resolve undefined and metrics read zero.
+   */
+  private static readonly RECOGNIZED_USAGE_KEYS: Record<string, readonly string[]> = {
+    anthropic: ['cacheCreationInputTokens', 'cacheReadInputTokens', 'usage'],
+    openai: ['cachedPromptTokens', 'reasoningTokens', 'responseId'],
+    google: ['usageMetadata'],
+  };
+
+  /** Providers already warned about this process — drift is chronic once present; one warn is signal, per-run warns are noise. */
+  private readonly driftWarned = new Set<string>();
+
+  /**
+   * Detect provider-metadata shape drift (issue adaaa4b9). Returns the
+   * providers whose metadata is present but unrecognizable. Deliberately
+   * conservative: absent or empty metadata is NOT drift (fields are omitted
+   * legitimately, e.g. uncached runs), only a non-empty object none of whose
+   * keys we recognize. The resulting marker is info-severity — metrics
+   * quality, not verdict evidence — so a false positive costs a log line,
+   * not a completeness downgrade.
+   */
+  private detectUsageShapeDrift(providerMetadata?: Record<string, unknown>): string[] {
+    if (!providerMetadata) return [];
+    const drifted: string[] = [];
+    for (const [provider, recognized] of Object.entries(AIProvider.RECOGNIZED_USAGE_KEYS)) {
+      const meta = providerMetadata[provider];
+      if (!meta || typeof meta !== 'object') continue;
+      const keys = Object.keys(meta);
+      if (keys.length === 0 || keys.some(k => recognized.includes(k))) continue;
+      drifted.push(provider);
+      if (!this.driftWarned.has(provider)) {
+        this.driftWarned.add(provider);
+        this.logger.warn(
+          `Provider metadata for "${provider}" has an unrecognized shape (keys: ${keys.slice(0, 8).join(', ')}) — ` +
+          `token/cache/thinking metrics for this provider may silently read zero. ` +
+          `The ${provider} provider SDK likely renamed its usage fields; update the extract tier in AIProvider.mapUsage.`,
+        );
+      }
+    }
+    return drifted;
   }
 
   private extractAnthropicUsage(base: UsageMetrics, providerMetadata?: Record<string, unknown>): void {

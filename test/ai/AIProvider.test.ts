@@ -139,6 +139,51 @@ describe('AIProvider', () => {
       });
     });
 
+    // ── Usage-metadata shape-drift detection (issue adaaa4b9) ──────────────
+    it('flags a provider whose metadata is non-empty but unrecognizable', async () => {
+      const { generateText } = await import('ai');
+      vi.mocked(generateText).mockResolvedValue({
+        text: 'ok',
+        usage: { inputTokens: 100, outputTokens: 50 },
+        steps: [],
+        finishReason: 'stop',
+        // Simulates a provider-SDK rename: cacheCreationInputTokens → cache_creation
+        providerMetadata: { anthropic: { cache_creation: 5, cache_read: 3 } },
+      } as never);
+
+      const warn = vi.fn();
+      const provider = new AIProvider(mockConfig, mockCatalog(), { debug() {}, info() {}, warn, error() {} });
+      const result = await provider.generate({ model: 'sonnet', system: 's', prompt: 'p' });
+
+      expect(result.usageShapeDrift).toEqual(['anthropic']);
+      expect(warn).toHaveBeenCalledWith(expect.stringContaining('unrecognized shape'));
+
+      // Chronic once present — warn fires once per provider per process, but
+      // the per-run drift flag keeps flowing.
+      const again = await provider.generate({ model: 'sonnet', system: 's', prompt: 'p' });
+      expect(again.usageShapeDrift).toEqual(['anthropic']);
+      expect(warn.mock.calls.filter(c => String(c[0]).includes('unrecognized shape'))).toHaveLength(1);
+    });
+
+    it('does not flag recognized, empty, or absent provider metadata', async () => {
+      const { generateText } = await import('ai');
+      const mockGenerateText = vi.mocked(generateText);
+      const base = { text: 'ok', usage: { inputTokens: 1, outputTokens: 1 }, steps: [], finishReason: 'stop' };
+      const provider = new AIProvider(mockConfig, mockCatalog(), noopLogger);
+
+      // Recognized shape (current SDK fields)
+      mockGenerateText.mockResolvedValueOnce({ ...base, providerMetadata: { anthropic: { cacheCreationInputTokens: 5, cacheReadInputTokens: 0 } } } as never);
+      expect((await provider.generate({ model: 'sonnet', system: 's', prompt: 'p' })).usageShapeDrift).toBeUndefined();
+
+      // Empty provider object — fields legitimately omitted, not drift
+      mockGenerateText.mockResolvedValueOnce({ ...base, providerMetadata: { anthropic: {} } } as never);
+      expect((await provider.generate({ model: 'sonnet', system: 's', prompt: 'p' })).usageShapeDrift).toBeUndefined();
+
+      // No provider metadata at all
+      mockGenerateText.mockResolvedValueOnce({ ...base, providerMetadata: undefined } as never);
+      expect((await provider.generate({ model: 'sonnet', system: 's', prompt: 'p' })).usageShapeDrift).toBeUndefined();
+    });
+
     // ── Structured-output-with-tools capability gating (Option C) ──────────
     // useStructuredOutput is true only when the model supports structured output
     // AND it is not the case that tools are present on a model whose
