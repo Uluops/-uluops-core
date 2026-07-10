@@ -20,6 +20,20 @@ export class TokenBudgetTracker {
   private cumulativeOutput = 0;
   /** Whether the context-budget wrap-up latch is currently engaged. */
   private forcedWrapUpFlag = false;
+  /** Whether a context eviction (step-over-step window shrink) was observed. Sticky. */
+  private contextEvictedFlag = false;
+  /** Total tokens observed dropped across all detected evictions. */
+  private evictedTokensTotal = 0;
+
+  /**
+   * Minimum step-over-step context shrink treated as an eviction, as a fraction
+   * of the previous window. The conversation only grows (messages append), so a
+   * genuine drop means content was removed — in practice Anthropic context
+   * management clearing old tool uses at its 50%-of-budget trigger, which drops
+   * whole tool results at once. The tolerance exists only to absorb provider
+   * token-accounting jitter between calls, not to classify small evictions.
+   */
+  private static readonly EVICTION_DROP_FRACTION = 0.05;
 
   constructor(private budget: number) {}
 
@@ -42,6 +56,22 @@ export class TokenBudgetTracker {
   }
 
   /**
+   * Whether a context eviction was observed at any point in the run. Unlike the
+   * wrap-up latch this is sticky: evicted tool results are gone for the rest of
+   * the run, so there is no "recovered" state. Read by AgentExecutor to emit a
+   * `context.evicted` degradation marker — without it, coverage loss below the
+   * wrap-up latch would report completeness 'complete' (issue fdaa0b24).
+   */
+  get contextEvicted(): boolean {
+    return this.contextEvictedFlag;
+  }
+
+  /** Total tokens dropped across detected evictions (detail for the marker). */
+  get evictedTokens(): number {
+    return this.evictedTokensTotal;
+  }
+
+  /**
    * Record token usage from a completed step.
    *
    * @param inputTokens - Full context window size for the latest API call.
@@ -50,6 +80,19 @@ export class TokenBudgetTracker {
    * @param outputTokens - Output tokens for this step; **accumulated** across steps.
    */
   update(inputTokens: number, outputTokens: number): void {
+    // A conversation only grows; a real step-over-step shrink means content was
+    // removed from the window (provider-side context eviction). Detect it here
+    // rather than in the provider because inputTokens is the only signal the AI
+    // SDK step hook exposes uniformly.
+    const drop = this.currentContextTokens - inputTokens;
+    if (
+      this.currentContextTokens > 0 &&
+      inputTokens > 0 &&
+      drop > this.currentContextTokens * TokenBudgetTracker.EVICTION_DROP_FRACTION
+    ) {
+      this.contextEvictedFlag = true;
+      this.evictedTokensTotal += drop;
+    }
     this.currentContextTokens = inputTokens;
     this.cumulativeOutput += outputTokens;
   }

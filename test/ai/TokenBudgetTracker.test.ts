@@ -86,6 +86,52 @@ describe('TokenBudgetTracker', () => {
     expect(status.remaining).toBe(200_000);
   });
 
+  it('detects context eviction from a step-over-step window shrink', () => {
+    const tracker = new TokenBudgetTracker(200_000);
+    tracker.update(80_000, 500);
+    tracker.update(120_000, 500);
+    expect(tracker.contextEvicted).toBe(false);
+    // Provider context management cleared old tool uses — window drops
+    tracker.update(60_000, 500);
+    expect(tracker.contextEvicted).toBe(true);
+    expect(tracker.evictedTokens).toBe(60_000);
+  });
+
+  it('eviction flag is sticky and evicted tokens accumulate across evictions', () => {
+    const tracker = new TokenBudgetTracker(200_000);
+    tracker.update(100_000, 500);
+    tracker.update(50_000, 500); // eviction 1: 50k dropped
+    tracker.update(110_000, 500); // grows again
+    tracker.update(70_000, 500); // eviction 2: 40k dropped
+    expect(tracker.contextEvicted).toBe(true);
+    expect(tracker.evictedTokens).toBe(90_000);
+  });
+
+  it('ignores small drops within token-accounting jitter tolerance', () => {
+    const tracker = new TokenBudgetTracker(200_000);
+    tracker.update(100_000, 500);
+    // 4% drop — below the 5% eviction floor
+    tracker.update(96_000, 500);
+    expect(tracker.contextEvicted).toBe(false);
+    expect(tracker.evictedTokens).toBe(0);
+  });
+
+  it('does not treat a missing usage reading (0 input tokens) as eviction', () => {
+    const tracker = new TokenBudgetTracker(200_000);
+    tracker.update(100_000, 500);
+    // Step hook reports usage.inputTokens ?? 0 when the SDK omits usage
+    tracker.update(0, 500);
+    expect(tracker.contextEvicted).toBe(false);
+  });
+
+  it('does not flag eviction on the first step or normal growth', () => {
+    const tracker = new TokenBudgetTracker(200_000);
+    tracker.update(5_000, 500);
+    tracker.update(30_000, 500);
+    tracker.update(90_000, 500);
+    expect(tracker.contextEvicted).toBe(false);
+  });
+
   it('forcedWrapUp defaults to false and reflects the latest markForcedWrapUp', () => {
     const tracker = new TokenBudgetTracker(200_000);
     expect(tracker.forcedWrapUp).toBe(false);

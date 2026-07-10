@@ -155,6 +155,12 @@ export interface UluOpsConfig {
    * management emits warnings when clearing old tool uses — monitor these to
    * detect when the budget is routinely exhausted.
    *
+   * Both mechanisms mark the result rather than fail it: forced wrap-up emits a
+   * `budget.forced-wrap-up` degradation marker and eviction a `context.evicted`
+   * marker, deriving completeness 'partial' on the result. PASS + partial is an
+   * intentional, gate-satisfying state — see types/degradation.ts for the
+   * decision record (issue fdaa0b24).
+   *
    * @default 200000
    */
   contextBudget?: number;

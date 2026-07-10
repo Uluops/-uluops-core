@@ -333,6 +333,11 @@ export class AgentExecutor {
    * Collect execution-phase degradation markers for a completed generation.
    *
    * - `budget.forced-wrap-up` — the context-budget latch was engaged at run end.
+   * - `context.evicted` — provider-side context management removed old tool
+   *   results mid-run (observed as a step-over-step window shrink). Emitted so
+   *   coverage loss below the wrap-up latch cannot report 'complete'; the
+   *   PASS-on-covered-scope decision (see types/degradation.ts) is only sound
+   *   if every coverage reduction is marked.
    * - `steps.near-exhaustion` — the tool loop was cut at the step ceiling
    *   (`finishReason === 'tool-calls'`) but had already produced output. The
    *   empty-output form of this is thrown as MaxStepsExhaustedError upstream, so
@@ -356,6 +361,15 @@ export class AgentExecutor {
         phase: 'execution',
         severity: 'degraded',
         detail: 'Context-budget wrap-up was forced; coverage may be partial.',
+      });
+    }
+
+    if (budgetTracker.contextEvicted) {
+      markers.push({
+        code: 'context.evicted',
+        phase: 'execution',
+        severity: 'degraded',
+        detail: `Provider context management evicted ~${budgetTracker.evictedTokens} tokens of earlier tool results; the verdict rests on a reduced evidence window.`,
       });
     }
 

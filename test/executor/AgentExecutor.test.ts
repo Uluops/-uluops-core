@@ -5,6 +5,7 @@ import * as os from 'node:os';
 import { AgentExecutor } from '../../src/executor/AgentExecutor.js';
 import { MaxStepsExhaustedError } from '../../src/errors/index.js';
 import type { AIProvider, AIGenerateResult } from '../../src/ai/AIProvider.js';
+import type { TokenBudgetTracker } from '../../src/ai/TokenBudgetTracker.js';
 import type { ResolvedConfig } from '../../src/types/config.js';
 import type { ResolvedDefinition, AgentRuntime, ExecutorRuntime } from '../../src/types/registry.js';
 import type { Logger } from '@uluops/sdk-core';
@@ -758,6 +759,28 @@ describe('AgentExecutor', () => {
 
       expect(result.completeness).toBe('partial');
       expect(result.degradationMarkers?.map(d => d.code)).toContain('steps.near-exhaustion');
+    });
+
+    it('provider-side context eviction marks partial via context.evicted', async () => {
+      const ai = mockAIProvider();
+      // Simulate what AIProvider's onStepFinish does across steps when Anthropic
+      // context management clears old tool uses: window grows, then shrinks.
+      const resolvedResult = await ai.generate({} as never);
+      ai.generate = vi.fn().mockImplementation(async (options: { budgetTracker?: TokenBudgetTracker }) => {
+        options.budgetTracker?.update(100_000, 500);
+        options.budgetTracker?.update(40_000, 500);
+        return resolvedResult;
+      }) as AIProvider['generate'];
+      const executor = new AgentExecutor(baseConfig, ai, noopLogger);
+
+      const result = await executor.execute(makeValidatorDef(), { target: tmpDir });
+
+      expect(result.completeness).toBe('partial');
+      const marker = result.degradationMarkers?.find(d => d.code === 'context.evicted');
+      expect(marker).toMatchObject({ phase: 'execution', severity: 'degraded' });
+      // The verdict itself is untouched — PASS + partial is a legitimate pass
+      // (decision record in types/degradation.ts, issue fdaa0b24).
+      expect(result.decisionCategory).toBe('positive');
     });
 
     it('low-confidence extraction marks partial', async () => {

@@ -9,6 +9,20 @@
  * case worth surfacing) or FAIL + complete (a confident negative). Completeness
  * is OBSERVED by the engine from degradation markers; agents never self-report it.
  *
+ * DECISION (2026-07-10, issue fdaa0b24): PASS + partial IS a legitimate pass.
+ * An agent that could not touch the full file span but found no issues in what
+ * it covered has passed the scope it covered; gates treat the decision as-is
+ * and do not downgrade on completeness. Rationale: forced wrap-up and context
+ * eviction are NORMAL operation on large repos — hardcoding a downgrade would
+ * institutionalize alarm fatigue. This holds only while two invariants do:
+ *  (1) every coverage reduction emits a marker (nothing degrades silently —
+ *      see collectExecutionMarkers in AgentExecutor and the context.evicted
+ *      marker), and
+ *  (2) completeness travels with the decision wherever the result is consumed,
+ *      so PASS+partial stays distinguishable from PASS+complete. Consumers that
+ *      drop completeness re-open the original finding.
+ * If either invariant breaks, revisit the decision — not the invariant.
+ *
  * Scope: this is a property of the core execution engine running an agent through
  * its tool loop. External-harness recordings have no completeness.
  */
