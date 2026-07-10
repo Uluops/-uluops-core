@@ -1201,4 +1201,84 @@ describe('UluOpsClient', () => {
       expect(response.runId).toBe('run-123');
     });
   });
+
+  // ─── Integrity pin threading (tracker 1a49ad7a) ─────────────────────────
+  // Pins must be reachable from every execution entrypoint — the README steers
+  // CI (the bash-enablement context) to runCommand/runPipeline, which formerly
+  // could not pin. RegistryClient.verifyPins fail-closed behavior is covered
+  // by test/registry/integrity.test.ts; here we assert the forwarding only.
+
+  describe('integrity pin threading', () => {
+    const PINS = { expectedHash: 'sha256-yaml', expectedPromptHash: 'sha256-prompt' };
+
+    it('runCommand forwards pins from overrides into resolve', async () => {
+      const client = new UluOpsClient({ apiKey: 'ulr_test-key', trackingEnabled: false });
+      mockRegistryResolve.mockResolvedValue(makeResolvedDef('command'));
+      mockCommandExecutorExecute.mockResolvedValue(makeCommandResult());
+
+      await client.runCommand('validate', { target: '/tmp' }, { model: 'opus', ...PINS });
+
+      expect(mockRegistryResolve).toHaveBeenCalledWith('validate', undefined, 'command', PINS);
+    });
+
+    it('runCommand without pins keeps the unpinned resolve path', async () => {
+      const client = new UluOpsClient({ apiKey: 'ulr_test-key', trackingEnabled: false });
+      mockRegistryResolve.mockResolvedValue(makeResolvedDef('command'));
+      mockCommandExecutorExecute.mockResolvedValue(makeCommandResult());
+
+      await client.runCommand('validate', { target: '/tmp' }, { model: 'opus' });
+
+      expect(mockRegistryResolve).toHaveBeenCalledWith('validate', undefined, 'command');
+    });
+
+    it('runWorkflow forwards pins into resolve', async () => {
+      const client = new UluOpsClient({ apiKey: 'ulr_test-key', trackingEnabled: false });
+      mockRegistryResolve.mockResolvedValue(makeResolvedDef('workflow'));
+      mockWorkflowExecutorExecute.mockResolvedValue(makeWorkflowResult());
+
+      await client.runWorkflow('ship', { target: '/tmp' }, { expectedHash: 'sha256-yaml' });
+
+      expect(mockRegistryResolve).toHaveBeenCalledWith('ship', undefined, 'workflow', { expectedHash: 'sha256-yaml', expectedPromptHash: undefined });
+    });
+
+    it('runPipeline forwards pins into resolve', async () => {
+      const client = new UluOpsClient({ apiKey: 'ulr_test-key', trackingEnabled: false });
+      mockRegistryResolve.mockResolvedValue(makeResolvedDef('pipeline'));
+      mockPipelineExecutorExecute.mockResolvedValue(makePipelineResult());
+
+      await client.runPipeline('full-validation@2.0.0', { target: '/tmp' }, { expectedHash: 'sha256-yaml' });
+
+      expect(mockRegistryResolve).toHaveBeenCalledWith('full-validation', '2.0.0', 'pipeline', { expectedHash: 'sha256-yaml', expectedPromptHash: undefined });
+    });
+
+    it('startPipeline forwards pins into resolve', async () => {
+      const client = new UluOpsClient({ apiKey: 'ulr_test-key', trackingEnabled: false });
+      mockRegistryResolve.mockResolvedValue(makeResolvedDef('pipeline'));
+      mockPipelineExecutorStart.mockResolvedValue({ wait: vi.fn() });
+
+      await client.startPipeline('full-validation', { target: '/tmp' }, { expectedHash: 'sha256-yaml' });
+
+      expect(mockRegistryResolve).toHaveBeenCalledWith('full-validation', undefined, 'pipeline', { expectedHash: 'sha256-yaml', expectedPromptHash: undefined });
+    });
+
+    it('run (universal) forwards pins into the untyped resolve', async () => {
+      const client = new UluOpsClient({ apiKey: 'ulr_test-key', trackingEnabled: false });
+      mockRegistryResolve.mockResolvedValue(makeResolvedDef('agent'));
+      mockAgentExecutorExecute.mockResolvedValue(makeAgentResult());
+
+      await client.run('code-validator', { target: '/tmp' }, PINS);
+
+      expect(mockRegistryResolve).toHaveBeenCalledWith('code-validator', undefined, undefined, PINS);
+    });
+
+    it('pin failure surfaces before any executor is invoked', async () => {
+      const client = new UluOpsClient({ apiKey: 'ulr_test-key', trackingEnabled: false });
+      mockRegistryResolve.mockRejectedValue(new Error('Integrity check failed: yaml hash mismatch'));
+
+      await expect(
+        client.runCommand('validate', { target: '/tmp' }, PINS),
+      ).rejects.toThrow(/Integrity check failed/);
+      expect(mockCommandExecutorExecute).not.toHaveBeenCalled();
+    });
+  });
 });

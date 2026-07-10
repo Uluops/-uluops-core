@@ -10,13 +10,13 @@ import type { CommandExecutor } from '../../src/executor/CommandExecutor.js';
 import type { WorkflowExecutor } from '../../src/executor/WorkflowExecutor.js';
 import type { RegistryClient } from '../../src/registry/RegistryClient.js';
 import type { ResolvedDefinition, AgentRuntime } from '../../src/types/registry.js';
-import type { ValidatorAgentResult, ExecutorAgentResult } from '../../src/types/agent.js';
+import type { AgentResult } from '../../src/types/agent.js';
 import type { CommandResult } from '../../src/types/command.js';
 import type { WorkflowResult } from '../../src/types/workflow.js';
 
 // ─── Result Factories ────────────────────────────────────────────────────
 
-export function makeValidatorResult(overrides?: Partial<ValidatorAgentResult>): ValidatorAgentResult {
+export function makeValidatorResult(overrides?: Partial<AgentResult>): AgentResult {
   return {
     type: 'agent',
     agentType: 'validator',
@@ -117,7 +117,7 @@ export function makeAgentDef(name = 'test-agent'): ResolvedDefinition {
 
 // ─── Mock Executor/Registry Factories ────────────────────────────────────
 
-export function makeAgentExecutor(results?: Array<ValidatorAgentResult | ExecutorAgentResult>): AgentExecutor {
+export function makeAgentExecutor(results?: AgentResult[]): AgentExecutor {
   const resultQueue = results ? [...results] : [];
   return {
     execute: vi.fn().mockImplementation(() => {

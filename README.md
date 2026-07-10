@@ -243,6 +243,13 @@ const result = await client.runCommand('validate', { target: './src' });
 // Override the definition's default model at runtime (e.g., for CI cost control)
 const fast = await client.runCommand('validate', { target: './src' }, { model: 'haiku' });
 
+// CI: pin the definition so a mutated registry entry is refused, not executed
+// (see Integrity Verification). Strongly recommended when `bash` is enabled.
+const pinned = await client.runCommand('validate', { target: './src' }, {
+  expectedHash: 'sha256:…',
+  expectedPromptHash: 'sha256:…',
+});
+
 console.log(`Score: ${result.score}`);
 console.log(`Categories:`, result.categories);
 ```
@@ -308,6 +315,41 @@ for (const stage of result.stages) {
 ```
 
 **Stage & agent conditions.** A stage's `condition` (and per-agent `agents[].condition` in inline-agent stages) is a **run-gate**: the stage or agent runs when the expression holds and is skipped when it is definitively false. Conditions can read run parameters (`params.frontend`, passed via `ExecutionInput.params`) and prior-stage results, including executed step outputs (`stages.preflight.steps['Detect TypeScript'].output == 'DETECTED'`). **An absent param is `false`** (so `!params.x` is `true` and `params.x || <detection>` gates on detection alone when `x` is unset) — param absence is a normal caller state. Unresolvable expressions of other kinds — missing stage/step path, unsupported namespace, or over the length cap — **fail open**: the stage runs and a warning is logged. `skip_if` is deprecated (skip-if-true semantics). See the PDL spec for the full expression grammar.
+
+**Stage output forwarding (0.31.0, ON by default).** Any inline-agent stage with `depends_on` automatically receives an `## Upstream Analysis` section in each of its agents' initial messages — a severity-sorted slice (decision, `decisionCategory`, score, summary, top-5 recommendations) of every dependency's results, placed after the operator `Directive:` and before the project context. Forwarding is one hop (direct dependencies only) and never flows between parallel siblings. Controls:
+
+```yaml
+stages:
+  - id: gate            # producer-side opt-out: this stage's outputs are never forwarded
+    forward: none
+  - id: deep-analysis   # escalation: also forward head+tail-retained rawOutput (16K+8K chars)
+    forward: full
+  - id: synthesis
+    depends_on: [deep-analysis]
+    # receives: none    # consumer-side opt-out: depend for ordering only
+```
+
+Caps (provisional; exported as `UPSTREAM_STAGE_SLICE_CAP` 8K / `UPSTREAM_STAGE_FULL_CAP` 24K / `UPSTREAM_TOTAL_CAP` 32K chars) reduce deterministically — findings first, then narratives; stage headers and verdict lines are never dropped, and all truncation is marked in-place. Fleet-wide kill switch: `ULUOPS_DISABLE_STAGE_FORWARDING=1` (or `true`). The forwarded slices ride `ExecutionInput.upstreamContext` (type `UpstreamStageContext`) — engine-populated; not an operator input.
+
+**Stage gates.** A stage's `gate:` block (PDL `$defs/gate`) controls pipeline flow after the stage completes. The gate *fails* when the stage's vocabulary-resolved decision is negative, the stage errored, or — when `threshold` is set — the aggregated score falls below it (`aggregate: min | max | average` over inline-agent scores, default `min`; ref-based stages use the stage result score; scoreless stages are fail-open for the threshold check only). What happens next is the gate's flow action:
+
+```yaml
+stages:
+  - id: build-gate
+    steps: [...]
+    gate:
+      on_failure: abort      # hard stop: remaining stages skipped, run fails (PDL default)
+  - id: validate
+    ref: ship@1.0.0
+    gate:
+      threshold: 70          # score gate on top of the decision gate
+      aggregate: min
+      on_failure: warn       # log and continue
+      # on_failure: skip     # skip remaining stages, run still completes
+      # on_success: skip_remaining  # early exit when the gate passes
+```
+
+`on_failure: abort` surfaces as a thrown `PipelineError` from `wait()`/`runPipeline()` carrying the partial result; skipped stages are recorded with `skipReason: 'gate_abort' | 'gate_skip' | 'gate_early_exit'`. Note: an abort-gated `steps:` stage that cannot execute because `allowStageSteps` is off **fails the run loudly** instead of passing through — an unexecutable mandatory gate is a configuration error (see [Stage Steps](#stage-steps-opt-in)).
 
 Async execution with handle-based control:
 
@@ -455,6 +497,7 @@ try {
 }
 ```
 
+- **Every execution entrypoint accepts pins**: `runAgent`/`runCommand` take them in their options/overrides; `runWorkflow`/`runPipeline`/`startPipeline`/`run` take a trailing `ResolvePinOptions`. Pipeline pins cover the pipeline YAML only — stage refs are resolved separately downstream and are not individually pinned (per-stage pinning is lockfile territory).
 - **Both pins are optional.** Unpinned resolves are unverified and behave exactly as before.
 - **`expectedHash`** verifies `computeHash(resolved.yaml)` — covers source and execution config. For **WDL/PDL** the YAML *is* the runtime, so the YAML pin alone fully covers execution.
 - **`expectedPromptHash`** verifies the frozen rendered prompt and is required (with `expectedHash`) for full **agent/command** executed-prompt integrity. Supplying it for a definition with no rendered prompt (workflow/pipeline, local, content-gated, schema-stale) throws `IntegrityError(kind: 'unavailable')` — never a silent pass.
@@ -698,6 +741,7 @@ const client = new UluOpsClient({
 | `ULUOPS_DASHBOARD_URL` | Dashboard base URL for run links | `https://app.uluops.ai` |
 | `ULUOPS_ALLOWED_TOOLS` | Comma-separated tool allowlist (e.g., `bash`) | all except `bash` |
 | `ULUOPS_ALLOW_STAGE_STEPS` | Permit engine execution of PDL stage `steps:` blocks (host shell; exact string `true`) | `false` |
+| `ULUOPS_DISABLE_STAGE_FORWARDING` | Disable upstream stage-result forwarding engine-wide (`1` or `true`) | `false` |
 | `ULUOPS_MAX_CONCURRENCY` | Global ceiling on concurrent in-flight LLM calls | `8` |
 | `ULUOPS_DEBUG` | Enable detailed execution logging | `false` |
 
@@ -859,7 +903,7 @@ try {
 
 Agent definitions can request tools (e.g., `tools: ['bash']` in YAML), but the operator must explicitly permit them. This separates the trust boundary: **definition authors declare** what they need, **operators decide** what they permit.
 
-By default, all tools except `bash` are allowed. The `bash` tool passes LLM-generated command strings to `sh -c`, granting full host OS access scoped to the working directory. Only enable it in sandboxed environments (containers, CI).
+By default, all tools except `bash` are allowed. The `bash` tool passes LLM-generated command strings to `sh -c`, granting full host OS access scoped to the working directory. Only enable it in sandboxed environments (containers, CI). **If you enable `bash` in CI, pin the definitions you run** (`expectedHash` — see [Integrity Verification](#integrity-verification)): with bash on, a mutated registry definition is author-controlled shell on your CI host, and the pin is what makes that substitution refuse to execute.
 
 ```typescript
 // Default: bash blocked even if definition requests it
@@ -899,7 +943,7 @@ Package managers (`npm`, `pip`), orchestrators (`docker`, `kubectl`), build tool
 
 ### Stage Steps (opt-in)
 
-PDL pipeline stages can declare inline shell `steps:` blocks (detection preflights, build gates). The engine executes them **only when the operator opts in** via `allowStageSteps: true` (or `ULUOPS_ALLOW_STAGE_STEPS=true` — the exact string `true`). This is the same trust boundary as the `bash` tool: step commands come from resolved definitions, so running them is definition-author-controlled shell on your host. **The opt-in is the boundary — there is no command allowlist.** With the opt-in off (the default), steps-only stages pass through as `PASS` with a `null` score (excluded from pipeline score aggregation) and their steps are not run.
+PDL pipeline stages can declare inline shell `steps:` blocks (detection preflights, build gates). The engine executes them **only when the operator opts in** via `allowStageSteps: true` (or `ULUOPS_ALLOW_STAGE_STEPS=true` — the exact string `true`). This is the same trust boundary as the `bash` tool: step commands come from resolved definitions, so running them is definition-author-controlled shell on your host. **The opt-in is the boundary — there is no command allowlist.** With the opt-in off (the default), steps-only stages pass through as `PASS` with a `null` score (excluded from pipeline score aggregation) and their steps are not run — **unless the stage carries an abort gate** (`gate.on_failure: abort`, or a `gate:` block that omits `on_failure` — abort is the PDL default), in which case the run fails loudly: an unexecutable mandatory gate is a configuration error, not a skippable step.
 
 Confinements applied to executed steps:
 

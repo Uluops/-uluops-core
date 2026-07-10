@@ -8,7 +8,7 @@ export { WorkflowExecutor } from './executor/WorkflowExecutor.js';
 export { PipelineExecutor } from './executor/PipelineExecutor.js';
 
 // ─── Service Clients ──────────────────────────────────────────────────────────
-export { RegistryClient } from './registry/RegistryClient.js';
+export { RegistryClient, type ResolvePinOptions } from './registry/RegistryClient.js';
 export { SubmissionClient } from './submission/SubmissionClient.js';
 
 // ─── AI SDK Integration ───────────────────────────────────────────────────────
@@ -38,6 +38,15 @@ export {
   DEFAULT_MAX_STEPS,
   DEFAULT_MAX_TOKENS,
 } from './constants.js';
+export {
+  UPSTREAM_STAGE_SLICE_CAP,
+  UPSTREAM_STAGE_FULL_CAP,
+  UPSTREAM_TOTAL_CAP,
+  UPSTREAM_MAX_RECOMMENDATIONS,
+  UPSTREAM_FULL_HEAD_CHARS,
+  UPSTREAM_FULL_TAIL_CHARS,
+  UPSTREAM_KILL_SWITCH_ENV,
+} from './executor/upstreamContext.js';
 
 // ─── Types: Config ────────────────────────────────────────────────────────────
 export type { UluOpsConfig, AIConfig, AIProviderCredentials, ResolvedConfig, ResolvedAIConfig } from './types/config.js';
@@ -49,6 +58,7 @@ export type {
   Domain,
   AgentType,
   ExecutionInput,
+  UpstreamStageContext,
   ExecutionResult,
   ExecutionMetrics,
   ExecutionOptions,

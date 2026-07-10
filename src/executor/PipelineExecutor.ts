@@ -3,10 +3,11 @@ import type { CommandExecutor } from './CommandExecutor.js';
 import type { WorkflowExecutor } from './WorkflowExecutor.js';
 import type { RegistryClient } from '../registry/RegistryClient.js';
 import type { ResolvedDefinition } from '../types/registry.js';
-import type { PipelineDefinition, StageDefinition, PipelineResult, StageResult, StepResult, PipelineState, PipelineHandle as IPipelineHandle } from '../types/pipeline.js';
+import type { PipelineDefinition, StageDefinition, GateDefinition, PipelineResult, StageResult, StepResult, PipelineState, PipelineHandle as IPipelineHandle } from '../types/pipeline.js';
 import { StepsExecutor } from './StepsExecutor.js';
 import { evaluateConditionExpr } from './conditions.js';
-import type { ExecutionInput, ExecutionOptions } from '../types/execution.js';
+import { buildUpstreamContext } from './upstreamContext.js';
+import type { ExecutionInput, ExecutionOptions, UpstreamStageContext } from '../types/execution.js';
 import type { AgentResult } from '../types/agent.js';
 import { PipelineError } from '../errors/index.js';
 import { parseRef } from '../utils/parseRef.js';
@@ -146,9 +147,54 @@ export class PipelineExecutor {
           }
         }
 
-        // Execute stage
-        const stageResult = await this.executeStage(stage, input, options, state.stageResults);
+        // Hard gates must not silently pass unexecuted (G5): a steps stage
+        // whose gate resolves to on_failure:abort verifies nothing when
+        // allowStageSteps is off. That is a configuration error — the author
+        // declared the gate mandatory, the operator cannot run it — so fail
+        // the run loudly with the remedy instead of stamping PASS.
+        if (
+          isStepsStage(stage) &&
+          stage.gate &&
+          resolveOnFailure(stage.gate) === 'abort' &&
+          !(options?.allowStageSteps ?? this.allowStageSteps)
+        ) {
+          throw new PipelineError(
+            `Stage "${stage.id}" is a hard gate (gate.on_failure: abort) but its steps ` +
+            `cannot run — allowStageSteps is disabled. Enable it (config.allowStageSteps, ` +
+            `ULUOPS_ALLOW_STAGE_STEPS=true, or per-run options.allowStageSteps) or ` +
+            `downgrade the gate to on_failure: warn.`,
+            {},
+          );
+        }
+
+        // Execute stage. Upstream forwarding (stage-output-forwarding spec §3.4):
+        // slices of depends_on results, built per-stage, honoring forward/receives
+        // opt-outs and the kill switch. Empty for non-dependent stages.
+        const upstreamContext = buildUpstreamContext(
+          stage,
+          def.pipeline.stages,
+          state.stageResults,
+          (msg) => this.logger.debug(msg),
+        );
+        const stageResult = await this.executeStage(stage, input, options, state.stageResults, upstreamContext);
         state.stageResults.push(stageResult);
+
+        // Enact the stage gate (PDL $defs/gate). Until now gates were parsed
+        // but never read — on_failure:abort flowed on like warn (G5).
+        const flow = this.applyGate(stage, stageResult);
+        if (flow === 'abort') {
+          this.skipRemaining(def.pipeline.stages, i + 1, state, 'gate_abort');
+          state.error = `Stage "${stage.id}" failed its gate (on_failure: abort)`;
+          state.status = 'failed';
+          break;
+        }
+        if (flow === 'skip' || flow === 'skip_remaining') {
+          this.skipRemaining(
+            def.pipeline.stages, i + 1, state,
+            flow === 'skip' ? 'gate_skip' : 'gate_early_exit',
+          );
+          break;
+        }
       }
 
       if (state.status === 'running') {
@@ -170,13 +216,19 @@ export class PipelineExecutor {
     return resolved.definition as PipelineDefinition;
   }
 
-  private async executeStage(stage: StageDefinition, input: ExecutionInput, options?: ExecutionOptions, priorResults: StageResult[] = []): Promise<StageResult> {
+  private async executeStage(stage: StageDefinition, input: ExecutionInput, options?: ExecutionOptions, priorResults: StageResult[] = [], upstreamContext: UpstreamStageContext[] = []): Promise<StageResult> {
     const startTime = Date.now();
 
     try {
-      // Inline agents — PDL stages with agents[] run each agent directly in parallel
+      // Inline agents — PDL stages with agents[] run each agent directly in parallel.
+      // Upstream context rides a per-stage shallow CLONE — never set on the shared
+      // `input` reference (in-place mutation leaks context across stages and races
+      // parallel agents; stage-output-forwarding spec §3.4, pre-impl run #31 A6).
+      // Ref-based stages below deliberately receive the original input: forwarding
+      // INTO command/workflow executions is the workflow-twin phase (spec §3.6).
       if (stage.type === 'agents' && stage.agents) {
-        const agentResults = await this.executeInlineAgents(stage.agents, input, options, priorResults);
+        const agentInput = upstreamContext.length > 0 ? { ...input, upstreamContext } : input;
+        const agentResults = await this.executeInlineAgents(stage.agents, agentInput, options, priorResults);
         // Exclude crashed agents (decision=FAIL, score=0) from average to prevent
         // one crash from poisoning the entire stage score (e.g., 1 pass at 90 + 2 crashes → 30).
         // Literal 'FAIL' is intentional here: it is the crash signature stamped by
@@ -229,7 +281,7 @@ export class PipelineExecutor {
       }
 
       // Steps stages (PDL shell preflight / build gates).
-      if (stage.type === 'steps' || (Array.isArray(stage.steps) && stage.steps.length > 0 && !stage.ref && !stage.agents)) {
+      if (isStepsStage(stage)) {
         const allowSteps = options?.allowStageSteps ?? this.allowStageSteps;
 
         // Opt-in gate (spec D3): step commands come from resolved definitions,
@@ -428,6 +480,92 @@ export class PipelineExecutor {
       durationMs: 0,
     };
   }
+
+  /**
+   * Evaluate a completed stage against its gate and return the flow action.
+   * 'continue' means no gate effect (no gate, gate passed, or on_failure:warn).
+   */
+  private applyGate(stage: StageDefinition, stageResult: StageResult): 'continue' | 'abort' | 'skip' | 'skip_remaining' {
+    const gate = stage.gate;
+    if (!gate) return 'continue';
+
+    if (this.gateFailed(gate, stage, stageResult)) {
+      const action = resolveOnFailure(gate);
+      if (action === 'warn') {
+        this.logger.warn(`Stage "${stage.id}" failed its gate — continuing (on_failure: warn)`);
+        return 'continue';
+      }
+      return action;
+    }
+
+    if (gate.on_success === 'skip_remaining') return 'skip_remaining';
+    return 'continue';
+  }
+
+  /**
+   * A gate fails on stage error, vocabulary-resolved negative decision, or —
+   * when `threshold` is set — an aggregated score below it. Scoreless stages
+   * are fail-open for the threshold check (WorkflowExecutor.evaluateGate
+   * precedent): steps stages score null by design and a missing score is a
+   * scoring gap, not evidence of failure. Decision-negative still fails.
+   */
+  private gateFailed(gate: GateDefinition, stage: StageDefinition, stageResult: StageResult): boolean {
+    if (stageResult.status === 'failed') return true;
+    if (resolveDecisionCategory(stageResult.result) === 'negative') return true;
+
+    if (gate.threshold !== undefined) {
+      const score = this.gateScore(gate, stageResult);
+      if (score === null) {
+        this.logger.warn(`Gate threshold on stage "${stage.id}" is not evaluable (no scores) — passing (fail-open)`);
+        return false;
+      }
+      return score < gate.threshold;
+    }
+
+    return false;
+  }
+
+  /**
+   * The score a gate threshold evaluates: `gate.aggregate` (PDL default 'min')
+   * over inline-agent scores when present — crashed/scoreless agents excluded,
+   * matching the stage-average exclusion — else the stage result's own score.
+   */
+  private gateScore(gate: GateDefinition, stageResult: StageResult): number | null {
+    const agentScores = (stageResult.agentResults ?? [])
+      .map(r => r.score)
+      .filter((s): s is number => s !== null && s !== undefined);
+    if (agentScores.length > 0) {
+      switch (gate.aggregate ?? 'min') {
+        case 'min': return Math.min(...agentScores);
+        case 'max': return Math.max(...agentScores);
+        case 'average': return agentScores.reduce((a, b) => a + b, 0) / agentScores.length;
+      }
+    }
+    return stageResult.result?.score ?? null;
+  }
+
+  /** Record every not-yet-run stage as skipped with the gate-flow reason, so
+   *  the result accounts for all authored stages (nothing silently vanishes). */
+  private skipRemaining(stages: StageDefinition[], from: number, state: PipelineState, reason: string): void {
+    for (let j = from; j < stages.length; j++) {
+      const s = stages[j];
+      if (s) state.stageResults.push(this.createSkippedStage(s, reason));
+    }
+  }
+}
+
+/** Steps-stage predicate — explicit `type: 'steps'` (stamped by
+ *  normalizePipelineSection) or the structural steps-only shape. */
+function isStepsStage(stage: StageDefinition): boolean {
+  return stage.type === 'steps' ||
+    (Array.isArray(stage.steps) && stage.steps.length > 0 && !stage.ref && !stage.agents);
+}
+
+/** PDL schema default: a gate without on_failure is an abort gate. Corpus
+ *  audit (2026-07-10, udl/pdl/v1): every stage gate declares on_failure
+ *  explicitly, so the default activates nothing silently. */
+function resolveOnFailure(gate: GateDefinition): 'abort' | 'warn' | 'skip' {
+  return gate.on_failure ?? 'abort';
 }
 
 /**

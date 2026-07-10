@@ -11,6 +11,7 @@ export type {
   Domain,
   AgentType,
   ExecutionInput,
+  UpstreamStageContext,
   ExecutionResult,
   ExecutionMetrics,
   ExecutionOptions,
@@ -61,6 +62,7 @@ export type {
 export type {
   PipelineDefinition,
   StageDefinition,
+  GateDefinition,
   TriggerDefinition,
   PipelineResult,
   PipelineMetrics,

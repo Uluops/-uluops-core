@@ -17,6 +17,7 @@ import type { AgentResult } from '../types/agent.js';
 import type { AgentType } from '../types/execution.js';
 import type { ParsedOutput, ExtractionResult } from '../types/parser.js';
 import { mapCategory } from './mapCategory.js';
+import { renderUpstreamSection } from './upstreamContext.js';
 import type { UsageMetrics } from '../types/ai.js';
 import type { Logger } from '@uluops/sdk-core';
 import { DEFAULT_PASS_THRESHOLD, DEFAULT_WARN_THRESHOLD, DEFAULT_MAX_STEPS, DEFAULT_MAX_TOKENS, DEFAULT_MODEL_ALIAS, EXTRACTION_CONFIDENCE_THRESHOLD } from '../constants.js';
@@ -526,6 +527,19 @@ export class AgentExecutor {
       parts.push('Directive:');
       parts.push(input.prompt);
       parts.push('');
+    }
+
+    // 2.5. Upstream stage results (pipeline forwarding — stage-output-forwarding
+    // spec §3.2). AFTER the operator directive (human intent is never displaced
+    // by machine context; a `-p "focus on X"` reads as an instruction about how
+    // to weigh this section) and BEFORE the project context. Engine-populated
+    // via ExecutionInput.upstreamContext; empty/absent → no section at all.
+    if (input.upstreamContext && input.upstreamContext.length > 0) {
+      const upstream = renderUpstreamSection(input.upstreamContext);
+      if (upstream) {
+        parts.push(upstream);
+        parts.push('');
+      }
     }
 
     // 3. Project context
