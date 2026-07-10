@@ -200,4 +200,6 @@ export {
   ServiceUnavailableError,
   NetworkError,
   TimeoutError,
+  ValidationError,
+  isValidationError,
 } from './errors/index.js';

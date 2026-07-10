@@ -101,6 +101,34 @@ describe('RegistryClient', () => {
       expect(result.agentType).toBe('validator');
     });
 
+    it('throws ConfigurationError naming the file for a local agent YAML missing agent.interface', async () => {
+      // Previously crashed later as TypeError: Cannot read properties of
+      // undefined (reading 'agentType') in buildAgentConfig (issue 2563691d).
+      const badYaml = yaml.stringify({
+        agent: {
+          behavior: { role: 'A reviewer with no interface section' },
+        },
+      });
+      await fs.writeFile(path.join(tmpDir, 'no-iface.agent.yaml'), badYaml);
+
+      const client = new RegistryClient({ ...baseConfig, localDefinitions: tmpDir }, noopLogger);
+
+      await expect(client.resolve('no-iface')).rejects.toThrow(ConfigurationError);
+      await expect(client.resolve('no-iface')).rejects.toThrow(/no-iface\.agent\.yaml.*agent\.interface/s);
+    });
+
+    it('throws ConfigurationError naming the file for a local agent YAML with no agent section', async () => {
+      // Previously resolved to an empty-prompt runtime (issue 34c6e6ec —
+      // uniform error contract: user-facing failures are UluOpsError subclasses).
+      const badYaml = yaml.stringify({ nonsense: { foo: 'bar' } });
+      await fs.writeFile(path.join(tmpDir, 'no-agent.agent.yaml'), badYaml);
+
+      const client = new RegistryClient({ ...baseConfig, localDefinitions: tmpDir }, noopLogger);
+
+      await expect(client.resolve('no-agent')).rejects.toThrow(ConfigurationError);
+      await expect(client.resolve('no-agent')).rejects.toThrow(/no-agent\.agent\.yaml.*'agent:'/s);
+    });
+
     it('resolves command definition from local files', async () => {
       const cmdYaml = yaml.stringify({
         command: {

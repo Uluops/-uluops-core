@@ -8,6 +8,7 @@ import { CommandExecutor } from '../executor/CommandExecutor.js';
 import { WorkflowExecutor } from '../executor/WorkflowExecutor.js';
 import { PipelineExecutor } from '../executor/PipelineExecutor.js';
 import { createLogger } from '@uluops/sdk-core';
+import { MIN_API_KEY_LENGTH } from '@uluops/sdk-core/config';
 import { ConfigurationError } from '../errors/index.js';
 import type { UluOpsConfig, AIConfig, ResolvedConfig, ResolvedAIConfig } from '../types/config.js';
 import type { ExecutionInput, ExecutionResult, ExecutionOptions } from '../types/execution.js';
@@ -639,6 +640,18 @@ export function resolveConfig(config: UluOpsConfig, env: NodeJS.ProcessEnv = pro
   if (apiKey && !apiKey.startsWith('ulr_')) {
     throw new ConfigurationError(
       `Invalid API key format: keys must begin with "ulr_". ` +
+      `Got: "[redacted]". ` +
+      `Generate a valid key at https://app.uluops.ai.`,
+    );
+  }
+
+  // Mirror sdk-core's length floor HERE so a short key fails at the config
+  // boundary as a ConfigurationError (UluOpsError hierarchy). Left to sdk-core,
+  // the same key throws its ValidationError from deep inside client
+  // construction — outside the documented error contract (issue 309875ff).
+  if (apiKey && apiKey.startsWith('ulr_') && apiKey.length < MIN_API_KEY_LENGTH) {
+    throw new ConfigurationError(
+      `Invalid API key format: key too short (min ${MIN_API_KEY_LENGTH} chars). ` +
       `Got: "[redacted]". ` +
       `Generate a valid key at https://app.uluops.ai.`,
     );
