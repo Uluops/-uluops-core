@@ -62,6 +62,38 @@ export interface StepDefinition {
 }
 
 /**
+ * Stage gate (PDL `$defs/gate`, pdl-schema-v1.2.0). Controls pipeline flow
+ * after the stage completes:
+ *
+ * - The gate FAILS when the stage's vocabulary-resolved decision is negative,
+ *   the stage errored, or (when `threshold` is set) the aggregated score falls
+ *   below it. A stage with no evaluable score is fail-open for the threshold
+ *   check (WorkflowExecutor.evaluateGate precedent) — decision-negative still
+ *   fails it.
+ * - `on_failure` is the enacted hard-stop contract (G5): `abort` fails the
+ *   pipeline and skips everything downstream; `skip` skips the remaining
+ *   stages but lets the pipeline complete; `warn` logs and continues.
+ *   PDL schema default is `abort` — a gate is a gate.
+ */
+export interface GateDefinition {
+  /** Score threshold (0-100). Absent → the gate fails only on negative
+   *  decisions / stage errors, never on score. */
+  threshold?: number;
+
+  /** Aggregation over inline-agent scores when `threshold` is set. Ref-based
+   *  stages have a single score and ignore this. PDL schema default 'min'. */
+  aggregate?: 'min' | 'max' | 'average';
+
+  /** Flow action when the gate fails. PDL schema default 'abort'. */
+  on_failure?: 'abort' | 'warn' | 'skip';
+
+  /** Flow action when the gate passes. `skip_remaining` is the early-exit
+   *  pattern: downstream stages are skipped, pipeline completes. PDL schema
+   *  default 'continue'. */
+  on_success?: 'continue' | 'skip_remaining';
+}
+
+/**
  * Stage definition within a pipeline
  */
 export interface StageDefinition {
@@ -113,6 +145,14 @@ export interface StageDefinition {
    *    non-suppressed depends_on outputs in their initial message
    *  - 'none': depend for ordering only; agents get a clean context. */
   receives?: 'auto' | 'none';
+
+  /** Post-stage flow gate (PDL `$defs/gate`) — see {@link GateDefinition}.
+   *  Enacted by PipelineExecutor: `on_failure`/`on_success` control pipeline
+   *  flow; `threshold`/`aggregate` evaluate against inline-agent scores or the
+   *  stage result score. A steps stage carrying an abort gate that cannot
+   *  execute (allowStageSteps off) fails the run loudly instead of silently
+   *  passing (G5). */
+  gate?: GateDefinition;
 
   /** Run-gate expression (PDL semantics): the stage runs when this holds and
    *  is skipped when it is definitively false; unresolvable expressions fail

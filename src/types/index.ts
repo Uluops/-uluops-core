@@ -62,6 +62,7 @@ export type {
 export type {
   PipelineDefinition,
   StageDefinition,
+  GateDefinition,
   TriggerDefinition,
   PipelineResult,
   PipelineMetrics,

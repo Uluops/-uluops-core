@@ -324,6 +324,26 @@ stages:
 
 Caps (provisional; exported as `UPSTREAM_STAGE_SLICE_CAP` 8K / `UPSTREAM_STAGE_FULL_CAP` 24K / `UPSTREAM_TOTAL_CAP` 32K chars) reduce deterministically — findings first, then narratives; stage headers and verdict lines are never dropped, and all truncation is marked in-place. Fleet-wide kill switch: `ULUOPS_DISABLE_STAGE_FORWARDING=1` (or `true`). The forwarded slices ride `ExecutionInput.upstreamContext` (type `UpstreamStageContext`) — engine-populated; not an operator input.
 
+**Stage gates.** A stage's `gate:` block (PDL `$defs/gate`) controls pipeline flow after the stage completes. The gate *fails* when the stage's vocabulary-resolved decision is negative, the stage errored, or — when `threshold` is set — the aggregated score falls below it (`aggregate: min | max | average` over inline-agent scores, default `min`; ref-based stages use the stage result score; scoreless stages are fail-open for the threshold check only). What happens next is the gate's flow action:
+
+```yaml
+stages:
+  - id: build-gate
+    steps: [...]
+    gate:
+      on_failure: abort      # hard stop: remaining stages skipped, run fails (PDL default)
+  - id: validate
+    ref: ship@1.0.0
+    gate:
+      threshold: 70          # score gate on top of the decision gate
+      aggregate: min
+      on_failure: warn       # log and continue
+      # on_failure: skip     # skip remaining stages, run still completes
+      # on_success: skip_remaining  # early exit when the gate passes
+```
+
+`on_failure: abort` surfaces as a thrown `PipelineError` from `wait()`/`runPipeline()` carrying the partial result; skipped stages are recorded with `skipReason: 'gate_abort' | 'gate_skip' | 'gate_early_exit'`. Note: an abort-gated `steps:` stage that cannot execute because `allowStageSteps` is off **fails the run loudly** instead of passing through — an unexecutable mandatory gate is a configuration error (see [Stage Steps](#stage-steps-opt-in)).
+
 Async execution with handle-based control:
 
 ```typescript
@@ -915,7 +935,7 @@ Package managers (`npm`, `pip`), orchestrators (`docker`, `kubectl`), build tool
 
 ### Stage Steps (opt-in)
 
-PDL pipeline stages can declare inline shell `steps:` blocks (detection preflights, build gates). The engine executes them **only when the operator opts in** via `allowStageSteps: true` (or `ULUOPS_ALLOW_STAGE_STEPS=true` — the exact string `true`). This is the same trust boundary as the `bash` tool: step commands come from resolved definitions, so running them is definition-author-controlled shell on your host. **The opt-in is the boundary — there is no command allowlist.** With the opt-in off (the default), steps-only stages pass through as `PASS` with a `null` score (excluded from pipeline score aggregation) and their steps are not run.
+PDL pipeline stages can declare inline shell `steps:` blocks (detection preflights, build gates). The engine executes them **only when the operator opts in** via `allowStageSteps: true` (or `ULUOPS_ALLOW_STAGE_STEPS=true` — the exact string `true`). This is the same trust boundary as the `bash` tool: step commands come from resolved definitions, so running them is definition-author-controlled shell on your host. **The opt-in is the boundary — there is no command allowlist.** With the opt-in off (the default), steps-only stages pass through as `PASS` with a `null` score (excluded from pipeline score aggregation) and their steps are not run — **unless the stage carries an abort gate** (`gate.on_failure: abort`, or a `gate:` block that omits `on_failure` — abort is the PDL default), in which case the run fails loudly: an unexecutable mandatory gate is a configuration error, not a skippable step.
 
 Confinements applied to executed steps:
 

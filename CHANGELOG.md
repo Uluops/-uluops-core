@@ -6,6 +6,19 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) 
 
 ## [Unreleased]
 
+### Changed — BEHAVIOR
+
+- **PDL stage gates are now enacted** (tracker G5, issue cf83cd47 — "hard build gate silently auto-passes"). The `gate:` block on pipeline stages (`threshold`, `aggregate`, `on_failure`, `on_success` — PDL `$defs/gate`, schema v1.2.0) was previously parsed but never read: `on_failure: abort` flowed on exactly like `warn`. Now, after each executed stage:
+  - The gate **fails** when the stage's vocabulary-resolved decision is negative, the stage errored, or — when `threshold` is set — the aggregated score falls below it (`gate.aggregate` over inline-agent scores, PDL default `min`; ref-based stages use the stage result score). Scoreless stages are **fail-open for the threshold check only** (WorkflowExecutor.evaluateGate precedent) — decision-negative still fails.
+  - `on_failure: abort` (also the PDL schema default for a gate that omits it) fails the pipeline: remaining stages are recorded as skipped (`gate_abort`), `wait()` throws `PipelineError` with the partial result. `skip` skips the remaining stages but lets the run complete (`gate_skip`). `warn` logs and continues (previous behavior for all gates).
+  - `on_success: skip_remaining` is the early-exit pattern: downstream stages are skipped (`gate_early_exit`), run completes.
+  - **An abort-gated steps stage that cannot execute (`allowStageSteps` off) now fails the run loudly** instead of silently stamping `PASS` — the author declared the gate mandatory; an operator who cannot run it has a configuration error, not a skippable step. The error names the remedy (enable `allowStageSteps` or downgrade the gate).
+  - Corpus audit (udl/pdl/v1, 2026-07-10): every stage gate declares `on_failure` explicitly (mostly `warn` — unchanged behavior apart from a new warn log). The `abort` gates (`api-server-validate`, `ship`) now actually stop their pipelines — the authored contract.
+
+### Added
+
+- `GateDefinition` type (`types/pipeline.ts`, exported from root and `/types`) and `StageDefinition.gate` — the gate block survives `normalizePipelineSection` untouched (structuredClone, no allowlist); it was reaching the executor all along, just untyped and unread.
+
 ## [0.31.0] - 2026-07-08
 
 ### Changed — BEHAVIOR
