@@ -18,6 +18,7 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) 
 ### Added
 
 - `GateDefinition` type (`types/pipeline.ts`, exported from root and `/types`) and `StageDefinition.gate` — the gate block survives `normalizePipelineSection` untouched (structuredClone, no allowlist); it was reaching the executor all along, just untyped and unread.
+- **Integrity pins are now reachable from every execution entrypoint** (tracker 1a49ad7a, security). The `expectedHash`/`expectedPromptHash` verification shipped in 0.20.0 was threaded through `runAgent` only — while the README steers CI (the exact bash-enablement context) to `runCommand`/`runPipeline`, which could not pin. Now: `runCommand` accepts pins in its `overrides`; `runWorkflow`/`runPipeline`/`startPipeline`/`run` accept a trailing `ResolvePinOptions` (newly exported from the package root). All additive-optional; verification remains resolve-time and fail-closed (`IntegrityError`), including cache hits. Scope notes, on the page: pipeline/workflow pins cover the top-level YAML only (stage/phase refs resolve downstream unpinned — per-stage pinning is lockfile territory, deferred with the trust-bootstrap TOFU caveat); `expectedPromptHash` on a promptless type still throws `kind: 'unavailable'`. README: CI bash-enablement now cross-links Integrity Verification with a pinned `runCommand` example.
 
 ## [0.31.0] - 2026-07-08
 

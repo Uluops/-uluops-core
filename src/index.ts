@@ -8,7 +8,7 @@ export { WorkflowExecutor } from './executor/WorkflowExecutor.js';
 export { PipelineExecutor } from './executor/PipelineExecutor.js';
 
 // ─── Service Clients ──────────────────────────────────────────────────────────
-export { RegistryClient } from './registry/RegistryClient.js';
+export { RegistryClient, type ResolvePinOptions } from './registry/RegistryClient.js';
 export { SubmissionClient } from './submission/SubmissionClient.js';
 
 // ─── AI SDK Integration ───────────────────────────────────────────────────────

@@ -243,6 +243,13 @@ const result = await client.runCommand('validate', { target: './src' });
 // Override the definition's default model at runtime (e.g., for CI cost control)
 const fast = await client.runCommand('validate', { target: './src' }, { model: 'haiku' });
 
+// CI: pin the definition so a mutated registry entry is refused, not executed
+// (see Integrity Verification). Strongly recommended when `bash` is enabled.
+const pinned = await client.runCommand('validate', { target: './src' }, {
+  expectedHash: 'sha256:…',
+  expectedPromptHash: 'sha256:…',
+});
+
 console.log(`Score: ${result.score}`);
 console.log(`Categories:`, result.categories);
 ```
@@ -490,6 +497,7 @@ try {
 }
 ```
 
+- **Every execution entrypoint accepts pins**: `runAgent`/`runCommand` take them in their options/overrides; `runWorkflow`/`runPipeline`/`startPipeline`/`run` take a trailing `ResolvePinOptions`. Pipeline pins cover the pipeline YAML only — stage refs are resolved separately downstream and are not individually pinned (per-stage pinning is lockfile territory).
 - **Both pins are optional.** Unpinned resolves are unverified and behave exactly as before.
 - **`expectedHash`** verifies `computeHash(resolved.yaml)` — covers source and execution config. For **WDL/PDL** the YAML *is* the runtime, so the YAML pin alone fully covers execution.
 - **`expectedPromptHash`** verifies the frozen rendered prompt and is required (with `expectedHash`) for full **agent/command** executed-prompt integrity. Supplying it for a definition with no rendered prompt (workflow/pipeline, local, content-gated, schema-stale) throws `IntegrityError(kind: 'unavailable')` — never a silent pass.
@@ -895,7 +903,7 @@ try {
 
 Agent definitions can request tools (e.g., `tools: ['bash']` in YAML), but the operator must explicitly permit them. This separates the trust boundary: **definition authors declare** what they need, **operators decide** what they permit.
 
-By default, all tools except `bash` are allowed. The `bash` tool passes LLM-generated command strings to `sh -c`, granting full host OS access scoped to the working directory. Only enable it in sandboxed environments (containers, CI).
+By default, all tools except `bash` are allowed. The `bash` tool passes LLM-generated command strings to `sh -c`, granting full host OS access scoped to the working directory. Only enable it in sandboxed environments (containers, CI). **If you enable `bash` in CI, pin the definitions you run** (`expectedHash` — see [Integrity Verification](#integrity-verification)): with bash on, a mutated registry definition is author-controlled shell on your CI host, and the pin is what makes that substitution refuse to execute.
 
 ```typescript
 // Default: bash blocked even if definition requests it
