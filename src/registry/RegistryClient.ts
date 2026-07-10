@@ -284,7 +284,7 @@ export class RegistryClient {
       }
       this.logger.debug(`Resolved locally: ${name} @ ${candidate.path}`);
 
-      const { runtime, degradations } = await this.renderLocally(yamlContent, definition, candidate.type);
+      const { runtime, degradations } = await this.renderLocally(yamlContent, definition, candidate.type, candidate.path);
 
       // PRODUCER CAST (issue a9d65912): ResolvedDefinition is discriminated on
       // `type`, but candidate.type and the parsed YAML are runtime data — the
@@ -573,12 +573,30 @@ export class RegistryClient {
     yamlContent: string,
     definition: Record<string, unknown>,
     type: DefinitionType,
+    sourcePath: string,
   ): Promise<{ runtime: ResolvedDefinition['runtime']; degradations: string[] }> {
     const degradations: string[] = [];
 
     if (type === 'agent') {
       const agent = definition['agent'] as AgentDefinition['agent'] | undefined;
-      if (!agent) return { runtime: { prompt: '' } as ResolvedDefinition['runtime'], degradations };
+      // Local files are user-authored: a missing required section must fail as
+      // an actionable ConfigurationError naming the file — not resolve to an
+      // empty prompt (!agent) or crash as a raw TypeError when buildAgentConfig
+      // reads agent.interface.agentType (issues 34c6e6ec / 2563691d). The
+      // remote path instead degrades to a prompt-only runtime because remote
+      // YAML is registry-validated at publish and its guard is defensive.
+      if (!agent) {
+        throw new ConfigurationError(
+          `Local definition file ${sourcePath} has no top-level 'agent:' section. ` +
+          `An .agent.yaml file must contain an ADL document (agent: → interface:, prompt, …).`,
+        );
+      }
+      if (!agent.interface) {
+        throw new ConfigurationError(
+          `Local definition file ${sourcePath} is missing the required 'agent.interface' section ` +
+          `(name, version, agentType). Add it or regenerate the file with 'udl validate'.`,
+        );
+      }
 
       // Render via registry API (definition-factory is server-side only)
       const rendered = await this.tryRenderViaAPI(type, yamlContent, degradations);

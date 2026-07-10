@@ -333,6 +333,8 @@ export class AgentExecutor {
    * Collect execution-phase degradation markers for a completed generation.
    *
    * - `budget.forced-wrap-up` — the context-budget latch was engaged at run end.
+   * - `usage.provider-metadata-shape-drift` (info) — a provider's usage
+   *   metadata arrived in an unrecognized shape; token metrics may read zero.
    * - `context.evicted` — provider-side context management removed old tool
    *   results mid-run (observed as a step-over-step window shrink). Emitted so
    *   coverage loss below the wrap-up latch cannot report 'complete'; the
@@ -370,6 +372,18 @@ export class AgentExecutor {
         phase: 'execution',
         severity: 'degraded',
         detail: `Provider context management evicted ~${budgetTracker.evictedTokens} tokens of earlier tool results; the verdict rests on a reduced evidence window.`,
+      });
+    }
+
+    if (result.usageShapeDrift && result.usageShapeDrift.length > 0) {
+      markers.push({
+        code: 'usage.provider-metadata-shape-drift',
+        phase: 'execution',
+        // info: metrics quality, not verdict evidence — token/cache/thinking
+        // numbers may read zero for these providers, but the run's coverage
+        // and decision are untouched (issue adaaa4b9).
+        severity: 'info',
+        detail: `Unrecognized usage-metadata shape from: ${result.usageShapeDrift.join(', ')}. Token/cache/thinking metrics may silently read zero.`,
       });
     }
 

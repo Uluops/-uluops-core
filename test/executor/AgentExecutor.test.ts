@@ -761,6 +761,18 @@ describe('AgentExecutor', () => {
       expect(result.degradationMarkers?.map(d => d.code)).toContain('steps.near-exhaustion');
     });
 
+    it('usage shape drift emits an info marker without touching completeness', async () => {
+      const ai = mockAIProvider({ usageShapeDrift: ['anthropic'] });
+      const executor = new AgentExecutor(baseConfig, ai, noopLogger);
+
+      const result = await executor.execute(makeValidatorDef(), { target: tmpDir });
+
+      const marker = result.degradationMarkers?.find(d => d.code === 'usage.provider-metadata-shape-drift');
+      expect(marker).toMatchObject({ phase: 'execution', severity: 'info' });
+      // info severity: metrics quality, not verdict evidence — completeness stays complete.
+      expect(result.completeness).toBe('complete');
+    });
+
     it('provider-side context eviction marks partial via context.evicted', async () => {
       const ai = mockAIProvider();
       // Simulate what AIProvider's onStepFinish does across steps when Anthropic

@@ -723,6 +723,24 @@ const client = new UluOpsClient({
 });
 ```
 
+### Local Definition File Naming
+
+Files under `localDefinitions` must follow the `<name>.<type>.yaml` convention —
+a plain `<name>.yaml` is **not** found, and the resulting error ("not found in
+registry. Set ULUOPS_API_KEY…") points at the registry rather than the filename:
+
+| Definition type | Filename | Also scanned in subdirectory |
+|-----------------|----------|------------------------------|
+| Agent (ADL) | `my-agent.agent.yaml` | `agents/` |
+| Command (CDL) | `my-command.command.yaml` | `commands/` |
+| Workflow (WDL) | `my-workflow.workflow.yaml` | `workflows/` |
+| Pipeline (PDL) | `my-pipeline.pipeline.yaml` | `pipelines/` |
+
+Each type is resolved from the base directory first, then its subdirectory
+(e.g. `./definitions/code-validator.agent.yaml`, then
+`./definitions/agents/code-validator.agent.yaml`). The `<name>` part is what
+you pass to `runAgent()` / `resolve()`.
+
 ### Environment Variables
 
 | Variable | Description | Default |

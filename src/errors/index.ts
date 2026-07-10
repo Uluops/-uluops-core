@@ -274,4 +274,10 @@ export {
   ServiceUnavailableError,
   NetworkError,
   TimeoutError,
+  // ValidationError (400) extends SdkApiError, not UluOpsError — re-exported so
+  // consumers can instanceof-check runtime 400s through this package (issue
+  // 309875ff). Config-time key validation no longer reaches it: resolveConfig
+  // mirrors sdk-core's checks and throws ConfigurationError at the boundary.
+  ValidationError,
+  isValidationError,
 } from '@uluops/sdk-core/errors';
