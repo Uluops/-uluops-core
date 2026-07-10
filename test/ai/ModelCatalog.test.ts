@@ -402,14 +402,65 @@ describe('ModelCatalog', () => {
       await expect(catalog.resolve('bad')).rejects.toThrow('listAliases()');
     });
 
-    it('re-throws network/auth errors from resolveAlias instead of masking as null', async () => {
+    it('re-throws network/auth errors from resolveAlias for aliases outside the offline table', async () => {
       const networkError = new Error('Network timeout');
       const sdk = mockSdk({
         resolveAlias: vi.fn().mockRejectedValue(networkError),
       });
       const catalog = new ModelCatalog(sdk);
 
-      await expect(catalog.resolve('sonnet')).rejects.toThrow('Network timeout');
+      // 'my-custom-alias' has no baked-in fallback — the outage must surface.
+      await expect(catalog.resolve('my-custom-alias')).rejects.toThrow('Network timeout');
+    });
+
+    // ── Offline outage fallback (issue 172518e2) ─────────────────────────
+    describe('offline fallback aliases', () => {
+      it('resolves a well-known alias from the baked-in table during a registry outage', async () => {
+        const sdk = mockSdk({
+          resolveAlias: vi.fn().mockRejectedValue(new Error('ECONNREFUSED')),
+        });
+        const warn = vi.fn();
+        const catalog = new ModelCatalog(sdk, { debug() {}, info() {}, warn, error() {} });
+
+        const resolved = await catalog.resolve('sonnet');
+
+        expect(resolved.provider).toBe('anthropic');
+        expect(resolved.resolvedFrom).toBe('sonnet');
+        // Default-deny capabilities offline — structured output must not be assumed.
+        expect(resolved.capabilities.structuredOutput).toBe(false);
+        expect(warn).toHaveBeenCalledWith(expect.stringContaining('Registry unreachable'));
+      });
+
+      it('does NOT use the fallback for a 404 (alias genuinely unknown)', async () => {
+        const notFound = Object.assign(new Error('not found'), { status: 404 });
+        const sdk = mockSdk({
+          resolveAlias: vi.fn().mockRejectedValue(notFound),
+          listModels: vi.fn().mockResolvedValue({ models: [] }),
+        });
+        const catalog = new ModelCatalog(sdk);
+
+        // 404 → alias path yields null → tier fails → ModelNotFoundError, not a fallback resolve.
+        await expect(catalog.resolve('sonnet')).rejects.toThrow('Cannot resolve model');
+      });
+
+      it('does not cache the fallback — registry recovery wins on the next resolve', async () => {
+        const resolveAlias = vi.fn()
+          .mockRejectedValueOnce(new Error('ECONNREFUSED'))
+          .mockResolvedValueOnce({
+            alias: 'sonnet',
+            target: 'anthropic:claude-registry-model',
+            model: null,
+          });
+        const sdk = mockSdk({ resolveAlias });
+        const catalog = new ModelCatalog(sdk);
+
+        const offline = await catalog.resolve('sonnet');
+        const online = await catalog.resolve('sonnet');
+
+        expect(offline.modelId).not.toBe('claude-registry-model');
+        expect(online.modelId).toBe('claude-registry-model');
+        expect(resolveAlias).toHaveBeenCalledTimes(2);
+      });
     });
 
     it('re-throws non-404 errors from getModel instead of masking as null', async () => {

@@ -1,5 +1,6 @@
 import { describe, it, expect, vi } from 'vitest';
 import { CommandExecutor } from '../../src/executor/CommandExecutor.js';
+import type { AgentExecutor } from '../../src/executor/AgentExecutor.js';
 import type { ResolvedDefinition } from '../../src/types/registry.js';
 import type { ExecutorAgentResult } from '../../src/types/agent.js';
 import { makeAgentExecutor, makeRegistry, makeValidatorResult } from './fixtures.js';
@@ -465,6 +466,156 @@ describe('CommandExecutor', () => {
 
       expect(result.decision).toBe('PARTIAL');
       expect(result.decisionCategory).toBe('conditional');
+    });
+  });
+
+  // ── Composite extraction confidence (issue e037aa98) ─────────────────────
+  describe('extraction confidence propagation', () => {
+    it('single-agent wrapping carries the agent extractionConfidence', async () => {
+      const agentExec = makeAgentExecutor([
+        makeValidatorResult({ extractionConfidence: 0.5 }),
+      ]);
+      const executor = new CommandExecutor(agentExec, makeRegistry());
+
+      const result = await executor.execute(makeCommandDef(), { target: '/tmp/test' });
+
+      expect(result.extractionConfidence).toBe(0.5);
+    });
+
+    it('aggregation carries the WORST child confidence', async () => {
+      const agentExec = makeAgentExecutor([
+        makeValidatorResult({ name: 'agent-a', score: 90, extractionConfidence: 1.0 }),
+        makeValidatorResult({ name: 'agent-b', score: 88, extractionConfidence: 0.4 }),
+      ]);
+      const executor = new CommandExecutor(agentExec, makeRegistry());
+
+      const result = await executor.execute(makeCommandDef({
+        agents: ['agent-a@1.0.0', 'agent-b@1.0.0'],
+        aggregation: { method: 'average' },
+      }), { target: '/tmp/test' });
+
+      // min, not average — one untrustworthy child taints the composite's
+      // positive verdict at the submission gate.
+      expect(result.extractionConfidence).toBe(0.4);
+    });
+
+    it('stays absent when no child carries a confidence', async () => {
+      const agentExec = makeAgentExecutor([
+        makeValidatorResult({ name: 'agent-a', score: 90 }),
+        makeValidatorResult({ name: 'agent-b', score: 88 }),
+      ]);
+      const executor = new CommandExecutor(agentExec, makeRegistry());
+
+      const result = await executor.execute(makeCommandDef({
+        agents: ['agent-a@1.0.0', 'agent-b@1.0.0'],
+        aggregation: { method: 'average' },
+      }), { target: '/tmp/test' });
+
+      expect(result.extractionConfidence).toBeUndefined();
+    });
+  });
+
+  // ── Scored-lens-negative cap (issue d60c2ea2, decision 2026-07-10) ────────
+  describe('scored-lens-negative cap', () => {
+    it('caps a passing average at WARN when a scored child resolves negative (DISORDERED@82)', async () => {
+      const agentExec = makeAgentExecutor([
+        makeValidatorResult({ name: 'code-validator', score: 90 }),
+        makeValidatorResult({ name: 'confucius-analyst', decision: 'DISORDERED', decisionCategory: 'negative', score: 82 }),
+      ]);
+      const executor = new CommandExecutor(agentExec, makeRegistry());
+
+      const result = await executor.execute(makeCommandDef({
+        agents: ['code-validator@1.0.0', 'confucius-analyst@1.0.0'],
+        aggregation: { method: 'average' },
+      }), { target: '/tmp/test' });
+
+      // Average 86 clears the pass threshold, but the declared categorical
+      // negative may never launder into an unqualified PASS.
+      expect(result.score).toBe(86);
+      expect(result.decision).toBe('WARN');
+      expect(result.decisionCategory).toBe('conditional');
+    });
+
+    it('does not upgrade a failing average — FAIL stays FAIL', async () => {
+      const agentExec = makeAgentExecutor([
+        makeValidatorResult({ name: 'agent-a', decision: 'FAIL', decisionCategory: 'negative', score: 30 }),
+        makeValidatorResult({ name: 'agent-b', decision: 'FAIL', decisionCategory: 'negative', score: 40 }),
+      ]);
+      const executor = new CommandExecutor(agentExec, makeRegistry());
+
+      const result = await executor.execute(makeCommandDef({
+        agents: ['agent-a@1.0.0', 'agent-b@1.0.0'],
+        aggregation: { method: 'average' },
+      }), { target: '/tmp/test' });
+
+      expect(result.decision).toBe('FAIL');
+      expect(result.decisionCategory).toBe('negative');
+    });
+
+    it('leaves an all-positive passing command untouched', async () => {
+      const agentExec = makeAgentExecutor([
+        makeValidatorResult({ name: 'agent-a', score: 90 }),
+        makeValidatorResult({ name: 'agent-b', score: 88 }),
+      ]);
+      const executor = new CommandExecutor(agentExec, makeRegistry());
+
+      const result = await executor.execute(makeCommandDef({
+        agents: ['agent-a@1.0.0', 'agent-b@1.0.0'],
+        aggregation: { method: 'average' },
+      }), { target: '/tmp/test' });
+
+      expect(result.decision).toBe('PASS');
+      expect(result.decisionCategory).toBe('positive');
+    });
+  });
+
+  // ── Parallel crash semantics (issue 77febff2, decision 2026-07-10) ────────
+  describe('parallel crash semantics', () => {
+    it('fails the command when a parallel agent crashes, keeping survivor work', async () => {
+      const agentExec = {
+        execute: vi.fn()
+          .mockResolvedValueOnce(makeValidatorResult({ name: 'agent-a', score: 90 }))
+          .mockRejectedValueOnce(new Error('registry timeout')),
+      } as unknown as AgentExecutor;
+      const executor = new CommandExecutor(agentExec, makeRegistry());
+
+      const result = await executor.execute(makeCommandDef({
+        agents: ['agent-a@1.0.0', 'agent-b@1.0.0'],
+        execution: {
+          model: { default: 'sonnet' },
+          timeout: 30000,
+          thresholds: { pass: 75, warn: 50 },
+          sequential: false,
+        },
+      }), { target: '/tmp/test' });
+
+      // Crashed agent synthesizes a negative-category, null-score placeholder;
+      // the scoreless-negative guard then fails the command — a gate that
+      // could not run its full panel must not emit an unqualified positive.
+      expect(result.decision).toBe('FAIL');
+      expect(result.decisionCategory).toBe('negative');
+      // Survivor's score still reported (placeholder null is excluded from the average).
+      expect(result.score).toBe(90);
+      // The crash is visible as a critical recommendation.
+      const crashRec = result.recommendations.find(r => r.title.includes('agent-b@1.0.0 failed'));
+      expect(crashRec).toMatchObject({ severity: 'critical', priority: 'critical' });
+    });
+
+    it('throws when ALL parallel agents crash', async () => {
+      const agentExec = {
+        execute: vi.fn().mockRejectedValue(new Error('boom')),
+      } as unknown as AgentExecutor;
+      const executor = new CommandExecutor(agentExec, makeRegistry());
+
+      await expect(executor.execute(makeCommandDef({
+        agents: ['agent-a@1.0.0', 'agent-b@1.0.0'],
+        execution: {
+          model: { default: 'sonnet' },
+          timeout: 30000,
+          thresholds: { pass: 75, warn: 50 },
+          sequential: false,
+        },
+      }), { target: '/tmp/test' })).rejects.toThrow('All parallel agents failed');
     });
   });
 });

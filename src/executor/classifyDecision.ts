@@ -80,6 +80,13 @@ export function classifyDecision(
  *
  * @param result - Any result carrying `decision` and optionally `decisionCategory`;
  *   `undefined` (e.g. a thrown-error stage with no result) resolves to `'neutral'`.
+ * @param onUnclassified - Called when a NON-EMPTY decision from an unstamped
+ *   result resolves `'neutral'` — the mixed-version blind spot (issue 3e74bc69):
+ *   a custom-vocabulary negative from a 0.29.x/hand-built producer is unknowable
+ *   at the consuming gate and silently non-gates. Gate boundaries pass a logger
+ *   warn here so the silence is at least loud; in-process 0.32.0+ producers
+ *   always stamp, so this firing means a foreign or downlevel result crossed
+ *   into a gate.
  * @example
  * ```typescript
  * resolveDecisionCategory({ decision: 'EXPOSED', decisionCategory: 'negative' }); // 'negative' — stamped category wins
@@ -90,9 +97,13 @@ export function classifyDecision(
  */
 export function resolveDecisionCategory(
   result: { decision?: string; decisionCategory?: DecisionCategory } | undefined,
+  onUnclassified?: (decision: string) => void,
 ): DecisionCategory {
   if (!result) return 'neutral';
-  return result.decisionCategory ?? classifyDecision(result.decision);
+  if (result.decisionCategory) return result.decisionCategory;
+  const category = classifyDecision(result.decision);
+  if (category === 'neutral' && result.decision) onUnclassified?.(result.decision);
+  return category;
 }
 
 /**

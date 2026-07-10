@@ -7,12 +7,14 @@ import type { ExecutionInput, Recommendation, SubscriptionTier } from '../types/
 import type { CommandResult, CommandMetrics } from '../types/command.js';
 import type { AgentResult } from '../types/agent.js';
 import { ExecutionError } from '../errors/index.js';
+import type { Logger } from '@uluops/sdk-core';
 import { parseRef } from '../utils/parseRef.js';
 import { sumTokenMetrics } from '../utils/sumTokenMetrics.js';
 import { DEFAULT_PASS_THRESHOLD, DEFAULT_WARN_THRESHOLD } from '../constants.js';
 import { mapCategory } from './mapCategory.js';
 import { resolveDecisionCategory, type DecisionCategory } from './classifyDecision.js';
 import { aggregateScores, type AggregationMethod } from '../utils/aggregateScores.js';
+import { worstExtractionConfidence } from '../utils/worstExtractionConfidence.js';
 
 /**
  * Executes command definitions.
@@ -23,11 +25,31 @@ import { aggregateScores, type AggregationMethod } from '../utils/aggregateScore
  * Handles preflight checks, model/threshold overrides from command definition,
  * and multi-agent score aggregation.
  */
+const noopLogger: Logger = { debug() {}, info() {}, warn() {}, error() {} };
+
 export class CommandExecutor {
+  private logger: Logger;
+
+  /**
+   * Gate-boundary tripwire (issue 3e74bc69): a non-empty decision that is
+   * neither stamped nor in the core register resolves 'neutral' and silently
+   * non-gates — reachable only for foreign/downlevel (0.29.x, hand-built)
+   * results, since in-process producers always stamp decisionCategory.
+   */
+  private warnUnclassified = (decision: string): void => {
+    this.logger.warn(
+      `Decision "${decision.slice(0, 80)}" has no stamped decisionCategory and is not in the core register — ` +
+      `resolving 'neutral' (non-gating). A custom-vocabulary negative from a pre-0.30 producer would not gate here.`,
+    );
+  };
+
   constructor(
     private agentExecutor: AgentExecutor,
     private registry: RegistryClient,
-  ) {}
+    logger?: Logger,
+  ) {
+    this.logger = logger ?? noopLogger;
+  }
 
   /**
    * Execute a command definition against a target.
@@ -52,7 +74,8 @@ export class CommandExecutor {
     if (resolved.type !== 'command') {
       throw new ExecutionError(`CommandExecutor received a '${resolved.type}' definition (expected 'command')`);
     }
-    const def = resolved.definition as CommandDefinition;
+    // The runtime check above narrows the discriminated union — no cast (a9d65912).
+    const def = resolved.definition;
 
     // Model resolution: operator override > CDL default
     const model = overrides?.model ?? def.command.execution.model.default;
@@ -92,17 +115,14 @@ export class CommandExecutor {
     };
 
     let agentResults: AgentResult[];
-    let agentErrors: string[] = [];
 
     if (def.command.execution.sequential === false) {
-      const parallel = await this.executeParallel(agentRefs, executeAgent);
-      agentResults = parallel.results;
-      agentErrors = parallel.agentErrors;
+      agentResults = await this.executeParallel(agentRefs, executeAgent);
     } else {
       agentResults = await this.executeSequentially(agentRefs, executeAgent);
     }
 
-    const result = this.aggregateResults(
+    return this.aggregateResults(
       agentResults,
       def,
       resolved.hash,
@@ -110,19 +130,6 @@ export class CommandExecutor {
       def.command.aggregation ?? { method: 'average' },
       resolved.minSubscription,
     );
-
-    // Surface partial failures as critical recommendations so consumers see them
-    if (agentErrors.length > 0) {
-      const errorRecs: Recommendation[] = agentErrors.map(msg => ({
-        title: msg,
-        priority: 'critical' as const,
-        severity: 'critical' as const,
-        file_paths: [],
-      }));
-      result.recommendations = [...errorRecs, ...result.recommendations];
-    }
-
-    return result;
   }
 
   private async executeSequentially(
@@ -136,10 +143,19 @@ export class CommandExecutor {
     return results;
   }
 
+  /**
+   * Execute agent refs in parallel. A crashed agent is synthesized as a
+   * negative-category, null-score placeholder result (issue 77febff2, decision
+   * 2026-07-10): the scoreless-negative guard in aggregateResults then fails
+   * the command, restoring crash-parity with sequential mode's fail-fast while
+   * keeping the survivors' work. Same pattern as PipelineExecutor's inline
+   * agents and WorkflowExecutor's parallel steps — a gate that could not run
+   * its full panel must not emit an unqualified positive.
+   */
   private async executeParallel(
     refs: string[],
     fn: (ref: string) => Promise<AgentResult>,
-  ): Promise<{ results: AgentResult[]; agentErrors: string[] }> {
+  ): Promise<AgentResult[]> {
     const settled = await Promise.allSettled(refs.map(fn));
     const results: AgentResult[] = [];
     const agentErrors: string[] = [];
@@ -152,14 +168,30 @@ export class CommandExecutor {
         const ref = refs[i]!;
         const msg = outcome.reason instanceof Error ? outcome.reason.message : String(outcome.reason);
         agentErrors.push(`Agent ${ref} failed: ${msg}`);
+        results.push({
+          name: ref,
+          agentType: 'validator',
+          decision: 'FAIL',
+          decisionCategory: 'negative',
+          // Crashed agent — no agent ran, so no score. Null pair, not fabricated 0/100.
+          score: null,
+          maxScore: null,
+          recommendations: [{
+            title: `Agent ${ref} failed: ${msg}`,
+            priority: 'critical',
+            severity: 'critical',
+            failureCode: 'PRA-FRA/C',
+          }],
+          metrics: { inputTokens: 0, outputTokens: 0, totalEffectiveTokens: 0, durationMs: 0, model: 'unknown' },
+        } as AgentResult);
       }
     }
 
-    if (results.length === 0) {
+    if (agentErrors.length === refs.length) {
       throw new ExecutionError(`All parallel agents failed: ${agentErrors.join('; ')}`);
     }
 
-    return { results, agentErrors };
+    return results;
   }
 
   /**
@@ -211,6 +243,7 @@ export class CommandExecutor {
       decisionCategory: agentResult.decisionCategory,
       score: agentResult.score,
       maxScore: agentResult.maxScore,
+      extractionConfidence: agentResult.extractionConfidence,
       threshold: def.command.execution.thresholds?.pass,
       categories: agentResult.categories?.map(mapCategory),
       artifacts: agentResult.artifacts,
@@ -271,23 +304,31 @@ export class CommandExecutor {
       // Scoreless children have no channel into the aggregate score, so their
       // negative completions must gate here or they are silently swallowed —
       // a passing scored validator must not mask a scoreless executor's failure.
-      // SCOPE OF THIS GUARD: scored negatives flow through the average, which is
-      // correct for validators (decision derives from score) but undecided for
-      // lens agents where a categorical negative can coexist with a passing
-      // score (e.g. DISORDERED@82). That case is deliberately NOT gated here —
-      // it is an aggregation-semantics question routed to the
-      // composition-aggregation spec, alongside the all-null floor above.
       if (decisionCategory !== 'negative' &&
-          results.some(r => r.score == null && resolveDecisionCategory(r) === 'negative')) {
+          results.some(r => r.score == null && resolveDecisionCategory(r, this.warnUnclassified) === 'negative')) {
         decision = 'FAIL';
         decisionCategory = 'negative';
+      }
+      // Scored-lens-negative cap (issue d60c2ea2, decision 2026-07-10): a scored
+      // child whose vocabulary-declared decision resolves negative (DISORDERED@82)
+      // caps the command at WARN — it can never launder into an unqualified PASS
+      // through the score average, but it does not hard-fail either: lens verdicts
+      // are characterizations, and hard-failing every passing-score negative would
+      // institutionalize alarm fatigue (same rationale as fdaa0b24). Validators
+      // are unaffected in practice — their negatives come with failing scores,
+      // which the average already fails. This closes the scored/scoreless
+      // asymmetry where a lens gated only if it happened to omit a score.
+      if (decisionCategory === 'positive' &&
+          results.some(r => r.score != null && resolveDecisionCategory(r, this.warnUnclassified) === 'negative')) {
+        decision = 'WARN';
+        decisionCategory = 'conditional';
       }
     } else {
       // Scoreless aggregation gates on vocabulary-resolved categories, not literal
       // FAILED/PARTIAL — a scoreless agent with a custom negative vocabulary
       // (completion.vocabulary.failed = 'MUTILATED') must still fail the command.
-      const failed = results.some(r => resolveDecisionCategory(r) === 'negative');
-      const partial = results.some(r => resolveDecisionCategory(r) === 'conditional');
+      const failed = results.some(r => resolveDecisionCategory(r, this.warnUnclassified) === 'negative');
+      const partial = results.some(r => resolveDecisionCategory(r, this.warnUnclassified) === 'conditional');
       decision = failed ? 'FAILED' : partial ? 'PARTIAL' : 'COMPLETE';
       decisionCategory = failed ? 'negative' : partial ? 'conditional' : 'positive';
     }
@@ -312,6 +353,7 @@ export class CommandExecutor {
       decisionCategory,
       score,
       maxScore,
+      extractionConfidence: worstExtractionConfidence(results),
       threshold,
       recommendations,
       durationMs,

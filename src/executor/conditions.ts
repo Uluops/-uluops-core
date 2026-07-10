@@ -32,6 +32,18 @@
  * Absence of a param is a normal caller state (the corpus gates agents with
  * `params.frontend || <detect>` expecting absent→false); absence of a stage
  * path is a typo signal, where running-anyway is the safety property.
+ *
+ * SECOND EXCEPTION — result fields of a non-completed stage (issue 10908362):
+ * when the referenced stage EXISTS but crashed or was skipped (status !==
+ * 'completed', no result envelope), its result fields are KNOWN-absent, not
+ * unknown. A verdict-gating condition like
+ * `stages.gate.decisionCategory == 'positive'` must fail CLOSED when the gate
+ * stage crashed — the stage genuinely exists and genuinely has no positive
+ * verdict, so equality is false, inequality is true, bare truthiness is false.
+ * The typo fail-open (stage id not found at all → unknown) is unaffected, as
+ * is field absence on a COMPLETED stage (still unknown — could be a field-name
+ * typo). This closes the crash hole in the documented verdict-gating idiom;
+ * the broader pipeline-level on_failure posture remains a PDL-spec question.
  */
 
 import type { StageResult } from '../types/pipeline.js';
@@ -45,6 +57,13 @@ export interface ConditionContext {
 
 /** true / false / null = unknown (unresolvable path or unparseable term). */
 export type ConditionVerdict = boolean | null;
+
+/**
+ * Sentinel for "the stage exists but did not complete, so this result field is
+ * KNOWN-absent" (second exception above). Distinct from `undefined`, which
+ * means the path itself could not be resolved (typo / missing stage → unknown).
+ */
+const STAGE_RESULT_ABSENT: unique symbol = Symbol('stage-result-absent');
 
 /** Expressions longer than this are rejected as unknown (fail-open) before
  *  any regex runs. Condition strings are definition-controlled and evaluated
@@ -124,7 +143,13 @@ function resolvePath(path: string, ctx: ConditionContext): unknown {
     // StageResult envelope (status, durationMs).
     const fromResult = stage.result ? getField(stage.result, field!) : undefined;
     if (fromResult !== undefined) return fromResult;
-    return getField(stage, field!);
+    const fromEnvelope = getField(stage, field!);
+    if (fromEnvelope !== undefined) return fromEnvelope;
+    // Stage exists but never completed: its result fields are KNOWN-absent —
+    // verdict-gating conditions must fail closed on a crashed/skipped gate
+    // stage (module header, second exception; issue 10908362).
+    if (stage.status !== 'completed') return STAGE_RESULT_ABSENT;
+    return undefined;
   }
 
   return undefined;
@@ -169,6 +194,13 @@ function evaluateTerm(term: string, ctx: ConditionContext): ConditionVerdict {
     const [, pathRaw, op, str1, str2, num, bool] = cmp;
     const path = pathRaw!.trim();
     const actual = resolvePath(path, ctx);
+    if (actual === STAGE_RESULT_ABSENT) {
+      // Known-absent result field on a non-completed stage: equality to any
+      // literal is false, inequality true; ordering is ill-formed (unknown).
+      if (op === '==') return negate(false);
+      if (op === '!=') return negate(true);
+      return null;
+    }
     if (actual === undefined || actual === null) {
       // D5 amendment: within the params namespace, ABSENCE IS A VALUE, not an
       // unknown — an unset param equals no literal (== false, != true).
@@ -213,7 +245,10 @@ function evaluateTerm(term: string, ctx: ConditionContext): ConditionVerdict {
     return negate(truthy(resolvePath(rest, ctx)) ?? false);
   }
   if (STEPS_PATH_RE.test(rest) || STAGE_FIELD_RE.test(rest)) {
-    return negate(truthy(resolvePath(rest, ctx)));
+    const resolved = resolvePath(rest, ctx);
+    // Known-absent result field on a non-completed stage → false, not unknown.
+    if (resolved === STAGE_RESULT_ABSENT) return negate(false);
+    return negate(truthy(resolved));
   }
 
   // Bare boolean literals (degenerate but legal).

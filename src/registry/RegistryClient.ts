@@ -286,6 +286,12 @@ export class RegistryClient {
 
       const { runtime, degradations } = await this.renderLocally(yamlContent, definition, candidate.type);
 
+      // PRODUCER CAST (issue a9d65912): ResolvedDefinition is discriminated on
+      // `type`, but candidate.type and the parsed YAML are runtime data — the
+      // type/definition correlation cannot be established statically here. This
+      // is one of the two points where it enters the type system; downstream
+      // narrowing (`resolved.type === 'command'` ⇒ CommandDefinition) is only
+      // as trustworthy as this parse.
       return {
         type: candidate.type,
         name,
@@ -299,7 +305,7 @@ export class RegistryClient {
         domain: this.extractDomain(definition, candidate.type) as ResolvedDefinition['domain'],
         agentType: this.extractAgentType(definition, candidate.type),
         degradations: degradations.length > 0 ? degradations : undefined,
-      };
+      } as ResolvedDefinition;
     }
 
     return null;
@@ -405,6 +411,11 @@ export class RegistryClient {
     const { runtime, promptHash, translatorVersion } =
       await this.buildRemoteRuntime(resolvedType, name, def, degradations);
 
+    // PRODUCER CAST (issue a9d65912): the type/definition correlation of the
+    // discriminated ResolvedDefinition union enters the type system here (and
+    // at the local-resolution twin) — resolvedType and the API's normalized
+    // payload are runtime data. Downstream narrowing is only as trustworthy
+    // as this response.
     return {
       type: resolvedType,
       name: def.name,
@@ -420,7 +431,7 @@ export class RegistryClient {
       minSubscription: (def.minSubscription as ResolvedDefinition['minSubscription']) ?? undefined,
       riskProfile: (def as unknown as Record<string, unknown>).riskProfile as ResolvedDefinition['riskProfile'] ?? null,
       ...(degradations.length > 0 && { degradations }),
-    };
+    } as ResolvedDefinition;
   }
 
   /**

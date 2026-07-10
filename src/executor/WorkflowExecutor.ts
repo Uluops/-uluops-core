@@ -14,6 +14,8 @@ import { sumTokenMetrics } from '../utils/sumTokenMetrics.js';
 import { topoGroupLevels } from '../utils/topoSort.js';
 import { parseRef } from '../utils/parseRef.js';
 import { resolveDecisionCategory, type DecisionCategory } from './classifyDecision.js';
+import { worstExtractionConfidence } from '../utils/worstExtractionConfidence.js';
+import type { Logger } from '@uluops/sdk-core';
 
 /**
  * Executes workflows as quality-gated directed acyclic graphs.
@@ -29,11 +31,24 @@ import { resolveDecisionCategory, type DecisionCategory } from './classifyDecisi
  * - warn:  proceed with warning annotation; no blocking
  */
 export class WorkflowExecutor {
+  private logger: Logger;
+
+  /** Gate-boundary tripwire for unclassifiable decisions — see CommandExecutor.warnUnclassified (issue 3e74bc69). */
+  private warnUnclassified = (decision: string): void => {
+    this.logger.warn(
+      `Decision "${decision.slice(0, 80)}" has no stamped decisionCategory and is not in the core register — ` +
+      `resolving 'neutral' (non-gating). A custom-vocabulary negative from a pre-0.30 producer would not gate here.`,
+    );
+  };
+
   constructor(
     private commandExecutor: CommandExecutor,
     private registry: RegistryClient,
     private agentExecutor?: AgentExecutor,
-  ) {}
+    logger?: Logger,
+  ) {
+    this.logger = logger ?? { debug() {}, info() {}, warn() {}, error() {} };
+  }
 
   /**
    * Execute a workflow with DAG-based phase orchestration.
@@ -97,6 +112,7 @@ export class WorkflowExecutor {
       decision: aggregated.decision,
       decisionCategory: aggregated.decisionCategory,
       score: aggregated.score,
+      extractionConfidence: worstExtractionConfidence(phaseResults.flatMap(p => p.commands)),
       phases: phaseResults,
       recommendations: this.deduplicateRecommendations(allRecommendations),
       durationMs,
@@ -351,13 +367,18 @@ export class WorkflowExecutor {
     // passes unconditionally. Mirror CommandExecutor.aggregateResults — a
     // scoreless child whose decision resolves negative gates the phase
     // categorically, honoring the phase's declared failure posture (on_fail).
-    // Scored negatives flow through the score gate by design; the scored-lens-
-    // negative case (negative decision alongside a passing score) is an open
-    // aggregation question routed to the composition-aggregation spec, not
-    // silently decided here.
     if (decision === 'passed' &&
-        commandResults.some(r => r.score == null && resolveDecisionCategory(r) === 'negative')) {
+        commandResults.some(r => r.score == null && resolveDecisionCategory(r, this.warnUnclassified) === 'negative')) {
       decision = phase.gate?.on_fail === 'warn' ? 'warned' : 'blocked';
+    }
+    // Scored-lens-negative cap (issue d60c2ea2, decision 2026-07-10) — the
+    // CommandExecutor twin: a scored child whose decision resolves negative
+    // (DISORDERED@82) caps a passed phase at 'warned'. Never an unqualified
+    // pass, never a hard block — see CommandExecutor.aggregateResults for the
+    // full rationale.
+    if (decision === 'passed' &&
+        commandResults.some(r => r.score != null && resolveDecisionCategory(r, this.warnUnclassified) === 'negative')) {
+      decision = 'warned';
     }
 
     return {
@@ -446,6 +467,7 @@ export class WorkflowExecutor {
       decisionCategory: agent.decisionCategory,
       score: agent.score,
       maxScore: agent.maxScore,
+      extractionConfidence: agent.extractionConfidence,
       recommendations: agent.recommendations,
       durationMs: agent.metrics.durationMs,
       metrics: { ...agent.metrics, toolCalls: agent.metrics.toolCallCount ?? 0 },
@@ -600,7 +622,8 @@ export class WorkflowExecutor {
         { partialResult: undefined },
       );
     }
-    return resolved.definition as WorkflowDefinition;
+    // The runtime check above narrows the discriminated union — no cast (a9d65912).
+    return resolved.definition;
   }
 
   private buildPartialResult(

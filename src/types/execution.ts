@@ -146,11 +146,30 @@ export interface ExecutionResult {
    * aggregation outcome. Consumers gating on decisions should read this (falling back to
    * `classifyDecision(decision)` when absent) rather than pattern-matching raw strings —
    * raw decisions carry per-definition vocabularies (EXPOSED, BEWITCHED, remapped
-   * SHIP/HOLD/BLOCK) that literal comparisons silently misclassify. */
+   * SHIP/HOLD/BLOCK) that literal comparisons silently misclassify.
+   *
+   * MIXED-VERSION CONTRACT (issue 3e74bc69): the field is optional because 0.29.x
+   * producers and hand-built results predate the stamp. For those, the fallback
+   * classifies core-register strings only — a custom-vocabulary negative resolves
+   * 'neutral' and does NOT gate. Custom-negative gating is therefore only as strong
+   * as the producing side's version. In-engine gate boundaries warn when they hit
+   * this case (`resolveDecisionCategory` onUnclassified); making the field required
+   * is a breaking change deferred to the next major. */
   decisionCategory?: import('../executor/classifyDecision.js').DecisionCategory;
 
   /** Aggregated score (0-100). Optional/null — not all execution types produce scores. */
   score?: number | null;
+
+  /**
+   * Extraction confidence (0-1) for gating. On composite results
+   * (command/workflow/pipeline) this is the WORST child's confidence —
+   * propagated so the submission gate can refuse allGatesPassed when any
+   * child's decision was regex-parsed below the trust threshold, instead of
+   * letting a low-confidence PASS launder through aggregation (issue
+   * e037aa98). Absent means no child carried a confidence (trustworthy by
+   * construction: structured output, or no extraction happened).
+   */
+  extractionConfidence?: number;
 
   /** Total execution duration */
   durationMs: number;

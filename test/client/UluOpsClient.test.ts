@@ -477,24 +477,26 @@ describe('UluOpsClient', () => {
       expect(args[2]).toBe(mockLogger); // logger
     });
 
-    it('passes agentExecutor and registry to CommandExecutor', () => {
+    it('passes agentExecutor, registry, and logger to CommandExecutor', () => {
       new UluOpsClient({ apiKey: 'ulr_test-key' });
 
       const args = constructorArgs(CommandExecutor as unknown as ReturnType<typeof vi.fn>);
-      expect(args).toHaveLength(2);
-      // Both are mock instances — we verify the count and structure
+      expect(args).toHaveLength(3);
+      // Mock instances — we verify the count and structure
       expect(args[0]).toHaveProperty('execute'); // agentExecutor
       expect(args[1]).toHaveProperty('resolve'); // registry
+      expect(args[2]).toBe(mockLogger); // logger (unclassified-decision tripwire, 3e74bc69)
     });
 
-    it('passes commandExecutor, registry, and agentExecutor to WorkflowExecutor', () => {
+    it('passes commandExecutor, registry, agentExecutor, and logger to WorkflowExecutor', () => {
       new UluOpsClient({ apiKey: 'ulr_test-key' });
 
       const args = constructorArgs(WorkflowExecutor as unknown as ReturnType<typeof vi.fn>);
-      expect(args).toHaveLength(3);
+      expect(args).toHaveLength(4);
       expect(args[0]).toHaveProperty('execute'); // commandExecutor
       expect(args[1]).toHaveProperty('resolve'); // registry
       expect(args[2]).toHaveProperty('execute'); // agentExecutor
+      expect(args[3]).toBe(mockLogger); // logger (unclassified-decision tripwire, 3e74bc69)
     });
 
     it('passes workflowExecutor, commandExecutor, agentExecutor, and registry to PipelineExecutor', () => {

@@ -199,9 +199,11 @@ export class SubmissionClient {
    * A low-confidence extraction (regex-parsed prose, confidence < the trust
    * threshold) is not trustworthy enough to pass a gate even when a positive
    * decision string was parsed. The decision is preserved on the result for
-   * analytics/reporting; gating simply refuses to treat it as a pass. This
-   * scopes to agent results only — `extractionConfidence` is absent on command/
-   * workflow ExecutionResults, so their gating is unchanged.
+   * analytics/reporting; gating simply refuses to treat it as a pass. Since
+   * issue e037aa98, composite results (command/workflow/pipeline) carry the
+   * WORST child's extractionConfidence, so this gate covers composites too —
+   * a phase whose agent parsed PASS at confidence 0.4 no longer launders to
+   * allGatesPassed through aggregation.
    *
    * POLARITY (deliberate asymmetry with executor gating): executor gates fail
    * OPEN on ambiguity — a result must resolve 'negative' to block, so an

@@ -14,6 +14,7 @@ import { parseRef } from '../utils/parseRef.js';
 import { formatErrorMessage } from '../utils/formatError.js';
 import { sumTokenMetrics } from '../utils/sumTokenMetrics.js';
 import { resolveDecisionCategory } from './classifyDecision.js';
+import { worstExtractionConfidence } from '../utils/worstExtractionConfidence.js';
 import { aggregateScores } from '../utils/aggregateScores.js';
 import type { Logger } from '@uluops/sdk-core';
 
@@ -25,6 +26,14 @@ import type { Logger } from '@uluops/sdk-core';
  */
 export class PipelineExecutor {
   private stepsExecutor: StepsExecutor;
+
+  /** Gate-boundary tripwire for unclassifiable decisions — see CommandExecutor.warnUnclassified (issue 3e74bc69). */
+  private warnUnclassified = (decision: string): void => {
+    this.logger.warn(
+      `Decision "${decision.slice(0, 80)}" has no stamped decisionCategory and is not in the core register — ` +
+      `resolving 'neutral' (non-gating). A custom-vocabulary negative from a pre-0.30 producer would not gate here.`,
+    );
+  };
 
   constructor(
     private workflowExecutor: WorkflowExecutor,
@@ -213,139 +222,26 @@ export class PipelineExecutor {
         {},
       );
     }
-    return resolved.definition as PipelineDefinition;
+    // The runtime check above narrows the discriminated union — no cast (a9d65912).
+    return resolved.definition;
   }
 
+  /**
+   * Dispatch a stage to its per-type executor (issue 2d5f3913 decomposition).
+   * The shared failure envelope lives here: any throw from a type executor
+   * becomes a status:'failed' StageResult rather than aborting the pipeline.
+   */
   private async executeStage(stage: StageDefinition, input: ExecutionInput, options?: ExecutionOptions, priorResults: StageResult[] = [], upstreamContext: UpstreamStageContext[] = []): Promise<StageResult> {
     const startTime = Date.now();
 
     try {
-      // Inline agents — PDL stages with agents[] run each agent directly in parallel.
-      // Upstream context rides a per-stage shallow CLONE — never set on the shared
-      // `input` reference (in-place mutation leaks context across stages and races
-      // parallel agents; stage-output-forwarding spec §3.4, pre-impl run #31 A6).
-      // Ref-based stages below deliberately receive the original input: forwarding
-      // INTO command/workflow executions is the workflow-twin phase (spec §3.6).
       if (stage.type === 'agents' && stage.agents) {
-        const agentInput = upstreamContext.length > 0 ? { ...input, upstreamContext } : input;
-        const agentResults = await this.executeInlineAgents(stage.agents, agentInput, options, priorResults);
-        // Exclude crashed agents (decision=FAIL, score=0) from average to prevent
-        // one crash from poisoning the entire stage score (e.g., 1 pass at 90 + 2 crashes → 30).
-        // Literal 'FAIL' is intentional here: it is the crash signature stamped by
-        // executeInlineAgents' rejection path, not a gating check — a lens agent's
-        // custom negative (EXPOSED) with a real score stays in the average.
-        const successResults = agentResults.filter(r => r.decision !== 'FAIL' || (r.score ?? 0) > 0);
-        const avgScore = aggregateScores(
-          successResults.map(r => ({ key: r.name, score: r.score ?? null })),
-        );
-        // Gate on vocabulary-resolved categories, not raw strings: lens agents emit
-        // custom negatives (EXPOSED, BEWITCHED) that a literal-'FAIL' test reads as
-        // passing (tracker run #55, SEM-INC/H). AgentExecutor stamps decisionCategory
-        // from the definition's vocabulary; crashed agents fall back via classifyDecision.
-        const stageFailed = agentResults.some(r => resolveDecisionCategory(r) === 'negative');
-
-        const stageEnd = Date.now() - startTime;
-
-        // Aggregating AgentResult → CommandResult conversion for pipeline stages.
-        // See CommandExecutor.wrapAgentResult for divergence rationale across all three sites.
-        return {
-          id: stage.id,
-          name: stage.name,
-          type: 'command' as const,
-          status: 'completed',
-          result: {
-            type: 'command',
-            name: stage.name,
-            version: '1.0.0',
-            definitionHash: '',
-            agentType: 'analyst',
-            decision: stageFailed ? 'FAIL' : 'PASS',
-            decisionCategory: stageFailed ? 'negative' as const : 'positive' as const,
-            // KEEP: avgScore is a real average over child agents; maxScore 100 is its scale,
-            // not a fabrication. (Caveat: aggregateScores floors an all-null-scoring stage to
-            // 0 — a residual fabricated zero routed to composition-aggregation-spec, not fixed here.)
-            score: avgScore,
-            maxScore: 100,
-            recommendations: agentResults.flatMap(r => r.recommendations),
-            durationMs: stageEnd,
-            metrics: {
-              ...sumTokenMetrics(agentResults.map(r => r.metrics)),
-              durationMs: stageEnd,
-              model: 'mixed',
-              toolCalls: agentResults.reduce((sum, r) => sum + (r.metrics.toolCallCount ?? 0), 0),
-            },
-          },
-          agentResults,
-          durationMs: stageEnd,
-        };
+        return await this.executeAgentsStage(stage, input, options, priorResults, upstreamContext, startTime);
       }
-
-      // Steps stages (PDL shell preflight / build gates).
       if (isStepsStage(stage)) {
-        const allowSteps = options?.allowStageSteps ?? this.allowStageSteps;
-
-        // Opt-in gate (spec D3): step commands come from resolved definitions,
-        // so running them is host shell access. Without the opt-in, keep the
-        // spec D2 interim posture — status:completed + decision:PASS so
-        // depends_on:[preflight] chains keep flowing, but score:null so the
-        // unexecuted stage is EXCLUDED from pipeline-level aggregation instead
-        // of injecting a fabricated 100 (steps-block investigation, G1).
-        if (!allowSteps || !stage.steps?.length) {
-          this.logger.warn(`Stage "${stage.id}" has steps — allowStageSteps is off; passing through with null score`);
-          return this.buildStepsStageResult(stage, 'PASS', undefined, startTime);
-        }
-
-        const stepResults = await this.stepsExecutor.execute(stage.steps, input);
-        const failed = stepResults.some(s => s.status === 'failed' &&
-          !stage.steps!.find(d => d.name === s.name)?.continue_on_error);
-        return this.buildStepsStageResult(stage, failed ? 'FAIL' : 'PASS', stepResults, startTime);
+        return await this.executeStepsStage(stage, input, options, startTime);
       }
-
-      // Stages with no content the engine can run (no ref, no agents, no steps —
-      // e.g. multi-entry workflows:/commands: arrays): fail loud instead of
-      // fabricating a PASS (pdl-steps-execution-spec D7). Single-entry workflows
-      // arrays are hoisted to ref by normalizePipelineSection and never land here.
-      if (!stage.ref && !stage.agents) {
-        throw new PipelineError(
-          `Stage "${stage.id}" has no executable content the engine supports ` +
-          `(no ref, no agents, no steps). Multi-entry workflows/commands arrays ` +
-          `are not executed — give the stage a stage-level ref.`,
-          {},
-        );
-      }
-
-      // Standard ref-based stages
-      if (!stage.ref) {
-        throw new PipelineError(
-          `Stage "${stage.id}" has type "${stage.type}" but no ref. ` +
-          `Non-inline stages must specify a ref (e.g., "agent-name@latest").`,
-          {},
-        );
-      }
-      const [refName, refVersion] = parseRef(stage.ref);
-      const resolved = await this.registry.resolve(refName, refVersion, stage.type as 'command' | 'workflow');
-
-      if (stage.type === 'workflow') {
-        const result = await this.workflowExecutor.execute(resolved, input);
-        return {
-          id: stage.id,
-          name: stage.name,
-          type: 'workflow',
-          status: 'completed',
-          result,
-          durationMs: Date.now() - startTime,
-        };
-      }
-
-      const result = await this.commandExecutor.execute(resolved, input);
-      return {
-        id: stage.id,
-        name: stage.name,
-        type: 'command',
-        status: 'completed',
-        result,
-        durationMs: Date.now() - startTime,
-      };
+      return await this.executeRefStage(stage, input, startTime);
     } catch (error) {
       return {
         id: stage.id,
@@ -358,6 +254,154 @@ export class PipelineExecutor {
         durationMs: Date.now() - startTime,
       };
     }
+  }
+
+  /**
+   * Inline agents — PDL stages with agents[] run each agent directly in parallel.
+   * Upstream context rides a per-stage shallow CLONE — never set on the shared
+   * `input` reference (in-place mutation leaks context across stages and races
+   * parallel agents; stage-output-forwarding spec §3.4, pre-impl run #31 A6).
+   * Ref-based stages deliberately receive the original input: forwarding INTO
+   * command/workflow executions is the workflow-twin phase (spec §3.6).
+   */
+  private async executeAgentsStage(
+    stage: StageDefinition,
+    input: ExecutionInput,
+    options: ExecutionOptions | undefined,
+    priorResults: StageResult[],
+    upstreamContext: UpstreamStageContext[],
+    startTime: number,
+  ): Promise<StageResult> {
+    const agentInput = upstreamContext.length > 0 ? { ...input, upstreamContext } : input;
+    const agentResults = await this.executeInlineAgents(stage.agents!, agentInput, options, priorResults);
+    // Exclude crashed agents (decision=FAIL, score=0) from average to prevent
+    // one crash from poisoning the entire stage score (e.g., 1 pass at 90 + 2 crashes → 30).
+    // Literal 'FAIL' is intentional here: it is the crash signature stamped by
+    // executeInlineAgents' rejection path, not a gating check — a lens agent's
+    // custom negative (EXPOSED) with a real score stays in the average.
+    const successResults = agentResults.filter(r => r.decision !== 'FAIL' || (r.score ?? 0) > 0);
+    const avgScore = aggregateScores(
+      successResults.map(r => ({ key: r.name, score: r.score ?? null })),
+    );
+    // Gate on vocabulary-resolved categories, not raw strings: lens agents emit
+    // custom negatives (EXPOSED, BEWITCHED) that a literal-'FAIL' test reads as
+    // passing (tracker run #55, SEM-INC/H). AgentExecutor stamps decisionCategory
+    // from the definition's vocabulary; crashed agents fall back via classifyDecision.
+    const stageFailed = agentResults.some(r => resolveDecisionCategory(r) === 'negative');
+
+    const stageEnd = Date.now() - startTime;
+
+    // Aggregating AgentResult → CommandResult conversion for pipeline stages.
+    // See CommandExecutor.wrapAgentResult for divergence rationale across all three sites.
+    return {
+      id: stage.id,
+      name: stage.name,
+      type: 'command' as const,
+      status: 'completed',
+      result: {
+        type: 'command',
+        name: stage.name,
+        version: '1.0.0',
+        definitionHash: '',
+        agentType: 'analyst',
+        decision: stageFailed ? 'FAIL' : 'PASS',
+        decisionCategory: stageFailed ? 'negative' as const : 'positive' as const,
+        // KEEP: avgScore is a real average over child agents; maxScore 100 is its scale,
+        // not a fabrication. (Caveat: aggregateScores floors an all-null-scoring stage to
+        // 0 — a residual fabricated zero routed to composition-aggregation-spec, not fixed here.)
+        score: avgScore,
+        maxScore: 100,
+        extractionConfidence: worstExtractionConfidence(agentResults),
+        recommendations: agentResults.flatMap(r => r.recommendations),
+        durationMs: stageEnd,
+        metrics: {
+          ...sumTokenMetrics(agentResults.map(r => r.metrics)),
+          durationMs: stageEnd,
+          model: 'mixed',
+          toolCalls: agentResults.reduce((sum, r) => sum + (r.metrics.toolCallCount ?? 0), 0),
+        },
+      },
+      agentResults,
+      durationMs: stageEnd,
+    };
+  }
+
+  /** Steps stages (PDL shell preflight / build gates). */
+  private async executeStepsStage(
+    stage: StageDefinition,
+    input: ExecutionInput,
+    options: ExecutionOptions | undefined,
+    startTime: number,
+  ): Promise<StageResult> {
+    const allowSteps = options?.allowStageSteps ?? this.allowStageSteps;
+
+    // Opt-in gate (spec D3): step commands come from resolved definitions,
+    // so running them is host shell access. Without the opt-in, keep the
+    // spec D2 interim posture — status:completed + decision:PASS so
+    // depends_on:[preflight] chains keep flowing, but score:null so the
+    // unexecuted stage is EXCLUDED from pipeline-level aggregation instead
+    // of injecting a fabricated 100 (steps-block investigation, G1).
+    if (!allowSteps || !stage.steps?.length) {
+      this.logger.warn(`Stage "${stage.id}" has steps — allowStageSteps is off; passing through with null score`);
+      return this.buildStepsStageResult(stage, 'PASS', undefined, startTime);
+    }
+
+    const stepResults = await this.stepsExecutor.execute(stage.steps, input);
+    const failed = stepResults.some(s => s.status === 'failed' &&
+      !stage.steps!.find(d => d.name === s.name)?.continue_on_error);
+    return this.buildStepsStageResult(stage, failed ? 'FAIL' : 'PASS', stepResults, startTime);
+  }
+
+  /** Ref-based stages (command / workflow refs), plus the no-content guards. */
+  private async executeRefStage(
+    stage: StageDefinition,
+    input: ExecutionInput,
+    startTime: number,
+  ): Promise<StageResult> {
+    // Stages with no content the engine can run (no ref, no agents, no steps —
+    // e.g. multi-entry workflows:/commands: arrays): fail loud instead of
+    // fabricating a PASS (pdl-steps-execution-spec D7). Single-entry workflows
+    // arrays are hoisted to ref by normalizePipelineSection and never land here.
+    if (!stage.ref && !stage.agents) {
+      throw new PipelineError(
+        `Stage "${stage.id}" has no executable content the engine supports ` +
+        `(no ref, no agents, no steps). Multi-entry workflows/commands arrays ` +
+        `are not executed — give the stage a stage-level ref.`,
+        {},
+      );
+    }
+
+    if (!stage.ref) {
+      throw new PipelineError(
+        `Stage "${stage.id}" has type "${stage.type}" but no ref. ` +
+        `Non-inline stages must specify a ref (e.g., "agent-name@latest").`,
+        {},
+      );
+    }
+    const [refName, refVersion] = parseRef(stage.ref);
+    const resolved = await this.registry.resolve(refName, refVersion, stage.type as 'command' | 'workflow');
+
+    if (stage.type === 'workflow') {
+      const result = await this.workflowExecutor.execute(resolved, input);
+      return {
+        id: stage.id,
+        name: stage.name,
+        type: 'workflow',
+        status: 'completed',
+        result,
+        durationMs: Date.now() - startTime,
+      };
+    }
+
+    const result = await this.commandExecutor.execute(resolved, input);
+    return {
+      id: stage.id,
+      name: stage.name,
+      type: 'command',
+      status: 'completed',
+      result,
+      durationMs: Date.now() - startTime,
+    };
   }
 
   /**
@@ -511,7 +555,7 @@ export class PipelineExecutor {
    */
   private gateFailed(gate: GateDefinition, stage: StageDefinition, stageResult: StageResult): boolean {
     if (stageResult.status === 'failed') return true;
-    if (resolveDecisionCategory(stageResult.result) === 'negative') return true;
+    if (resolveDecisionCategory(stageResult.result, this.warnUnclassified) === 'negative') return true;
 
     if (gate.threshold !== undefined) {
       const score = this.gateScore(gate, stageResult);
@@ -647,6 +691,9 @@ class PipelineHandle implements IPipelineHandle {
       decision,
       decisionCategory,
       score,
+      extractionConfidence: worstExtractionConfidence(
+        this.state.stageResults.map(s => s.result).filter((r): r is NonNullable<typeof r> => r != null),
+      ),
       durationMs,
       status: mapPipelineStatus(this.state.status),
       stages: this.state.stageResults,

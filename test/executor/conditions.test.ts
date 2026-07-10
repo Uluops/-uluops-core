@@ -107,6 +107,39 @@ describe('evaluateConditionExpr', () => {
     it('returns unknown for a missing stage', () => {
       expect(evaluateConditionExpr("stages.ghost.decision == 'PASS'", ctx)).toBeNull();
     });
+
+    it('fails CLOSED on result fields of a crashed stage (known-absent, issue 10908362)', () => {
+      const crashed = {
+        id: 'gate', name: 'Gate', type: 'command' as const,
+        status: 'failed' as const, skipReason: 'boom', durationMs: 5,
+      };
+      const crashCtx = { stages: [crashed], params: {} };
+      // The documented verdict-gating idiom must not fail open when the gate
+      // stage crashed: equality is false (downstream does NOT run)…
+      expect(evaluateConditionExpr("stages.gate.decisionCategory == 'positive'", crashCtx)).toBe(false);
+      // …inequality is true, bare truthiness is false.
+      expect(evaluateConditionExpr("stages.gate.decisionCategory != 'positive'", crashCtx)).toBe(true);
+      expect(evaluateConditionExpr('stages.gate.decisionCategory', crashCtx)).toBe(false);
+      // Ordering over a known-absent field stays ill-formed (unknown).
+      expect(evaluateConditionExpr('stages.gate.score >= 70', crashCtx)).toBe(null);
+      // Envelope fields still resolve normally on the crashed stage.
+      expect(evaluateConditionExpr("stages.gate.status == 'failed'", crashCtx)).toBe(true);
+    });
+
+    it('treats result fields of a skipped stage as known-absent too', () => {
+      const skipped = {
+        id: 'gate', name: 'Gate', type: 'command' as const,
+        status: 'skipped' as const, skipReason: 'condition not met', durationMs: 0,
+      };
+      const skipCtx = { stages: [skipped], params: {} };
+      expect(evaluateConditionExpr("stages.gate.decisionCategory == 'positive'", skipCtx)).toBe(false);
+    });
+
+    it('keeps fail-open (unknown) for absent fields on a COMPLETED stage', () => {
+      // Field absence on a completed stage may be a field-name typo — running
+      // anyway remains the safety property there.
+      expect(evaluateConditionExpr("stages.validate.nonexistent_field == 'x'", ctx)).toBe(null);
+    });
   });
 
   describe('boolean composition (Kleene)', () => {

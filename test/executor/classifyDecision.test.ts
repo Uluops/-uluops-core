@@ -236,5 +236,28 @@ describe('buildVocabularyMap', () => {
       // exactly why producers must stamp decisionCategory (tracker run #55).
       expect(resolveDecisionCategory({ decision: 'BEWITCHED' })).toBe('neutral');
     });
+
+    describe('onUnclassified tripwire (issue 3e74bc69)', () => {
+      it('fires for a non-empty unstamped decision outside the core register', () => {
+        const seen: string[] = [];
+        expect(resolveDecisionCategory({ decision: 'BEWITCHED' }, d => seen.push(d))).toBe('neutral');
+        expect(seen).toEqual(['BEWITCHED']);
+      });
+
+      it('does not fire when the category is stamped', () => {
+        const seen: string[] = [];
+        resolveDecisionCategory({ decision: 'BEWITCHED', decisionCategory: 'negative' }, d => seen.push(d));
+        expect(seen).toEqual([]);
+      });
+
+      it('does not fire for core-register strings, empty, or absent decisions', () => {
+        const seen: string[] = [];
+        resolveDecisionCategory({ decision: 'FAIL' }, d => seen.push(d));
+        resolveDecisionCategory({ decision: '' }, d => seen.push(d));
+        resolveDecisionCategory({}, d => seen.push(d));
+        resolveDecisionCategory(undefined, d => seen.push(d));
+        expect(seen).toEqual([]);
+      });
+    });
   });
 });
