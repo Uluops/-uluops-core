@@ -146,7 +146,15 @@ export interface ExecutionResult {
    * aggregation outcome. Consumers gating on decisions should read this (falling back to
    * `classifyDecision(decision)` when absent) rather than pattern-matching raw strings —
    * raw decisions carry per-definition vocabularies (EXPOSED, BEWITCHED, remapped
-   * SHIP/HOLD/BLOCK) that literal comparisons silently misclassify. */
+   * SHIP/HOLD/BLOCK) that literal comparisons silently misclassify.
+   *
+   * MIXED-VERSION CONTRACT (issue 3e74bc69): the field is optional because 0.29.x
+   * producers and hand-built results predate the stamp. For those, the fallback
+   * classifies core-register strings only — a custom-vocabulary negative resolves
+   * 'neutral' and does NOT gate. Custom-negative gating is therefore only as strong
+   * as the producing side's version. In-engine gate boundaries warn when they hit
+   * this case (`resolveDecisionCategory` onUnclassified); making the field required
+   * is a breaking change deferred to the next major. */
   decisionCategory?: import('../executor/classifyDecision.js').DecisionCategory;
 
   /** Aggregated score (0-100). Optional/null — not all execution types produce scores. */

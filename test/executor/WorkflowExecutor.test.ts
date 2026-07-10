@@ -293,6 +293,21 @@ describe('WorkflowExecutor', () => {
       expect(result.decisionCategory).toBe('conditional');
     });
 
+    it('caps a passed phase at warned when a scored child resolves negative (d60c2ea2 twin)', async () => {
+      // DISORDERED@82: the score clears the gate threshold, but the declared
+      // categorical negative may never launder into an unqualified pass.
+      const cmdExec = makeCommandExecutor([
+        makeCommandResult({ decision: 'DISORDERED', decisionCategory: 'negative', score: 82 }),
+      ]);
+      const executor = new WorkflowExecutor(cmdExec, makeRegistry());
+
+      const result = await executor.execute(makeWorkflowDef(), { target: '/tmp/test' });
+
+      expect(result.phases[0]!.decision).toBe('warned');
+      expect(result.decision).toBe('HOLD');
+      expect(result.decisionCategory).toBe('conditional');
+    });
+
     it('still passes a phase whose scoreless child is positive', async () => {
       const cmdExec = makeCommandExecutor([
         makeCommandResult({ decision: 'PRESERVED', decisionCategory: 'positive', score: null, maxScore: null }),

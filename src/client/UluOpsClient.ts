@@ -61,8 +61,8 @@ export class UluOpsClient {
     const aiProvider = new AIProvider(this.config, modelCatalog, logger);
 
     this.agentExecutor = new AgentExecutor(this.config, aiProvider, logger);
-    this.commandExecutor = new CommandExecutor(this.agentExecutor, this.registry);
-    this.workflowExecutor = new WorkflowExecutor(this.commandExecutor, this.registry, this.agentExecutor);
+    this.commandExecutor = new CommandExecutor(this.agentExecutor, this.registry, logger);
+    this.workflowExecutor = new WorkflowExecutor(this.commandExecutor, this.registry, this.agentExecutor, logger);
     this.pipelineExecutor = new PipelineExecutor(
       this.workflowExecutor,
       this.commandExecutor,

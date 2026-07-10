@@ -26,6 +26,14 @@ import type { Logger } from '@uluops/sdk-core';
 export class PipelineExecutor {
   private stepsExecutor: StepsExecutor;
 
+  /** Gate-boundary tripwire for unclassifiable decisions — see CommandExecutor.warnUnclassified (issue 3e74bc69). */
+  private warnUnclassified = (decision: string): void => {
+    this.logger.warn(
+      `Decision "${decision.slice(0, 80)}" has no stamped decisionCategory and is not in the core register — ` +
+      `resolving 'neutral' (non-gating). A custom-vocabulary negative from a pre-0.30 producer would not gate here.`,
+    );
+  };
+
   constructor(
     private workflowExecutor: WorkflowExecutor,
     private commandExecutor: CommandExecutor,
@@ -511,7 +519,7 @@ export class PipelineExecutor {
    */
   private gateFailed(gate: GateDefinition, stage: StageDefinition, stageResult: StageResult): boolean {
     if (stageResult.status === 'failed') return true;
-    if (resolveDecisionCategory(stageResult.result) === 'negative') return true;
+    if (resolveDecisionCategory(stageResult.result, this.warnUnclassified) === 'negative') return true;
 
     if (gate.threshold !== undefined) {
       const score = this.gateScore(gate, stageResult);
