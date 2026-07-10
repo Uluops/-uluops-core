@@ -6,6 +6,45 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) 
 
 ## [Unreleased]
 
+## [0.33.0] - 2026-07-10
+
+Two branches merged: `fix/core-top10-second-pass` (gating-semantics decisions, composite confidence, type-safety refactors) and `fix/core-top10-third-pass` (dx error-contract batch, usage shape-drift signal). 20 tracker issues closed. Three 0.30.0 Design Notes are superseded below (marked ⤳).
+
+### Changed — BEHAVIOR
+
+- **PASS + partial is a decided, gate-satisfying state** (issue fdaa0b24, decision 2026-07-10). An agent that could not touch the full file span but found no issues in what it covered has passed the scope it covered; gates treat the decision as-is and never downgrade on completeness. The decision record (with its two load-bearing invariants: every coverage reduction emits a marker; completeness stays distinguishable wherever consumed) lives in `types/degradation.ts`.
+- **Scored-lens-negative caps the aggregate at WARN** (issue d60c2ea2, decision 2026-07-10; ⤳ supersedes the 0.30.0 "routed to the composition-aggregation spec" scope line). A scored child whose vocabulary-declared decision resolves `negative` (e.g. DISORDERED@82) caps a multi-agent command at `WARN`/`conditional` and a passed workflow phase at `warned` — never an unqualified pass, never a hard fail. Closes the scored/scoreless asymmetry where a lens gated only if it happened to omit a score.
+- **Crashed parallel command agents now fail the command** (issue 77febff2, decision 2026-07-10). A rejected agent in `sequential: false` execution synthesizes a negative-category, null-score placeholder result (PipelineExecutor inline-agent / WorkflowExecutor parallel-step parity) — the scoreless-negative guard then fails the command instead of letting survivors stamp `PASS` over a partially-crashed panel. Survivors' work and scores are preserved; the crash surfaces as a critical recommendation; all-crashed still throws `ExecutionError`.
+- **Verdict-gating conditions fail closed on a crashed gate stage** (issue 10908362; ⤳ supersedes the 0.30.0 "fails open if the upstream stage crashed" note). Result fields of a stage that EXISTS but never completed (crashed/skipped) are now known-absent in condition evaluation: `stages.gate.decisionCategory == 'positive'` is `false`, `!=` is `true`, bare truthiness is `false`; ordering comparators stay unknown. The typo fail-open (unknown stage id → run + warn) and field absence on a COMPLETED stage are unchanged. Verdict-coloring-is-not-halting stands; a pipeline-level `on_failure` posture remains a PDL-spec question.
+- **Short `ulr_` API keys fail at the config boundary** as `ConfigurationError` (`key too short (min 20 chars)`, key redacted) instead of sdk-core's `ValidationError` from inside client construction (issue 309875ff). `resolveConfig` mirrors sdk-core's exported `MIN_API_KEY_LENGTH`.
+- **Malformed local agent YAML fails loud and named** (issues 34c6e6ec / 2563691d). A local `.agent.yaml` with no top-level `agent:` section, or missing `agent.interface`, throws `ConfigurationError` naming the file and the missing section — previously the former silently resolved to an empty-prompt runtime and the latter crashed as a raw `TypeError` in `buildAgentConfig`. The remote path is unchanged (registry-validated at publish; degrades defensively).
+
+### Added
+
+- **`ExecutionResult.extractionConfidence`** — on composite results (command/workflow/pipeline) this is the WORST child's extraction confidence, propagated through all three AgentResult→CommandResult conversion sites plus workflow/pipeline aggregation (issue e037aa98). The submission gate (`isPositiveDecision`) now refuses `allGatesPassed` on a composite whose weakest child was regex-parsed below the trust threshold — a phase whose agent parsed PASS at 0.4 no longer launders through aggregation. Min, not average: one untrustworthy child taints the composite's positive verdict. New util `worstExtractionConfidence` (exported source, internal use).
+- **`context.evicted` degradation marker** (degraded severity). Provider-side context management (Anthropic, 50%-of-budget trigger) previously evicted old tool results with no signal — coverage loss below the wrap-up latch reported `complete`. `TokenBudgetTracker` now detects the step-over-step context-window shrink (sticky flag, 5% jitter floor, `evictedTokens` total in the marker detail).
+- **`usage.provider-metadata-shape-drift` degradation marker** (info severity — metrics quality, not verdict evidence; completeness untouched) (issue adaaa4b9). `mapUsage` reaches into undocumented provider-metadata shapes via casts; when a provider SDK renames its usage fields the casts silently resolve `undefined` and token/cache/thinking metrics read zero. Non-empty provider metadata with zero recognized keys now sets `AIGenerateResult.usageShapeDrift` and emits the marker; the warn log is deduped per provider per process. Conservative by design: absent/empty metadata is NOT drift (fields are legitimately omitted, e.g. uncached runs).
+- **Offline fallback aliases for registry outages** (issue 172518e2). A cold process resolving a well-known model alias (`sonnet`/`haiku`/`opus`) while the registry is unreachable previously failed before any LLM call. `ModelCatalog` now falls back to a baked-in table on transport errors only — never on 404 (an alias the registry says doesn't exist still fails), never cached (registry recovery wins the next resolve), default-deny capabilities (structured output off), loud warn. The table is a documented decay surface: refresh alongside registry model syncs.
+- **`ValidationError` / `isValidationError` re-exported** from `@uluops/core` (errors barrel + package root) so runtime 400s are instanceof-checkable through this package (issue 4d7f0946). Documented as extending `SdkApiError`, not `UluOpsError`.
+- **`resolveDecisionCategory(result, onUnclassified?)`** — optional gate-boundary tripwire (issue 3e74bc69; ⤳ hardens the 0.30.0 "mixed-version contract" note). Command/workflow/pipeline gate sites now warn when a non-empty unstamped decision resolves `neutral` — the 0.29.x/hand-built blind spot where a custom-vocabulary negative silently non-gates. In-process 0.30+ producers always stamp, so a firing means a foreign or downlevel result crossed a gate. `CommandExecutor`/`WorkflowExecutor` gained optional trailing `logger` constructor params (backward compatible).
+- README: **Local Definition File Naming** section — the `<name>.<type>.yaml` convention table and base-dir → subdirectory scan order (issue 0c8aea72).
+
+### Changed — TYPES
+
+- **`ResolvedDefinition` is now a union discriminated on `type`** (issue a9d65912). Checking `resolved.type === 'command'` narrows `resolved.definition` to `CommandDefinition` — the executors' runtime type checks narrow instead of being followed by `as XxxDefinition` casts. The type/definition correlation enters the type system at RegistryClient's two producer casts only (documented as the trust point); the `agent` variant stays Partial-tolerant (content-gated resolutions carry no YAML); `runtime` is deliberately NOT correlated (it depends on `agentType`, not `type` — a command ref can resolve to an agent runtime). New exported `ResolvedDefinitionBase`. Consumers constructing `ResolvedDefinition` literals must now match a variant; consumers that only read results are unaffected.
+
+### Internal
+
+- `PipelineExecutor.executeStage` decomposed into `executeAgentsStage` / `executeStepsStage` / `executeRefStage` with the shared failure envelope in the dispatcher (issue 2d5f3913). Bodies moved verbatim.
+- `AnalysisSummaryExtractor.validateSectionShape` is a type predicate — the exploration-map sections double assertion is gone (issue 62c9f1dd).
+- Bash-tool version-mismatch error now names both remedies, leading with the likelier direction (SDK bumped ahead → update `ANTHROPIC_BASH_TOOL_VERSION`; reverse → update `@ai-sdk/anthropic`) (issue f90fbbbc).
+- Test API-key literals lengthened to ≥ `MIN_API_KEY_LENGTH` (the new config-boundary check applies to tests too).
+
+### Design Notes
+
+- Dispositioned as observations, not code (tracker): the AI SDK sole-callsite coupling ("the coupling is the investment", SCOPE.md), the AgentExecutor convergence funnel (trigger recorded: validate the universal schema serves a new agent type BEFORE wiring it through), and the sdk-core re-export facade + `@ai-sdk/*` dynamic-import trust boundary (deliberate, documented; its testing ask is enacted by the shape-drift detector).
+- Residual, not green-lit: forwarding completeness/degradation markers over the tracker wire (ops-sdk `AgentInput` + tracker schema + migration). Invariant (2) of the PASS+partial decision currently holds in-process only; `SubmissionClient.resultToAgent` still drops completeness. Recorded on issue fdaa0b24.
+
 ## [0.32.0] - 2026-07-10
 
 ### Changed — BEHAVIOR

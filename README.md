@@ -225,8 +225,8 @@ if (result.completeness !== 'complete') {
 }
 ```
 
-- **`completeness`**: `'complete' | 'partial' | 'failed'`, derived from degradation markers (any `critical` ⇒ `failed`; any `degraded` ⇒ `partial`; else `complete`). Absent ⇒ treat as `complete`. A `PASS` + `partial` result is a positive verdict reached on incomplete evidence — worth surfacing.
-- **`degradationMarkers`**: typed `{ code, phase, severity, detail? }[]`. `code` is the stable contract (e.g. `budget.forced-wrap-up`, `steps.near-exhaustion`, `extraction.low-confidence`, `render.raw-yaml-fallback`); `detail` is human-only — never match on it. `phase` is `'resolution' | 'execution'`.
+- **`completeness`**: `'complete' | 'partial' | 'failed'`, derived from degradation markers (any `critical` ⇒ `failed`; any `degraded` ⇒ `partial`; else `complete`). Absent ⇒ treat as `complete`. **`PASS` + `partial` is a legitimate, gate-satisfying pass** (decided 2026-07-10, recorded in `types/degradation.ts`): the agent passed the scope it could cover — forced wrap-up and context eviction are normal operation on large repos. Gates never downgrade on completeness; consumers that care about evidence span read `completeness` alongside the decision.
+- **`degradationMarkers`**: typed `{ code, phase, severity, detail? }[]`. `code` is the stable contract (e.g. `budget.forced-wrap-up`, `context.evicted`, `steps.near-exhaustion`, `extraction.low-confidence`, `usage.provider-metadata-shape-drift`, `render.raw-yaml-fallback`); `detail` is human-only — never match on it. `phase` is `'resolution' | 'execution'`.
 - The engine *observes* completeness from how the run actually executed; agents never self-report it. `deriveCompleteness(markers)` is exported if you want to recompute it.
 - **`decisionCategory`**: the vocabulary-resolved category of `decision` (`'positive' | 'negative' | 'conditional' | 'neutral'`), stamped on every result. For custom-vocabulary agents (cognitive lens agents, WDL-remapped workflow decisions) gate on this — or on `resolveDecisionCategory(result)` — instead of the raw decision string. See [Decision Classification](#decision-classification).
 - `degradations: string[]` is the deprecated legacy alias (resolution-phase strings only), retained for compatibility — prefer `degradationMarkers`.
@@ -637,6 +637,13 @@ const premiumModels = await catalog.listModels({ tier: 'premium' });
 catalog.refresh();
 ```
 
+> **Registry outages:** the well-known aliases (`sonnet`, `haiku`, `opus`) resolve
+> from a baked-in fallback table when the registry is unreachable — transport
+> errors only (a 404 still fails: the alias genuinely doesn't exist), never
+> cached, default-deny capabilities (structured output disabled), loud warn.
+> A cold CI runner survives a registry outage instead of failing before its
+> first LLM call.
+
 ### Decision Classification
 
 ```typescript
@@ -669,6 +676,12 @@ if (category === 'negative') {
   // handle failure — works for PASS/FAIL agents AND cognitive lens agents
 }
 ```
+
+**Aggregation semantics** (multi-agent commands and workflow phases):
+
+- A **scoreless** child whose decision resolves `negative` fails the aggregate outright — it has no channel into the score average, so it gates categorically.
+- A **scored** child whose decision resolves `negative` but whose score passes (a lens verdict like `DISORDERED@82`) caps the aggregate at `WARN`/`conditional` — never an unqualified `PASS`, never a hard `FAIL`.
+- A **crashed** parallel agent synthesizes a negative placeholder and fails the command — a gate that couldn't run its full panel doesn't emit an unqualified positive. Survivors' scores are preserved; the crash surfaces as a critical recommendation.
 
 ## Configuration
 
@@ -884,6 +897,7 @@ try {
 | Error | Description |
 |-------|-------------|
 | `SdkApiError` | Base API error |
+| `ValidationError` | 400 validation failure (extends `SdkApiError`, **not** `UluOpsError`; `isValidationError` guard also exported). Config-time key validation never reaches it — `resolveConfig` throws `ConfigurationError` at the boundary |
 | `RateLimitError` | 429 rate limit exceeded |
 | `UnauthorizedError` | 401 authentication failure |
 | `ForbiddenError` | 403 access denied |
