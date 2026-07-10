@@ -113,11 +113,7 @@ export class UluOpsClient {
     // Forward caller-pinned integrity hashes (if any) into resolve, which verifies
     // fail-closed before the definition is executed. Only pass pins when present
     // so unpinned resolves keep their original (unverified) call path.
-    const pins: ResolvePinOptions | undefined =
-      options?.expectedHash || options?.expectedPromptHash
-        ? { expectedHash: options.expectedHash, expectedPromptHash: options.expectedPromptHash }
-        : undefined;
-    const resolved = await this.resolveByRef(name, 'agent', pins);
+    const resolved = await this.resolveByRef(name, 'agent', toPins(options));
 
     if (resolved.type !== 'agent') {
       throw new ConfigurationError(`${name} is not an agent (type: ${resolved.type}). Use runCommand() instead.`);
@@ -138,13 +134,21 @@ export class UluOpsClient {
    * @param name - Command name or `name@version` ref.
    * @param input - Execution input ({@link ExecutionInput}); `target` is the absolute project path.
    * @param overrides - Optional runtime overrides; `model` overrides the definition's default model.
+   *   `expectedHash`/`expectedPromptHash` pin the resolved definition — verified fail-closed
+   *   before anything executes. Pin in CI, especially with `bash` enabled (see README →
+   *   Integrity Verification).
    * @returns The aggregated {@link CommandResult} with per-agent scores, decision, and recommendations.
    * @throws {ConfigurationError} If the resolved definition is not a command.
+   * @throws {IntegrityError} If a supplied pin does not match the resolved definition.
    * @throws {PreflightError} If a preflight check fails.
    * @throws {ExecutionError} If an underlying agent execution fails.
    */
-  async runCommand(name: string, input: ExecutionInput, overrides?: { model?: string }): Promise<CommandResult> {
-    const resolved = await this.resolveByRef(name, 'command');
+  async runCommand(
+    name: string,
+    input: ExecutionInput,
+    overrides?: { model?: string; expectedHash?: string; expectedPromptHash?: string },
+  ): Promise<CommandResult> {
+    const resolved = await this.resolveByRef(name, 'command', toPins(overrides));
 
     if (resolved.type !== 'command') {
       throw new ConfigurationError(`${name} is not a command (type: ${resolved.type}). Use runAgent() for agents or runWorkflow() for workflows.`);
@@ -163,12 +167,16 @@ export class UluOpsClient {
    *
    * @param name - Workflow name or `name@version` ref.
    * @param input - Execution input ({@link ExecutionInput}); `target` is the absolute project path.
+   * @param options - Optional integrity pins ({@link ResolvePinOptions}), verified fail-closed
+   *   at resolve time. Workflows have no rendered prompt — pin `expectedHash` (YAML) only;
+   *   `expectedPromptHash` throws `IntegrityError` (`kind: 'unavailable'`).
    * @returns The {@link WorkflowResult} with per-phase results and aggregate metrics.
    * @throws {ConfigurationError} If the resolved definition is not a workflow.
+   * @throws {IntegrityError} If a supplied pin does not match the resolved definition.
    * @throws {WorkflowError} If a phase gate fails (`error.context.partialResult` holds completed phases).
    */
-  async runWorkflow(name: string, input: ExecutionInput): Promise<WorkflowResult> {
-    const resolved = await this.resolveByRef(name, 'workflow');
+  async runWorkflow(name: string, input: ExecutionInput, options?: ResolvePinOptions): Promise<WorkflowResult> {
+    const resolved = await this.resolveByRef(name, 'workflow', toPins(options));
 
     if (resolved.type !== 'workflow') {
       throw new ConfigurationError(`${name} is not a workflow (type: ${resolved.type}). Use runAgent() for agents or runCommand() for commands.`);
@@ -187,12 +195,17 @@ export class UluOpsClient {
    *
    * @param name - Pipeline name or `name@version` ref.
    * @param input - Execution input ({@link ExecutionInput}); `target` is the absolute project path.
+   * @param options - Optional integrity pins ({@link ResolvePinOptions}), verified fail-closed
+   *   at resolve time. Pins cover the pipeline YAML only (`expectedHash`) — stage refs are
+   *   resolved separately downstream and are NOT individually pinned (per-stage pinning is
+   *   lockfile territory). `expectedPromptHash` throws `IntegrityError` (`kind: 'unavailable'`).
    * @returns The {@link PipelineResult} with per-stage results and aggregate metrics.
    * @throws {ConfigurationError} If the resolved definition is not a pipeline.
+   * @throws {IntegrityError} If a supplied pin does not match the resolved definition.
    * @throws {PipelineError} If a stage fails (`error.context` holds stage name/index).
    */
-  async runPipeline(name: string, input: ExecutionInput): Promise<PipelineResult> {
-    const resolved = await this.resolveByRef(name, 'pipeline');
+  async runPipeline(name: string, input: ExecutionInput, options?: ResolvePinOptions): Promise<PipelineResult> {
+    const resolved = await this.resolveByRef(name, 'pipeline', toPins(options));
 
     if (resolved.type !== 'pipeline') {
       throw new ConfigurationError(`${name} is not a pipeline (type: ${resolved.type}). Use runWorkflow() for workflows or runCommand() for commands.`);
@@ -215,11 +228,14 @@ export class UluOpsClient {
    *
    * @param name - Definition name or `name@version` ref (any of the four types).
    * @param input - Execution input ({@link ExecutionInput}); `target` is the absolute project path.
+   * @param options - Optional integrity pins ({@link ResolvePinOptions}), verified fail-closed
+   *   at resolve time. `expectedPromptHash` applies to agent/command resolutions only.
    * @returns An {@link AgentResult} for agents, or an {@link ExecutionResult} for command/workflow/pipeline.
    * @throws {ConfigurationError} If the resolved definition has an unknown type.
+   * @throws {IntegrityError} If a supplied pin does not match the resolved definition.
    */
-  async run(name: string, input: ExecutionInput): Promise<ExecutionResult | AgentResult> {
-    const resolved = await this.resolveByRef(name);
+  async run(name: string, input: ExecutionInput, options?: ResolvePinOptions): Promise<ExecutionResult | AgentResult> {
+    const resolved = await this.resolveByRef(name, undefined, toPins(options));
     let result: ExecutionResult | AgentResult;
 
     switch (resolved.type) {
@@ -257,11 +273,14 @@ export class UluOpsClient {
    *
    * @param name - Pipeline name or `name@version` ref.
    * @param input - Execution input ({@link ExecutionInput}); `target` is the absolute project path.
+   * @param options - Optional integrity pins ({@link ResolvePinOptions}); same semantics as
+   *   {@link UluOpsClient.runPipeline} — pipeline YAML only, verified before the run starts.
    * @returns A {@link PipelineHandle} exposing `wait()`, status polling, and cancellation.
    * @throws {ConfigurationError} If the resolved definition is not a pipeline.
+   * @throws {IntegrityError} If a supplied pin does not match the resolved definition.
    */
-  async startPipeline(name: string, input: ExecutionInput): Promise<PipelineHandle> {
-    const resolved = await this.resolveByRef(name, 'pipeline');
+  async startPipeline(name: string, input: ExecutionInput, options?: ResolvePinOptions): Promise<PipelineHandle> {
+    const resolved = await this.resolveByRef(name, 'pipeline', toPins(options));
 
     if (resolved.type !== 'pipeline') {
       throw new ConfigurationError(`${name} is not a pipeline (type: ${resolved.type}). Use runWorkflow() for workflows or runCommand() for commands.`);
@@ -737,4 +756,17 @@ function resolveProviderApiKey(name: string, env: NodeJS.ProcessEnv = process.en
   }
 
   return undefined;
+}
+
+/**
+ * Build resolve-time integrity pins from caller options — only when a pin is
+ * actually present, so unpinned resolves keep their original (unverified)
+ * call path. Shared by every execution entrypoint: pinning must be reachable
+ * from the surfaces the README steers CI toward, not just runAgent
+ * (tracker 1a49ad7a).
+ */
+function toPins(options?: { expectedHash?: string; expectedPromptHash?: string }): ResolvePinOptions | undefined {
+  return options?.expectedHash || options?.expectedPromptHash
+    ? { expectedHash: options.expectedHash, expectedPromptHash: options.expectedPromptHash }
+    : undefined;
 }
