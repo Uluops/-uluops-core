@@ -57,7 +57,7 @@ export class UluOpsClient {
     this.submission = new SubmissionClient(this.config);
 
     // ModelCatalog resolves aliases via registry (no auto-sync; cache cleared via refresh())
-    const modelCatalog = new ModelCatalog(this.registry.registrySdk);
+    const modelCatalog = new ModelCatalog(this.registry.registrySdk, logger);
     const aiProvider = new AIProvider(this.config, modelCatalog, logger);
 
     this.agentExecutor = new AgentExecutor(this.config, aiProvider, logger);
@@ -255,8 +255,10 @@ export class UluOpsClient {
         });
         break;
       default: {
-        const _exhaustive: never = resolved.type;
-        throw new ConfigurationError(`Unknown definition type: ${_exhaustive}`);
+        // The union is discriminated on `type`, so `resolved` itself narrows
+        // to never once all four variants are handled.
+        const _exhaustive: never = resolved;
+        throw new ConfigurationError(`Unknown definition type: ${JSON.stringify(_exhaustive)}`);
       }
     }
 

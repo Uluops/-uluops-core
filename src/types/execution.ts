@@ -160,6 +160,17 @@ export interface ExecutionResult {
   /** Aggregated score (0-100). Optional/null — not all execution types produce scores. */
   score?: number | null;
 
+  /**
+   * Extraction confidence (0-1) for gating. On composite results
+   * (command/workflow/pipeline) this is the WORST child's confidence —
+   * propagated so the submission gate can refuse allGatesPassed when any
+   * child's decision was regex-parsed below the trust threshold, instead of
+   * letting a low-confidence PASS launder through aggregation (issue
+   * e037aa98). Absent means no child carried a confidence (trustworthy by
+   * construction: structured output, or no extraction happened).
+   */
+  extractionConfidence?: number;
+
   /** Total execution duration */
   durationMs: number;
 

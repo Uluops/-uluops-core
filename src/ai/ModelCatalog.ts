@@ -7,6 +7,7 @@ import type {
   ModelTier,
 } from '@uluops/registry-sdk';
 import { ModelNotFoundError, CapabilityError } from '../errors/index.js';
+import type { Logger } from '@uluops/sdk-core';
 
 /**
  * Resolved model with provider routing information
@@ -73,12 +74,36 @@ const DEFAULT_CAPABILITIES: ModelCapabilities = {
 };
 
 /**
+ * Last-resort alias table for registry OUTAGES only (issue 172518e2): a cold
+ * process resolving a well-known alias while the registry is unreachable
+ * previously failed before any LLM call, with no offline path — the offline
+ * quick-start covers definition resolution but not model aliases. Consulted
+ * exclusively on transport errors (never on 404 — an alias the registry says
+ * doesn't exist still fails), never cached (registry recovery wins), and
+ * resolves with DEFAULT_CAPABILITIES (default-deny structured output).
+ *
+ * DECAY SURFACE (2026-07-10, cf. issue 70cb73e3): these are date-stamped
+ * vendor IDs and are the fastest-decaying strings in the codebase. They only
+ * matter during a registry outage; a stale entry fails at the provider call
+ * instead of at resolution — still strictly later than today's failure point.
+ * Refresh alongside registry model syncs.
+ */
+const OFFLINE_FALLBACK_ALIASES: Record<string, { provider: string; modelId: string }> = {
+  sonnet: { provider: 'anthropic', modelId: 'claude-sonnet-4-6' },
+  haiku: { provider: 'anthropic', modelId: 'claude-haiku-4-5-20251001' },
+  opus: { provider: 'anthropic', modelId: 'claude-opus-4-8' },
+};
+
+const noopLogger: Logger = { debug() {}, info() {}, warn() {}, error() {} };
+
+/**
  * Registry-backed model catalog with in-memory caching.
  *
  * Resolution priority:
  * 1. Explicit provider:modelId (e.g., "anthropic:claude-sonnet-4-5-20250929")
  * 2. Registry alias (e.g., "sonnet") via models.resolveAlias()
  * 3. Tier name (e.g., "premium") — resolves to first available model for tier
+ * 4. During a registry outage only: OFFLINE_FALLBACK_ALIASES for well-known aliases
  *
  * Cache is in-memory only. Call refresh() to clear after admin syncs models.
  * No auto-sync or TTL — model sync is an admin operation.
@@ -86,8 +111,11 @@ const DEFAULT_CAPABILITIES: ModelCapabilities = {
 export class ModelCatalog {
   private aliasCache = new Map<string, AliasResolution>();
   private modelCache = new Map<string, Model>();
+  private logger: Logger;
 
-  constructor(private sdk: RegistrySdk) {}
+  constructor(private sdk: RegistrySdk, logger?: Logger) {
+    this.logger = logger ?? noopLogger;
+  }
 
   /**
    * Resolve a model input to a fully-qualified ResolvedModel.
@@ -105,8 +133,18 @@ export class ModelCatalog {
       return this.resolveExplicit(input, opts);
     }
 
-    // 2. Try alias resolution
-    const aliasResult = await this.resolveAlias(input);
+    // 2. Try alias resolution. A transport error (registry outage, not a 404)
+    // falls back to the offline table for well-known aliases before failing —
+    // a cold process must be able to resolve 'sonnet' while the registry is
+    // down (issue 172518e2).
+    let aliasResult: AliasResolution | null;
+    try {
+      aliasResult = await this.resolveAlias(input);
+    } catch (error) {
+      const fallback = this.resolveOfflineFallback(input, error, opts);
+      if (fallback) return fallback;
+      throw error;
+    }
     if (aliasResult) {
       const resolved = this.toResolvedModel(aliasResult, input);
       this.validateCapabilities(resolved, opts?.requiredCapabilities);
@@ -257,6 +295,38 @@ export class ModelCatalog {
       if (this.isNotFoundError(error)) return null;
       throw error;
     }
+  }
+
+  /**
+   * Offline outage fallback (issue 172518e2). Returns a ResolvedModel from the
+   * static table when the alias is well-known, or null (caller rethrows the
+   * registry error). Deliberately NOT cached — once the registry recovers, the
+   * next cold resolution must use its authoritative mapping.
+   */
+  private resolveOfflineFallback(
+    alias: string,
+    cause: unknown,
+    opts?: ResolveOptions,
+  ): ResolvedModel | null {
+    const entry = OFFLINE_FALLBACK_ALIASES[alias];
+    if (!entry) return null;
+
+    this.logger.warn(
+      `Registry unreachable while resolving model alias "${alias}" (${cause instanceof Error ? cause.message : String(cause)}) — ` +
+      `falling back to baked-in ${entry.provider}:${entry.modelId} with default-deny capabilities. ` +
+      `Capabilities and context window are unknown offline; structured output is disabled for this run.`,
+    );
+
+    const resolved: ResolvedModel = {
+      provider: entry.provider,
+      modelId: entry.modelId,
+      providerModelId: entry.modelId,
+      tier: 'standard',
+      capabilities: DEFAULT_CAPABILITIES,
+      resolvedFrom: alias,
+    };
+    this.validateCapabilities(resolved, opts?.requiredCapabilities);
+    return resolved;
   }
 
   /** Check if an error is a 404/not-found from the registry API */

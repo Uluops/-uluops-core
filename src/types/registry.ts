@@ -8,12 +8,9 @@ import type { PipelineDefinition } from './pipeline.js';
 export type { SubscriptionTier } from './execution.js';
 
 /**
- * Resolved definition from registry
+ * Fields shared by every resolved definition, independent of its type.
  */
-export interface ResolvedDefinition {
-  /** Definition type */
-  type: DefinitionType;
-
+export interface ResolvedDefinitionBase {
   /** Definition name */
   name: string;
 
@@ -39,10 +36,9 @@ export interface ResolvedDefinition {
   /** Raw YAML content (null when content-gated — check proRestricted) */
   yaml: string;
 
-  /** Parsed definition (Partial when no YAML available — use optional chaining) */
-  definition: AgentDefinition | CommandDefinition | WorkflowDefinition | PipelineDefinition | Partial<AgentDefinition>;
-
-  /** Rendered runtime - type depends on agentType */
+  /** Rendered runtime - type depends on agentType, NOT on definition type
+   * (a command ref can resolve to an agent runtime) — deliberately not
+   * correlated with the `type` discriminator. */
   runtime: BaseRuntime | AgentRuntime | ExecutorRuntime | WorkflowRuntime | PipelineRuntime;
 
   /** Domain classification */
@@ -60,6 +56,37 @@ export interface ResolvedDefinition {
   /** Degradation markers — tracks which fallback paths were taken during resolution */
   degradations?: string[];
 }
+
+/**
+ * Resolved definition from registry — a union DISCRIMINATED on `type`
+ * (issue a9d65912): checking `resolved.type === 'command'` narrows
+ * `resolved.definition` to CommandDefinition, so the executors' runtime type
+ * checks narrow instead of being followed by assertXxxDefinition() casts.
+ *
+ * The correlation is established at ONE producer point (RegistryClient's
+ * construction cast, where runtime YAML data enters the type system) and is
+ * only as trustworthy as the registry/local parse behind it — the agent
+ * variant stays Partial-tolerant because content-gated resolutions carry no
+ * YAML (use optional chaining on `definition`).
+ */
+export type ResolvedDefinition =
+  | (ResolvedDefinitionBase & {
+      type: 'agent';
+      /** Parsed definition (Partial when no YAML available — use optional chaining) */
+      definition: AgentDefinition | Partial<AgentDefinition>;
+    })
+  | (ResolvedDefinitionBase & {
+      type: 'command';
+      definition: CommandDefinition;
+    })
+  | (ResolvedDefinitionBase & {
+      type: 'workflow';
+      definition: WorkflowDefinition;
+    })
+  | (ResolvedDefinitionBase & {
+      type: 'pipeline';
+      definition: PipelineDefinition;
+    });
 
 /**
  * Base runtime shared by all definition types — the minimum shape

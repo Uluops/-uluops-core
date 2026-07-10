@@ -14,6 +14,7 @@ import { sumTokenMetrics } from '../utils/sumTokenMetrics.js';
 import { topoGroupLevels } from '../utils/topoSort.js';
 import { parseRef } from '../utils/parseRef.js';
 import { resolveDecisionCategory, type DecisionCategory } from './classifyDecision.js';
+import { worstExtractionConfidence } from '../utils/worstExtractionConfidence.js';
 import type { Logger } from '@uluops/sdk-core';
 
 /**
@@ -111,6 +112,7 @@ export class WorkflowExecutor {
       decision: aggregated.decision,
       decisionCategory: aggregated.decisionCategory,
       score: aggregated.score,
+      extractionConfidence: worstExtractionConfidence(phaseResults.flatMap(p => p.commands)),
       phases: phaseResults,
       recommendations: this.deduplicateRecommendations(allRecommendations),
       durationMs,
@@ -465,6 +467,7 @@ export class WorkflowExecutor {
       decisionCategory: agent.decisionCategory,
       score: agent.score,
       maxScore: agent.maxScore,
+      extractionConfidence: agent.extractionConfidence,
       recommendations: agent.recommendations,
       durationMs: agent.metrics.durationMs,
       metrics: { ...agent.metrics, toolCalls: agent.metrics.toolCallCount ?? 0 },
@@ -619,7 +622,8 @@ export class WorkflowExecutor {
         { partialResult: undefined },
       );
     }
-    return resolved.definition as WorkflowDefinition;
+    // The runtime check above narrows the discriminated union — no cast (a9d65912).
+    return resolved.definition;
   }
 
   private buildPartialResult(

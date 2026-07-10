@@ -1,5 +1,8 @@
 import { createHash } from 'node:crypto';
 import type { AnalysisSummaryInput, AnalysisRecordInput, CategoryScore, ExplorationMap } from '@uluops/ops-sdk';
+
+/** One typed section of an exploration map (the ops-sdk union member). */
+type ExplorationSection = ExplorationMap['sections'][number];
 import type { AgentResult, AgentDefinition } from '../types/agent.js';
 import type { ResolvedDefinition } from '../types/registry.js';
 
@@ -374,12 +377,10 @@ export class AnalysisSummaryExtractor {
       const sections = (e.sections as Array<Record<string, unknown>>)
         .filter(s => typeof s.type === 'string' && typeof s.label === 'string' && VALID_SECTION_TYPES.has(s.type as string))
         .map(s => this.reshapeSection(s))
-        .filter(s => this.validateSectionShape(s));
+        .filter((s): s is Record<string, unknown> & ExplorationSection => this.validateSectionShape(s));
       maps.push({
         metadata: e.metadata as ExplorationMap['metadata'],
-        // reshapeSection produces typed fields for all 8 known section types;
-        // validateSectionShape confirms required per-type fields exist.
-        sections: sections as unknown as ExplorationMap['sections'],
+        sections,
       });
     }
 
@@ -424,7 +425,17 @@ export class AnalysisSummaryExtractor {
   }
 
   /** Validate that a reshaped section has the required fields for its declared type. */
-  private validateSectionShape(section: Record<string, unknown>): boolean {
+  /**
+   * Type predicate welding the runtime check to the type claim (issue
+   * 62c9f1dd) — the caller's filter narrows to ExplorationSection without a
+   * double assertion. LIMITATION: the check verifies the per-type required
+   * array exists, not the shape of its members; member shape is guaranteed by
+   * reshapeSection for entries-form input and by the LLM schema for typed-form
+   * input.
+   */
+  private validateSectionShape(
+    section: Record<string, unknown>,
+  ): section is Record<string, unknown> & ExplorationSection {
     const type = section.type as string;
     switch (type) {
       case 'inventory': return Array.isArray(section.items);

@@ -14,6 +14,7 @@ import { DEFAULT_PASS_THRESHOLD, DEFAULT_WARN_THRESHOLD } from '../constants.js'
 import { mapCategory } from './mapCategory.js';
 import { resolveDecisionCategory, type DecisionCategory } from './classifyDecision.js';
 import { aggregateScores, type AggregationMethod } from '../utils/aggregateScores.js';
+import { worstExtractionConfidence } from '../utils/worstExtractionConfidence.js';
 
 /**
  * Executes command definitions.
@@ -73,7 +74,8 @@ export class CommandExecutor {
     if (resolved.type !== 'command') {
       throw new ExecutionError(`CommandExecutor received a '${resolved.type}' definition (expected 'command')`);
     }
-    const def = resolved.definition as CommandDefinition;
+    // The runtime check above narrows the discriminated union — no cast (a9d65912).
+    const def = resolved.definition;
 
     // Model resolution: operator override > CDL default
     const model = overrides?.model ?? def.command.execution.model.default;
@@ -241,6 +243,7 @@ export class CommandExecutor {
       decisionCategory: agentResult.decisionCategory,
       score: agentResult.score,
       maxScore: agentResult.maxScore,
+      extractionConfidence: agentResult.extractionConfidence,
       threshold: def.command.execution.thresholds?.pass,
       categories: agentResult.categories?.map(mapCategory),
       artifacts: agentResult.artifacts,
@@ -350,6 +353,7 @@ export class CommandExecutor {
       decisionCategory,
       score,
       maxScore,
+      extractionConfidence: worstExtractionConfidence(results),
       threshold,
       recommendations,
       durationMs,
