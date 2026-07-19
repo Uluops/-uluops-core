@@ -6,6 +6,30 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) 
 
 ## [Unreleased]
 
+## [0.34.0] - 2026-07-19
+
+### Changed
+
+- **`RunSubmissionResponse.allGatesPassed` and `RunHistoryEntry.allGatesPassed`
+  widen to `boolean | null`.** These types re-expose values read from the ops
+  API, whose read shape is nullable since `@uluops/ops-sdk@5.10.0`: `null` =
+  **NOT_A_GATE** — the run carried no gate-bearing agents (e.g. a
+  cognitive-lens-only run), distinct from `false` (a gate ran and failed).
+  Render `null` neutrally and exclude null runs from pass-rate computations.
+
+### Design Notes
+
+- **Read/write asymmetry is deliberate.** The `SubmissionClient` WRITE path
+  still asserts an explicit boolean verdict via the polarity classifier
+  (`isPositiveDecision`, fail-closed) — `null` is never a valid input value
+  (save-run-decision-semantics spec v0.2.1, D6). Whether the submission path
+  should instead omit the verdict for lens-only runs (letting the API infer
+  NOT_A_GATE) is an open question deferred with that spec's Change 2.
+
+### Dependencies
+
+- `@uluops/ops-sdk` 5.8.0 → **5.10.0** (nullable `allGatesPassed` read schemas).
+
 ## [0.33.0] - 2026-07-10
 
 Two branches merged: `fix/core-top10-second-pass` (gating-semantics decisions, composite confidence, type-safety refactors) and `fix/core-top10-third-pass` (dx error-contract batch, usage shape-drift signal). 20 tracker issues closed. Three 0.30.0 Design Notes are superseded below (marked ⤳).
