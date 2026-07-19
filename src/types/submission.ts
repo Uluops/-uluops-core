@@ -45,8 +45,10 @@ export interface RunSubmissionResponse {
   /** Dashboard URL for this run */
   dashboardUrl: string;
 
-  /** Whether all gates passed */
-  allGatesPassed: boolean;
+  /** Whether all gates passed. null = NOT_A_GATE — the run carried no
+   *  gate-bearing agents (read shape since ops-sdk 5.10.0; distinct from
+   *  false, a gate ran and failed) */
+  allGatesPassed: boolean | null;
 
   /** Average score across validators; null for scoreless (generator/executor) runs */
   averageScore: number | null;
@@ -126,8 +128,10 @@ export interface RunHistoryEntry {
   /** Run timestamp */
   timestamp: string;
 
-  /** Whether all gates passed */
-  allGatesPassed: boolean;
+  /** Whether all gates passed. null = NOT_A_GATE — the run carried no
+   *  gate-bearing agents (read shape since ops-sdk 5.10.0; distinct from
+   *  false, a gate ran and failed) */
+  allGatesPassed: boolean | null;
 
   /** Average score across validators; null for scoreless (generator/executor) runs */
   averageScore: number | null;

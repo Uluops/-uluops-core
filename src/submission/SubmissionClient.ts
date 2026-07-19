@@ -212,6 +212,14 @@ export class SubmissionClient {
    * unstamped) to report allGatesPassed. Blocking wants evidence of failure;
    * asserting success wants evidence of success. An ambiguous result therefore
    * flows through stages but is never reported as a pass.
+   *
+   * READ/WRITE asymmetry (since ops-sdk 5.10.0): the READ shape is
+   * boolean | null (null = NOT_A_GATE, a run with no gate-bearing agents —
+   * save-run-decision-semantics spec v0.2.1). This WRITE path deliberately
+   * still asserts an explicit boolean verdict from the polarity classifier;
+   * null is never a valid input value (spec D6). Whether the SDK submission
+   * path should instead omit the verdict for lens-only runs (letting the API
+   * infer NOT_A_GATE) is an open question deferred with Change 2.
    */
   private isPositiveDecision(result: ExecutionResult | AgentResult): boolean {
     if (
