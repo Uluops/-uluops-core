@@ -30,6 +30,14 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) 
 
 - `@uluops/ops-sdk` 5.8.0 → **5.10.0** (nullable `allGatesPassed` read schemas).
 
+### Security
+
+- Transitive `brace-expansion` (under `glob`) bumped to **5.0.7** via
+  `npm audit fix` (lockfile-only) — remediates GHSA-3jxr-9vmj-r5cp (high,
+  DoS via exponential-time expansion). The advisory published between this
+  version's local validation and its npm publish, tripping the
+  `prepublishOnly` audit gate.
+
 ## [0.33.0] - 2026-07-10
 
 Two branches merged: `fix/core-top10-second-pass` (gating-semantics decisions, composite confidence, type-safety refactors) and `fix/core-top10-third-pass` (dx error-contract batch, usage shape-drift signal). 20 tracker issues closed. Three 0.30.0 Design Notes are superseded below (marked ⤳).

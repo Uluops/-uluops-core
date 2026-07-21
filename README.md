@@ -441,6 +441,13 @@ for (const entry of history) {
 const run = await client.getRun('run-uuid');
 ```
 
+> `allGatesPassed` on history entries and run reads is `boolean | null` (since
+> v0.34.0): `null` = **NOT_A_GATE** — the run carried no gate-bearing agents
+> (e.g. a cognitive-lens-only run), distinct from `false` (a gate ran and
+> failed). Render `null` neutrally and exclude null runs from pass-rate math.
+> Submission *inputs* are unchanged — the client still asserts an explicit
+> boolean verdict; `null` is never a valid input value.
+
 On the auto-tracking path, a failed submission (e.g. a free-tier `402 PROJECT_LIMIT`, `SUBSCRIPTION_REQUIRED`, or a transient 5xx) is **non-fatal** — the agent run still resolves successfully. The result carries `trackingFailed: true` plus a typed `trackingError` (`{ code, statusCode, message, requestId, details }`), so callers can surface the reason — and any `details.upgradeUrl` — instead of silently dropping the dashboard link. `code` (e.g. `PROJECT_LIMIT`) is the stable contract; `message` is human-readable and should not be matched on.
 
 **What lands in analysis data.** At submission time, `AnalysisSummaryExtractor` builds the run's `analysisSummary` + `analysisRecords`:
