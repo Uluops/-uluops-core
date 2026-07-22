@@ -58,7 +58,7 @@
     "@ai-sdk/openai": "3.0.33",
     "@uluops/ops-sdk": "5.10.0",
     "@uluops/registry-sdk": "0.39.0",
-    "@uluops/sdk-core": "0.15.0",
+    "@uluops/sdk-core": "0.16.0",
     "ai": "6.0.77",
     "glob": "11.1.0",
     "yaml": "2.8.3",
