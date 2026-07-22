@@ -6,6 +6,27 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) 
 
 ## [Unreleased]
 
+## [0.35.0] - 2026-07-22
+
+### Changed
+
+- **`classifyDecision` module re-exported from `@uluops/sdk-core/decisions`**
+  (implementation moved there; all `@uluops/core` import paths unchanged).
+  Rationale: the module is pure and dependency-free, and register consumers
+  like the ops API need it without this package's AI-SDK stack (OQ-1b,
+  save-run-decision-semantics spec v0.2.1).
+- **Register extension via sdk-core 0.16.0** (issue `44a7a67c`):
+  `APPROVED`/`PROCEED` → positive, `BLOCKED` → negative. Behavior change:
+  `SubmissionClient.isPositiveDecision` now reports `allGatesPassed: true`
+  for APPROVED/PROCEED results (previously neutral → fail-closed `false`),
+  and executor gating treats BLOCKED as negative. Intended corrections —
+  these are genuine gate verdicts, previously desynced from ops-api's
+  interim register.
+
+### Dependencies
+
+- `@uluops/sdk-core` → **0.16.0** (decisions module home).
+
 ## [0.34.0] - 2026-07-19
 
 ### Changed
