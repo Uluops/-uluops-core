@@ -297,6 +297,9 @@ export class AgentExecutor {
       model: result.model,
       harness: 'uluops-core',
       toolCallCount: result.toolCallCount,
+      // A COPY, not a computation — pricing lives on the ResolvedModel, which
+      // is only in hand at the AIProvider seam (spec v0.6.0 Phase 1b).
+      costUsd: result.costUsd,
     };
   }
 

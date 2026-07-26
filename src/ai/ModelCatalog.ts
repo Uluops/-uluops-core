@@ -1,6 +1,7 @@
 import type {
   RegistryClient as RegistrySdk,
   Model,
+  ModelCost,
   ModelAlias as RegistryModelAlias,
   AliasResolution,
   ModelCapabilities,
@@ -35,6 +36,16 @@ export interface ResolvedModel {
    * guards against the actual window rather than a static default.
    */
   contextWindow?: number;
+
+  /**
+   * Pricing (USD per MILLION tokens) from the registry. Undefined on every
+   * degraded resolution path — unregistered model, registry-outage offline
+   * fallback, alias without an embedded model — and for registry rows that
+   * are unpriced (wire cost: null). Absence flows through to
+   * costUsd === undefined; never coerced to zero rates (honest-absent,
+   * costusd-pricing-population spec v0.6.0).
+   */
+  cost?: ModelCost;
 
   /** Original input that resolved to this model */
   resolvedFrom: string;
@@ -230,6 +241,7 @@ export class ModelCatalog {
       tier: model.tier,
       capabilities: model.capabilities,
       contextWindow: model.limits?.context || undefined,
+      cost: model.cost ?? undefined,
       resolvedFrom: providerModelId,
     };
 
@@ -272,6 +284,7 @@ export class ModelCatalog {
       tier: model.tier,
       capabilities: model.capabilities,
       contextWindow: model.limits?.context || undefined,
+      cost: model.cost ?? undefined,
       resolvedFrom: tier,
     };
 
@@ -347,6 +360,7 @@ export class ModelCatalog {
       tier: model?.tier ?? 'standard',
       capabilities: model?.capabilities ?? DEFAULT_CAPABILITIES,
       contextWindow: model?.limits?.context || undefined,
+      cost: model?.cost ?? undefined,
       resolvedFrom: input,
     };
   }

@@ -537,3 +537,67 @@ describe('ModelCatalog', () => {
     });
   });
 });
+
+// ─── cost mapping (costusd spec v0.6.0 — criterion 3 / checklist 1a.7) ──────
+// Honest-absent must be provably TOTAL: every degraded resolution path yields
+// cost === undefined (never 0-rates, never a throw); registry-backed paths
+// carry the block; wire null converts to undefined.
+describe('ResolvedModel.cost (Phase 1a)', () => {
+  const cost = { input: 3, output: 15, cacheRead: 0.3, cacheWrite: 3.75 };
+
+  it('alias resolution carries the registry cost block', async () => {
+    const sdk = mockSdk({
+      resolveAlias: vi.fn().mockResolvedValue(makeAliasResolution({ model: makeModel({ cost }) })),
+    });
+    const result = await new ModelCatalog(sdk).resolve('sonnet');
+    expect(result.cost).toEqual(cost);
+  });
+
+  it('explicit provider:modelId (registered) carries cost', async () => {
+    const sdk = mockSdk({ getModel: vi.fn().mockResolvedValue(makeModel({ cost })) });
+    const result = await new ModelCatalog(sdk).resolve('anthropic:claude-sonnet-4-5-20250929');
+    expect(result.cost).toEqual(cost);
+  });
+
+  it('tier resolution carries cost from the list item', async () => {
+    const sdk = mockSdk({
+      resolveAlias: vi.fn().mockRejectedValue(makeNotFoundError()),
+      listModels: vi.fn().mockResolvedValue({ models: [makeModel({ tier: 'budget', cost })] }),
+    });
+    const result = await new ModelCatalog(sdk).resolve('budget');
+    expect(result.cost).toEqual(cost);
+  });
+
+  it('wire cost: null (unpriced registry row) → undefined, not 0-rates', async () => {
+    const sdk = mockSdk({ getModel: vi.fn().mockResolvedValue(makeModel({ cost: null })) });
+    const result = await new ModelCatalog(sdk).resolve('anthropic:claude-sonnet-4-5-20250929');
+    expect(result.cost).toBeUndefined();
+  });
+
+  it('unregistered model (registry 404) → cost undefined, no throw', async () => {
+    const sdk = mockSdk({ getModel: vi.fn().mockRejectedValue(makeNotFoundError()) });
+    const result = await new ModelCatalog(sdk).resolve('anthropic:some-unregistered-model');
+    expect(result.cost).toBeUndefined();
+  });
+
+  it('alias-without-embedded-model → cost undefined', async () => {
+    const sdk = mockSdk({
+      resolveAlias: vi.fn().mockResolvedValue(
+        makeAliasResolution({ model: null, target: 'anthropic:claude-haiku-4-5' }),
+      ),
+    });
+    const result = await new ModelCatalog(sdk).resolve('haiku');
+    expect(result.cost).toBeUndefined();
+  });
+
+  it('offline fallback (registry unreachable) → cost undefined, no throw', async () => {
+    const sdk = mockSdk({
+      resolveAlias: vi.fn().mockRejectedValue(new Error('ECONNREFUSED')),
+      listModels: vi.fn().mockRejectedValue(new Error('ECONNREFUSED')),
+      getModel: vi.fn().mockRejectedValue(new Error('ECONNREFUSED')),
+    });
+    const result = await new ModelCatalog(sdk).resolve('sonnet');
+    expect(result.cost).toBeUndefined();
+    expect(result.resolvedFrom).toBe('sonnet');
+  });
+});

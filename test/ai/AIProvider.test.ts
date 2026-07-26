@@ -1267,3 +1267,67 @@ describe('AIProvider', () => {
     });
   });
 });
+
+describe('computeCostUsd (spec v0.6.0 Phase 1b — unit criterion 1b.5)', () => {
+  const compute = (usage: Record<string, number | undefined>, cost: unknown): number | undefined => {
+    const provider = new AIProvider(mockConfig, mockCatalog(), noopLogger);
+    return (provider as unknown as {
+      computeCostUsd: (u: unknown, c: unknown) => number | undefined;
+    }).computeCostUsd(usage, cost);
+  };
+  const sonnet = { input: 3, output: 15, cacheRead: 0.3, cacheWrite: 3.75 };
+
+  it('matches the hand-computed sonnet 3/15 sample', () => {
+    // 1M input * $3/M + 100k output * $15/M = 3 + 1.5 = 4.5
+    expect(compute({ input_tokens: 1_000_000, output_tokens: 100_000 }, sonnet)).toBeCloseTo(4.5, 10);
+  });
+
+  it('prices Anthropic cache reads/writes at their own rates', () => {
+    // 10k in*3 + 1k out*15 + 100k cacheRead*0.3 + 20k cacheWrite*3.75 (per MTok)
+    const usd = compute(
+      { input_tokens: 10_000, output_tokens: 1_000, cache_read_input_tokens: 100_000, cache_creation_input_tokens: 20_000 },
+      sonnet,
+    );
+    expect(usd).toBeCloseTo((10_000 * 3 + 1_000 * 15 + 100_000 * 0.3 + 20_000 * 3.75) / 1e6, 10);
+  });
+
+  it('prices cached_input (OpenAI/Google gross-input portion) at cacheRead, subtracted from gross input', () => {
+    // gross 100k input of which 40k cached: 60k*3 + 40k*0.3 + 10k out*15
+    const usd = compute({ input_tokens: 100_000, output_tokens: 10_000, cached_input_tokens: 40_000 }, sonnet);
+    expect(usd).toBeCloseTo((60_000 * 3 + 40_000 * 0.3 + 10_000 * 15) / 1e6, 10);
+  });
+
+  it('falls back to the input rate for cached_input when no cacheRead rate exists (conservative overstatement)', () => {
+    const usd = compute({ input_tokens: 100_000, output_tokens: 0, cached_input_tokens: 40_000 }, { input: 3, output: 15 });
+    expect(usd).toBeCloseTo((100_000 * 3) / 1e6, 10);
+  });
+
+  it('does not double-count when BOTH cache pools are non-zero simultaneously (run #69 F1/F2)', () => {
+    // gross input 100k of which 40k cached (OpenAI-style) + 5k Anthropic-style
+    // cache reads (separate channel, NOT part of gross input) + 2k cache writes.
+    const usd = compute(
+      {
+        input_tokens: 100_000,
+        output_tokens: 10_000,
+        cached_input_tokens: 40_000,
+        cache_read_input_tokens: 5_000,
+        cache_creation_input_tokens: 2_000,
+      },
+      sonnet,
+    );
+    // (100k-40k)*3 + 40k*0.3 + 10k*15 + 5k*0.3 + 2k*3.75 — each pool priced once.
+    expect(usd).toBeCloseTo(
+      (60_000 * 3 + 40_000 * 0.3 + 10_000 * 15 + 5_000 * 0.3 + 2_000 * 3.75) / 1e6,
+      10,
+    );
+  });
+
+  it('returns undefined — never 0 — when the model carries no pricing', () => {
+    expect(compute({ input_tokens: 1_000_000, output_tokens: 100_000 }, undefined)).toBeUndefined();
+    expect(compute({ input_tokens: 1_000_000, output_tokens: 100_000 }, null)).toBeUndefined();
+  });
+
+  it('returns a REAL 0 for zero usage on a priced model (error-fallback polarity)', () => {
+    expect(compute({ input_tokens: 0, output_tokens: 0 }, sonnet)).toBe(0);
+  });
+});
