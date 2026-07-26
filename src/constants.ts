@@ -19,6 +19,14 @@ export const STARTER_DEFINITIONS_DIR = resolve(__dirname, '../definitions/starte
 // and RAH provides runtime calibration. If you're seeing systematic pass/fail
 // drift after a model or prompt change, the fix is in the definition or RAH
 // calibration, not here.
+//
+// Who actually experiences these values (narrower than the export surface
+// suggests — index.ts re-exports them, but export ≠ use): only runs whose
+// definition omits the corresponding field hit a fallback — agents without
+// decisions.thresholds (AgentExecutor.resolveThresholds), commands without
+// execution.thresholds (CommandExecutor), workflow phases without
+// gate.threshold (WorkflowExecutor), plus RegistryClient's threshold display.
+// A definition that declares its thresholds never reads these.
 
 /**
  * Default pass threshold for agent/command scoring (0-100).
