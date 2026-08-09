@@ -13,6 +13,7 @@ import { PipelineError } from '../errors/index.js';
 import { parseRef } from '../utils/parseRef.js';
 import { formatErrorMessage } from '../utils/formatError.js';
 import { sumTokenMetrics } from '../utils/sumTokenMetrics.js';
+import { sumCostUsd } from '../utils/sumCostUsd.js';
 import { resolveDecisionCategory } from './classifyDecision.js';
 import { worstExtractionConfidence } from '../utils/worstExtractionConfidence.js';
 import { aggregateScores } from '../utils/aggregateScores.js';
@@ -316,6 +317,7 @@ export class PipelineExecutor {
         durationMs: stageEnd,
         metrics: {
           ...sumTokenMetrics(agentResults.map(r => r.metrics)),
+          costUsd: sumCostUsd(agentResults.map(r => r.metrics)),
           durationMs: stageEnd,
           model: 'mixed',
           toolCalls: agentResults.reduce((sum, r) => sum + (r.metrics.toolCallCount ?? 0), 0),
@@ -507,7 +509,12 @@ export class PipelineExecutor {
         maxScore: null,
         recommendations: [],
         durationMs,
-        metrics: { durationMs, model: 'none', toolCalls: 0, inputTokens: 0, outputTokens: 0, totalEffectiveTokens: 0 },
+        metrics: { durationMs, model: 'none', toolCalls: 0, inputTokens: 0, outputTokens: 0, totalEffectiveTokens: 0,
+          // REAL zero, not absent: a steps stage runs no LLM by construction, so its
+          // cost is a known $0. Leaving it undefined would poison every mixed
+          // pipeline's sumCostUsd rollup (run #69 F5) — undefined is reserved for
+          // LLM work that cannot be priced (unpriced model, crash with unreported usage).
+          costUsd: 0 },
       },
       durationMs,
     };
@@ -700,6 +707,11 @@ class PipelineHandle implements IPipelineHandle {
       recommendations,
       metrics: {
         ...sumTokenMetrics(
+          this.state.stageResults
+            .map(s => s.result?.metrics)
+            .filter((m): m is NonNullable<typeof m> => m != null),
+        ),
+        costUsd: sumCostUsd(
           this.state.stageResults
             .map(s => s.result?.metrics)
             .filter((m): m is NonNullable<typeof m> => m != null),

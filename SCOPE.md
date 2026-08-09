@@ -114,7 +114,7 @@ The `DEFAULT_MODEL_ALIAS = 'sonnet'` and `defaultProvider = 'anthropic'` default
 
 ### costUsd — plumbed but not yet populated
 
-`ExecutionMetrics.costUsd` is declared in types, propagated through `CommandMetricsSummary` and `WorkflowExecutor`, and rendered by the CLI formatter when present. It is not yet computed because the registry `Model` type does not carry pricing data. Populating this field requires adding per-model pricing rates to the registry model catalog (input $/MTok, output $/MTok, cache read/write rates) and computing cost from token counts in `AgentExecutor.buildMetrics()`. This is deferred until the registry model schema supports pricing fields.
+`ExecutionMetrics.costUsd` is computed at the `AIProvider.buildGenerateResult` seam — the only place both usage and the `ResolvedModel` (carrying registry pricing, USD per million tokens) are in hand — copied by `AgentExecutor.buildMetrics()`, and rolled up at all four aggregation sites via `sumCostUsd` (command, workflow, pipeline-stage, pipeline; deliberately NOT `sumTokenMetrics` — cost uses ANY-absent→undefined polarity, the inverse of token coalescing, so a partial sum is never presented as a total). `undefined` means unpriced (unpriced registry row, unregistered model, offline fallback, alias without model) — never a fabricated `$0`. The CLI formatter renders it when present (`packages/-uluops-cli/src/formatters/core.ts:145,194`) and omits the line when absent. costUsd is deliberately NOT transmitted to the tracker (derivable post-hoc from persisted tokens + dated pricing; see spec Non-goal / OQ-1). Design record: `uluops-specifications/specs/-uluops-core/costusd-pricing-population.md` (v0.6.0).
 
 ### Anthropic identifiers are volatile constants
 

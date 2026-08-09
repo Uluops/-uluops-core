@@ -49,6 +49,15 @@ export interface AIGenerateResult<TOutput = unknown> {
   finishReason: string;
 
   /**
+   * Estimated cost in USD, computed here — the only seam where both usage and
+   * the ResolvedModel (with registry pricing) are in hand. Undefined when the
+   * resolved model carries no cost (unpriced registry row, unregistered
+   * model, offline fallback, alias without model) — never 0 for "unknown".
+   * A real computed 0 (zero-usage result on a priced model) is meaningful.
+   */
+  costUsd?: number;
+
+  /**
    * Providers whose usage metadata arrived in an unrecognized shape (issue
    * adaaa4b9). mapUsage reaches into undocumented provider-metadata fields via
    * casts; when a provider-SDK renames them, the casts silently resolve
@@ -331,6 +340,28 @@ export class AIProvider {
   }
 
   /**
+   * Compute estimated USD cost from usage and the resolved model's registry
+   * pricing (USD per MILLION tokens; live-pinned sonnet 3/15 — hence /1e6).
+   *
+   * cached_input_tokens rule (cross-harness-token-normalization §3.2): the
+   * cheap cache-served portion of GROSS input that OpenAI/Google report is
+   * priced at cacheRead when that rate exists, else at the full input rate
+   * (documented conservative overstatement). It is subtracted from gross
+   * input first and never double-counted against cache_read_input_tokens,
+   * which holds only genuine Anthropic-style cache reads.
+   */
+  private computeCostUsd(usage: UsageMetrics, cost: ResolvedModel['cost']): number | undefined {
+    if (!cost) return undefined;
+    const cached = usage.cached_input_tokens ?? 0;
+    const grossInput = Math.max(0, usage.input_tokens - cached);
+    let usd = grossInput * cost.input + usage.output_tokens * cost.output;
+    usd += cached * (cost.cacheRead ?? cost.input);
+    if (cost.cacheRead !== undefined) usd += (usage.cache_read_input_tokens ?? 0) * cost.cacheRead;
+    if (cost.cacheWrite !== undefined) usd += (usage.cache_creation_input_tokens ?? 0) * cost.cacheWrite;
+    return usd / 1e6;
+  }
+
+  /**
    * Build AIGenerateResult from successful generateText output.
    */
   private buildGenerateResult(
@@ -366,6 +397,7 @@ export class AIProvider {
       provider: resolved.provider,
       steps: result.steps.length,
       finishReason: result.finishReason,
+      costUsd: this.computeCostUsd(usage, resolved.cost),
       structuredOutput: useStructuredOutput ? result.output : undefined,
       ...(usageShapeDrift.length > 0 ? { usageShapeDrift } : {}),
     };
@@ -384,17 +416,21 @@ export class AIProvider {
       this.logger.warn(
         `Structured output generation failed — falling back to text extraction: ${(error as Error).message}`,
       );
+      const usage = this.mapUsage(
+        (error as NoObjectGeneratedError).usage ?? { inputTokens: 0, outputTokens: 0 },
+      );
       return {
         text: (error as NoObjectGeneratedError).text ?? '',
         structuredOutput: undefined,
-        usage: this.mapUsage(
-          (error as NoObjectGeneratedError).usage ?? { inputTokens: 0, outputTokens: 0 },
-        ),
+        usage,
         toolCallCount: 0,
         model: `${resolved.provider}:${resolved.modelId}`,
         provider: resolved.provider,
         steps: 0,
         finishReason: (error as NoObjectGeneratedError).finishReason ?? 'error',
+        // Priced model + zero-usage fallback => a REAL computed 0, not
+        // undefined; undefined only when the model carries no pricing.
+        costUsd: this.computeCostUsd(usage, resolved.cost),
       };
     }
     throw this.mapError(error, timeoutMs);

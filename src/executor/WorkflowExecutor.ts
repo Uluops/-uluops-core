@@ -11,6 +11,7 @@ import { formatErrorMessage } from '../utils/formatError.js';
 import { DEFAULT_GATE_THRESHOLD } from '../constants.js';
 import { aggregateScores } from '../utils/aggregateScores.js';
 import { sumTokenMetrics } from '../utils/sumTokenMetrics.js';
+import { sumCostUsd } from '../utils/sumCostUsd.js';
 import { topoGroupLevels } from '../utils/topoSort.js';
 import { parseRef } from '../utils/parseRef.js';
 import { resolveDecisionCategory, type DecisionCategory } from './classifyDecision.js';
@@ -118,6 +119,7 @@ export class WorkflowExecutor {
       durationMs,
       metrics: {
         ...tokenTotals,
+        costUsd: sumCostUsd(phaseResults.flatMap(p => p.commands.map(c => c.metrics))),
         durationMs,
         model: 'mixed',
         ...phaseResults.reduce((acc, p) => {

@@ -327,6 +327,11 @@ describe('PipelineExecutor', () => {
       expect(stageResult.score).toBeNull();
       expect(stageResult.maxScore).toBeNull();
       expect(cmdExec.execute).not.toHaveBeenCalled();
+      // run #69 F5: a steps stage runs no LLM by construction — its cost is a
+      // REAL $0, not absent. Absent would poison every mixed pipeline's
+      // sumCostUsd rollup to undefined forever.
+      expect(stageResult.metrics.costUsd).toBe(0);
+      expect(result.metrics.costUsd).toBe(0);
     });
 
     it('recognizes a steps stage without an explicit type (pre-normalization shape)', async () => {

@@ -14,21 +14,68 @@ import type { ResolvedDefinition } from '../types/registry.js';
  */
 const ANALYSIS_RECORD_ID_MAX_LENGTH = 100;
 
-/** Valid recordType enum values accepted by the tracker API. */
-const VALID_RECORD_TYPES = new Set([
-  'category_breakdown', 'criterion_deduction', 'auto_fail_check', 'convention',
-  'power_map', 'tension', 'tension_health', 'stagnation', 'four_cause',
-  'essential_property', 'naming_chain', 'ritual', 'evidence_claim', 'causal_claim',
-  'is_ought_violation', 'habitual_assumption', 'theory', 'corroboration',
-  'untested_assumption', 'bold_conjecture', 'participation_gap', 'shadow',
-  'hierarchy_inversion', 'form_extraction', 'confidence_basis', 'examination_debt',
-  'intervention_chain', 'reversal', 'emptiness', 'control_paradox',
-  'stress_concentration', 'lever_point', 'displacement', 'fulcrum',
-  'center_of_gravity', 'commitment', 'contradiction', 'inquiry_question',
-  'definitional_stability', 'decay_vector', 'tension_trajectory', 'cascade_layer',
-  'capability_emergence', 'artifact', 'completion_criterion', 'improvement',
-  'evidence_finding',
-]);
+/**
+ * Max length of the analysis recordType accepted by the tracker.
+ * Mirrors `VARCHAR(50)` (ops-api migration 024) and the `z.string().min(1).max(50)`
+ * request schemas in ops-api and the MCP. Local constant for the same reason as
+ * ANALYSIS_RECORD_ID_MAX_LENGTH above.
+ *
+ * There is deliberately NO record-type vocabulary here. This module used to hold a
+ * 47-value `VALID_RECORD_TYPES` set and coerce anything outside it to
+ * 'evidence_finding' — silently, and only on the Tier 2 path, so an identical record
+ * survived or was flattened depending purely on which channel the agent emitted it
+ * through. That set was a vestige of an enum the platform deliberately removed:
+ * ops-api widened `recordType` from `z.enum(...)` to a bounded string precisely so
+ * "registry-defined agents can introduce new record types without requiring an API
+ * release" (ops-uluops-api/CHANGELOG.md:1743; the same rationale is documented at
+ * ops-uluops-mcp/src/types/schemas.ts:71-78). Re-narrowing it client-side contradicted
+ * that decision and destroyed the type distinction on the way to a database column
+ * that was always willing to store it. As of 2026-08-07 the stored corpus carried 307
+ * distinct record types, 271 of them outside that set, on 58.5% of all rows.
+ */
+const ANALYSIS_RECORD_TYPE_MAX_LENGTH = 50;
+
+/** Fallback when a record carries no usable type at all. */
+const FALLBACK_RECORD_TYPE = 'evidence_finding';
+
+/**
+ * Storage bounds on the remaining agent-authored record fields, mirroring the ops-sdk
+ * request schema (`title: z.string().min(1).max(500)`,
+ * `classification: z.string().max(50).nullish()`) and the ops-api columns.
+ *
+ * These are enforced here for the same reason recordType and severity are: the SDK
+ * validates the WHOLE analysisRecords array client-side, before the network, so a single
+ * over-length value throws a ZodError and loses the entire run's analysis rather than one
+ * record. recordId already had this defence (safeRecordId); severity and recordType have it
+ * now; title and classification were the two left un-bounded, which made the guarantee only
+ * as strong as its weakest field.
+ */
+const ANALYSIS_RECORD_TITLE_MAX_LENGTH = 500;
+const ANALYSIS_RECORD_CLASSIFICATION_MAX_LENGTH = 50;
+
+/** Title is required and non-empty at the API; a record with none still has to be storable. */
+const FALLBACK_RECORD_TITLE = '(untitled record)';
+
+/** Cap on a preserved non-string value, so one malformed payload cannot bloat the row. */
+const PRESERVED_RECORD_TYPE_MAX_LENGTH = 200;
+
+/**
+ * Render a non-string value for preservation in `data.rawRecordType`, without throwing.
+ * `JSON.stringify` throws on circular structures and returns undefined for symbols and
+ * functions, and this runs on the save path of every agent run — a throw here would fail
+ * the whole save, which is the exact failure class this module exists to prevent.
+ */
+function safeStringify(value: unknown): string {
+  let out: string;
+  try {
+    out = JSON.stringify(value) ?? Object.prototype.toString.call(value);
+  } catch {
+    out = Object.prototype.toString.call(value);
+  }
+  return out.length > PRESERVED_RECORD_TYPE_MAX_LENGTH
+    ? `${out.slice(0, PRESERVED_RECORD_TYPE_MAX_LENGTH)}…`
+    : out;
+}
 
 const VALID_SEVERITIES = new Set(['critical', 'high', 'medium', 'low', 'info']);
 
@@ -474,7 +521,16 @@ export class AnalysisSummaryExtractor {
     result: AgentResult,
     analysisBlock: AgentAnalysisBlock | null,
   ): AnalysisRecordInput[] {
-    return this.collectAnalysisRecords(result, analysisBlock).map(r => this.sanitizeRecordSeverity(r));
+    // sanitizeRecordData runs FIRST and the order is load-bearing: every sanitizer below
+    // preserves its rejected value by spreading `record.data`, and spreading an array
+    // yields {0:…, 1:…}. Normalizing data to a plain object up front is what makes those
+    // spreads safe. Moving it later reintroduces the corruption it exists to prevent.
+    return this.collectAnalysisRecords(result, analysisBlock)
+      .map(r => this.sanitizeRecordData(r))
+      .map(r => this.sanitizeRecordSeverity(r))
+      .map(r => this.sanitizeRecordType(r))
+      .map(r => this.sanitizeRecordTitle(r))
+      .map(r => this.sanitizeRecordClassification(r));
   }
 
   /**
@@ -496,6 +552,177 @@ export class AnalysisSummaryExtractor {
       severity: null,
       data: { ...(record.data ?? {}), rawSeverity: String(raw) },
     };
+  }
+
+  /**
+   * Normalize record type onto the tracker's storage contract WITHOUT narrowing the
+   * vocabulary. Applied uniformly to every tier — that uniformity is the point.
+   *
+   * Two defects this replaces:
+   *  - Tier 2 coerced any type outside a hardcoded 47-value set to 'evidence_finding'
+   *    and preserved the original nowhere, while Tier 1 passed the same value through
+   *    untouched. Same field, two policies, chosen by which channel the agent used.
+   *  - Tier 1 applied no bound at all, so an empty or over-50-char type reached an API
+   *    that requires min(1).max(50) — rejecting the entire save, not just one record.
+   *
+   * Case-normalizes because the convention is snake_case throughout; without it 'Fear'
+   * and 'fear' become distinct types, distinct dashboard badges, and distinct filter
+   * results. Safe to apply to a live corpus: censused 2026-08-09 over all 3515 rows in
+   * the 2026-07-31 dump (both INSERT statements, extraction control-matched 3515/3515),
+   * 307 distinct record types, **zero** carrying any uppercase — so no historical row
+   * changes meaning under this rule. Two independent reasons it stays safe if one ever
+   * appears: the column collates `utf8mb4_0900_ai_ci`, which is case-insensitive, so
+   * SQL filters and GROUP BY do not split on case either way. The residual exposure is
+   * application-layer exact-match — e.g. the dashboard tallies types into a JS Map
+   * (AnalysisSummaryCards.tsx:41), which IS case-sensitive — and that is precisely what
+   * normalizing here prevents. Anything unusable becomes
+   * the fallback with the original preserved in data.rawRecordType — the same courtesy
+   * sanitizeRecordSeverity extends to severity, so the save always goes through and
+   * nothing is lost.
+   */
+  private sanitizeRecordType(record: AnalysisRecordInput): AnalysisRecordInput {
+    const raw: unknown = record.recordType;
+
+    // Only a genuine string can be a record type. Tier 1 spreads the agent's record
+    // verbatim, so a fence emitting `"recordType": {}` arrives here as an object — and a
+    // bare String() would turn it into "[object object]", 15 characters, comfortably
+    // inside the bound, stored as though the agent had declared it. That is worse than
+    // the behaviour this method replaces: the old code sent the non-string to the API and
+    // got a loud ZodError, whereas a fabricated type is silent and lands in the very
+    // corpus this normalization exists to make measurable. Arrays ("a,b") and numbers
+    // ("123") fail the same way. Non-strings take the fallback and keep their original
+    // shape in data.rawRecordType.
+    const isUsable = typeof raw === 'string';
+    const normalized = isUsable ? raw.trim().toLowerCase() : '';
+
+    if (normalized.length > 0 && normalized.length <= ANALYSIS_RECORD_TYPE_MAX_LENGTH) {
+      return normalized === raw ? record : { ...record, recordType: normalized };
+    }
+
+    // Preserve only when there was something to preserve. A missing, null or blank type
+    // carries no information, and writing rawRecordType:"" onto every such record would
+    // be noise in the one field consumers read for the record's actual content. A
+    // non-string always carries information — it is a bug in the emitting agent, and the
+    // shape is the evidence — so it is serialized rather than dropped.
+    const hasContent = isUsable ? normalized.length > 0 : raw != null;
+    const preserved = hasContent
+      ? { rawRecordType: isUsable ? raw : safeStringify(raw) }
+      : {};
+    return {
+      ...record,
+      recordType: FALLBACK_RECORD_TYPE,
+      data: { ...(record.data ?? {}), ...preserved },
+    };
+  }
+
+  /**
+   * Bound the record title to the API's `min(1).max(500)` without discarding it.
+   *
+   * Title is prose, so an over-length one is truncated rather than replaced — a clipped
+   * title still identifies the finding, where a generic fallback would not. The full text
+   * is kept in data.rawTitle so nothing is lost. A missing, blank or non-string title has
+   * no prose to salvage and takes the fallback instead; non-strings keep their shape in
+   * data.rawTitle for the same reason recordType does — `String({})` would otherwise store
+   * "[object Object]" as the human-readable title of the record.
+   */
+  private sanitizeRecordTitle(record: AnalysisRecordInput): AnalysisRecordInput {
+    const raw: unknown = record.title;
+    const isUsable = typeof raw === 'string';
+    const trimmed = isUsable ? raw.trim() : '';
+
+    if (trimmed.length > 0 && trimmed.length <= ANALYSIS_RECORD_TITLE_MAX_LENGTH) {
+      return trimmed === raw ? record : { ...record, title: trimmed };
+    }
+
+    if (trimmed.length > ANALYSIS_RECORD_TITLE_MAX_LENGTH) {
+      return {
+        ...record,
+        title: `${trimmed.slice(0, ANALYSIS_RECORD_TITLE_MAX_LENGTH - 1)}…`,
+        data: { ...(record.data ?? {}), rawTitle: trimmed },
+      };
+    }
+
+    const preserved = !isUsable && raw != null ? { rawTitle: safeStringify(raw) } : {};
+    return {
+      ...record,
+      title: FALLBACK_RECORD_TITLE,
+      data: { ...(record.data ?? {}), ...preserved },
+    };
+  }
+
+  /**
+   * Bound the record classification to the API's `max(50)`, which is nullish-optional.
+   *
+   * Unlike title, classification is a categorical label — a truncated category is a
+   * *different* category, and silently inventing one is worse than declaring none. So an
+   * over-length or non-string classification becomes null with the original preserved in
+   * data.rawClassification, mirroring how sanitizeRecordSeverity handles an off-vocabulary
+   * severity. A blank classification is simply null: the field is optional and there is
+   * nothing to preserve.
+   */
+  private sanitizeRecordClassification(record: AnalysisRecordInput): AnalysisRecordInput {
+    const raw: unknown = record.classification;
+    if (raw == null) return record;
+
+    const isUsable = typeof raw === 'string';
+    const trimmed = isUsable ? raw.trim() : '';
+
+    if (trimmed.length > 0 && trimmed.length <= ANALYSIS_RECORD_CLASSIFICATION_MAX_LENGTH) {
+      return trimmed === raw ? record : { ...record, classification: trimmed };
+    }
+
+    const preserved = trimmed.length > 0
+      ? { rawClassification: trimmed }
+      : (isUsable ? {} : { rawClassification: safeStringify(raw) });
+    return {
+      ...record,
+      classification: null,
+      data: { ...(record.data ?? {}), ...preserved },
+    };
+  }
+
+  /**
+   * Coerce record data onto the API's `z.record(z.string(), z.unknown())`.
+   *
+   * This is the last field in the per-record contract with no guard, and it fails harder
+   * than it looks. Measured against the SDK's own schema: a plain object is accepted, and
+   * **every other shape is rejected** — arrays (including `[]`), null, undefined, and
+   * primitives alike. Because the SDK validates the whole `analysisRecords` array before
+   * the network, any one of those loses the entire run's analysis, exactly like an
+   * over-length title.
+   *
+   * The array case is not hypothetical: the structured-output contract expresses data as
+   * `[{key, value}]` entries, and agents cross the wires between that and the object form.
+   * Tier 2 converted entries inline; Tier 1 did not, so a fenced record carrying the
+   * entries shape was a save-killer. The conversion moved here so all four tiers get it.
+   *
+   * Anything genuinely unrepresentable is preserved under a single `rawData` key rather
+   * than dropped — including a non-entries array, which the old inline conversion turned
+   * into `{undefined: undefined}` by mapping absent `.key` fields.
+   */
+  private sanitizeRecordData(record: AnalysisRecordInput): AnalysisRecordInput {
+    const raw: unknown = record.data;
+
+    if (raw == null) {
+      return { ...record, data: {} };
+    }
+
+    if (Array.isArray(raw)) {
+      if (raw.length === 0) return { ...record, data: {} };
+      const isEntries = raw.every(
+        (e): e is { key: unknown; value: unknown } =>
+          !!e && typeof e === 'object' && !Array.isArray(e) && 'key' in e,
+      );
+      return isEntries
+        ? { ...record, data: Object.fromEntries(raw.map(e => [String(e.key), e.value])) }
+        : { ...record, data: { rawData: raw } };
+    }
+
+    if (typeof raw !== 'object') {
+      return { ...record, data: { rawData: raw } };
+    }
+
+    return record;
   }
 
   private collectAnalysisRecords(
@@ -525,7 +752,13 @@ export class AnalysisSummaryExtractor {
     // Tier 4: auto-generated from recommendations
     return result.recommendations.map(rec => ({
       agentName: result.name,
-      recordType: rec.failureDomain && VALID_RECORD_TYPES.has(rec.failureDomain) ? rec.failureDomain : 'evidence_finding',
+      // Always the fallback. This previously read
+      //   rec.failureDomain && VALID_RECORD_TYPES.has(rec.failureDomain) ? rec.failureDomain : ...
+      // which could never take the first branch: failureDomain is STR|SEM|PRA|EPI and no
+      // failure domain was ever a member of that set. The intent was presumably to carry the
+      // domain through as a type; it never did, and domain is not a record type anyway —
+      // it stays available on the record via data.failureMode and the classification code.
+      recordType: FALLBACK_RECORD_TYPE,
       recordId: this.safeRecordId(rec.failureCode, `${result.name}/${rec.title}`),
       title: rec.title,
       classification: rec.failureCode ?? null,
@@ -547,7 +780,11 @@ export class AnalysisSummaryExtractor {
 
   /**
    * Extract analysis records from structured output's analysisRecords array.
-   * Converts entries-based data [{key, value}] to the API's Record<string, unknown> format.
+   *
+   * Entries-based data (`[{key, value}]`) used to be converted here, which meant Tier 1
+   * never got the conversion and a fenced record carrying that shape was a save-killer.
+   * It now happens in sanitizeRecordData, for every tier — and handles the non-entries
+   * array this inline version silently turned into `{undefined: undefined}`.
    */
   private extractStructuredRecords(rawJson: unknown, agentName: string): AnalysisRecordInput[] {
     const raw = this.extractJsonField(rawJson, 'analysisRecords', 'analysis_records');
@@ -556,19 +793,22 @@ export class AnalysisSummaryExtractor {
     return raw.filter((r): r is Record<string, unknown> =>
       r && typeof r === 'object' && 'recordType' in r && 'recordId' in r && 'title' in r,
     ).map(r => {
-      // Convert entries-based data to flat record
-      const dataEntries = Array.isArray(r.data)
-        ? Object.fromEntries((r.data as Array<{ key: string; value: string }>).map(e => [e.key, e.value]))
-        : (r.data as Record<string, unknown>) ?? {};
-
+      // recordType, title, classification and data are forwarded UNCONVERTED — deliberately.
+      // The tier filter admits any record carrying these keys, whatever their JSON type,
+      // and a String() here would erase that type before the sanitizers can see it:
+      // String({}) is "[object Object]", which every downstream bound then happily accepts
+      // and stores as though the agent had declared it. The sanitizers applied in
+      // buildAnalysisRecords are the single place these fields are typed and bounded, for
+      // all four tiers at once. The casts below are the price of that ordering; they are
+      // safe precisely because nothing consumes these values before sanitization.
       return {
         agentName,
-        recordType: VALID_RECORD_TYPES.has(String(r.recordType)) ? String(r.recordType) : 'evidence_finding',
-        recordId: this.safeRecordId(String(r.recordId), `${agentName}/${r.title}`),
-        title: String(r.title),
-        classification: r.classification ? String(r.classification) : null,
+        recordType: r.recordType as string,
+        recordId: this.safeRecordId(String(r.recordId), `${agentName}/${String(r.title)}`),
+        title: r.title as string,
+        classification: (r.classification ?? null) as string | null,
         severity: r.severity ? String(r.severity) : null,
-        data: dataEntries,
+        data: r.data as Record<string, unknown>,
       };
     });
   }

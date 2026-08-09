@@ -226,6 +226,47 @@ describe('CommandExecutor', () => {
       expect(result.metrics.totalEffectiveTokens).toBe(1200);
       expect(result.metrics.model).toBe('mixed');
     });
+
+    // costusd spec v0.6.0 criterion 1c.6 — this command-level rollup is the
+    // SOURCE of the per-command costUsd the workflow summary reads (census
+    // D3); polarity is the inverse of token sums (ANY unpriced child poisons).
+    it('rolls up costUsd when all agents are priced', async () => {
+      const results = [
+        makeValidatorResult({
+          name: 'agent-a',
+          metrics: { inputTokens: 500, outputTokens: 200, totalEffectiveTokens: 750, durationMs: 1000, model: 'sonnet', costUsd: 0.25 },
+        }),
+        makeValidatorResult({
+          name: 'agent-b',
+          metrics: { inputTokens: 300, outputTokens: 100, totalEffectiveTokens: 450, durationMs: 800, model: 'sonnet', costUsd: 0.1 },
+        }),
+      ];
+      const executor = new CommandExecutor(makeAgentExecutor(results), makeRegistry());
+      const result = await executor.execute(
+        makeCommandDef({ agents: ['agent-a@1.0.0', 'agent-b@1.0.0'] }),
+        { target: '/tmp/test' },
+      );
+      expect(result.metrics.costUsd).toBeCloseTo(0.35, 10);
+    });
+
+    it('costUsd rollup is undefined when ANY agent is unpriced — never a partial sum', async () => {
+      const results = [
+        makeValidatorResult({
+          name: 'agent-a',
+          metrics: { inputTokens: 500, outputTokens: 200, totalEffectiveTokens: 750, durationMs: 1000, model: 'sonnet', costUsd: 0.25 },
+        }),
+        makeValidatorResult({
+          name: 'agent-b',
+          metrics: { inputTokens: 300, outputTokens: 100, totalEffectiveTokens: 450, durationMs: 800, model: 'sonnet' },
+        }),
+      ];
+      const executor = new CommandExecutor(makeAgentExecutor(results), makeRegistry());
+      const result = await executor.execute(
+        makeCommandDef({ agents: ['agent-a@1.0.0', 'agent-b@1.0.0'] }),
+        { target: '/tmp/test' },
+      );
+      expect(result.metrics.costUsd).toBeUndefined();
+    });
   });
 
   describe('threshold boundary conditions', () => {
