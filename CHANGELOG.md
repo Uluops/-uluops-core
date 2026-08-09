@@ -8,6 +8,19 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) 
 
 ## [0.36.0] - 2026-08-09
 
+### Dependencies
+
+- **`@uluops/ops-sdk` 5.10.0 → 5.13.0** (exact pin). Additive across all three minors, with
+  no change to the per-record contract this release's sanitizers are written against —
+  verified field by field before bumping: `recordType` `min(1).max(50)`, `recordId`
+  `min(1).max(100)`, `title` `min(1).max(500)`, `classification` `max(50).nullish()`,
+  `data` `z.record(z.string(), z.unknown())`, array capped at 100. Every constant in
+  `AnalysisSummaryExtractor` still mirrors its counterpart exactly.
+
+  What the range brings: `clusterKey` on `RecommendationInput` (5.12.0, within-run
+  convergence) and `mergedIntoIssueId` on issue responses (5.13.0), which makes "where did
+  this issue go?" answerable in one call instead of ending at `status: merged`.
+
 ### Fixed
 
 - **`recordType` is no longer narrowed against a client-side vocabulary, and the
