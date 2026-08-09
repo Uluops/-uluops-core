@@ -545,6 +545,402 @@ describe('AnalysisSummaryExtractor', () => {
     });
   });
 
+  // Record TYPE is deliberately not a closed vocabulary. ops-api widened it from an enum to a
+  // bounded string so registry-defined agents can emit new shapes without an API release
+  // (ops-uluops-api/CHANGELOG.md:1743). This module used to re-narrow it client-side against a
+  // 47-value set, and only on Tier 2 — so the same record survived or was flattened to
+  // evidence_finding depending on which channel the agent used, with the original preserved
+  // nowhere. These tests pin the vocabulary-open behaviour and the tier symmetry.
+  describe('record type sanitization', () => {
+    const fenceWith = (analysis: Record<string, unknown>) =>
+      `# Report\n\n\`\`\`json\n${JSON.stringify({ agent: {}, result: {}, analysis })}\n\`\`\`\n`;
+
+    it('preserves an off-catalog record type on Tier 2 instead of flattening it', () => {
+      // breakdown_event and reification are real, heavily-emitted types that were absent from
+      // the old 47-value set. Before this change both became evidence_finding here.
+      const result = makeAgentResult({
+        rawJson: {
+          analysisRecords: [
+            { recordType: 'breakdown_event', recordId: 'B1', title: 'obtrusive', data: [] },
+            { recordType: 'reification', recordId: 'R1', title: 'svabhava', data: [] },
+          ],
+        },
+      });
+      const { records } = extractor.extract(result, makeResolvedDefinition());
+      expect(records.map(r => r.recordType)).toEqual(['breakdown_event', 'reification']);
+      expect(records[0].data).not.toHaveProperty('rawRecordType');
+    });
+
+    it('applies the same policy on Tier 1 and Tier 2 — the asymmetry is the bug', () => {
+      const viaFence = makeAgentResult({
+        rawOutput: fenceWith({
+          records: [{ recordType: 'threshold_verdict', recordId: 'T1', title: 'fence', data: {} }],
+        }),
+      });
+      const viaStructured = makeAgentResult({
+        rawJson: {
+          analysisRecords: [{ recordType: 'threshold_verdict', recordId: 'T2', title: 'structured', data: [] }],
+        },
+      });
+      const t1 = extractor.extract(viaFence, makeResolvedDefinition()).records[0];
+      const t2 = extractor.extract(viaStructured, makeResolvedDefinition()).records[0];
+      expect(t1.recordType).toBe('threshold_verdict');
+      expect(t2.recordType).toBe(t1.recordType);
+    });
+
+    it('normalizes case and surrounding whitespace so variants do not fragment', () => {
+      const result = makeAgentResult({
+        rawJson: {
+          analysisRecords: [
+            { recordType: '  Fear  ', recordId: 'F1', title: 'cased', data: [] },
+            { recordType: 'fear', recordId: 'F2', title: 'plain', data: [] },
+          ],
+        },
+      });
+      const { records } = extractor.extract(result, makeResolvedDefinition());
+      expect(records.map(r => r.recordType)).toEqual(['fear', 'fear']);
+      expect(records[0].data).not.toHaveProperty('rawRecordType');
+    });
+
+    it('falls back on an over-length type and preserves the original, on BOTH tiers', () => {
+      // 50 is the storage bound (VARCHAR(50), and min(1).max(50) in the API + MCP schemas).
+      // Tier 1 previously applied no bound at all, so this value reached the API and its
+      // rejection killed the entire save — not just the offending record.
+      const tooLong = 'x'.repeat(51);
+      const viaFence = makeAgentResult({
+        rawOutput: fenceWith({ records: [{ recordType: tooLong, recordId: 'L1', title: 'fence', data: {} }] }),
+      });
+      const viaStructured = makeAgentResult({
+        rawJson: { analysisRecords: [{ recordType: tooLong, recordId: 'L2', title: 'structured', data: [] }] },
+      });
+      for (const result of [viaFence, viaStructured]) {
+        const rec = extractor.extract(result, makeResolvedDefinition()).records[0];
+        expect(rec.recordType).toBe('evidence_finding');
+        expect(rec.data).toMatchObject({ rawRecordType: tooLong });
+      }
+    });
+
+    it('accepts a type exactly at the 50-char bound', () => {
+      const atBound = 'y'.repeat(50);
+      const result = makeAgentResult({
+        rawJson: { analysisRecords: [{ recordType: atBound, recordId: 'A1', title: 'boundary', data: [] }] },
+      });
+      const { records } = extractor.extract(result, makeResolvedDefinition());
+      expect(records[0].recordType).toBe(atBound);
+      expect(records[0].data).not.toHaveProperty('rawRecordType');
+    });
+
+    it('falls back without rawRecordType noise when there was nothing to preserve', () => {
+      const result = makeAgentResult({
+        rawJson: {
+          analysisRecords: [
+            { recordType: '', recordId: 'E1', title: 'empty', data: [] },
+            { recordType: null, recordId: 'N1', title: 'null', data: [] },
+          ],
+        },
+      });
+      const { records } = extractor.extract(result, makeResolvedDefinition());
+      expect(records.map(r => r.recordType)).toEqual(['evidence_finding', 'evidence_finding']);
+      // Regression guard: String(null) is the 4-char string "null", which the bound accepts.
+      expect(records.map(r => r.recordType)).not.toContain('null');
+      for (const rec of records) expect(rec.data).not.toHaveProperty('rawRecordType');
+    });
+
+    it('does not fabricate a type from a non-string value', () => {
+      // Tier 1 spreads the agent's record verbatim off JSON.parse, so recordType can be any
+      // JSON type. A bare String() would turn {} into "[object object]" — 15 chars, inside
+      // the bound — and store it as though declared. The old code sent the non-string to the
+      // API and died loudly; a fabricated type is worse, because it is silent AND it lands
+      // in the corpus this normalization exists to make measurable.
+      const fenceWithType = (recordType: unknown) =>
+        `# R\n\n\`\`\`json\n${JSON.stringify({
+          agent: {}, result: {},
+          analysis: { records: [{ recordType, recordId: 'X1', title: 't', data: {} }] },
+        })}\n\`\`\`\n`;
+
+      const cases: Array<[unknown, string]> = [
+        [{}, '{}'],
+        [{ name: 'fear' }, '{"name":"fear"}'],
+        [['a', 'b'], '["a","b"]'],
+        [123, '123'],
+        [true, 'true'],
+      ];
+
+      for (const [value, expectedRaw] of cases) {
+        const { records } = extractor.extract(
+          makeAgentResult({ rawOutput: fenceWithType(value) }),
+          makeResolvedDefinition(),
+        );
+        expect(records[0].recordType).toBe('evidence_finding');
+        expect(records[0].recordType).not.toContain('object');
+        expect(records[0].data).toMatchObject({ rawRecordType: expectedRaw });
+      }
+    });
+
+    it('lands both rawSeverity and rawRecordType when a record fails both checks', () => {
+      // The two sanitizers run in sequence over the same `data` object
+      // (.map(sanitizeRecordSeverity).map(sanitizeRecordType)). Severity runs first, so
+      // the type sanitizer spreads a `data` that already carries rawSeverity. Neither
+      // may drop the other's preserved value, and the agent's own keys must survive both.
+      const result = makeAgentResult({
+        rawJson: {
+          analysisRecords: [{
+            recordType: 'z'.repeat(51),
+            recordId: 'D1',
+            title: 'both invalid',
+            severity: 'structural',
+            data: [{ key: 'note', value: 'agent payload' }],
+          }],
+        },
+      });
+      const { records } = extractor.extract(result, makeResolvedDefinition());
+      expect(records[0].recordType).toBe('evidence_finding');
+      expect(records[0].severity).toBeNull();
+      expect(records[0].data).toEqual({
+        note: 'agent payload',
+        rawSeverity: 'structural',
+        rawRecordType: 'z'.repeat(51),
+      });
+    });
+
+    it('sanitizer wins when the agent already used the key rawRecordType', () => {
+      // Documented, accepted collision: the preserved value is written after the agent's
+      // data is spread, so on a key clash the sanitizer's value survives. Same shape as
+      // the pre-existing rawSeverity behaviour. Pinned so a change here is deliberate.
+      const result = makeAgentResult({
+        rawJson: {
+          analysisRecords: [{
+            recordType: 'q'.repeat(51),
+            recordId: 'C1',
+            title: 'clobber',
+            data: [{ key: 'rawRecordType', value: 'agent-supplied' }],
+          }],
+        },
+      });
+      const { records } = extractor.extract(result, makeResolvedDefinition());
+      expect(records[0].data).toMatchObject({ rawRecordType: 'q'.repeat(51) });
+    });
+
+    it('does not fabricate a type or title from a non-string on Tier 2 either', () => {
+      // The Tier 1 fix alone was not enough. extractStructuredRecords used to do
+      // String(r.recordType) and String(r.title), which erased the JSON type before the
+      // sanitizers could see it — so Tier 2 kept fabricating "[object object]" while Tier 1
+      // was clean. Fixing the cited instance and not its sibling path is the exact pattern
+      // this file's other comments keep warning about.
+      const { records } = extractor.extract(
+        makeAgentResult({
+          rawJson: {
+            analysisRecords: [
+              { recordType: {}, recordId: 'X1', title: { t: 1 }, data: [] },
+              { recordType: ['a', 'b'], recordId: 'X2', title: 42, data: [] },
+            ],
+          },
+        }),
+        makeResolvedDefinition(),
+      );
+      for (const rec of records) {
+        expect(rec.recordType).toBe('evidence_finding');
+        expect(rec.recordType).not.toContain('object');
+        expect(rec.title).not.toContain('object');
+        expect(rec.title).toBe('(untitled record)');
+      }
+    });
+
+    it('still yields evidence_finding for Tier 4 recommendation records', () => {
+      // Tier 4 previously tested VALID_RECORD_TYPES.has(failureDomain), which could never be
+      // true — failureDomain is STR|SEM|PRA|EPI and no domain was in that set. Behaviour is
+      // unchanged; the dead branch is gone.
+      const result = makeAgentResult({
+        recommendations: [
+          { agent: 'test-validator', title: 'tier-4', priority: 'suggested', failureDomain: 'STR' },
+        ],
+      });
+      const { records } = extractor.extract(result, makeResolvedDefinition());
+      expect(records[0].recordType).toBe('evidence_finding');
+    });
+  });
+
+  // title and classification were the last two agent-authored fields with no bound. The SDK
+  // validates the WHOLE analysisRecords array client-side before the network, so one
+  // over-length value threw a ZodError and lost the entire run's analysis rather than one
+  // record — the same failure that produced sanitizeRecordSeverity and sanitizeRecordType.
+  describe('record title and classification sanitization', () => {
+    const t2 = (overrides: Record<string, unknown>) =>
+      extractor.extract(
+        makeAgentResult({
+          rawJson: {
+            analysisRecords: [{ recordType: 'fear', recordId: 'R1', title: 't', data: [], ...overrides }],
+          },
+        }),
+        makeResolvedDefinition(),
+      ).records[0];
+
+    it('accepts a title exactly at the 500-char bound untouched', () => {
+      const atBound = 'y'.repeat(500);
+      const rec = t2({ title: atBound });
+      expect(rec.title).toBe(atBound);
+      expect(rec.data).not.toHaveProperty('rawTitle');
+    });
+
+    it('truncates an over-length title and keeps the full text', () => {
+      // Prose, so truncate rather than replace — a clipped title still identifies the
+      // finding. The result must be exactly at the bound, not one over.
+      const tooLong = 'z'.repeat(501);
+      const rec = t2({ title: tooLong });
+      expect(rec.title).toHaveLength(500);
+      expect(rec.title.endsWith('…')).toBe(true);
+      expect(rec.data).toMatchObject({ rawTitle: tooLong });
+    });
+
+    it('falls back on a blank or whitespace-only title', () => {
+      for (const blank of ['', '   ']) {
+        const rec = t2({ title: blank });
+        expect(rec.title).toBe('(untitled record)');
+        expect(rec.data).not.toHaveProperty('rawTitle');
+      }
+    });
+
+    it('nulls an over-length classification rather than truncating it', () => {
+      // Categorical, not prose: a truncated category is a DIFFERENT category, so inventing
+      // one is worse than declaring none.
+      const tooLong = 'd'.repeat(51);
+      const rec = t2({ classification: tooLong });
+      expect(rec.classification).toBeNull();
+      expect(rec.data).toMatchObject({ rawClassification: tooLong });
+    });
+
+    it('accepts a classification exactly at the 50-char bound', () => {
+      const atBound = 'c'.repeat(50);
+      const rec = t2({ classification: atBound });
+      expect(rec.classification).toBe(atBound);
+      expect(rec.data).not.toHaveProperty('rawClassification');
+    });
+
+    it('leaves an absent classification null without adding noise', () => {
+      const rec = t2({ classification: null });
+      expect(rec.classification ?? null).toBeNull();
+      expect(rec.data).not.toHaveProperty('rawClassification');
+    });
+
+    it('keeps every field inside the SDK contract when all three are over-length at once', () => {
+      // The whole point: the SDK validates the entire array, so one bad field loses the run.
+      const rec = t2({
+        recordType: 'q'.repeat(90),
+        title: 'z'.repeat(900),
+        classification: 'd'.repeat(120),
+      });
+      expect(rec.recordType.length).toBeLessThanOrEqual(50);
+      expect(rec.title.length).toBeLessThanOrEqual(500);
+      expect(rec.classification === null || rec.classification.length <= 50).toBe(true);
+      expect(rec.data).toMatchObject({
+        rawRecordType: 'q'.repeat(90),
+        rawTitle: 'z'.repeat(900),
+        rawClassification: 'd'.repeat(120),
+      });
+    });
+
+    it('applies the same title bound on Tier 1 and Tier 4', () => {
+      const tooLong = 'w'.repeat(600);
+      const viaFence = extractor.extract(
+        makeAgentResult({
+          rawOutput: `# R\n\n\`\`\`json\n${JSON.stringify({
+            agent: {}, result: {},
+            analysis: { records: [{ recordType: 'fear', recordId: 'T1', title: tooLong, data: {} }] },
+          })}\n\`\`\`\n`,
+        }),
+        makeResolvedDefinition(),
+      ).records[0];
+      const viaRecs = extractor.extract(
+        makeAgentResult({
+          recommendations: [{ agent: 'test-validator', title: tooLong, priority: 'suggested' }],
+        }),
+        makeResolvedDefinition(),
+      ).records[0];
+      for (const rec of [viaFence, viaRecs]) {
+        expect(rec.title).toHaveLength(500);
+        expect(rec.data).toMatchObject({ rawTitle: tooLong });
+      }
+    });
+  });
+
+  // data was the last field in the per-record contract with no guard, and it fails harder
+  // than the others: measured against the SDK's own z.record(z.string(), z.unknown()), a
+  // plain object is accepted and EVERY other shape is rejected — arrays including [], null,
+  // undefined and primitives alike. Since the SDK validates the whole array before the
+  // network, any of those loses the entire run's analysis.
+  describe('record data sanitization', () => {
+    const fenceWith = (analysis: Record<string, unknown>) =>
+      `# R\n\n\`\`\`json\n${JSON.stringify({ agent: {}, result: {}, analysis })}\n\`\`\`\n`;
+
+    const bothTiers = (data: unknown) => {
+      const rec = { recordType: 'fear', recordId: 'R1', title: 't', data };
+      return [
+        extractor.extract(makeAgentResult({ rawOutput: fenceWith({ records: [rec] }) }), makeResolvedDefinition()).records[0],
+        extractor.extract(makeAgentResult({ rawJson: { analysisRecords: [rec] } }), makeResolvedDefinition()).records[0],
+      ];
+    };
+
+    const isPlainObject = (v: unknown) => !!v && typeof v === 'object' && !Array.isArray(v);
+
+    it('yields a plain object for every input shape, on Tier 1 and Tier 2 alike', () => {
+      for (const shape of [{ a: 1 }, [{ key: 'k', value: 'v' }], ['a', 'b'], [], null, 'hello', 42]) {
+        for (const rec of bothTiers(shape)) {
+          expect(isPlainObject(rec.data), `shape ${JSON.stringify(shape)}`).toBe(true);
+        }
+      }
+    });
+
+    it('converts entries-based data on BOTH tiers, not just Tier 2', () => {
+      // The conversion used to live inline in extractStructuredRecords, so a fenced record
+      // carrying the entries shape reached the SDK as an array and killed the whole save.
+      for (const rec of bothTiers([{ key: 'status', value: 'confirmed' }, { key: 'n', value: 2 }])) {
+        expect(rec.data).toEqual({ status: 'confirmed', n: 2 });
+      }
+    });
+
+    it('preserves a non-entries array under rawData instead of mangling it', () => {
+      // The old inline conversion mapped absent .key fields and produced {undefined: undefined}.
+      for (const rec of bothTiers(['a', 'b'])) {
+        expect(rec.data).toEqual({ rawData: ['a', 'b'] });
+        expect(rec.data).not.toHaveProperty('undefined');
+        expect(rec.data).not.toHaveProperty('0');
+      }
+    });
+
+    it('maps empty array and null to an empty object, not to rawData noise', () => {
+      for (const shape of [[], null]) {
+        for (const rec of bothTiers(shape)) {
+          expect(rec.data).toEqual({});
+        }
+      }
+    });
+
+    it('normalizes data BEFORE the other sanitizers spread it', () => {
+      // Ordering is load-bearing: every other sanitizer preserves its rejected value by
+      // spreading record.data, and spreading an array yields {0:…, 1:…}. This record fails
+      // severity, type AND title while carrying array data — if data were normalized last,
+      // the preserved keys would land on an index-keyed object.
+      const [t1, t2] = [
+        extractor.extract(makeAgentResult({
+          rawOutput: fenceWith({ records: [{ recordType: 'q'.repeat(60), recordId: 'R1', title: '', severity: 'structural', data: ['x'] }] }),
+        }), makeResolvedDefinition()).records[0],
+        extractor.extract(makeAgentResult({
+          rawJson: { analysisRecords: [{ recordType: 'q'.repeat(60), recordId: 'R2', title: '', severity: 'structural', data: ['x'] }] },
+        }), makeResolvedDefinition()).records[0],
+      ];
+      for (const rec of [t1, t2]) {
+        expect(isPlainObject(rec.data)).toBe(true);
+        expect(rec.data).not.toHaveProperty('0');
+        expect(rec.data).toMatchObject({
+          rawData: ['x'],
+          rawSeverity: 'structural',
+          rawRecordType: 'q'.repeat(60),
+        });
+        expect(rec.title).toBe('(untitled record)');
+      }
+    });
+  });
+
   describe('record tier precedence', () => {
     const fenceWith = (analysis: Record<string, unknown>) =>
       `# Report\n\n\`\`\`json\n${JSON.stringify({ agent: {}, result: {}, analysis })}\n\`\`\`\n`;

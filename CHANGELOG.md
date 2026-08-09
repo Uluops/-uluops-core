@@ -6,6 +6,130 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) 
 
 ## [Unreleased]
 
+## [0.36.0] - 2026-08-09
+
+### Fixed
+
+- **`recordType` is no longer narrowed against a client-side vocabulary, and the
+  four extraction tiers now apply one policy instead of two.**
+
+  `AnalysisSummaryExtractor` held a 47-value `VALID_RECORD_TYPES` set and coerced
+  anything outside it to `evidence_finding` — silently, preserving the original
+  nowhere, and **only on Tier 2** (structured output). Tier 1 (the JSON code fence)
+  passed the identical value through untouched. The same finding therefore survived
+  or was flattened depending purely on which channel the agent emitted it through.
+
+  **This is a behaviour change with no signature change**, which is why it is
+  recorded here rather than being visible in a diff a consumer would notice:
+  `recordType` keeps its type and its bounds, and starts carrying values that
+  previously never reached the tracker. Anything reading the field should expect a
+  materially wider set. Records whose type used to arrive as `evidence_finding` will
+  now arrive as whatever the agent actually declared.
+
+  The set was a vestige of an enum the platform had already removed on purpose.
+  ops-api widened `recordType` from `z.enum(...)` to a bounded string so
+  "registry-defined agents can introduce new record types without requiring an API
+  release to extend the enum" (`ops-uluops-api/CHANGELOG.md:1743`; same rationale at
+  `ops-uluops-mcp/src/types/schemas.ts:71-78`). Re-narrowing it here contradicted
+  that decision and destroyed the distinction on the way to a `VARCHAR(50)` column
+  that was always willing to store it. Measured on the 2026-07-31 corpus: **307
+  distinct record types stored, 271 of them outside the set, on 58.5% of all rows.**
+
+  Replaced by `sanitizeRecordType`, applied uniformly to every tier at the same seam
+  as `sanitizeRecordSeverity`. It enforces the storage contract and nothing else —
+  trim, lowercase, and a 1–50 char bound. Anything unusable becomes
+  `evidence_finding` with the original preserved in `data.rawRecordType`, the same
+  courtesy severity already received via `data.rawSeverity`.
+
+  Two further defects fixed in passing:
+  - **Tier 1 applied no bound at all.** An empty or over-50-char type went straight
+    to an API requiring `min(1).max(50)`, whose rejection failed the *entire save*,
+    not just the offending record. Now bounded like every other tier.
+  - **Tier 4's type selection was dead code.** It read
+    `VALID_RECORD_TYPES.has(rec.failureDomain)`, but `failureDomain` is
+    `STR|SEM|PRA|EPI` and no domain was ever a member of that set, so the branch
+    could never be taken. Behaviour is unchanged (`evidence_finding`); the
+    unreachable condition is gone.
+
+  Lowercasing is new normalization, not a pass-through: `Fear` and `fear` would
+  otherwise persist as distinct types, distinct dashboard badges and distinct filter
+  results. The convention is snake_case throughout and the stored corpus is already
+  uniformly lowercase.
+
+  Note this does not by itself tell any agent *which* types to emit — the
+  `[record_type from vocabulary]` placeholder in rendered prompts still points at a
+  vocabulary with no source (`record_types` is in 0 of 249 definitions and 0 of 4 ADL
+  schema versions). This change stops **this writer's four tiers** destroying what agents
+  emit through them. It does not cover the harness/MCP `save_run` path, where the
+  orchestrator itemizes records by hand and submits without normalization — so a
+  normalized/unnormalized split now exists between core-written and hand-written rows.
+
+- **Non-string record types and titles no longer become fabricated values.**
+
+  `recordType` and `title` arrive from `JSON.parse` of model output and can be any JSON
+  type. Both were stringified before being bounded, so `{}` became `"[object Object]"` —
+  inside every downstream bound, and stored as though the agent had declared it. That is
+  worse than the behaviour it replaced: the old path sent the non-string to the API and got
+  a loud `ZodError`, whereas a fabricated value is silent and lands in the corpus this
+  normalization exists to make measurable.
+
+  Both are now type-checked before bounding, with the original kept in `data.rawRecordType`
+  / `data.rawTitle` via a throw-safe stringify (guarded against circular structures, capped
+  at 200 chars).
+
+  **Corrected in the same cycle:** the first version of this fix covered Tier 1 only.
+  `extractStructuredRecords` still did `String(r.recordType)` and `String(r.title)`, which
+  erased the JSON type before the sanitizers could inspect it — so Tier 2 kept fabricating
+  while Tier 1 was clean, which is precisely the per-channel divergence the entry above
+  indicts. Tier 2 now forwards these fields unconverted and the sanitizers are the single
+  place they are typed and bounded.
+
+- **`title` and `classification` are now bounded, closing the last two unguarded fields.**
+
+  The ops-sdk validates the *entire* `analysisRecords` array client-side before the network.
+  A single over-length value therefore threw a `ZodError` and lost **the whole run's
+  analysis**, not the offending record. `recordId` had been defended since it was added
+  (`safeRecordId`), and `severity` and `recordType` were defended above — `title` and
+  `classification` were the two left raw, which made the guarantee only as strong as its
+  weakest field. Measured before the fix: `title` was a bare pass-through on Tier 2 and
+  Tier 4, and `classification` was unbounded on every tier.
+
+  The two are treated differently on purpose:
+  - **`title` is prose**, so an over-length one is truncated to the 500-char bound with the
+    full text preserved in `data.rawTitle`. A clipped title still identifies the finding.
+  - **`classification` is categorical**, so an over-length one becomes `null` with the
+    original in `data.rawClassification`. A truncated category is a *different* category,
+    and silently inventing one is worse than declaring none — the same reasoning
+    `sanitizeRecordSeverity` already applies to an off-vocabulary severity.
+
+  A blank or missing title falls back to `(untitled record)`, since the field is required
+  and non-empty at the API; a blank classification is simply `null`, since it is optional.
+
+  All four sanitizers now run at one seam in `buildAnalysisRecords`, so every tier gets
+  identical treatment by construction rather than by remembering.
+
+- **`data` is normalized to a plain object, closing the last field in the contract.**
+
+  Measured against the SDK's own `z.record(z.string(), z.unknown())`: a plain object is
+  accepted and **every other shape is rejected** — arrays *including `[]`*, `null`,
+  `undefined`, and primitives alike. So this was not shape-mangling, it was another
+  whole-save killer.
+
+  The array case was live, not hypothetical. The structured-output contract expresses data
+  as `[{key, value}]` entries, and the conversion existed only inside
+  `extractStructuredRecords` — so Tier 2 handled it and **Tier 1 did not**, making a fenced
+  record carrying the entries shape a save-killer. The conversion moved to
+  `sanitizeRecordData`, which also handles the non-entries array the old inline version
+  silently turned into `{undefined: undefined}` by mapping absent `.key` fields. Entries
+  convert, other arrays and primitives are preserved under `rawData`, empty array and null
+  become `{}`.
+
+  **`sanitizeRecordData` runs FIRST and the order is load-bearing.** Every other sanitizer
+  preserves its rejected value by spreading `record.data`, and spreading an array yields
+  `{0: …, 1: …}`. Normalizing data up front is what makes those spreads safe. This is
+  enforced by a test that fails when the call is moved later, rather than asserted in a
+  comment.
+
 ## [0.35.0] - 2026-07-22
 
 ### Changed

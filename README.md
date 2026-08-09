@@ -454,7 +454,17 @@ On the auto-tracking path, a failed submission (e.g. a free-tier `402 PROJECT_LI
 
 - `systemMetrics` carries the agent's **cognitive measurements only** — its analysis-block `system_metrics`, else structured-output `domainMetrics`, else `null`. Execution telemetry (tokens, model, duration) is never merged in; it travels on `agents[]`.
 - Extraction facts (`extraction_confidence`, `extraction_method`) are epistemic facts about the parse and merge into `epistemicAssessment` — the agent's own keys always win.
-- Record `severity` is sanitized onto the tracker enum (`critical`/`high`/`medium`/`low`/`info`): enum values are case-normalized; anything else (register-style severities like `structural` or `NOTABLE`) becomes `null` with the original preserved as `data.rawSeverity`. One off-vocabulary record can no longer reject the entire submission.
+- **Every agent-authored field on a record is sanitized against the API's storage contract, at one seam, for all four extraction tiers** (v0.36.0). The tracker validates the *whole* `analysisRecords` array before the network, so a single out-of-contract value used to lose the entire run's analysis rather than one record. Each field is normalized in the way that preserves the most meaning, and anything rejected is kept under a `raw*` key rather than dropped:
+
+  | Field | Contract | On violation |
+  |---|---|---|
+  | `severity` | the tracker enum | case-normalized; register-style values (`structural`, `NOTABLE`) → `null`, original in `data.rawSeverity` |
+  | `recordType` | non-empty, ≤50 | trimmed and lowercased; **no vocabulary check** — see below; unusable → `evidence_finding`, original in `data.rawRecordType` |
+  | `title` | non-empty, ≤500 | prose, so **truncated** to the bound with the full text in `data.rawTitle`; blank → `(untitled record)` |
+  | `classification` | ≤50, optional | categorical, so **nulled** rather than truncated — a clipped category is a different category — original in `data.rawClassification` |
+  | `data` | a plain object | entries-form `[{key,value}]` converted; any other array, primitive or `null` → `{}` or `{ rawData }` |
+
+  `recordType` is deliberately **not** checked against a fixed vocabulary. The tracker stores it as a bounded string so registry-defined agents can emit new record shapes without a coordinated release; this package used to re-narrow it client-side against a 47-value set and silently rewrite anything outside it to `evidence_finding`. If you consume `recordType`, expect a materially wider set than before v0.36.0 — 307 distinct values were already in storage from other write paths.
 
 ### Usage Metrics
 
