@@ -989,6 +989,73 @@ describe('AnalysisSummaryExtractor', () => {
     });
   });
 
+  // `agentName` is the only way a record can be attributed to the agent that produced it.
+  // Existing coverage asserted it incidentally, inside tests about other things, and only
+  // on Tier 1 — so a tier that stopped setting it would go unnoticed. This block asserts it
+  // across all four, because the cascade means any ONE of them can be the path a given
+  // agent's records take, and a gap in one is invisible from the others.
+  //
+  // The failure this guards is not hypothetical: the MCP write path omitted `agent_name`
+  // from its tool schema and the tracker silently reattributed every record to the run
+  // definition (tracker run #4, 2026-08-09 — 32 records from two analysts stored under one
+  // definition name, all typed `validator`). Core sets the field on every tier today; this
+  // keeps it that way.
+  describe('agentName is set on every extraction tier', () => {
+    const fenceWith = (analysis: Record<string, unknown>) =>
+      `# R\n\n\`\`\`json\n${JSON.stringify({ agent: {}, result: {}, analysis })}\n\`\`\`\n`;
+
+    it.each([
+      [
+        'Tier 1 — analysis block',
+        { rawOutput: fenceWith({ records: [{ recordType: 'fear', recordId: 'F1', title: 't', data: {} }] }) },
+      ],
+      [
+        'Tier 2 — structured output',
+        { rawJson: { analysisRecords: [{ recordType: 'fear', recordId: 'F1', title: 't', data: [] }] } },
+      ],
+      [
+        'Tier 3 — exploration maps',
+        {
+          recommendations: [],
+          rawJson: {
+            explorationMaps: [{
+              metadata: { explorerName: 'democritus-explorer', framework: 'reductive' },
+              sections: [{ type: 'inventory', label: 'Atoms', entries: [{ key: 'A1', value: 'facade' }] }],
+            }],
+          },
+        },
+      ],
+      [
+        'Tier 4 — recommendations',
+        { recommendations: [{ agent: 'test-validator', title: 'tier-4', priority: 'suggested' as const }] },
+      ],
+    ])('%s', (_label, overrides) => {
+      const { records } = extractor.extract(
+        makeAgentResult(overrides as Parameters<typeof makeAgentResult>[0]),
+        makeResolvedDefinition(),
+      );
+      expect(records.length).toBeGreaterThan(0);
+      for (const rec of records) {
+        expect(rec.agentName).toBe('test-validator');
+      }
+    });
+
+    it('lets a record override the run-level agent, for multi-agent payloads', () => {
+      // Tier 1 honours a per-record agentName (`rec.agentName ?? result.name`). This is the
+      // capability the MCP layer could not use, because its schema never declared the field.
+      const result = makeAgentResult({
+        rawOutput: fenceWith({
+          records: [
+            { recordType: 'fear', recordId: 'F1', title: 'from anxiety-reader', agentName: 'anxiety-reader', data: {} },
+            { recordType: 'evidence_finding', recordId: 'B1', title: 'from the runner', data: {} },
+          ],
+        }),
+      });
+      const { records } = extractor.extract(result, makeResolvedDefinition());
+      expect(records.map((r) => r.agentName)).toEqual(['anxiety-reader', 'test-validator']);
+    });
+  });
+
   describe('analysis block from rawOutput JSON fence', () => {
     const jsonFence = (analysis: Record<string, unknown>) =>
       `# Report\n\nSome markdown...\n\n\`\`\`json\n${JSON.stringify({
