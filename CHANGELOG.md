@@ -6,6 +6,48 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) 
 
 ## [Unreleased]
 
+## [0.37.0] - 2026-08-11
+
+### Changed
+
+- **BREAKING — `engines.node` raised from `>=18.0.0` to `>=20.3.0`.** Node 18 was never
+  actually supported; the declaration was false and had been for some time. Every
+  `@uluops/*` dependency in this package's own tree already requires `>=20.3.0` —
+  `@uluops/ops-sdk@5.13.0`, `@uluops/sdk-core@0.15.0`, `@uluops/registry-sdk@0.47.1` — so
+  an install on Node 18 produced `EBADENGINE` warnings for the dependencies and then failed
+  in test. The bump makes the declared contract match the one that was already being
+  enforced by the tree.
+
+  **What a consumer sees:** installing on Node 18 now warns on `@uluops/core` itself rather
+  than only on its dependencies. Nothing that worked stops working — Node 18 installs were
+  already broken, just not at a layer that named this package. On a `0.x` version a minor is
+  the breaking slot, so caret-pinned consumers are minor-locked and will not receive this
+  automatically; that is deliberate.
+
+### Internal
+
+- **CI matrix `[18, 20, 22]` → `[20, 22, 24]`.** The 18 entry had been failing on `main` and
+  was testing a configuration the dependency tree cannot satisfy — a red that carried no
+  information. Node 24 is added because it is current LTS and was previously untested; the
+  floor (20) and 22 remain, so the matrix now spans exactly the supported range and nothing
+  outside it.
+
+### Security
+
+- **Four high-severity advisories resolved** via `npm audit fix` — all patch-level, no
+  package added or removed, no change to `package.json` dependencies:
+  `brace-expansion` 1.1.16→1.1.18 / 2.1.2→2.1.4 (DoS, GHSA-mh99-v99m-4gvg and
+  GHSA-rgw5-rvv9-x895), `js-yaml` 4.3.0→4.3.1 (quadratic CPU in `!!omap`, GHSA-5p4m-2wfm-xmqj),
+  `nanoid` 3.3.16→3.3.18 (GHSA-2v37-7h3g-55p8), `postcss` 8.5.22→8.5.26. All are dev-tooling
+  transitives (eslint, vite); none is reachable from published runtime code.
+
+  `npm audit --audit-level=high` — the gate CI runs — now exits clean. One **low**-severity
+  `esbuild` advisory remains (GHSA-g7r4-m6w7-qqqr, arbitrary file read via the dev server on
+  Windows). It is left unfixed deliberately: it requires a breaking upgrade, affects only the
+  dev server on a platform this package is not developed on, and is below the CI threshold.
+  Recorded here so its absence from a future audit is a decision someone made, not a fact
+  someone assumed.
+
 ## [0.36.0] - 2026-08-09
 
 ### Dependencies
