@@ -8,6 +8,29 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) 
 
 ### Fixed
 
+- **`AnalysisSummaryExtractor.extract()` documented a `@throws` contract it has never
+  honoured.** The JSDoc on this publicly-exported method (`src/index.ts:23`) declared
+  `@throws {Error} if the analysis block JSON is malformed (propagated from JSON.parse)`.
+  It does not throw — `parseAnalysisBlock` catches and returns `null`, and there is no
+  `throw` statement anywhere in the module. The doc contradicted the module's own stated
+  purpose: `safeStringify`'s comment notes that this "runs on the save path of every agent
+  run — a throw here would fail the whole save, which is the exact failure class this
+  module exists to prevent."
+
+  **Consumer impact is the inverse of what it looks like.** Nobody's code breaks, but
+  anyone who wrote a `try`/`catch` around `extract()` on the strength of that line has
+  been defending against an impossible failure, and anyone who assumed malformed analysis
+  JSON would surface loudly has been getting silence. The doc now states the real
+  behaviour and names the degradation path: a null block falls through to `result.rawJson`
+  via each consumer's own fallback (`systemMetrics` → `extractDomainMetrics`, records →
+  the Tier 2/3 cascade, `epistemicAssessment`/`auditImplications` take `rawJson` as a
+  second source, `explorationMaps` reads `rawJson` only), so a malformed fence costs no
+  data on the structured-output path and is already surfaced as an `extraction.failed`
+  degradation marker on the text path.
+
+  No behaviour changed. This is a correction to a false contract, not a fix to the code
+  it described.
+
 - **Pipeline stage averages no longer discard a legitimately-evaluated score of 0.** The
   inline-agent crash filter in `PipelineExecutor` was `r.decision !== 'FAIL' || (r.score ?? 0) > 0`
   and is now `r.score != null`.

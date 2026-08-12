@@ -134,7 +134,17 @@ export class AnalysisSummaryExtractor {
    * @param result - The completed agent result with parsed output and metrics
    * @param resolved - The resolved definition providing scoring weights and vocabulary
    * @returns Summary and records ready for tracker submission
-   * @throws {Error} if the analysis block JSON is malformed (propagated from JSON.parse)
+   *
+   * Does NOT throw. This previously documented `@throws {Error} if the analysis block
+   * JSON is malformed (propagated from JSON.parse)`, which was never true of the
+   * implementation — parseAnalysisBlock catches and returns null, and every consumer of
+   * the block then degrades to its `result.rawJson` fallback (systemMetrics →
+   * extractDomainMetrics, records → the Tier 2/3 cascade, epistemicAssessment and
+   * auditImplications take rawJson as a second source, explorationMaps reads rawJson
+   * only). A malformed fence therefore costs no data on the structured-output path, and
+   * on the text path it is already surfaced upstream as an extraction.failed degradation
+   * marker. Callers must not write a try/catch expecting the documented failure — there
+   * is no throwing path through extract().
    */
   extract(result: AgentResult, resolved: ResolvedDefinition): AnalysisExtractionResult {
     const analysisBlock = this.resolveAnalysisBlock(result);
@@ -226,6 +236,16 @@ export class AnalysisSummaryExtractor {
       if (!analysis || typeof analysis !== 'object') return null;
       return analysis as AgentAnalysisBlock;
     } catch {
+      // Conflates "fence present but malformed" with "no fence at all" (the `return null`
+      // at the !jsonMatch guard above). Returning null is CORRECT for data: resolveAnalysisBlock
+      // falls through to rawJson, and every consumer of the block has its own rawJson
+      // fallback, so nothing is lost on the structured-output path; on the text path the
+      // same malformed content already failed in OutputExtractor and surfaces as an
+      // extraction.failed marker. What is lost is the knowledge that THIS agent emitted
+      // broken JSON — an output-quality signal about the agent, not a data-integrity
+      // problem. Distinguishing the two needs a channel this class does not have (it has
+      // no logger, and DegradationPhase is 'resolution' | 'execution' so the analysis
+      // phase cannot emit a marker). Deliberately left conflated until that channel exists.
       return null;
     }
   }
