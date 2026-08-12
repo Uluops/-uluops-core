@@ -8,6 +8,35 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) 
 
 ### Fixed
 
+- **One malformed recommendation field can no longer destroy an entire run submission.**
+  `RecommendationInputSchema` validates *client-side* inside `ops-sdk`, before any HTTP
+  call, so a single bad value used to throw a `ZodError` that aborted the whole
+  `runs.save` payload — every agent's recommendations and all analysis records for that
+  run. One agent's typo could delete nine other agents' output.
+
+  Four fields of one taxonomy code had four different policies on four consecutive lines:
+  `failureCode` stripped silently, `failureDomain` and `severity` thrown, `failureMode`
+  unvalidated. All recommendation fields now go through one repair pass with a single
+  policy: **repair or omit only what the wire would reject** (so nothing can abort the
+  save), **never drop a value the wire would have accepted** (imperfect data beats none),
+  and **warn on every repair**, naming the field and the offending value.
+
+  Concretely: a malformed `failureDomain` or `severity` is omitted instead of thrown; a
+  malformed `failureCode` is still omitted but now says so; an off-taxonomy `failureMode`
+  is *kept* (the wire accepts any string ≤50) with a warning that it will not join against
+  the taxonomy downstream; an invalid `priority` — required on the wire, so it cannot be
+  omitted — is coerced to `suggested`, the neutral middle of the vocabulary, rather than
+  losing the run; over-length `title`, `description`, `category`, `filePath` and `agent`
+  are truncated to their wire maxima.
+
+  **`SubmissionClient`'s constructor now takes a `Logger` as a second argument.** It is
+  constructed internally by `UluOpsClient`, so this is not a breaking change for normal
+  use; it is one for anyone instantiating `SubmissionClient` directly.
+
+  The local `failureCode` regex was replaced by the SDK's own exported schemas
+  (`FailureCodeSchema`, `FailureDomainSchema`, `SeveritySchema`, `PrioritySchema`), so the
+  client can no longer drift from the contract it is validating against.
+
 - **`AnalysisSummaryExtractor.extract()` documented a `@throws` contract it has never
   honoured.** The JSDoc on this publicly-exported method (`src/index.ts:23`) declared
   `@throws {Error} if the analysis block JSON is malformed (propagated from JSON.parse)`.

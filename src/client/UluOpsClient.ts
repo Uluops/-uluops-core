@@ -55,7 +55,7 @@ export class UluOpsClient {
     const logger = this.logger;
 
     this.registry = new RegistryClient(this.config, logger);
-    this.submission = new SubmissionClient(this.config);
+    this.submission = new SubmissionClient(this.config, logger);
 
     // ModelCatalog resolves aliases via registry (no auto-sync; cache cleared via refresh())
     const modelCatalog = new ModelCatalog(this.registry.registrySdk, logger);

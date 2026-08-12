@@ -10,16 +10,33 @@ const mockValidate = vi.fn();
 const mockListByProject = vi.fn();
 const mockGet = vi.fn();
 
-vi.mock('@uluops/ops-sdk', () => ({
-  OpsClient: vi.fn(() => ({
-    runs: {
-      save: mockSave,
-      validate: mockValidate,
-      listByProject: mockListByProject,
-      get: mockGet,
-    },
-  })),
-}));
+// Spread the real module and replace only OpsClient. SubmissionClient validates
+// recommendations against the SDK's own exported schemas (FailureCodeSchema,
+// FailureDomainSchema, SeveritySchema, PrioritySchema); stubbing the module wholesale
+// would leave those undefined and test a sanitizer that cannot actually validate.
+vi.mock('@uluops/ops-sdk', async (importOriginal) => {
+  const actual = await importOriginal<typeof import('@uluops/ops-sdk')>();
+  return {
+    ...actual,
+    OpsClient: vi.fn(() => ({
+      runs: {
+        save: mockSave,
+        validate: mockValidate,
+        listByProject: mockListByProject,
+        get: mockGet,
+      },
+    })),
+  };
+});
+
+/** Captures warnings so repair-reporting can be asserted, not just assumed. */
+const warnings: string[] = [];
+const testLogger = {
+  warn: (msg: string) => { warnings.push(msg); },
+  debug: () => {},
+  info: () => {},
+  error: () => {},
+} as unknown as ConstructorParameters<typeof SubmissionClient>[1];
 
 const baseConfig: ResolvedConfig = {
   apiKey: 'test-key',
@@ -82,6 +99,85 @@ function makeSubmission(overrides?: Partial<RunSubmission>): RunSubmission {
 describe('SubmissionClient', () => {
   beforeEach(() => {
     vi.clearAllMocks();
+    warnings.length = 0;
+  });
+
+  // ─────────────────────────────────────────────────────────────────────────────
+  // recommendation sanitization
+  //
+  // RecommendationInputSchema validates CLIENT-SIDE inside ops-sdk, before any HTTP
+  // call, so one malformed field on one recommendation used to abort the entire
+  // runs.save payload — every agent's output and all analysis records for the run.
+  // These assert the two halves of the policy together: the save survives, AND the
+  // repair is reported. Asserting only "did not throw" would pass just as well on a
+  // sanitizer that silently dropped everything.
+  // ─────────────────────────────────────────────────────────────────────────────
+
+  describe('recommendation sanitization', () => {
+    const okSave = () => mockSave.mockResolvedValueOnce({
+      run: { id: 'r', projectId: 'p', runNumber: 1, workflowType: 'w', allGatesPassed: true, averageScore: 1 },
+      agents: [], correlation: { newIssues: 0, recurringIssues: 0, regressions: 0 },
+    });
+    const sentRecs = () => mockSave.mock.calls[0]![0].recommendations[0];
+
+    async function submitWith(rec: Record<string, unknown>) {
+      okSave();
+      const client = new SubmissionClient(baseConfig, testLogger);
+      await client.submit(makeSubmission({
+        result: makeResult({ recommendations: [rec as never] }),
+      }));
+      return sentRecs();
+    }
+
+    it('omits a malformed failureDomain instead of aborting the whole save', async () => {
+      const sent = await submitWith({
+        agent: 'a', title: 't', priority: 'high', failureDomain: 'Structural',
+      });
+      expect(mockSave).toHaveBeenCalledOnce();          // the save happened at all
+      expect(sent.failureDomain).toBeUndefined();
+      expect(warnings.join(' ')).toContain('failureDomain');
+    });
+
+    it('reports a stripped failureCode instead of dropping it silently', async () => {
+      const sent = await submitWith({
+        agent: 'a', title: 't', priority: 'high', failureCode: 'PRA-FRA/High',
+      });
+      expect(sent.failureCode).toBeUndefined();
+      expect(warnings.join(' ')).toContain('PRA-FRA/High');
+    });
+
+    it('keeps an off-taxonomy failureMode the wire accepts, but says so', async () => {
+      const sent = await submitWith({
+        agent: 'a', title: 't', priority: 'high', failureMode: 'validation',
+      });
+      // Rule 2: never drop a value the wire would have accepted.
+      expect(sent.failureMode).toBe('validation');
+      expect(warnings.join(' ')).toContain('off-taxonomy');
+    });
+
+    it('coerces an invalid required priority rather than losing the run', async () => {
+      const sent = await submitWith({ agent: 'a', title: 't', priority: 'URGENT' });
+      expect(sent.priority).toBe('suggested');
+      expect(warnings.join(' ')).toContain('coerced');
+    });
+
+    it('truncates an over-length title to the wire maximum', async () => {
+      const sent = await submitWith({ agent: 'a', title: 'x'.repeat(600), priority: 'high' });
+      expect(sent.title).toHaveLength(500);
+      expect(warnings.join(' ')).toContain('truncated');
+    });
+
+    // Control. Without this, every assertion above would also pass on a sanitizer that
+    // warned about and mangled everything it touched.
+    it('passes a well-formed recommendation through untouched and silently', async () => {
+      const clean = {
+        agent: 'code-validator', title: 'Real finding', priority: 'high',
+        severity: 'high', failureCode: 'STR-OMI/H', failureDomain: 'STR', failureMode: 'OMI',
+      };
+      const sent = await submitWith(clean);
+      expect(sent).toMatchObject(clean);
+      expect(warnings).toEqual([]);
+    });
   });
 
   // ─────────────────────────────────────────────────────────────────────────────
@@ -104,7 +200,7 @@ describe('SubmissionClient', () => {
         deduplicated: false,
       });
 
-      const client = new SubmissionClient(baseConfig);
+      const client = new SubmissionClient(baseConfig, testLogger);
       const response = await client.submit(makeSubmission());
 
       expect(response.runId).toBe('run-123');
@@ -133,7 +229,7 @@ describe('SubmissionClient', () => {
         deduplicated: false,
       });
 
-      const client = new SubmissionClient(baseConfig);
+      const client = new SubmissionClient(baseConfig, testLogger);
       const response = await client.submit(makeSubmission());
 
       expect(response.dashboardUrl).toBe(
@@ -149,7 +245,7 @@ describe('SubmissionClient', () => {
         deduplicated: false,
       });
 
-      const client = new SubmissionClient(baseConfig);
+      const client = new SubmissionClient(baseConfig, testLogger);
       await client.submit(makeSubmission({
         idempotencyKey: 'idem-key',
         rawMarkdown: '# Report',
@@ -201,7 +297,7 @@ describe('SubmissionClient', () => {
         deduplicated: false,
       });
 
-      const client = new SubmissionClient(baseConfig);
+      const client = new SubmissionClient(baseConfig, testLogger);
       await client.submit(makeSubmission({
         result: makeResult({ score: undefined }),
       }));
@@ -223,7 +319,7 @@ describe('SubmissionClient', () => {
         deduplicated: false,
       });
 
-      const client = new SubmissionClient(baseConfig);
+      const client = new SubmissionClient(baseConfig, testLogger);
       const response = await client.submit(makeSubmission({
         result: makeResult({ score: undefined }),
       }));
@@ -236,7 +332,7 @@ describe('SubmissionClient', () => {
       // A non-bidirectional tracker rejects the null-score payload.
       mockSave.mockRejectedValueOnce(new Error('tracker rejected: score must be a number'));
 
-      const client = new SubmissionClient(baseConfig);
+      const client = new SubmissionClient(baseConfig, testLogger);
       await expect(
         client.submit(makeSubmission({ result: makeResult({ score: undefined }) })),
       ).rejects.toThrow(/tracker rejected/);
@@ -250,7 +346,7 @@ describe('SubmissionClient', () => {
         deduplicated: false,
       });
 
-      const client = new SubmissionClient(baseConfig);
+      const client = new SubmissionClient(baseConfig, testLogger);
       await client.submit(makeSubmission({
         result: makeResult({ minSubscription: 'plus' }),
       }));
@@ -267,7 +363,7 @@ describe('SubmissionClient', () => {
         deduplicated: false,
       });
 
-      const client = new SubmissionClient(baseConfig);
+      const client = new SubmissionClient(baseConfig, testLogger);
       await client.submit(makeSubmission());
 
       const input = mockSave.mock.calls[0]![0] as Record<string, unknown>;
@@ -285,7 +381,7 @@ describe('SubmissionClient', () => {
       const result = makeResult();
       result.recommendations = [{ title: 'no validator', priority: 'backlog' }];
 
-      const client = new SubmissionClient(baseConfig);
+      const client = new SubmissionClient(baseConfig, testLogger);
       await client.submit(makeSubmission({ result }));
 
       const input = mockSave.mock.calls[0]![0] as Record<string, unknown>;
@@ -300,7 +396,7 @@ describe('SubmissionClient', () => {
 
   describe('submit (tracking disabled)', () => {
     it('returns local response without calling API', async () => {
-      const client = new SubmissionClient({ ...baseConfig, trackingEnabled: false });
+      const client = new SubmissionClient({ ...baseConfig, trackingEnabled: false }, testLogger);
       const response = await client.submit(makeSubmission());
 
       expect(mockSave).not.toHaveBeenCalled();
@@ -314,7 +410,7 @@ describe('SubmissionClient', () => {
     });
 
     it('calculates allGatesPassed from decision', async () => {
-      const client = new SubmissionClient({ ...baseConfig, trackingEnabled: false });
+      const client = new SubmissionClient({ ...baseConfig, trackingEnabled: false }, testLogger);
 
       const fail = await client.submit(makeSubmission({
         result: makeResult({ decision: 'FAIL' }),
@@ -338,7 +434,7 @@ describe('SubmissionClient', () => {
     });
 
     it('blocks low-confidence extractions even when the decision is positive', async () => {
-      const client = new SubmissionClient({ ...baseConfig, trackingEnabled: false });
+      const client = new SubmissionClient({ ...baseConfig, trackingEnabled: false }, testLogger);
 
       // structured_text regex (0.5) parsed a real PASS, but it is below the trust
       // threshold — the decision is preserved on the result, gating refuses it.
@@ -361,7 +457,7 @@ describe('SubmissionClient', () => {
     });
 
     it('uses decisionCategory for non-standard positive decisions', async () => {
-      const client = new SubmissionClient({ ...baseConfig, trackingEnabled: false });
+      const client = new SubmissionClient({ ...baseConfig, trackingEnabled: false }, testLogger);
 
       // Cognitive lens agents emit EXAMINED, VITAL, etc. — not PASS/SHIP
       const examined = await client.submit(makeSubmission({
@@ -391,7 +487,7 @@ describe('SubmissionClient', () => {
         preview: { newIssues: 1, recurringIssues: 0, regressions: 0 },
       });
 
-      const client = new SubmissionClient(baseConfig);
+      const client = new SubmissionClient(baseConfig, testLogger);
       const sub = makeSubmission();
       const result = await client.previewSubmission(sub.project, sub.workflowType, sub.result);
 
@@ -411,7 +507,7 @@ describe('SubmissionClient', () => {
         preview: { newIssues: 0, recurringIssues: 0, regressions: 0 },
       });
 
-      const client = new SubmissionClient(baseConfig);
+      const client = new SubmissionClient(baseConfig, testLogger);
       const sub = makeSubmission();
       const result = await client.previewSubmission(sub.project, sub.workflowType, sub.result);
 
@@ -443,7 +539,7 @@ describe('SubmissionClient', () => {
         },
       ]);
 
-      const client = new SubmissionClient(baseConfig);
+      const client = new SubmissionClient(baseConfig, testLogger);
       const history = await client.getHistory('test-project', { workflowType: 'ship', limit: 10 });
 
       expect(history).toHaveLength(1);
@@ -479,7 +575,7 @@ describe('SubmissionClient', () => {
         },
       ]);
 
-      const client = new SubmissionClient(baseConfig);
+      const client = new SubmissionClient(baseConfig, testLogger);
       const history = await client.getHistory('test-project');
 
       expect(history[0]!.averageScore).toBeNull(); // null preserved on read (no longer fabricated to 0)
@@ -508,7 +604,7 @@ describe('SubmissionClient', () => {
         updatedAt: '2026-02-08T12:00:00Z',
       });
 
-      const client = new SubmissionClient(baseConfig);
+      const client = new SubmissionClient(baseConfig, testLogger);
       const result = await client.getRun('run-xyz');
 
       expect(result.runId).toBe('run-xyz');

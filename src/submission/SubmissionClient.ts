@@ -1,4 +1,14 @@
-import { OpsClient, type AnalysisSummaryInput, type AnalysisRecordInput } from '@uluops/ops-sdk';
+import {
+  OpsClient,
+  FailureCodeSchema,
+  FailureDomainSchema,
+  SeveritySchema,
+  PrioritySchema,
+  type AnalysisSummaryInput,
+  type AnalysisRecordInput,
+  type RecommendationInput,
+} from '@uluops/ops-sdk';
+import type { Logger } from '@uluops/sdk-core';
 import type { ResolvedConfig } from '../types/config.js';
 import type { ExecutionResult, ExecutionMetrics } from '../types/execution.js';
 import type { AgentResult } from '../types/agent.js';
@@ -23,7 +33,95 @@ export class SubmissionClient {
   private _ops?: OpsClient;
   private readonly analysisExtractor = new AnalysisSummaryExtractor();
 
-  constructor(private config: ResolvedConfig) {}
+  constructor(private config: ResolvedConfig, private logger: Logger) {}
+
+  /**
+   * Repair one recommendation so it cannot abort the submission.
+   *
+   * WHY: `RecommendationInputSchema` validates CLIENT-SIDE inside ops-sdk, before any
+   * HTTP call. One malformed field on one recommendation therefore throws a ZodError
+   * that aborts the whole `runs.save` payload — every agent's recommendations and all
+   * analysis records for that run. One agent's typo destroying nine other agents'
+   * output is not an acceptable failure mode for a non-fatal tracking side-channel.
+   *
+   * POLICY, applied uniformly to every field:
+   *  1. repair or omit only what the WIRE would reject, so a bad value can never abort
+   *     the save;
+   *  2. never drop a value the wire would have accepted — imperfect data beats none;
+   *  3. warn on every repair, naming field and value, so nothing is lost silently.
+   *
+   * This replaces four different policies on four consecutive lines: `failureCode`
+   * stripped silently, `failureDomain` and `severity` thrown (killing the save),
+   * `failureMode` unvalidated. (tracker 07355df7, 271271d8)
+   */
+  private sanitizeRecommendation(
+    r: ExecutionResult['recommendations'][number],
+  ): RecommendationInput {
+    const repairs: string[] = [];
+
+    const keepIfValid = <T>(
+      schema: { safeParse(v: unknown): { success: boolean } },
+      value: T | undefined,
+      field: string,
+    ): T | undefined => {
+      if (value === undefined || value === null) return undefined;
+      if (schema.safeParse(value).success) return value;
+      repairs.push(`${field}=${JSON.stringify(value)} omitted (wire schema would reject it)`);
+      return undefined;
+    };
+
+    const clamp = (value: string | undefined, max: number, field: string): string | undefined => {
+      if (value === undefined || value === null) return undefined;
+      if (value.length <= max) return value;
+      repairs.push(`${field} truncated ${value.length}→${max} chars`);
+      return value.slice(0, max);
+    };
+
+    // `priority` is REQUIRED on the wire, so an invalid value cannot be omitted — only
+    // replaced. 'suggested' is the neutral middle of the vocabulary; coercing to
+    // 'critical' or 'backlog' would editorialise someone's triage.
+    let priority = r.priority;
+    if (!PrioritySchema.safeParse(priority).success) {
+      repairs.push(`priority=${JSON.stringify(priority)} coerced to 'suggested' (required field)`);
+      priority = 'suggested' as typeof priority;
+    }
+
+    // The wire accepts any string ≤50 for failureMode, so an off-taxonomy value is NOT
+    // dropped — rule 2. It is still worth saying out loud, because a mode that is not
+    // three uppercase letters will not join against the taxonomy downstream.
+    const failureMode = clamp(r.failureMode, 50, 'failureMode');
+    if (failureMode !== undefined && !/^[A-Z]{3}$/.test(failureMode)) {
+      repairs.push(`failureMode=${JSON.stringify(failureMode)} is off-taxonomy (sent as-is; the wire accepts any string ≤50)`);
+    }
+
+    const sanitized = {
+      agent: clamp(r.agent, 100, 'agent') ?? 'unknown',
+      // `title` is required and `min(1)` on the wire; an empty one would abort the save.
+      title: clamp(r.title, 500, 'title') || '(untitled recommendation)',
+      priority,
+      severity: keepIfValid(SeveritySchema, r.severity, 'severity'),
+      failureCode: keepIfValid(FailureCodeSchema, r.failureCode, 'failureCode'),
+      failureDomain: keepIfValid(FailureDomainSchema, r.failureDomain, 'failureDomain'),
+      failureMode,
+      category: clamp(r.category, 100, 'category'),
+      filePath: clamp(r.filePath, 1000, 'filePath'),
+      lineNumber: r.lineNumber,
+      description: clamp(r.description, 10_000, 'description'),
+      classificationConfidence: r.classificationConfidence,
+      classifiedBy: r.classifiedBy,
+      secondaryFailureCodes: r.secondaryFailureCodes,
+      taxonomyVersion: r.taxonomyVersion,
+    };
+
+    if (repairs.length > 0) {
+      this.logger.warn(
+        `Recommendation "${String(r.title ?? '(untitled)').slice(0, 80)}" from agent ` +
+        `"${r.agent ?? 'unknown'}" was repaired before submission: ${repairs.join('; ')}`,
+      );
+    }
+
+    return sanitized;
+  }
 
   /**
    * Lazily construct the underlying OpsClient on first API use.
@@ -279,23 +377,7 @@ export class SubmissionClient {
       workflowType: submission.workflowType,
       idempotencyKey: submission.idempotencyKey,
       agents,
-      recommendations: result.recommendations.map(r => ({
-        agent: r.agent ?? 'unknown',
-        title: r.title,
-        priority: r.priority,
-        severity: r.severity,
-        failureCode: r.failureCode && /^(STR|SEM|PRA|EPI)-[A-Z]{3}\/[CHMLI]$/.test(r.failureCode) ? r.failureCode : undefined,
-        failureDomain: r.failureDomain,
-        failureMode: r.failureMode,
-        category: r.category,
-        filePath: r.filePath,
-        lineNumber: r.lineNumber,
-        description: r.description,
-        classificationConfidence: r.classificationConfidence,
-        classifiedBy: r.classifiedBy,
-        secondaryFailureCodes: r.secondaryFailureCodes,
-        taxonomyVersion: r.taxonomyVersion,
-      })),
+      recommendations: result.recommendations.map(r => this.sanitizeRecommendation(r)),
       timestamp: new Date().toISOString(),
       rawMarkdown: submission.rawMarkdown,
       summary: {
