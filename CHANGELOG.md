@@ -74,6 +74,35 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) 
   tests are already pinned. Verified by neutralising the guard and confirming all four
   assertions fail. No production behaviour changed — the guard was working; it was untested.
 
+- **Rejection-branch coverage added for the four preflight guards that had none** —
+  `$ARGUMENTS` shell-quoting (CWE-78), logical path traversal, symlink escape, and unknown
+  check type. `preflight.ts` implements eight guards while its header documents four, which
+  is much of why these went untested. 22 tests → 62.
+
+  Each new test was verified by mutation: the guard it covers was disabled in turn and the
+  matching test confirmed to fail. That caught one of the new tests being vacuous — a target
+  directory named `star*` passes `test -d $ARGUMENTS` even unquoted, because the glob
+  expands to the directory itself, so the case held whether or not `shellQuote` ran. It now
+  creates a second matching entry so the unquoted expansion yields two words and the
+  assertion can actually fail.
+
+  The `$ARGUMENTS` tests key on `>` rather than on `;` or `|`. Redirection is the
+  discriminating character: it is absent from the metacharacter blocklist
+  (``/[;|&`\n\r\\]|\$\(/``), so the metacharacter guard cannot backstop it and only
+  `shellQuote` prevents the injection. The assertions check the filesystem for a stray file
+  rather than merely the absence of a throw, since a successful redirection is the injection.
+
+  Both traversal guards also gained a passing control — a legitimate nested path, and a
+  symlink pointing *inside* the target — so neither test could be satisfied by a guard that
+  simply rejected everything.
+
+  One behaviour is pinned as fail-closed rather than correct: a target path containing an
+  apostrophe is refused by the metacharacter guard, because `shellQuote` emits `'it'\''s'`
+  and the guard's quoted-span stripping leaves a bare backslash. Safe, but it contradicts
+  the claim at `preflight.ts:184-185` that shellQuote's backslashes are stripped before the
+  check. Filed; the test asserts the current rejection so a future fix has to flip it
+  deliberately.
+
 ## [0.37.0] - 2026-08-11
 
 ### Changed
