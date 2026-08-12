@@ -6,6 +6,51 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) 
 
 ## [Unreleased]
 
+### Fixed
+
+- **Pipeline stage averages no longer discard a legitimately-evaluated score of 0.** The
+  inline-agent crash filter in `PipelineExecutor` was `r.decision !== 'FAIL' || (r.score ?? 0) > 0`
+  and is now `r.score != null`.
+
+  **This changes numbers, with no signature change and no compiler error, so read it here or
+  not at all.** A stage containing an agent that legitimately evaluated its target as a total
+  failure — `{decision: 'FAIL', score: 0}` — previously excluded that agent from the stage
+  average as though it had never run. A stage of `[PASS@90, FAIL@0]` scored **90**; it now
+  scores **45**. Stage scores can therefore *drop* on this release without any agent behaving
+  differently, and a `threshold` gate that passed on such a stage may now fail. That is the
+  correct reading: a real worst-case score is data, not an absence.
+
+  The filter's stated intent — keep one crash from poisoning a stage average — is preserved
+  and now rests on the property that actually distinguishes a crash. `executeInlineAgents`
+  stamps a rejected agent `score: null` ("Null pair, not fabricated 0/100"), so nullity is the
+  crash signature; the decision string is not. The old comment asserted that literal `'FAIL'`
+  *was* the crash signature, and that premise was false two ways: `FAIL` is core validator
+  vocabulary (`sdk-core` `classifyDecision`: PASS/WARN/FAIL), and `AgentExecutor` stamps
+  `parsed.decision ?? 'FAIL'`, so any agent that merely omits a decision is labelled FAIL
+  without crashing.
+
+  This is the second and last site of the crash-as-zero class; the first
+  (`AgentExecutor`'s `parsed.score ?? 0`) was fixed in 0.23.0's nullable-score work. The
+  filter now matches `CommandExecutor`'s `scoredResults`, so all three aggregation sites
+  finally agree, and it is belt-and-braces rather than the sole defence — `aggregateScores`
+  applies the same null guard internally.
+
+  Custom-vocabulary negatives are unaffected: `[PASS@90, EXPOSED@50]` scored 70 before and
+  scores 70 now.
+
+### Internal
+
+- **The interpreter-eval preflight test now tests the interpreter guard.** It previously fed
+  bare `node -e`, `python3 -c`, `bash -c` and `bun --eval`, all of which are rejected by the
+  *allowlist* check that runs first — so every payload died at the wrong branch, and the
+  assertion `.rejects.toThrow(PreflightError)` could not tell the two apart because every
+  guard in the module throws that same class. The guard could have been deleted outright with
+  the suite still green. Payloads now wrap the interpreter in an allowlisted base command
+  (`command bash -c …`, `which node -e …`) so they reach the guard, and the assertion matches
+  the message `'disallowed interpreter eval'`, matching how the allowlist and metacharacter
+  tests are already pinned. Verified by neutralising the guard and confirming all four
+  assertions fail. No production behaviour changed — the guard was working; it was untested.
+
 ## [0.37.0] - 2026-08-11
 
 ### Changed

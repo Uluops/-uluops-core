@@ -275,12 +275,17 @@ export class PipelineExecutor {
   ): Promise<StageResult> {
     const agentInput = upstreamContext.length > 0 ? { ...input, upstreamContext } : input;
     const agentResults = await this.executeInlineAgents(stage.agents!, agentInput, options, priorResults);
-    // Exclude crashed agents (decision=FAIL, score=0) from average to prevent
-    // one crash from poisoning the entire stage score (e.g., 1 pass at 90 + 2 crashes → 30).
-    // Literal 'FAIL' is intentional here: it is the crash signature stamped by
-    // executeInlineAgents' rejection path, not a gating check — a lens agent's
-    // custom negative (EXPOSED) with a real score stays in the average.
-    const successResults = agentResults.filter(r => r.decision !== 'FAIL' || (r.score ?? 0) > 0);
+    // Exclude unscored results from the average to prevent one crash from poisoning
+    // the entire stage score (e.g., 1 pass at 90 + 2 crashes → 30).
+    // Discriminate on score nullity, NOT on the decision string: 'FAIL' is core
+    // validator vocabulary (sdk-core classifyDecision: PASS/WARN/FAIL) and is also the
+    // fallback AgentExecutor stamps for a missing decision, so it is NOT a crash
+    // signature. A crashed inline agent is stamped score: null by the rejection path
+    // below, which is what actually distinguishes it — a legitimately-evaluated
+    // {decision:'FAIL', score:0} is a real worst-case score and must stay in the average.
+    // Matches CommandExecutor's scoredResults filter; aggregateScores applies the same
+    // null guard internally, so this is belt-and-braces, not the sole defence.
+    const successResults = agentResults.filter(r => r.score != null);
     const avgScore = aggregateScores(
       successResults.map(r => ({ key: r.name, score: r.score ?? null })),
     );

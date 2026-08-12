@@ -96,14 +96,20 @@ describe('runPreflightChecks', () => {
       await expect(runPreflightChecks(checks, input)).rejects.toThrow('not in the allowed command list');
     });
 
+    // Payloads MUST use an allowlisted base command (`command`, `which`) to wrap the
+    // interpreter. A bare `node -e ...` never reaches the interpreter guard — the
+    // allowlist check runs first and rejects `node` on its own, so the test would pass
+    // at the wrong branch and the guard could be deleted without failing. Assert on the
+    // message, not on PreflightError: every guard in this module throws that same class,
+    // so a class-only assertion cannot tell you which one fired.
     it.each([
-      ['node -e', 'node -e "process.exit(0)"'],
-      ['python3 -c', 'python3 -c "print(1)"'],
-      ['bash -c', 'bash -c "echo hi"'],
-      ['bun --eval', 'bun --eval "1"'],
+      ['command + bash -c', 'command bash -c "echo hi"'],
+      ['command + python3 -c', 'command python3 -c "print(1)"'],
+      ['which + node -e', 'which node -e x'],
+      ['command + sh -c', 'command sh -c x'],
     ])('rejects interpreter eval: %s', async (_label, cmd) => {
       const checks: PreflightCheck[] = [{ check: 'command', command: cmd }];
-      await expect(runPreflightChecks(checks, input)).rejects.toThrow(PreflightError);
+      await expect(runPreflightChecks(checks, input)).rejects.toThrow('disallowed interpreter eval');
     });
   });
 
