@@ -59,6 +59,7 @@
     "@uluops/ops-sdk": "^5.13.0",
     "@uluops/registry-sdk": "0.47.1",
     "@uluops/sdk-core": "0.16.0",
+    "@uluops/taxonomy": "1.0.3",
     "ai": "6.0.77",
     "glob": "11.1.0",
     "yaml": "2.8.3",

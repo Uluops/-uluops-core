@@ -18,6 +18,7 @@ import type { CommandResult } from '../types/command.js';
 import type { RunSubmission, RunSubmissionResponse, RunHistoryEntry, SubmissionQueryOptions } from '../types/submission.js';
 import { AnalysisSummaryExtractor } from '../analysis/AnalysisSummaryExtractor.js';
 import { EXTRACTION_CONFIDENCE_THRESHOLD } from '../constants.js';
+import { isCanonicalMode } from '@uluops/taxonomy';
 
 /**
  * Thin wrapper around @uluops/ops-sdk for execution result submission.
@@ -87,11 +88,35 @@ export class SubmissionClient {
     }
 
     // The wire accepts any string ≤50 for failureMode, so an off-taxonomy value is NOT
-    // dropped — rule 2. It is still worth saying out loud, because a mode that is not
-    // three uppercase letters will not join against the taxonomy downstream.
+    // dropped — rule 2. It is still worth saying out loud, because a mode that is not in the
+    // taxonomy will not join against it downstream: `byMode` is built by iterating the
+    // catalog, so a non-member vanishes from mode-level analytics entirely.
+    //
+    // **This used to test SHAPE while calling the result "off-taxonomy".** `/^[A-Z]{3}$/`
+    // accepts `ZZZ`, `QQQ` and every other three-letter string, so the warning stayed silent
+    // for precisely the values it named — and that shape is the mechanism by which 242
+    // invented codes reached the datastore. It now checks MEMBERSHIP, which is what the
+    // message always claimed.
+    //
+    // Safe to tighten here where it is not safe elsewhere: this only appends to `repairs` and
+    // sends the value unchanged. Systems spec §7.3 defers membership because ENFORCING it
+    // rejects data; nothing is rejected here.
     const failureMode = clamp(r.failureMode, 50, 'failureMode');
-    if (failureMode !== undefined && !/^[A-Z]{3}$/.test(failureMode)) {
-      repairs.push(`failureMode=${JSON.stringify(failureMode)} is off-taxonomy (sent as-is; the wire accepts any string ≤50)`);
+    if (failureMode !== undefined) {
+      // Membership is only defined on the fully-qualified code — `INC` is both STR-INC and
+      // SEM-INC — so qualify from the domain in the same payload. With no domain there is
+      // nothing to decide against, and the shape check is the most that can be said.
+      const domain = typeof r.failureDomain === 'string' ? r.failureDomain : undefined;
+      const qualified = domain ? `${domain}-${failureMode}` : null;
+      const offTaxonomy = qualified
+        ? !isCanonicalMode(qualified)
+        : !/^[A-Z]{3}$/.test(failureMode);
+      if (offTaxonomy) {
+        repairs.push(
+          `failureMode=${JSON.stringify(failureMode)}${qualified ? ` (as ${qualified})` : ''} ` +
+          `is off-taxonomy (sent as-is; the wire accepts any string ≤50)`,
+        );
+      }
     }
 
     const sanitized = {

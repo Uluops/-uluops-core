@@ -6,6 +6,30 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) 
 
 ## [Unreleased]
 
+### Fixed — the "off-taxonomy" warning tested shape, not taxonomy
+
+`SubmissionClient` warned when `failureMode` did not match `/^[A-Z]{3}$/` and called the
+result *"off-taxonomy"*. That regex accepts `ZZZ`, `QQQ` and every other three-letter string —
+so the warning stayed **silent for exactly the values it named**, and that shape is the
+mechanism by which 242 invented codes reached the datastore.
+
+It now checks membership via `isCanonicalMode` from `@uluops/taxonomy`. Measured:
+
+| value | old (shape) | new (membership) |
+|---|---|---|
+| `STR-ZZZ` | silent | **warns** |
+| `SEM-VAL` | silent | **warns** |
+| `STR-OMI`, `EPI-SCP` | silent | silent |
+
+Membership is only defined on the fully-qualified code — `INC` is both `STR-INC` and
+`SEM-INC` — so the bare mode is qualified using `failureDomain` from the same payload. With no
+domain there is nothing to decide against and the shape check remains the most that can be
+said.
+
+**Nothing is rejected, which is why this could tighten here and cannot elsewhere.** The check
+only appends to `repairs` and sends the value unchanged. Systems spec §7.3 defers membership
+enforcement because *enforcing* it rejects data; that concern does not apply to a diagnostic.
+
 ### Fixed
 
 - **One malformed recommendation field can no longer destroy an entire run submission.**
