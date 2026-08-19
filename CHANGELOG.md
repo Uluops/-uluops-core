@@ -6,6 +6,18 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) 
 
 ## [Unreleased]
 
+## [0.37.1] - 2026-08-19
+
+### Dependencies — `@uluops/registry-sdk` 0.47.1 → 0.49.0 (registry-api ADR-013 activation prerequisite)
+
+Core is the transitive carrier of the SDK into `uluops-registry-api`'s tree and a registry
+reader in its own right. With this bump, definition reads tolerate the drop-aware
+deep-analysis fields: `deep.errorReason` validates as shape rather than a closed enum (the
+old pin **threw** on any reason it didn't know — `unrepresentable_findings` shipped
+server-side 2026-08-18), and `deep.droppedFindings` survives parsing instead of being
+strip-mode deleted. No API change in core itself. Latent until the registry's deep worker
+activates; consumers should be on ≥0.37.1 before it does.
+
 ### Fixed — the "off-taxonomy" warning tested shape, not taxonomy
 
 `SubmissionClient` warned when `failureMode` did not match `/^[A-Z]{3}$/` and called the
