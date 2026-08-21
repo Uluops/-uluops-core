@@ -540,9 +540,16 @@ interface AgentResultBase {
    */
   completeness?: Completeness;
 
-  /** Full parsed JSON from LLM output (pre-Zod-strip).
-   * Contains fields beyond agentOutputSchema — epistemicAssessment, explorationMaps,
-   * auditImplications — used by AnalysisSummaryExtractor at submission time.
+  /** Full parsed JSON from LLM output (pre-Zod-strip) — the raw structured-output
+   * object as the model produced it, not `agentOutputSchema.parse()`'s result.
+   * Two distinct things live here that the typed result does not carry:
+   *   1. The five schema fields `AgentExecutor.mapStructuredOutput` does not
+   *      promote — explorationMaps, epistemicAssessment, auditImplications,
+   *      analysisRecords, domainMetrics. It maps six of the schema's eleven:
+   *      decision, score, maxScore, summary, categories, artifacts.
+   *   2. Keys genuinely outside `agentOutputSchema` — notably the `analysis`
+   *      block recovered by `AnalysisSummaryExtractor.analysisFromRawJson`.
+   * Both are read back untyped by AnalysisSummaryExtractor at submission time.
    * Internal: not part of the public API surface. */
   rawJson?: unknown;
 }

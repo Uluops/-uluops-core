@@ -4,6 +4,7 @@ import { glob } from 'glob';
 import type { ToolUseBlock, ToolResult } from '../types/index.js';
 import type { Logger } from '@uluops/sdk-core';
 import { formatErrorMessage } from '../utils/formatError.js';
+import { checkRegexPatternSafety } from '../utils/regexSafety.js';
 import { extractSymbols } from './symbols.js';
 
 /** No-op logger for when none is provided */
@@ -17,6 +18,13 @@ const MAX_LINE_COUNT_SIZE = 102_400;
 
 /** Timeout for glob operations (30s). Prevents hangs on large or network-mounted filesystems. */
 const GLOB_TIMEOUT_MS = 30_000;
+
+/**
+ * Glob ignore patterns shared by list_files and search_content. Single source of
+ * truth for the sandbox's ignore surface — widening it in one place and not the
+ * other would make list_files and search_content disagree about what exists.
+ */
+const GLOB_IGNORE_PATTERNS = ['**/node_modules/**', '**/.git/**', '**/dist/**', '**/build/**'];
 
 /** Default max results for list_files. Balances completeness vs token cost in a single tool response. */
 const DEFAULT_LIST_MAX_RESULTS = 200;
@@ -235,7 +243,7 @@ export class ToolHandler {
     const files = await glob(globPattern, {
       cwd: dirPath,
       nodir: true,
-      ignore: ['**/node_modules/**', '**/.git/**', '**/dist/**', '**/build/**'],
+      ignore: GLOB_IGNORE_PATTERNS,
       follow: false,
       signal: AbortSignal.timeout(GLOB_TIMEOUT_MS),
     });
@@ -293,27 +301,16 @@ export class ToolHandler {
     const files = await glob(fileGlob, {
       cwd: this.basePath,
       nodir: true,
-      ignore: ['**/node_modules/**', '**/.git/**', '**/dist/**', '**/build/**'],
+      ignore: GLOB_IGNORE_PATTERNS,
       follow: false,
       signal: AbortSignal.timeout(GLOB_TIMEOUT_MS),
     });
 
-    // Cap pattern length to mitigate ReDoS from LLM-generated pathological regexes (CWE-1333)
-    if (opts.pattern.length > 200) {
-      return { tool_use_id: id, content: `Error: regex pattern too long (${opts.pattern.length} chars, max 200)`, is_error: true };
-    }
-
-    // Reject patterns with nested quantifiers or alternation explosions that cause
-    // catastrophic backtracking (CWE-1333).
-    // Nested quantifiers: (x+)+, (x*)+, (x+)*, (x{n,})+, ([...]+)+
-    // Alternation explosion: (a|aa)+, (a|a?)+  — overlapping alternation under quantifier
-    if (/(\([^)]*[+*][^)]*\))[+*]|\(\?:[^)]*[+*][^)]*\)[+*]/.test(opts.pattern)) {
-      return { tool_use_id: id, content: 'Error: regex pattern contains nested quantifiers which may cause catastrophic backtracking', is_error: true };
-    }
-    // Detect overlapping alternation under quantifier: (alt1|alt2)+ where alternatives overlap.
-    // Conservative heuristic: any group with alternation followed by a quantifier.
-    if (/\([^)]*\|[^)]*\)[+*{]/.test(opts.pattern)) {
-      return { tool_use_id: id, content: 'Error: regex pattern contains alternation under quantifier which may cause catastrophic backtracking', is_error: true };
+    // Cap pattern length and reject catastrophic-backtracking shapes (CWE-1333) —
+    // shared with StepsExecutor's expect_match guard via regexSafety.ts.
+    const patternSafetyIssue = checkRegexPatternSafety(opts.pattern);
+    if (patternSafetyIssue !== undefined) {
+      return { tool_use_id: id, content: `Error: ${patternSafetyIssue}`, is_error: true };
     }
 
     let regex: RegExp;

@@ -2,6 +2,7 @@ import { describe, it, expect, vi } from 'vitest';
 import { PipelineExecutor } from '../../src/executor/PipelineExecutor.js';
 import type { ResolvedDefinition } from '../../src/types/registry.js';
 import type { PipelineDefinition } from '../../src/types/pipeline.js';
+import type { CommandResult } from '../../src/types/command.js';
 import { PipelineError } from '../../src/errors/index.js';
 import type { AgentExecutor } from '../../src/executor/AgentExecutor.js';
 import type { CommandExecutor } from '../../src/executor/CommandExecutor.js';
@@ -47,7 +48,7 @@ function makePipelineDef(overrides?: Partial<PipelineDefinition['pipeline']>): R
         ],
         ...overrides,
       },
-    } as ResolvedDefinition['definition'],
+    } as PipelineDefinition,
     runtime: {} as ResolvedDefinition['runtime'],
     domain: 'software',
   };
@@ -175,6 +176,50 @@ describe('PipelineExecutor', () => {
 
       expect(result.stages[0]!.status).toBe('completed');
       expect(result.stages[1]!.status).toBe('completed');
+    });
+
+    it('warns when a stage depends on a stage declared later in the array (forward dependency)', async () => {
+      const cmdExec = makeCommandExecutor([makeCommandResult({ score: 90 })]);
+      const wfExec = makeWorkflowExecutor();
+      const registry = makeRegistry();
+      const warn = vi.fn();
+      const logger: Logger = { debug() {}, info() {}, warn, error() {} };
+      const executor = new PipelineExecutor(wfExec, cmdExec, agentExec, registry, logger);
+
+      const def = makePipelineDef({
+        stages: [
+          { id: 'stage-1', name: 'Stage 1', type: 'command', ref: 'cmd-a@1.0.0', depends_on: ['stage-2'] },
+          { id: 'stage-2', name: 'Stage 2', type: 'command', ref: 'cmd-b@1.0.0' },
+        ],
+      });
+
+      const result = await executor.execute(def, { target: '/tmp/test' });
+
+      expect(result.stages[0]!.status).toBe('skipped');
+      expect(result.stages[0]!.skipReason).toBe('dependencies_not_met');
+      expect(warn).toHaveBeenCalledWith(expect.stringMatching(/forward dependency/));
+    });
+
+    it('warns when a stage depends on an id that does not exist in the pipeline (unknown dependency)', async () => {
+      const cmdExec = makeCommandExecutor([makeCommandResult({ score: 90 })]);
+      const wfExec = makeWorkflowExecutor();
+      const registry = makeRegistry();
+      const warn = vi.fn();
+      const logger: Logger = { debug() {}, info() {}, warn, error() {} };
+      const executor = new PipelineExecutor(wfExec, cmdExec, agentExec, registry, logger);
+
+      const def = makePipelineDef({
+        stages: [
+          { id: 'stage-1', name: 'Stage 1', type: 'command', ref: 'cmd-a@1.0.0' },
+          { id: 'stage-2', name: 'Stage 2', type: 'command', ref: 'cmd-b@1.0.0', depends_on: ['does-not-exist'] },
+        ],
+      });
+
+      const result = await executor.execute(def, { target: '/tmp/test' });
+
+      expect(result.stages[1]!.status).toBe('skipped');
+      expect(result.stages[1]!.skipReason).toBe('dependencies_not_met');
+      expect(warn).toHaveBeenCalledWith(expect.stringMatching(/unknown dependency/));
     });
   });
 
@@ -322,7 +367,8 @@ describe('PipelineExecutor', () => {
       const result = await executor.execute(def, { target: '/tmp/test' });
 
       expect(result.stages[0]!.status).toBe('completed');
-      const stageResult = result.stages[0]!.result!;
+      // Steps stages always synthesize a CommandResult (PipelineExecutor.ts) — never a WorkflowResult.
+      const stageResult = result.stages[0]!.result! as CommandResult;
       expect(stageResult.decision).toBe('PASS');
       expect(stageResult.score).toBeNull();
       expect(stageResult.maxScore).toBeNull();

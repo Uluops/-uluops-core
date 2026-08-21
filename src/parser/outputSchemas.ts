@@ -2,22 +2,54 @@ import { z } from 'zod';
 import type { Issue } from '../types/command.js';
 
 /**
+ * Optional field that also tolerates an explicit `null` from the model.
+ *
+ * Emits NO union in the JSON schema — the field is simply absent from `required` — which is what
+ * keeps the Anthropic union count under its ceiling. But models have been taught by the previous
+ * all-nullable schema to send `"field": null`, and bare `.optional()` REJECTS that, which would
+ * turn a previously-working run into a hard ExecutionError at mapStructuredOutput's safeParse.
+ * The preprocess coerces null to absent before validation, so both shapes parse identically.
+ */
+const optionalNullTolerant = <T extends z.ZodTypeAny>(inner: T) =>
+  z.preprocess((v) => (v === null ? undefined : v), inner);
+
+/**
  * Issue within a finding — matches the Issue type from types/command.ts
  *
- * NOTE: All optional fields use .nullable() instead of .optional() because
- * OpenAI's strict structured output mode rejects optional properties.
- * See: https://platform.openai.com/docs/guides/structured-outputs/supported-schemas
+ * NULLABLE vs OPTIONAL — this file balances two provider constraints that pull opposite ways.
+ *
+ * OpenAI strict mode rejects `.optional()` (every property must be in `required`), which is why
+ * this schema was originally all-`.nullable()` — see docs/spikes/nullable-structured-output.md.
+ * But Zod renders every `.nullable()` as a JSON-Schema union, and ANTHROPIC rejects a schema with
+ * more than 16 union-typed parameters with HTTP 400 *before the model runs*. At 29 nullables the
+ * schema was unusable on Anthropic entirely while working fine on OpenAI — invisible until a live
+ * run, because most traffic goes through the Claude Code harness rather than this engine.
+ *
+ * Resolution: fields whose consumers cannot distinguish null from absent are `.optional()`
+ * (verified per-field — every reader uses `?? default`, and AnalysisSummaryExtractor's
+ * extractJsonField collapses the two), and OpenAI strict mode is disabled via
+ * `providerOptions.openai.strictJsonSchema: false` in AIProvider.buildOpenAIOptions.
+ *
+ * SIX fields stay `.nullable()` deliberately:
+ *   - score / maxScore, and category score / maxScore — null carries meaning ("failed to score",
+ *     NOT zero) and the null-iff invariant is enforced by a compile-time assertion at the bottom
+ *     of this file. `.optional()` yields `number | undefined` and hard-fails tsc there.
+ *   - finding pointsEarned / pointsPossible — same "null for scoreless" family (types/parser.ts),
+ *     and converting them is not needed to stay under the limit.
+ *
+ * The union budget is enforced by test/parser/schemaUnionBudget.test.ts, which converts this
+ * schema through the same path the AI SDK uses and asserts the count Anthropic would see.
  */
 const issueSchema = z.object({
   title: z.string().describe('Short description of the issue'),
-  description: z.string().nullable().describe('Detailed explanation'),
-  priority: z.enum(['critical', 'suggested', 'backlog']).nullable()
-    .describe('Issue priority level'),
-  severity: z.enum(['critical', 'high', 'medium', 'low', 'info']).nullable()
-    .describe('Issue severity level'),
-  filePath: z.string().nullable().describe('File path where the issue was found'),
-  lineNumber: z.number().nullable().describe('Line number in the file'),
-  failureCode: z.string().nullable().describe('Machine-readable failure code'),
+  description: optionalNullTolerant(z.string().optional().describe('Detailed explanation')),
+  priority: optionalNullTolerant(z.enum(['critical', 'suggested', 'backlog']).optional()
+    .describe('Issue priority level')),
+  severity: optionalNullTolerant(z.enum(['critical', 'high', 'medium', 'low', 'info']).optional()
+    .describe('Issue severity level')),
+  filePath: optionalNullTolerant(z.string().optional().describe('File path where the issue was found')),
+  lineNumber: optionalNullTolerant(z.number().optional().describe('Line number in the file')),
+  failureCode: optionalNullTolerant(z.string().optional().describe('Machine-readable failure code')),
 });
 
 /**
@@ -40,8 +72,8 @@ const categorySchema = z.object({
  */
 const artifactSchema = z.object({
   type: z.string().describe('Artifact type (e.g., "file", "report")'),
-  path: z.string().nullable().describe('File path if applicable'),
-  content: z.string().nullable().describe('Artifact content'),
+  path: optionalNullTolerant(z.string().optional().describe('File path if applicable')),
+  content: optionalNullTolerant(z.string().optional().describe('Artifact content')),
 });
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -76,7 +108,7 @@ const explorationSectionSchema = z.object({
   type: z.enum(['inventory', 'topology', 'landscape', 'classification', 'mapping', 'synthesis', 'limitation', 'agenda'])
     .describe('Section type: inventory (items), topology (entities+relationships), landscape (findings across dimensions), classification (hierarchy), mapping (source→target), synthesis (patterns), limitation (blind spots), agenda (inquiry questions)'),
   label: z.string().describe('Human-readable section title'),
-  summary: z.string().nullable().describe('Brief section summary'),
+  summary: optionalNullTolerant(z.string().optional().describe('Brief section summary')),
   entries: z.array(explorationEntrySchema)
     .describe('Section data as key-value entries. Keys vary by type — inventory: item names; topology: entity/relationship names; landscape: dimension names; agenda: question identifiers. Values contain the structured content.'),
 });
@@ -88,7 +120,7 @@ const explorationMapSchema = z.object({
   metadata: z.object({
     explorerName: z.string().describe('Name of the explorer agent'),
     framework: z.string().describe('Analytical framework used (e.g., "logical-levels", "reductive-decomposition")'),
-    artifactPath: z.string().nullable().describe('Path to the artifact being explored'),
+    artifactPath: optionalNullTolerant(z.string().optional().describe('Path to the artifact being explored')),
   }),
   sections: z.array(explorationSectionSchema).describe('Typed structural sections of the exploration'),
 });
@@ -98,9 +130,9 @@ const explorationMapSchema = z.object({
  */
 const epistemicAssessmentSchema = z.object({
   confidence: z.enum(['high', 'medium', 'low']).describe('Overall confidence in the analysis'),
-  groundingRatio: z.number().nullable().describe('Ratio of grounded claims to total claims (0-1)'),
-  keyUncertainties: z.array(z.string()).nullable().describe('Major sources of uncertainty in the analysis'),
-  methodology: z.string().nullable().describe('Analytical methodology applied'),
+  groundingRatio: optionalNullTolerant(z.number().optional().describe('Ratio of grounded claims to total claims (0-1)')),
+  keyUncertainties: optionalNullTolerant(z.array(z.string()).optional().describe('Major sources of uncertainty in the analysis')),
+  methodology: optionalNullTolerant(z.string().optional().describe('Analytical methodology applied')),
 });
 
 /**
@@ -123,10 +155,10 @@ const analysisRecordSchema = z.object({
     .describe('Agent-local ID within this run. Semantic, namespaced IDs allowed (e.g., R-1, foundations-api-aristotle-20260626). Max 100 characters.'),
   title: z.string()
     .describe('Human-readable title of the finding'),
-  classification: z.string().nullable()
-    .describe('Classification label (e.g., PROMISING, SPECULATIVE, INTERPRETED-OPAQUE, FACTUAL)'),
-  severity: z.string().nullable()
-    .describe('Severity or significance level (e.g., critical, high, medium, low, info)'),
+  classification: optionalNullTolerant(z.string().optional()
+    .describe('Classification label (e.g., PROMISING, SPECULATIVE, INTERPRETED-OPAQUE, FACTUAL)')),
+  severity: optionalNullTolerant(z.string().optional()
+    .describe('Severity or significance level (e.g., critical, high, medium, low, info)')),
   data: z.array(explorationEntrySchema)
     .describe('Structured data as key-value entries. Keys vary by record type — include relevant fields like status, evidence, filePath, lineNumber, description, rationale.'),
 });
@@ -173,22 +205,22 @@ export const agentOutputSchema = z.object({
     .describe('Overall score 0-100, or null for generators/executors producing artifacts not scores'),
   maxScore: z.number().nullable()
     .describe('Maximum possible score; null iff score is null'),
-  summary: z.string().nullable()
-    .describe('Brief human-readable summary of the result'),
-  categories: z.array(categorySchema).nullable()
-    .describe('Category breakdown with individual findings'),
-  artifacts: z.array(artifactSchema).nullable()
-    .describe('Generated artifacts (executor agents)'),
-  explorationMaps: z.array(explorationMapSchema).nullable()
-    .describe('Structural mappings from explorer agents — level maps, inventories, topologies, claim extractions, inquiry agendas. Null for non-explorer agents.'),
-  epistemicAssessment: epistemicAssessmentSchema.nullable()
-    .describe('Epistemic confidence and grounding assessment from cognitive lens agents. Null for validators/executors.'),
-  auditImplications: z.array(auditImplicationSchema).nullable()
-    .describe('Forward-looking trajectory projections and audit implications from analyst/forecaster agents. Null for validators/executors.'),
-  analysisRecords: z.array(analysisRecordSchema).nullable()
-    .describe('Typed analysis records — structured findings with domain-specific record types (commitment, inquiry_question, evidence_claim, convention, tension, reification_candidate, etc.) and meaningful IDs (R-1, IQ-2, EC-3). Null for validators/executors.'),
-  domainMetrics: z.array(domainMetricSchema).nullable()
-    .describe('Agent-specific quantitative metrics as defined in the agent\'s metrics vocabulary (e.g., atomsIdentified:20, candidatesIdentified:5). Null when no domain metrics are applicable.'),
+  summary: optionalNullTolerant(z.string().optional()
+    .describe('Brief human-readable summary of the result')),
+  categories: optionalNullTolerant(z.array(categorySchema).optional()
+    .describe('Category breakdown with individual findings')),
+  artifacts: optionalNullTolerant(z.array(artifactSchema).optional()
+    .describe('Generated artifacts (executor agents)')),
+  explorationMaps: optionalNullTolerant(z.array(explorationMapSchema).optional()
+    .describe('Structural mappings from explorer agents — level maps, inventories, topologies, claim extractions, inquiry agendas. Null for non-explorer agents.')),
+  epistemicAssessment: optionalNullTolerant(epistemicAssessmentSchema.optional()
+    .describe('Epistemic confidence and grounding assessment from cognitive lens agents. Null for validators/executors.')),
+  auditImplications: optionalNullTolerant(z.array(auditImplicationSchema).optional()
+    .describe('Forward-looking trajectory projections and audit implications from analyst/forecaster agents. Null for validators/executors.')),
+  analysisRecords: optionalNullTolerant(z.array(analysisRecordSchema).optional()
+    .describe('Typed analysis records — structured findings with domain-specific record types (commitment, inquiry_question, evidence_claim, convention, tension, reification_candidate, etc.) and meaningful IDs (R-1, IQ-2, EC-3). Null for validators/executors.')),
+  domainMetrics: optionalNullTolerant(z.array(domainMetricSchema).optional()
+    .describe('Agent-specific quantitative metrics as defined in the agent\'s metrics vocabulary (e.g., atomsIdentified:20, candidatesIdentified:5). Null when no domain metrics are applicable.')),
 });
 
 /**

@@ -8,6 +8,7 @@ import { SubscriptionRequiredError, ConfigurationError } from '../../src/errors/
 import type { ResolvedConfig } from '../../src/types/config.js';
 import type { Logger } from '@uluops/sdk-core';
 import { SdkApiError } from '@uluops/sdk-core/errors';
+import { deriveCompleteness, resolutionMarkersFromLegacy } from '../../src/executor/degradationMarkers.js';
 
 const noopLogger: Logger = { debug() {}, info() {}, warn() {}, error() {} };
 
@@ -15,6 +16,7 @@ const noopLogger: Logger = { debug() {}, info() {}, warn() {}, error() {} };
 const mockDefinitionsList = vi.fn();
 const mockDefinitionsGet = vi.fn();
 const mockRenderGet = vi.fn();
+const mockRenderPreview = vi.fn();
 
 vi.mock('@uluops/registry-sdk', () => ({
   RegistryClient: vi.fn(() => ({
@@ -24,6 +26,7 @@ vi.mock('@uluops/registry-sdk', () => ({
     },
     render: {
       get: mockRenderGet,
+      preview: mockRenderPreview,
     },
   })),
 }));
@@ -31,7 +34,7 @@ vi.mock('@uluops/registry-sdk', () => ({
 function getMocks() {
   return {
     definitions: { list: mockDefinitionsList, get: mockDefinitionsGet },
-    render: { get: mockRenderGet },
+    render: { get: mockRenderGet, preview: mockRenderPreview },
   };
 }
 
@@ -42,13 +45,15 @@ const baseConfig: ResolvedConfig = {
     defaultProvider: 'anthropic',
   },
   registryUrl: 'https://registry.example.com/api',
-  validationUrl: 'https://ops.example.com/api',
+  submissionUrl: 'https://ops.example.com/api',
   dashboardUrl: 'https://app.example.com',
   trackingEnabled: true,
   timeout: 30000,
   debug: false,
   defaultThinkingBudget: 10_000,
   contextBudget: 200_000,
+  maxConcurrency: 8,
+  allowStageSteps: false,
 };
 
 describe('RegistryClient', () => {
@@ -490,6 +495,69 @@ describe('RegistryClient', () => {
       expect(result.minSubscription).toBe('plus');
     });
 
+    /**
+     * DUAL-PACKAGE REGRESSION GUARD.
+     *
+     * core and registry-sdk pin DIFFERENT exact @uluops/sdk-core versions, so the
+     * SdkApiError the SDK actually throws is a different class object from the one
+     * core imports. The sibling tests below construct core's OWN SdkApiError, so
+     * `instanceof` succeeds there and they pass whether or not the bug is present —
+     * they assert exactly the behaviour that was broken in production.
+     *
+     * These tests mint a FOREIGN error instead: same shape, different identity, like
+     * the one that really crosses the boundary. They fail against an instanceof-based
+     * implementation and pass against the structural guard.
+     */
+    class ForeignSdkApiError extends Error {
+      constructor(
+        public readonly statusCode: number,
+        message: string,
+        public readonly code?: string,
+        public readonly details?: Record<string, unknown>,
+      ) {
+        super(message);
+        this.name = 'SdkApiError';
+      }
+    }
+
+    it('throws SubscriptionRequiredError on a FOREIGN 402 (instanceof would miss it)', async () => {
+      const mocks = getMocks();
+      const foreign = new ForeignSdkApiError(
+        402,
+        'This definition requires hobbyist tier or higher',
+        'SUBSCRIPTION_REQUIRED',
+        { currentTier: 'free', requiredTier: 'hobbyist', upgradeUrl: 'https://example.com/upgrade' },
+      );
+      // Control inside the assertion: prove identity really differs, so this cannot
+      // pass for the wrong reason.
+      expect(foreign instanceof SdkApiError).toBe(false);
+      mocks.definitions.get.mockRejectedValueOnce(foreign);
+
+      const client = new RegistryClient(baseConfig, noopLogger);
+      await expect(client.resolve('socrates-explorer', undefined, 'agent'))
+        .rejects.toBeInstanceOf(SubscriptionRequiredError);
+    });
+
+    it('throws ConfigurationError on a FOREIGN 404 (instanceof would miss it)', async () => {
+      const mocks = getMocks();
+      const foreign = new ForeignSdkApiError(404, 'not found', 'NOT_FOUND');
+      foreign.name = 'NotFoundError'; // 404 arrives as a subclass, not base
+      expect(foreign instanceof SdkApiError).toBe(false);
+      mocks.definitions.get.mockRejectedValueOnce(foreign);
+
+      const client = new RegistryClient(baseConfig, noopLogger);
+      await expect(client.resolve('nope', undefined, 'agent'))
+        .rejects.toBeInstanceOf(ConfigurationError);
+    });
+
+    it('rethrows a non-API error untouched (negative control)', async () => {
+      const mocks = getMocks();
+      mocks.definitions.get.mockRejectedValueOnce(new Error('socket hang up'));
+
+      const client = new RegistryClient(baseConfig, noopLogger);
+      await expect(client.resolve('x', undefined, 'agent')).rejects.toThrow('socket hang up');
+    });
+
     it('throws SubscriptionRequiredError on 402 from registry', async () => {
       const mocks = getMocks();
       const apiError = new SdkApiError(
@@ -533,6 +601,72 @@ describe('RegistryClient', () => {
       await expect(client.resolve('missing', undefined, 'agent')).rejects.toBeInstanceOf(ConfigurationError);
       mocks.definitions.get.mockRejectedValueOnce(new SdkApiError(404, 'Not found', 'NOT_FOUND'));
       await expect(client.resolve('missing', undefined, 'agent')).rejects.toThrow(/client\.list\(\)/);
+    });
+
+    // The local normalization port (registry/normalize.ts) is a deliberate SUPERSET of
+    // the factory the registry API calls — it gained the PDL single-entry `workflows[]`
+    // → `ref` hoist before the factory did. Server-normalized output used to be trusted
+    // verbatim, so a pipeline resolved from the registry silently kept the un-hoisted
+    // stage, which then threw at executeRefStage and blocked every dependent stage while
+    // the run still reported completed (tracker aafb93c2).
+    it('re-normalizes server-normalized output, applying a port rule the factory has not picked up yet', async () => {
+      const mocks = getMocks();
+      const serverNormalized = {
+        pipeline: {
+          interface: { name: 'server-pipe', version: '1.0.0', domain: 'software' },
+          stages: [{ id: 's1', name: 'Validate', workflows: [{ ref: 'ship@1.0.0' }] }],
+        },
+      };
+      mocks.definitions.get.mockResolvedValueOnce({
+        name: 'server-pipe',
+        type: 'pipeline',
+        version: '1.0.0',
+        hash: 'sha256:pipe',
+        yaml: yaml.stringify(serverNormalized),
+        normalized: serverNormalized,
+        domain: 'software',
+      });
+      mocks.render.get.mockResolvedValueOnce({ markdown: '# pipeline prompt' });
+
+      const client = new RegistryClient(baseConfig, noopLogger);
+      const result = await client.resolve('server-pipe', undefined, 'pipeline');
+
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any
+      const stage = (result.definition as any).pipeline.stages[0];
+      expect(stage.ref).toBe('ship@1.0.0');
+      expect(stage.type).toBe('workflow');
+    });
+
+    // Idempotence control (required): a pipeline the registry has ALREADY fully
+    // normalized must round-trip unchanged. Without this, a "fix" that mutates
+    // server-normalized output on every resolve — not just the gap case above —
+    // would pass the positive test just as well.
+    it('idempotence control: a fully server-normalized pipeline is unchanged by re-normalization', async () => {
+      const mocks = getMocks();
+      const serverNormalized = {
+        pipeline: {
+          interface: { name: 'already-normalized', version: '1.0.0', domain: 'software' },
+          stages: [
+            { id: 's1', name: 'Validate', type: 'agents', agents: [{ ref: 'code-validator@1.0.0' }] },
+            { id: 's2', name: 'Ship', type: 'command', ref: 'ship-cmd@1.0.0' },
+          ],
+        },
+      };
+      mocks.definitions.get.mockResolvedValueOnce({
+        name: 'already-normalized',
+        type: 'pipeline',
+        version: '1.0.0',
+        hash: 'sha256:pipe2',
+        yaml: yaml.stringify(serverNormalized),
+        normalized: serverNormalized,
+        domain: 'software',
+      });
+      mocks.render.get.mockResolvedValueOnce({ markdown: '# pipeline prompt' });
+
+      const client = new RegistryClient(baseConfig, noopLogger);
+      const result = await client.resolve('already-normalized', undefined, 'pipeline');
+
+      expect(result.definition).toEqual(serverNormalized);
     });
   });
 
@@ -715,6 +849,68 @@ describe('RegistryClient', () => {
       expect(runtime.prompt).toContain('agent-a@1.0.0');
       expect(runtime.prompt).toContain('agent-b@2.0.0');
       expect(runtime.prompt).toContain('opus');
+    });
+  });
+
+  describe('render fallback diagnostics', () => {
+    function writeAgentYaml(dir: string, name: string): Promise<void> {
+      const agentYaml = yaml.stringify({
+        agent: {
+          interface: { name, version: '1.0.0', agentType: 'validator', domain: 'software' },
+          behavior: { role: 'A code reviewer', expertise: ['TypeScript'] },
+          output: { format: 'JSON' },
+        },
+      });
+      return fs.writeFile(path.join(dir, `${name}.agent.yaml`), agentYaml);
+    }
+
+    it('warns once per client instance with entitlement wording on 401/403, across multiple resolutions', async () => {
+      await writeAgentYaml(tmpDir, 'agent-a');
+      await writeAgentYaml(tmpDir, 'agent-b');
+      mockRenderPreview.mockRejectedValue(new SdkApiError(401, 'Unauthorized', 'UNAUTHORIZED'));
+
+      const warn = vi.fn();
+      const logger: Logger = { debug() {}, info() {}, warn, error() {} };
+      const client = new RegistryClient({ ...baseConfig, localDefinitions: tmpDir }, logger);
+
+      await client.resolve('agent-a');
+      await client.resolve('agent-b');
+
+      expect(warn).toHaveBeenCalledTimes(1);
+      expect(warn.mock.calls[0]![0]).toMatch(/lacks render access/);
+      expect(warn.mock.calls[0]![0]).toMatch(/raw YAML/);
+    });
+
+    it('warns with "unavailable" wording, not entitlement wording, on a transport-level failure', async () => {
+      await writeAgentYaml(tmpDir, 'agent-c');
+      mockRenderPreview.mockRejectedValueOnce(new Error('ECONNREFUSED'));
+
+      const warn = vi.fn();
+      const logger: Logger = { debug() {}, info() {}, warn, error() {} };
+      const client = new RegistryClient({ ...baseConfig, localDefinitions: tmpDir }, logger);
+
+      await client.resolve('agent-c');
+
+      expect(warn).toHaveBeenCalledTimes(1);
+      expect(warn.mock.calls[0]![0]).toMatch(/unavailable/);
+      expect(warn.mock.calls[0]![0]).not.toMatch(/render access/);
+    });
+
+    it('keeps the structured degradation signal (render:api-unavailable, completeness partial) for both entitlement and transport failures', async () => {
+      await writeAgentYaml(tmpDir, 'agent-d');
+      await writeAgentYaml(tmpDir, 'agent-e');
+
+      const clientEntitlement = new RegistryClient({ ...baseConfig, localDefinitions: tmpDir }, noopLogger);
+      mockRenderPreview.mockRejectedValueOnce(new SdkApiError(403, 'Forbidden', 'FORBIDDEN'));
+      const resultEntitlement = await clientEntitlement.resolve('agent-d');
+      expect(resultEntitlement.degradations).toContain('render:api-unavailable');
+      expect(deriveCompleteness(resolutionMarkersFromLegacy(resultEntitlement.degradations ?? []))).toBe('partial');
+
+      const clientTransport = new RegistryClient({ ...baseConfig, localDefinitions: tmpDir }, noopLogger);
+      mockRenderPreview.mockRejectedValueOnce(new Error('ETIMEDOUT'));
+      const resultTransport = await clientTransport.resolve('agent-e');
+      expect(resultTransport.degradations).toContain('render:api-unavailable');
+      expect(deriveCompleteness(resolutionMarkersFromLegacy(resultTransport.degradations ?? []))).toBe('partial');
     });
   });
 });

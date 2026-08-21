@@ -62,10 +62,12 @@ export interface ExecutionInput {
   prompt?: string;
 
   /**
-   * Run parameters for definition templates. Currently consumed by step-command
-   * substitution ({{ params.x }}, StepsExecutor); `target` is implied from the
-   * target field and need not be repeated. Condition-expression evaluation over
-   * params is Phase 3 of pdl-steps-execution-spec.
+   * Run parameters for definition templates. Consumed by step-command
+   * substitution (`{{ params.x }}`, StepsExecutor) and by stage/agent
+   * `condition:` expressions (`params.x`, conditions.ts); `target` is implied
+   * from the target field and need not be repeated. An ABSENT param evaluates
+   * as `false` in a condition rather than unknown (spec D5 amendment) — see
+   * conditions.ts for the three-valued semantics.
    */
   params?: Record<string, string | number | boolean>;
 
@@ -129,10 +131,26 @@ export interface ExecutionResult {
   /** Name of executed definition */
   name: string;
 
-  /** Version executed */
+  /** Version executed.
+   *
+   * SYNTHESIZED-IDENTITY CONTRACT (issue dd7e8761): these three fields are
+   * required, but workflow/pipeline aggregate results have no definition behind
+   * them — WorkflowExecutor and PipelineExecutor stamp the sentinel
+   * '1.0.0-synthesized' (with definitionHash '') on synthesized aggregate/crash
+   * results so SubmissionClient.realVersion() strips it before submission
+   * rather than forwarding a fake 1.0.0. '1.0.0-synthesized' has a sibling
+   * sentinel, 'unknown', for locally-loaded/unversioned definitions (see
+   * UluOpsClient.recordExecutions) — realVersion() strips both, though they
+   * originate from different code paths, not both from these two executors.
+   * Consumers reading version off an aggregate result must expect a sentinel,
+   * not a semver. Making the three optional — or splitting a discriminated
+   * provenance — is a breaking change to a published type, deferred to the
+   * next major. Same shape as the MIXED-VERSION CONTRACT note on
+   * decisionCategory below. */
   version: string;
 
-  /** Definition hash for audit trail */
+  /** Definition hash for audit trail. Empty string on synthesized results —
+   * see the contract note on version. */
   definitionHash: string;
 
   /** Minimum subscription tier required for this definition (from registry) */
@@ -282,6 +300,14 @@ export interface ExecutionOptions {
   /** Execution timeout in milliseconds */
   timeoutMs?: number;
 
+  /**
+   * Timeout for a single shell-tool invocation (bash/exec) in milliseconds, distinct
+   * from `timeoutMs` (the overall agent run budget). Previously the shell tool silently
+   * inherited `context.timeoutMs`, so a 30-minute agent budget authorised a single
+   * 30-minute `bash` call. Defaults to SHELL_COMMAND_TIMEOUT_MS (30s) when unset.
+   */
+  shellTimeoutMs?: number;
+
   /** Threshold overrides for validators */
   thresholds?: {
     pass?: number;
@@ -374,7 +400,7 @@ export interface Recommendation {
   title: string;
 
   /** Priority level */
-  priority: 'critical' | 'suggested' | 'backlog';
+  priority: 'critical' | 'high' | 'suggested' | 'backlog';
 
   /** Severity level */
   severity?: 'critical' | 'high' | 'medium' | 'low' | 'info';

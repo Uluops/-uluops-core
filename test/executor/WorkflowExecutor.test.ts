@@ -2,7 +2,9 @@ import { describe, it, expect, vi } from 'vitest';
 import { WorkflowExecutor } from '../../src/executor/WorkflowExecutor.js';
 import type { CommandExecutor } from '../../src/executor/CommandExecutor.js';
 import type { ResolvedDefinition } from '../../src/types/registry.js';
-import type { WorkflowDefinition } from '../../src/types/workflow.js';
+import type { WorkflowDefinition, WorkflowResult } from '../../src/types/workflow.js';
+import type { CommandDefinition } from '../../src/types/command.js';
+import type { AgentDefinition } from '../../src/types/agent.js';
 import type { RegistryClient } from '../../src/registry/RegistryClient.js';
 import { WorkflowError, ConfigurationError } from '../../src/errors/index.js';
 import { makeCommandResult, makeCommandExecutor, makeNamedCommandExecutor, makeRegistry, makeAgentExecutor, makeValidatorResult } from './fixtures.js';
@@ -40,7 +42,7 @@ function makeWorkflowDef(overrides?: Partial<WorkflowDefinition['workflow']>): R
         },
         ...overrides,
       },
-    } as ResolvedDefinition['definition'],
+    } as WorkflowDefinition,
     runtime: {} as ResolvedDefinition['runtime'],
     domain: 'software',
   };
@@ -90,7 +92,7 @@ describe('WorkflowExecutor', () => {
       const registry = makeRegistry({
         'aristotle-analyst': {
           type: 'command', name: 'aristotle-analyst', version: '1.0.0', hash: 'sha256:c',
-          yaml: '', definition: {} as ResolvedDefinition['definition'],
+          yaml: '', definition: {} as CommandDefinition,
           runtime: {} as ResolvedDefinition['runtime'], domain: 'software',
         },
       });
@@ -120,11 +122,11 @@ describe('WorkflowExecutor', () => {
       })]);
       const agentDef: ResolvedDefinition = {
         type: 'agent', name: 'agent-only', version: '1.0.0', hash: 'sha256:a',
-        yaml: '', definition: {} as ResolvedDefinition['definition'],
+        yaml: '', definition: {} as Partial<AgentDefinition>,
         runtime: {} as ResolvedDefinition['runtime'], domain: 'software', agentType: 'validator',
       };
       const registry = {
-        resolve: vi.fn().mockImplementation((name: string, version?: string, type?: string) => {
+        resolve: vi.fn().mockImplementation((name: string, _version?: string, type?: string) => {
           if (type === 'command') return Promise.reject(new ConfigurationError(`Definition "${name}" (command) not found in registry.`));
           return Promise.resolve(agentDef);
         }),
@@ -798,14 +800,65 @@ describe('WorkflowExecutor', () => {
         const we = error as WorkflowError;
         expect(we.message).toContain('Agent timeout');
         expect(we.context?.partialResult).toBeDefined();
-        expect(we.context!.partialResult!.name).toBe('test-workflow');
-        expect(we.context!.partialResult!.type).toBe('workflow');
-        expect(we.context!.partialResult!.definitionHash).toBe('sha256:wf');
-        expect(we.context!.partialResult!.phases).toBeDefined();
-        expect(Array.isArray(we.context!.partialResult!.phases)).toBe(true);
-        expect(we.context!.partialResult!.recommendations).toBeDefined();
-        expect(Array.isArray(we.context!.partialResult!.recommendations)).toBe(true);
-        expect(typeof we.context!.partialResult!.durationMs).toBe('number');
+        // Not an array on this path (the outer catch) — narrow before property access.
+        expect(Array.isArray(we.context!.partialResult)).toBe(false);
+        const partial = we.context!.partialResult as Partial<WorkflowResult>;
+        expect(partial.name).toBe('test-workflow');
+        expect(partial.type).toBe('workflow');
+        expect(partial.definitionHash).toBe('sha256:wf');
+        expect(partial.phases).toBeDefined();
+        expect(Array.isArray(partial.phases)).toBe(true);
+        expect(partial.recommendations).toBeDefined();
+        expect(Array.isArray(partial.recommendations)).toBe(true);
+        expect(typeof partial.durationMs).toBe('number');
+      }
+    });
+
+    // NOTE on the CommandResult[] arm of the type (WorkflowExecutor.ts:356):
+    // that WorkflowError is constructed inside executePhase(), but every path
+    // that calls executePhase() catches it before it can reach a caller of
+    // execute() — a single-phase level lets it propagate to execute()'s own
+    // try/catch, which immediately REWRAPS it in a new WorkflowError carrying
+    // buildPartialResult(...) (the object shape); a multi-phase level catches
+    // it via createBlockedPhase() and never rethrows at all. So the array arm
+    // is real (it IS constructed, and the type documents that), but it is not
+    // observable through the public execute() API today — confirmed here by
+    // asserting the wrapped behavior actually occurs, rather than asserting
+    // the array shape a caller cannot obtain.
+    it('rewraps an all-steps-failed WorkflowError into the phase-gate object shape (array arm never reaches execute() callers)', async () => {
+      const cmdExec = {
+        execute: vi.fn().mockRejectedValue(new Error('boom')),
+      } as unknown as CommandExecutor;
+      const registry = makeRegistry();
+      const executor = new WorkflowExecutor(cmdExec, registry);
+
+      const def = makeWorkflowDef({
+        orchestration: {
+          phases: [
+            {
+              id: 'validate',
+              name: 'Validation',
+              commands: ['code-validator', 'second-validator'],
+              parallel: true,
+              gate: { threshold: 70, aggregate: 'average', on_fail: 'stop' },
+            },
+          ],
+          on_failure: 'stop',
+        },
+      });
+
+      try {
+        await executor.execute(def, { target: '/tmp/test' });
+        expect.fail('Should have thrown');
+      } catch (error) {
+        expect(error).toBeInstanceOf(WorkflowError);
+        const we = error as WorkflowError;
+        // The inner message ("All steps in phase...") survives via
+        // formatErrorMessage() interpolation into the outer wrapper's message.
+        expect(we.message).toContain('All steps in phase');
+        expect(Array.isArray(we.context!.partialResult)).toBe(false);
+        const partial = we.context!.partialResult as Partial<WorkflowResult>;
+        expect(partial.type).toBe('workflow');
       }
     });
   });

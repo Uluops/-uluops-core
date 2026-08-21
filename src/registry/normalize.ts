@@ -17,11 +17,27 @@
  * workflows hand un-normalized `steps[]` to WorkflowExecutor, whose
  * `phase.commands.map()` throws → every phase BLOCKs (silent score-0 run).
  *
- * This file is a FAITHFUL PORT of the factory's normalization module —
- * intentionally a near-verbatim copy so the two can be diffed for drift. The
- * only transforms exposed publicly here are the mundane authoring→runtime field
- * mappings; none of the factory's IP (templates/rendering/scoring) is involved.
- * Keep in sync with `packages/-uluops-definition-factory/src/normalization/`.
+ * This file is a PORT of the factory's normalization module, but NOT a
+ * verbatim one — it is a deliberate SUPERSET, and has been since at least
+ * 2026-07-07: two rules exist here (the PDL single-entry `workflows[]` →
+ * `ref` hoist and its neighboring stage-type inferences) that the factory
+ * module this file was ported from does not have. "Keep in sync" therefore
+ * does not mean "identical" — it means the factory is the canonical MINIMUM
+ * this port must cover, not a ceiling on it.
+ *
+ * That asymmetry is what makes RegistryClient's re-normalization of
+ * server-normalized output (normalizeLocally, applied unconditionally to
+ * `def.normalized`) SAFE rather than redundant: every rule below is guarded
+ * on the target field's absence (`!out['agents']`, `!execution['preflight']`,
+ * `!stage['type']`, etc.), so running the superset over output the factory
+ * already normalized is a verified no-op for every rule the two share, and a
+ * genuine top-up for any rule this port has that the factory doesn't yet.
+ * The gap runs in exactly one direction: if the FACTORY ever gains a rule
+ * this port lacks, server-normalized output carrying that rule's effect
+ * would round-trip through this file unchanged (each guard sees its target
+ * field already absent-of-the-old-shape and does nothing) — that direction
+ * remains undetected by this file. Only a direct diff against
+ * `packages/-uluops-definition-factory/src/normalization/` catches it.
  *
  * Pure functions — every function returns a new object and never mutates input.
  */

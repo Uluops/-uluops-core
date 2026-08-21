@@ -101,6 +101,26 @@ export const ANTHROPIC_CONTEXT_MANAGEMENT_TYPE = 'clear_tool_uses_20250919';
 export const DEFAULT_MODEL_ALIAS = 'sonnet';
 
 /**
+ * Default sampling temperature when no temperature is specified in options or
+ * agent definition. Pure extraction of a value that was a bare `0` literal at
+ * three call sites (AgentExecutor.buildMetrics, AIProvider's debug log and
+ * generation options) — same value, now named. Whether generators/explorers
+ * should get a nonzero floor instead of inheriting the validator-tuned default
+ * is a policy question, not addressed here (tracker c47c1c54).
+ */
+export const DEFAULT_TEMPERATURE = 0;
+
+/**
+ * Default timeout for a single shell-tool invocation (bash/exec), in milliseconds.
+ * Distinct from the overall agent run timeout: `createProviderShellTool` declared its
+ * own 30s default but every caller passed `context.timeoutMs` (the agent budget)
+ * instead, so a 30-minute agent budget authorised a single 30-minute `bash` call and a
+ * 5-minute agent budget capped every shell call at 5 minutes. Overridable per-run via
+ * `ExecutionOptions.shellTimeoutMs`.
+ */
+export const SHELL_COMMAND_TIMEOUT_MS = 30_000;
+
+/**
  * Default allowlist of valid provider names for dynamic import.
  * Prevents path traversal via crafted provider strings (CWE-829).
  * Users can extend this via config.ai.additionalProviders.

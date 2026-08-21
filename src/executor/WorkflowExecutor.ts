@@ -327,7 +327,12 @@ export class WorkflowExecutor {
           commandResults.push({
             type: 'command',
             name: stepRefs[j]!.ref,
-            version: '',
+            // No definition backs this result — the step crashed before its
+            // definition could even be resolved. '1.0.0-synthesized' is deliberately
+            // non-parseable as a real release, so downstream consumers
+            // (SubmissionClient's realVersion) can tell it apart from an actual
+            // 1.0.0 release instead of putting an empty string on the wire.
+            version: '1.0.0-synthesized',
             definitionHash: '',
             agentType: 'validator',
             decision: 'FAIL',

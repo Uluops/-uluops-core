@@ -17,6 +17,20 @@ export async function runPreflightChecks(
   input: ExecutionInput,
 ): Promise<void> {
   for (const check of checks) {
+    // Guard the command TEMPLATE, before $ARGUMENTS substitution. shellQuote()
+    // (below) escapes an embedded single quote in the target as `'\''`, and the
+    // metacharacter guard strips single-quoted spans with `/'[^']*'/g` — which
+    // leaves the bare `\` from that escape sequence, and `\` is itself on the
+    // blocklist. Guarding post-substitution text therefore made the guard
+    // reject the output of this file's own quoting function for any target
+    // path containing an apostrophe. Guarding the template instead is both
+    // correct and sufficient: of the three substituted fields, only `command`
+    // is shell-interpreted, and it always routes target-derived text through
+    // shellQuote() (see substituteCheckVars), so metacharacters that reach the
+    // template can only have come from the check's author, not the target.
+    if (check.check === 'command' && check.command) {
+      validateCommandTemplate(check.command);
+    }
     // Substitute CDL template variables ($ARGUMENTS → target path)
     const resolved = substituteCheckVars(check, input);
     await runSingleCheck(resolved, input);
@@ -119,8 +133,20 @@ async function checkFileExists(
   }
 }
 
+// Allowlist restricted to read-only/query commands. Package managers (npm, pip),
+// orchestrators (docker, kubectl), build tools (make, cargo), and interpreters
+// (node, python) are excluded — they have broad side-effect authority that
+// doesn't belong in prerequisite checks. None are used in any real CDL definition.
+const ALLOWED_PREFLIGHT_COMMANDS = [
+  'test', '[', 'true', 'false', 'echo',
+  'git',
+  'grep', 'find', 'ls', 'cat', 'head', 'tail', 'wc',
+  'which', 'command',
+];
+
 /**
- * Run a shell command from a CDL preflight definition.
+ * Validate a preflight command TEMPLATE (pre-$ARGUMENTS-substitution) authored
+ * in CDL YAML.
  *
  * SECURITY MODEL: Preflight commands are prerequisite checks authored in CDL
  * YAML by definition authors (supply-chain trust). The allowlist prevents
@@ -132,29 +158,16 @@ async function checkFileExists(
  *   1. Base-command allowlist (read-only/query commands only)
  *   2. Interpreter eval rejection (node -e, python -c, etc.)
  *   3. Shell metacharacter rejection (;, |, &&, $(), backticks)
- *   4. $ARGUMENTS shell-quoting (CWE-78 prevention)
+ *   4. $ARGUMENTS shell-quoting (CWE-78 prevention, applied at substitution —
+ *      see substituteCheckVars/shellQuote — not here)
  *
- * Commands execute in the target directory (cwd = input.target) to match
- * the execution context of file_exists and git_clean checks.
+ * Runs against the TEMPLATE, not the substituted command (see the comment in
+ * runPreflightChecks for why: guarding post-substitution text made this
+ * reject shellQuote's own output for a target path containing an apostrophe).
  */
-async function checkCommand(check: PreflightCheck, input: ExecutionInput): Promise<void> {
-  if (!check.command) {
-    throw new PreflightError('command check requires a command', 'command');
-  }
-
-  // Allowlist restricted to read-only/query commands. Package managers (npm, pip),
-  // orchestrators (docker, kubectl), build tools (make, cargo), and interpreters
-  // (node, python) are excluded — they have broad side-effect authority that
-  // doesn't belong in prerequisite checks. None are used in any real CDL definition.
-  const ALLOWED_PREFLIGHT_COMMANDS = [
-    'test', '[', 'true', 'false', 'echo',
-    'git',
-    'grep', 'find', 'ls', 'cat', 'head', 'tail', 'wc',
-    'which', 'command',
-  ];
-
+function validateCommandTemplate(commandTemplate: string): void {
   // Extract the base command name (first token, strip any path prefix)
-  const baseCommand = check.command.trim().split(/\s+/)[0]?.replace(/^.*\//, '');
+  const baseCommand = commandTemplate.trim().split(/\s+/)[0]?.replace(/^.*\//, '');
   if (!baseCommand || !ALLOWED_PREFLIGHT_COMMANDS.includes(baseCommand)) {
     throw new PreflightError(
       `Preflight command "${baseCommand}" is not in the allowed command list. ` +
@@ -166,7 +179,7 @@ async function checkCommand(check: PreflightCheck, input: ExecutionInput): Promi
 
   // Reject interpreter-based code execution even for allowed commands.
   // Commands like `node -e "..."` or `python3 -c "..."` can execute arbitrary code.
-  if (/\b(bash|sh|zsh|dash|csh|fish|node|python[23]?|ruby|perl|php|lua|deno|bun|awk|gawk|mawk|nawk)\s+(-e|--eval|-c)\b/.test(check.command)) {
+  if (/\b(bash|sh|zsh|dash|csh|fish|node|python[23]?|ruby|perl|php|lua|deno|bun|awk|gawk|mawk|nawk)\s+(-e|--eval|-c)\b/.test(commandTemplate)) {
     throw new PreflightError(
       'Preflight command contains disallowed interpreter eval',
       'command',
@@ -180,17 +193,34 @@ async function checkCommand(check: PreflightCheck, input: ExecutionInput): Promi
   // Newlines (\n, \r) are also rejected — sh -c treats them as command separators.
   // Backslash (\) is rejected too — it enables line continuation and word-level
   // obfuscation that the changelog (0.8.2) documented as blocked. No legitimate
-  // preflight command (test/git/grep/find existence checks) needs an unquoted
-  // backslash; quoted $ARGUMENTS backslashes are stripped before this check.
-  // Single-quoted strings from shellQuote($ARGUMENTS) are safe — the
-  // rejection targets unquoted metacharacters in the original command template.
-  if (/[;|&`\n\r\\]|\$\(/.test(check.command.replace(/'[^']*'/g, ''))) {
+  // preflight command template (test/git/grep/find existence checks) needs an
+  // unquoted backslash. This runs on the TEMPLATE, so `'[^']*'` here strips only
+  // quoted spans the author wrote directly — never a shellQuote()-escaped
+  // $ARGUMENTS, which does not exist yet at this point in the pipeline.
+  if (/[;|&`\n\r\\]|\$\(/.test(commandTemplate.replace(/'[^']*'/g, ''))) {
     throw new PreflightError(
       `Preflight command contains disallowed shell metacharacters. ` +
       `Commands must be simple (no chaining with ; && || or command substitution).`,
       'command',
       { command: baseCommand },
     );
+  }
+}
+
+/**
+ * Run a shell command from a CDL preflight definition.
+ *
+ * The command has already been validated against the allowlist/interpreter/
+ * metacharacter guards (validateCommandTemplate, run against the template in
+ * runPreflightChecks before substitution) and had $ARGUMENTS shell-quoted
+ * (substituteCheckVars). This function only executes.
+ *
+ * Commands execute in the target directory (cwd = input.target) to match
+ * the execution context of file_exists and git_clean checks.
+ */
+async function checkCommand(check: PreflightCheck, input: ExecutionInput): Promise<void> {
+  if (!check.command) {
+    throw new PreflightError('command check requires a command', 'command');
   }
 
   try {

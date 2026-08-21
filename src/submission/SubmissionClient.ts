@@ -21,6 +21,29 @@ import { EXTRACTION_CONFIDENCE_THRESHOLD } from '../constants.js';
 import { isCanonicalMode } from '@uluops/taxonomy';
 
 /**
+ * Ceiling on `analysisRecords` in one `runs.save` payload. Mirrors
+ * `analysisRecords: z.array(...).max(100)` in `@uluops/ops-sdk`'s
+ * `SaveRunInputSchema` (dist/types/schemas.js). That cap is enforced
+ * CLIENT-SIDE inside ops-sdk before any HTTP call — exceeding it throws a
+ * ZodError that loses the entire run's analysis, not just the excess
+ * records. Kept as a local constant (rather than importing from ops-sdk) so
+ * the coupling is visible here and re-checked whenever the ops-sdk pin
+ * moves, per the sanitizeRecommendation policy below: truncate and warn,
+ * never let a ceiling become a submission-aborting throw.
+ */
+const MAX_ANALYSIS_RECORDS = 100;
+
+/**
+ * Ceiling on `agents` in one `runs.save` payload. Mirrors
+ * `agents: z.array(AgentInputSchema).min(1).max(100)` in
+ * `@uluops/ops-sdk`'s `SaveRunInputSchema`. Same rationale as
+ * {@link MAX_ANALYSIS_RECORDS} — a workflow/pipeline with many phases/stages
+ * can decompose into more than 100 per-agent entries with no ceiling on the
+ * core side.
+ */
+const MAX_RUN_AGENTS = 100;
+
+/**
  * Thin wrapper around @uluops/ops-sdk for execution result submission.
  *
  * Delegates all API operations to OpsClient (which handles retry,
@@ -57,7 +80,7 @@ export class SubmissionClient {
    */
   private sanitizeRecommendation(
     r: ExecutionResult['recommendations'][number],
-  ): RecommendationInput {
+  ): { sanitized: RecommendationInput; repairs: string[] } {
     const repairs: string[] = [];
 
     const keepIfValid = <T>(
@@ -145,7 +168,23 @@ export class SubmissionClient {
       );
     }
 
-    return sanitized;
+    return { sanitized, repairs };
+  }
+
+  /**
+   * Cap an accumulated array at the wire's client-side ceiling, warning once
+   * when truncation occurs. See {@link MAX_ANALYSIS_RECORDS} / {@link MAX_RUN_AGENTS}
+   * for why this exists: the ops-sdk schema throws a ZodError past the cap,
+   * which would lose the entire run's payload — truncating loses only the
+   * tail, and the warning names exactly how much.
+   */
+  private capWithWarning<T>(items: T[], max: number, label: string): T[] {
+    if (items.length <= max) return items;
+    this.logger.warn(
+      `Submission produced ${items.length} ${label}, exceeding the wire limit of ${max}; ` +
+      `dropping the last ${items.length - max} (mirrors the @uluops/ops-sdk client-side schema cap).`,
+    );
+    return items.slice(0, max);
   }
 
   /**
@@ -185,7 +224,7 @@ export class SubmissionClient {
       return this.createLocalResponse(submission);
     }
 
-    const input = this.transformToOpsInput(submission);
+    const { input, repairedRecommendations } = this.transformToOpsInput(submission);
     const response = await this.ops.runs.save(input);
 
     return {
@@ -201,6 +240,7 @@ export class SubmissionClient {
         regressions: response.correlation?.regressions ?? 0,
       },
       deduplicated: response.deduplicated,
+      repairedRecommendations,
     };
   }
 
@@ -225,7 +265,7 @@ export class SubmissionClient {
     wouldRegress: boolean;
     validationErrors: string[];
   }> {
-    const input = this.transformToOpsInput({ project, workflowType, result });
+    const { input } = this.transformToOpsInput({ project, workflowType, result });
     const response = await this.ops.runs.validate(input);
 
     return {
@@ -359,12 +399,22 @@ export class SubmissionClient {
   }
 
   /**
-   * Transform SDK RunSubmission to OpsClient SaveFeaturesListInput format
+   * Transform SDK RunSubmission to OpsClient SaveFeaturesListInput format.
+   *
+   * Also returns `repairedRecommendations` — the count of recommendations
+   * `sanitizeRecommendation` had to repair (coerce/omit/truncate a field). The
+   * per-recommendation warn at the bottom of `sanitizeRecommendation` names the
+   * field/value detail; this is the run-level tally so a caller can read/threshold
+   * on a number instead of grepping logs (tracker 97efa7e2).
    */
-  private transformToOpsInput(submission: RunSubmission): Parameters<OpsClient['runs']['save']>[0] {
+  private transformToOpsInput(submission: RunSubmission): {
+    input: Parameters<OpsClient['runs']['save']>[0];
+    repairedRecommendations: number;
+  } {
     const { result } = submission;
 
-    // Workflow/pipeline results: decompose phases/stages into per-agent entries
+    // Workflow/pipeline results: decompose phases/stages into per-agent entries.
+    // extractWorkflowAgents / extractPipelineAgents each cap at MAX_RUN_AGENTS.
     const agents = this.isWorkflowResult(result)
       ? this.extractWorkflowAgents(result)
       : this.isPipelineResult(result)
@@ -379,7 +429,10 @@ export class SubmissionClient {
       if (this.isAgentResult(result)) {
         const analysis = this.analysisExtractor.extract(result as AgentResult, submission.resolvedDefinition);
         analysisSummary = analysis.summary;
-        analysisRecords = analysis.records.length > 0 ? analysis.records : undefined;
+        analysisRecords = analysis.records.length > 0
+          ? this.capWithWarning(analysis.records, MAX_ANALYSIS_RECORDS, 'analysis records')
+          : undefined;
+        for (const w of analysis.warnings ?? []) this.logger.warn(w);
       } else if (this.isPipelineResult(result)) {
         // Extract analysis from each preserved AgentResult across pipeline stages
         const allRecords: AnalysisRecordInput[] = [];
@@ -390,34 +443,54 @@ export class SubmissionClient {
               if (analysis.records.length > 0) allRecords.push(...analysis.records);
               // Use the first agent's summary as the run-level summary
               if (!analysisSummary && analysis.summary) analysisSummary = analysis.summary;
+              for (const w of analysis.warnings ?? []) this.logger.warn(w);
             }
           }
         }
-        if (allRecords.length > 0) analysisRecords = allRecords;
+        if (allRecords.length > 0) {
+          analysisRecords = this.capWithWarning(allRecords, MAX_ANALYSIS_RECORDS, 'analysis records');
+        }
       }
     }
 
+    // sanitizeRecommendation returns { sanitized, repairs } per recommendation — take
+    // .sanitized for the wire payload, tally .repairs.length for the run-level count.
+    const sanitizedRecommendations = result.recommendations.map(r => this.sanitizeRecommendation(r));
+    const repairedRecommendations = sanitizedRecommendations.filter(r => r.repairs.length > 0).length;
+    if (repairedRecommendations > 0) {
+      const distinctFields = new Set(
+        sanitizedRecommendations.flatMap(r => r.repairs.map(msg => msg.split('=')[0]?.split(' ')[0])),
+      ).size;
+      this.logger.warn(
+        `Submission repaired ${repairedRecommendations} of ${sanitizedRecommendations.length} ` +
+        `recommendations before sending (${distinctFields} distinct fields).`,
+      );
+    }
+
     return {
-      project: submission.project,
-      workflowType: submission.workflowType,
-      idempotencyKey: submission.idempotencyKey,
-      agents,
-      recommendations: result.recommendations.map(r => this.sanitizeRecommendation(r)),
-      timestamp: new Date().toISOString(),
-      rawMarkdown: submission.rawMarkdown,
-      summary: {
-        allGatesPassed: this.isPositiveDecision(result),
-        // OMIT when scoreless — the tracker computes the average over scored agents
-        // or stores null. Never fabricate 0. (score-nullability spec, averageScore decision.)
-        ...(result.score != null ? { averageScore: result.score } : {}),
+      input: {
+        project: submission.project,
+        workflowType: submission.workflowType,
+        idempotencyKey: submission.idempotencyKey,
+        agents,
+        recommendations: sanitizedRecommendations.map(r => r.sanitized),
+        timestamp: new Date().toISOString(),
+        rawMarkdown: submission.rawMarkdown,
+        summary: {
+          allGatesPassed: this.isPositiveDecision(result),
+          // OMIT when scoreless — the tracker computes the average over scored agents
+          // or stores null. Never fabricate 0. (score-nullability spec, averageScore decision.)
+          ...(result.score != null ? { averageScore: result.score } : {}),
+        },
+        definitionType: result.type,
+        definitionName: result.name,
+        definitionVersion: result.version !== 'unknown' ? result.version : undefined,
+        definitionHash: result.definitionHash?.replace(/^sha256:/, ''),
+        definitionMinSubscription: result.minSubscription,
+        analysisSummary,
+        analysisRecords,
       },
-      definitionType: result.type,
-      definitionName: result.name,
-      definitionVersion: result.version !== 'unknown' ? result.version : undefined,
-      definitionHash: result.definitionHash?.replace(/^sha256:/, ''),
-      definitionMinSubscription: result.minSubscription,
-      analysisSummary,
-      analysisRecords,
+      repairedRecommendations,
     };
   }
 
@@ -470,7 +543,7 @@ export class SubmissionClient {
       agents.push(this.resultToAgent(result));
     }
 
-    return agents;
+    return this.capWithWarning(agents, MAX_RUN_AGENTS, 'agent entries (from workflow phases)');
   }
 
   /**
@@ -510,7 +583,7 @@ export class SubmissionClient {
       agents.push(this.resultToAgent(result));
     }
 
-    return agents;
+    return this.capWithWarning(agents, MAX_RUN_AGENTS, 'agent entries (from pipeline stages)');
   }
 
   /**
@@ -527,7 +600,7 @@ export class SubmissionClient {
       : (('maxScore' in result ? result.maxScore : undefined) ?? 100);
     return {
       name: result.name,
-      definitionVersion: result.version !== 'unknown' ? result.version : undefined,
+      definitionVersion: this.realVersion(result.version),
       score,
       maxScore,
       decision: result.decision,
@@ -547,7 +620,7 @@ export class SubmissionClient {
     const maxScore = score === null ? undefined : (cmd.maxScore ?? 100);
     return {
       name: cmd.name,
-      definitionVersion: cmd.version !== 'unknown' ? cmd.version : undefined,
+      definitionVersion: this.realVersion(cmd.version),
       score,
       maxScore,
       decision: cmd.decision,
@@ -556,6 +629,24 @@ export class SubmissionClient {
       tokens: this.extractTokens(cmd.metrics),
       durationMs: cmd.metrics.durationMs,
     };
+  }
+
+  /**
+   * Guard a version string against the engine's placeholder sentinels before it
+   * reaches the wire as real definition identity.
+   *
+   * `'unknown'` marks a registry lookup that found nothing; `'1.0.0-synthesized'`
+   * marks a PipelineExecutor/WorkflowExecutor result with no backing definition at
+   * all (an aggregated stage, a steps-only stage, a step that crashed before its
+   * definition resolved — see the version-field comments at those call sites).
+   * Neither is real version data, so both are omitted rather than forwarded —
+   * forwarding '1.0.0-synthesized' would be indistinguishable from a genuine
+   * 1.0.0 release on the tracker. Deliberately does NOT also treat a bare
+   * '1.0.0' as a placeholder: that IS a legitimate version for a real
+   * definition, and suppressing it would drop genuine data.
+   */
+  private realVersion(v: string | undefined): string | undefined {
+    return v && v !== 'unknown' && v !== '1.0.0-synthesized' ? v : undefined;
   }
 
   /** Extract token metrics into the tracker's expected shape. */
@@ -574,6 +665,11 @@ export class SubmissionClient {
    * Create a local-only response when tracking is disabled
    */
   private createLocalResponse(submission: RunSubmission): RunSubmissionResponse {
+    // No network call is made, but running the same sanitize pass here keeps
+    // repairedRecommendations meaningful offline too — it's what WOULD be
+    // repaired if this run were submitted (tracker 97efa7e2).
+    const repairedRecommendations = submission.result.recommendations
+      .filter(r => this.sanitizeRecommendation(r).repairs.length > 0).length;
     return {
       runId: 'local',
       runNumber: 0,
@@ -589,6 +685,7 @@ export class SubmissionClient {
         regressions: 0,
       },
       deduplicated: false,
+      repairedRecommendations,
     };
   }
 }

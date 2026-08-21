@@ -1,5 +1,5 @@
-import { describe, it, expect } from 'vitest';
-import { mkdtempSync, mkdirSync, writeFileSync } from 'node:fs';
+import { describe, it, expect, afterEach, vi } from 'vitest';
+import { mkdtempSync, mkdirSync, writeFileSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import * as path from 'node:path';
 import { StepsExecutor, substituteStepTemplates } from '../../src/executor/StepsExecutor.js';
@@ -7,9 +7,20 @@ import type { Logger } from '@uluops/sdk-core';
 
 const noopLogger: Logger = { debug() {}, info() {}, warn() {}, error() {} };
 
+const createdTargets: string[] = [];
+
 function makeTarget(): string {
-  return mkdtempSync(path.join(tmpdir(), 'steps-exec-'));
+  const dir = mkdtempSync(path.join(tmpdir(), 'steps-exec-'));
+  createdTargets.push(dir);
+  return dir;
 }
+
+afterEach(() => {
+  while (createdTargets.length > 0) {
+    const dir = createdTargets.pop()!;
+    rmSync(dir, { recursive: true, force: true });
+  }
+});
 
 describe('substituteStepTemplates', () => {
   const input = { target: '/tmp/my target' };
@@ -47,6 +58,16 @@ describe('substituteStepTemplates', () => {
   it('reports unsupported leftover template syntax', () => {
     const out = substituteStepTemplates('echo {{ stages.preflight.score }}', input);
     expect(out).toHaveProperty('unresolved');
+  });
+
+  it('coerces a non-string param (number) via String()', () => {
+    const out = substituteStepTemplates('echo {{ params.n }}', { ...input, params: { n: 42 } });
+    expect(out).toEqual({ command: "echo '42'" });
+  });
+
+  it('does not treat a `false` param as absent (undefined-check must not swallow false)', () => {
+    const out = substituteStepTemplates('echo {{ params.v }}', { ...input, params: { v: false } });
+    expect(out).toEqual({ command: "echo 'false'" });
   });
 });
 
@@ -189,6 +210,47 @@ describe('StepsExecutor', () => {
     );
     expect(results[0]!.status).toBe('passed');
   });
+
+  it('waits retry_delay between attempts', async () => {
+    const target = makeTarget();
+    const started = Date.now();
+    const results = await executor.execute(
+      [{ name: 'flaky-delayed', command: 'test -f marker || { touch marker; exit 1; }', retries: 2, retry_delay: 50 }],
+      { target },
+    );
+    const elapsed = Date.now() - started;
+    expect(results[0]!.status).toBe('passed');
+    expect(elapsed).toBeGreaterThanOrEqual(50);
+  });
+
+  it('clamps an oversized retry_delay to MAX_RETRY_DELAY (CWE-400 guard)', async () => {
+    // Capture the delay rather than wait it out. The clamp is 60s, so a real
+    // wait costs a minute per suite run and three across the CI node matrix.
+    // Spying proves the clamp fired at the same production code path, instantly,
+    // and needs no injectable-timer refactor of StepsExecutor.
+    const delays: number[] = [];
+    const realSetTimeout = globalThis.setTimeout;
+    const spy = vi
+      .spyOn(globalThis, 'setTimeout')
+      .mockImplementation(((fn: () => void, ms?: number) => {
+        delays.push(ms ?? 0);
+        // Collapse ONLY the clamped retry backoff. execFile arms its own timeout
+        // via setTimeout; shortening that would kill the child process instead.
+        return realSetTimeout(fn, ms === 60_000 ? 0 : ms);
+      }) as unknown as typeof globalThis.setTimeout);
+
+    try {
+      const results = await executor.execute(
+        [{ name: 'runaway-delay', command: 'exit 1', retries: 1, retry_delay: 999_999_999 }],
+        { target: makeTarget() },
+      );
+      expect(results[0]!.status).toBe('failed');
+      expect(delays).toContain(60_000);            // MAX_RETRY_DELAY
+      expect(delays).not.toContain(999_999_999);   // the unclamped request
+    } finally {
+      spy.mockRestore();
+    }
+  }, 20_000);
 
   it('substitutes {{ params.target }} in commands', async () => {
     const target = makeTarget();

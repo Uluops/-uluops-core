@@ -1,5 +1,9 @@
 import { describe, it, expect } from 'vitest';
-import { normalizePipelineSection } from '../../src/registry/normalize.js';
+import {
+  normalizePipelineSection,
+  normalizeWorkflowSection,
+  normalizeCommandSection,
+} from '../../src/registry/normalize.js';
 
 // Stage-type inference for PDL sections (pdl-steps-execution-spec D6/D7).
 describe('normalizePipelineSection', () => {
@@ -61,5 +65,68 @@ describe('normalizePipelineSection', () => {
       { id: 's', name: 'S', agents: [{ ref: 'a@1' }], steps: [{ name: 'Check', command: 'true' }] },
     ]));
     expect(stagesOf(out)[0]!['type']).toBe('agents');
+  });
+
+  // Every rule in this file is guarded on the target field's absence — that is what
+  // makes re-running the port over already-normalized (e.g. server-normalized) output
+  // safe rather than redundant (tracker aafb93c2). These pin that each guard is a true
+  // no-op, not just "doesn't crash": re-normalizing already-typed stages must not
+  // touch a value a prior normalization pass (local or factory) already set.
+  it('idempotence: already-typed stages (agents, command, workflow) are unchanged by a second pass', () => {
+    const input = section([
+      { id: 's1', name: 'S1', type: 'agents', agents: [{ ref: 'a@1' }] },
+      { id: 's2', name: 'S2', type: 'command', ref: 'cmd@1' },
+      { id: 's3', name: 'S3', type: 'workflow', ref: 'ship@1.0.0', workflows: [{ ref: 'ship@1.0.0' }] },
+    ]);
+    const out = normalizePipelineSection(input);
+    expect(out).toEqual(input);
+  });
+});
+
+// WDL orchestration.phases normalization (steps[] → commands[]/agentRefs[], condition →
+// skip_if, gate.aggregate default).
+describe('normalizeWorkflowSection', () => {
+  it('idempotence: a phase already carrying commands[], skip_if, and gate.aggregate is unchanged', () => {
+    const input = {
+      orchestration: {
+        phases: [
+          {
+            id: 'p1',
+            commands: ['code-validator@1.0.0'],
+            skip_if: 'NOT (true)',
+            gate: { threshold: 70, aggregate: 'average' },
+          },
+        ],
+      },
+    };
+    const out = normalizeWorkflowSection(input);
+    expect(out).toEqual(input);
+  });
+
+  it('still maps steps[] → commands[]/agentRefs[] when absent (control: the guard can fail)', () => {
+    const input = {
+      orchestration: {
+        phases: [{ id: 'p1', steps: [{ command: 'code-validator@1.0.0', agent: 'reviewer@1.0.0' }] }],
+      },
+    };
+    const out = normalizeWorkflowSection(input);
+    const phase = (out['orchestration'] as Record<string, unknown>)['phases'] as Array<Record<string, unknown>>;
+    expect(phase[0]!['commands']).toEqual(['code-validator@1.0.0']);
+    expect(phase[0]!['agentRefs']).toEqual(['reviewer@1.0.0']);
+  });
+});
+
+// CDL invokes.agent(s) → agents[] normalization.
+describe('normalizeCommandSection', () => {
+  it('idempotence: agents[] already present is unchanged', () => {
+    const input = { agents: ['code-validator@1.0.0'], invokes: { agent: 'code-validator@1.0.0' } };
+    const out = normalizeCommandSection(input);
+    expect(out).toEqual(input);
+  });
+
+  it('still maps invokes.agent → agents[] when absent (control: the guard can fail)', () => {
+    const input = { invokes: { agent: 'code-validator@1.0.0' } };
+    const out = normalizeCommandSection(input);
+    expect(out['agents']).toEqual(['code-validator@1.0.0']);
   });
 });

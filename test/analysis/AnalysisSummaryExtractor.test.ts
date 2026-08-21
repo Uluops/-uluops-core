@@ -305,6 +305,211 @@ describe('AnalysisSummaryExtractor', () => {
       expect(summary.auditImplications).toBeNull();
       expect(summary.explorationMaps).toBeNull();
     });
+
+    // The ops-sdk SaveRunInputSchema bounds exploration map `sections` at
+    // `.max(100)` client-side, before any HTTP call. Uncapped, that throws a
+    // ZodError that loses the whole analysis summary. These assert
+    // truncation-with-warning, and (required) that exactly-at-the-cap is
+    // passed through unchanged with no warning — without the control, a cap
+    // that truncated everything to zero would pass just as well.
+    it('truncates exploration map sections over the wire cap (100) and warns naming the drop', () => {
+      const sections = Array.from({ length: 150 }, (_, i) => ({
+        type: 'topology', label: `Section ${i}`, entities: [], relationships: [],
+      }));
+      const result = makeAgentResult({
+        rawJson: {
+          decision: 'EXPLORED',
+          score: 0,
+          explorationMaps: [{
+            metadata: { explorerName: 'bateson-explorer', framework: 'logical-levels' },
+            sections,
+          }],
+        },
+      });
+      const resolved = makeResolvedDefinition();
+      const { summary, warnings } = extractor.extract(result, resolved);
+
+      expect(summary.explorationMaps).toHaveLength(1);
+      expect(summary.explorationMaps![0]!.sections).toHaveLength(100);
+      expect(warnings).toBeDefined();
+      const w = warnings!.find(m => m.includes('bateson-explorer'));
+      expect(w).toBeDefined();
+      expect(w).toMatch(/150/);
+      expect(w).toMatch(/50/);
+    });
+
+    it('control: exactly 100 exploration map sections pass through untouched with no warning', () => {
+      const sections = Array.from({ length: 100 }, (_, i) => ({
+        type: 'topology', label: `Section ${i}`, entities: [], relationships: [],
+      }));
+      const result = makeAgentResult({
+        rawJson: {
+          decision: 'EXPLORED',
+          score: 0,
+          explorationMaps: [{
+            metadata: { explorerName: 'bateson-explorer', framework: 'logical-levels' },
+            sections,
+          }],
+        },
+      });
+      const resolved = makeResolvedDefinition();
+      const { summary, warnings } = extractor.extract(result, resolved);
+
+      expect(summary.explorationMaps![0]!.sections).toHaveLength(100);
+      expect(warnings).toBeUndefined();
+    });
+
+    it('warns naming the drop when an exploration map section has an off-vocabulary type', () => {
+      const result = makeAgentResult({
+        rawJson: {
+          decision: 'EXPLORED',
+          score: 0,
+          explorationMaps: [{
+            metadata: { explorerName: 'bateson-explorer', framework: 'logical-levels' },
+            sections: [
+              { type: 'topology', label: 'Valid section', entities: [], relationships: [] },
+              { type: 'bogus-type', label: 'Invalid section' },
+            ],
+          }],
+        },
+      });
+      const { summary, warnings } = extractor.extract(result, makeResolvedDefinition());
+
+      expect(summary.explorationMaps![0]!.sections).toHaveLength(1);
+      expect(warnings).toBeDefined();
+      const w = warnings!.find(m => m.includes('bateson-explorer') && m.includes('off-vocabulary'));
+      expect(w).toBeDefined();
+      expect(w).toMatch(/1/);
+    });
+
+    it('control: exploration map with only valid section types produces no off-vocabulary warning', () => {
+      const result = makeAgentResult({
+        rawJson: {
+          decision: 'EXPLORED',
+          score: 0,
+          explorationMaps: [{
+            metadata: { explorerName: 'bateson-explorer', framework: 'logical-levels' },
+            sections: [
+              { type: 'topology', label: 'Valid section', entities: [], relationships: [] },
+            ],
+          }],
+        },
+      });
+      const { summary, warnings } = extractor.extract(result, makeResolvedDefinition());
+
+      expect(summary.explorationMaps![0]!.sections).toHaveLength(1);
+      expect(warnings).toBeUndefined();
+    });
+  });
+
+  describe('signalling: dropped/capped data warns instead of silently disappearing', () => {
+    it('warns when Tier-2 analysisRecords entries are dropped for missing recordType/recordId/title', () => {
+      const result = makeAgentResult({
+        rawJson: {
+          analysisRecords: [
+            { recordType: 'fear', recordId: 'R1', title: 'valid-1', data: {} },
+            { recordType: 'fear', recordId: 'R2', title: 'valid-2', data: {} },
+            { recordType: 'fear', recordId: 'R3', title: 'valid-3', data: {} },
+            { recordId: 'R4', data: {} }, // missing title and recordType
+            { recordType: 'fear', data: {} }, // missing recordId and title
+          ],
+        },
+      });
+      const { records, warnings } = extractor.extract(result, makeResolvedDefinition());
+
+      expect(records).toHaveLength(3);
+      expect(warnings).toBeDefined();
+      const w = warnings!.find(m => m.includes('Tier-2'));
+      expect(w).toBeDefined();
+      expect(w).toMatch(/2 of 5/);
+    });
+
+    it('control: 5 valid Tier-2 analysisRecords entries produce no drop warning', () => {
+      const result = makeAgentResult({
+        rawJson: {
+          analysisRecords: Array.from({ length: 5 }, (_, i) => ({
+            recordType: 'fear', recordId: `R${i}`, title: `valid-${i}`, data: {},
+          })),
+        },
+      });
+      const { records, warnings } = extractor.extract(result, makeResolvedDefinition());
+
+      expect(records).toHaveLength(5);
+      expect(warnings).toBeUndefined();
+    });
+
+    it('warns when domainMetrics entries lack key or value', () => {
+      const result = makeAgentResult({
+        rawJson: {
+          domainMetrics: [
+            { key: 'a', value: '1' },
+            { key: 'b', value: '2' },
+            { notKeyOrValue: true },
+          ],
+        },
+      });
+      const { summary, warnings } = extractor.extract(result, makeResolvedDefinition());
+
+      expect(summary.systemMetrics).toEqual({ a: 1, b: 2 });
+      expect(warnings).toBeDefined();
+      const w = warnings!.find(m => m.includes('domainMetrics'));
+      expect(w).toBeDefined();
+      expect(w).toMatch(/1 of 3/);
+    });
+
+    it('control: domainMetrics entries all valid produce no drop warning', () => {
+      const result = makeAgentResult({
+        rawJson: {
+          domainMetrics: [
+            { key: 'a', value: '1' },
+            { key: 'b', value: '2' },
+          ],
+        },
+      });
+      const { summary, warnings } = extractor.extract(result, makeResolvedDefinition());
+
+      expect(summary.systemMetrics).toEqual({ a: 1, b: 2 });
+      expect(warnings).toBeUndefined();
+    });
+
+    it('warns when exploration-map-derived records exceed the 100 cap (101 items)', () => {
+      const items = Array.from({ length: 101 }, (_, i) => ({ key: `k${i}`, value: `v${i}` }));
+      const result = makeAgentResult({
+        rawJson: {
+          explorationMaps: [{
+            metadata: { explorerName: 'meadows-explorer', framework: 'systems' },
+            sections: [
+              { type: 'inventory', label: 'Items', items },
+            ],
+          }],
+        },
+      });
+      const { records, warnings } = extractor.extract(result, makeResolvedDefinition());
+
+      expect(records).toHaveLength(100);
+      expect(warnings).toBeDefined();
+      const w = warnings!.find(m => m.includes('Exploration-map-derived records capped'));
+      expect(w).toBeDefined();
+      expect(w).toMatch(/\b1\b/);
+    });
+
+    it('control: exactly 100 exploration-map-derived items produce no cap warning', () => {
+      const items = Array.from({ length: 100 }, (_, i) => ({ key: `k${i}`, value: `v${i}` }));
+      const result = makeAgentResult({
+        rawJson: {
+          explorationMaps: [{
+            metadata: { explorerName: 'meadows-explorer', framework: 'systems' },
+            sections: [
+              { type: 'inventory', label: 'Items', items },
+            ],
+          }],
+        },
+      });
+      const { records, warnings } = extractor.extract(result, makeResolvedDefinition());
+
+      expect(records).toHaveLength(100);
+      expect(warnings).toBeUndefined();
+    });
   });
 
   describe('analysis records', () => {
@@ -356,8 +561,8 @@ describe('AnalysisSummaryExtractor', () => {
         },
       });
 
-      expect(records[1].recordType).toBe('evidence_finding');
-      expect(records[1].recordId).toMatch(/^r-[0-9a-f]{16}$/);
+      expect(records[1]!.recordType).toBe('evidence_finding');
+      expect(records[1]!.recordId).toMatch(/^r-[0-9a-f]{16}$/);
     });
 
     it('returns empty array when no recommendations', () => {
@@ -398,11 +603,11 @@ describe('AnalysisSummaryExtractor', () => {
       const { records } = extractor.extract(result, resolved);
 
       expect(records).toHaveLength(3);
-      expect(records[0].recordType).toBe('evidence_finding');
-      expect(records[0].title).toBe('A1: UluOpsClient');
-      expect(records[0].data).toMatchObject({ sectionType: 'inventory', content: 'Primary facade' });
-      expect(records[2].recordType).toBe('inquiry_question');
-      expect(records[2].title).toBe('Q1');
+      expect(records[0]!.recordType).toBe('evidence_finding');
+      expect(records[0]!.title).toBe('A1: UluOpsClient');
+      expect(records[0]!.data).toMatchObject({ sectionType: 'inventory', content: 'Primary facade' });
+      expect(records[2]!.recordType).toBe('inquiry_question');
+      expect(records[2]!.title).toBe('Q1');
     });
 
     it('uses Tier 2 structured records from rawJson.analysisRecords', () => {
@@ -425,10 +630,10 @@ describe('AnalysisSummaryExtractor', () => {
       const { records } = extractor.extract(result, resolved);
 
       expect(records).toHaveLength(1);
-      expect(records[0].recordType).toBe('commitment');
-      expect(records[0].recordId).toBe('R-1');
-      expect(records[0].title).toBe('Test commitment');
-      expect(records[0].data).toEqual({ status: 'confirmed' });
+      expect(records[0]!.recordType).toBe('commitment');
+      expect(records[0]!.recordId).toBe('R-1');
+      expect(records[0]!.title).toBe('Test commitment');
+      expect(records[0]!.data).toEqual({ status: 'confirmed' });
     });
 
     it('preserves a semantic recordId between 21 and 100 chars (no longer hashed)', () => {
@@ -443,7 +648,7 @@ describe('AnalysisSummaryExtractor', () => {
         },
       });
       const { records } = extractor.extract(result, makeResolvedDefinition());
-      expect(records[0].recordId).toBe(semanticId);
+      expect(records[0]!.recordId).toBe(semanticId);
     });
 
     it('bounds an over-100-char recordId to a deterministic hash', () => {
@@ -457,7 +662,7 @@ describe('AnalysisSummaryExtractor', () => {
         },
       });
       const { records } = extractor.extract(result, makeResolvedDefinition());
-      expect(records[0].recordId).toMatch(/^r-[0-9a-f]{16}$/);
+      expect(records[0]!.recordId).toMatch(/^r-[0-9a-f]{16}$/);
     });
 
     it('populates domainMetrics from rawJson when no analysis block', () => {
@@ -498,10 +703,10 @@ describe('AnalysisSummaryExtractor', () => {
         }),
       });
       const { records } = extractor.extract(result, makeResolvedDefinition());
-      expect(records[0].severity).toBeNull();
-      expect(records[0].data).toEqual({ note: 'kept', rawSeverity: 'structural' });
-      expect(records[1].severity).toBe('high');
-      expect(records[1].data).not.toHaveProperty('rawSeverity');
+      expect(records[0]!.severity).toBeNull();
+      expect(records[0]!.data).toEqual({ note: 'kept', rawSeverity: 'structural' });
+      expect(records[1]!.severity).toBe('high');
+      expect(records[1]!.data).not.toHaveProperty('rawSeverity');
     });
 
     it('case-normalizes enum severities instead of nulling them', () => {
@@ -511,8 +716,8 @@ describe('AnalysisSummaryExtractor', () => {
         }),
       });
       const { records } = extractor.extract(result, makeResolvedDefinition());
-      expect(records[0].severity).toBe('high');
-      expect(records[0].data).not.toHaveProperty('rawSeverity');
+      expect(records[0]!.severity).toBe('high');
+      expect(records[0]!.data).not.toHaveProperty('rawSeverity');
     });
 
     it('sanitizes Tier 2 structured records and Tier 4 recommendation records', () => {
@@ -522,15 +727,17 @@ describe('AnalysisSummaryExtractor', () => {
         },
       });
       const { records: t2 } = extractor.extract(structured, makeResolvedDefinition());
-      expect(t2[0].severity).toBeNull();
-      expect(t2[0].data).toMatchObject({ rawSeverity: 'epistemic' });
+      expect(t2[0]!.severity).toBeNull();
+      expect(t2[0]!.data).toMatchObject({ rawSeverity: 'epistemic' });
 
       const recs = makeAgentResult({
-        recommendations: [{ agent: 'test-validator', title: 'tier-4', priority: 'suggested', severity: 'tactical' }],
+        // Anxiety-reader register severity, deliberately off the closed vocabulary — see
+        // sanitizeRecordSeverity's rawSeverity-preservation path exercised below.
+        recommendations: [{ agent: 'test-validator', title: 'tier-4', priority: 'suggested', severity: 'tactical' as never }],
       });
       const { records: t4 } = extractor.extract(recs, makeResolvedDefinition());
-      expect(t4[0].severity).toBeNull();
-      expect(t4[0].data).toMatchObject({ rawSeverity: 'tactical' });
+      expect(t4[0]!.severity).toBeNull();
+      expect(t4[0]!.data).toMatchObject({ rawSeverity: 'tactical' });
     });
 
     it('leaves null/absent severity untouched', () => {
@@ -540,8 +747,8 @@ describe('AnalysisSummaryExtractor', () => {
         }),
       });
       const { records } = extractor.extract(result, makeResolvedDefinition());
-      expect(records[0].severity ?? null).toBeNull();
-      expect(records[0].data).not.toHaveProperty('rawSeverity');
+      expect(records[0]!.severity ?? null).toBeNull();
+      expect(records[0]!.data).not.toHaveProperty('rawSeverity');
     });
   });
 
@@ -568,7 +775,7 @@ describe('AnalysisSummaryExtractor', () => {
       });
       const { records } = extractor.extract(result, makeResolvedDefinition());
       expect(records.map(r => r.recordType)).toEqual(['breakdown_event', 'reification']);
-      expect(records[0].data).not.toHaveProperty('rawRecordType');
+      expect(records[0]!.data).not.toHaveProperty('rawRecordType');
     });
 
     it('applies the same policy on Tier 1 and Tier 2 — the asymmetry is the bug', () => {
@@ -582,8 +789,8 @@ describe('AnalysisSummaryExtractor', () => {
           analysisRecords: [{ recordType: 'threshold_verdict', recordId: 'T2', title: 'structured', data: [] }],
         },
       });
-      const t1 = extractor.extract(viaFence, makeResolvedDefinition()).records[0];
-      const t2 = extractor.extract(viaStructured, makeResolvedDefinition()).records[0];
+      const t1 = extractor.extract(viaFence, makeResolvedDefinition()).records[0]!;
+      const t2 = extractor.extract(viaStructured, makeResolvedDefinition()).records[0]!;
       expect(t1.recordType).toBe('threshold_verdict');
       expect(t2.recordType).toBe(t1.recordType);
     });
@@ -599,7 +806,7 @@ describe('AnalysisSummaryExtractor', () => {
       });
       const { records } = extractor.extract(result, makeResolvedDefinition());
       expect(records.map(r => r.recordType)).toEqual(['fear', 'fear']);
-      expect(records[0].data).not.toHaveProperty('rawRecordType');
+      expect(records[0]!.data).not.toHaveProperty('rawRecordType');
     });
 
     it('falls back on an over-length type and preserves the original, on BOTH tiers', () => {
@@ -614,7 +821,7 @@ describe('AnalysisSummaryExtractor', () => {
         rawJson: { analysisRecords: [{ recordType: tooLong, recordId: 'L2', title: 'structured', data: [] }] },
       });
       for (const result of [viaFence, viaStructured]) {
-        const rec = extractor.extract(result, makeResolvedDefinition()).records[0];
+        const rec = extractor.extract(result, makeResolvedDefinition()).records[0]!;
         expect(rec.recordType).toBe('evidence_finding');
         expect(rec.data).toMatchObject({ rawRecordType: tooLong });
       }
@@ -626,11 +833,11 @@ describe('AnalysisSummaryExtractor', () => {
         rawJson: { analysisRecords: [{ recordType: atBound, recordId: 'A1', title: 'boundary', data: [] }] },
       });
       const { records } = extractor.extract(result, makeResolvedDefinition());
-      expect(records[0].recordType).toBe(atBound);
-      expect(records[0].data).not.toHaveProperty('rawRecordType');
+      expect(records[0]!.recordType).toBe(atBound);
+      expect(records[0]!.data).not.toHaveProperty('rawRecordType');
     });
 
-    it('falls back without rawRecordType noise when there was nothing to preserve', () => {
+    it('falls back without rawRecordType noise when there was nothing to preserve, and marks the fallback source', () => {
       const result = makeAgentResult({
         rawJson: {
           analysisRecords: [
@@ -643,7 +850,43 @@ describe('AnalysisSummaryExtractor', () => {
       expect(records.map(r => r.recordType)).toEqual(['evidence_finding', 'evidence_finding']);
       // Regression guard: String(null) is the 4-char string "null", which the bound accepts.
       expect(records.map(r => r.recordType)).not.toContain('null');
-      for (const rec of records) expect(rec.data).not.toHaveProperty('rawRecordType');
+      for (const rec of records) {
+        expect(rec.data).not.toHaveProperty('rawRecordType');
+        // Without this, the blank-fallback case (no declared type) is indistinguishable
+        // from a genuinely declared `recordType: 'evidence_finding'` — see the control below.
+        expect(rec.data).toMatchObject({ recordTypeSource: 'fallback-blank' });
+      }
+    });
+
+    it('control: a genuinely declared evidence_finding carries neither rawRecordType nor recordTypeSource', () => {
+      const result = makeAgentResult({
+        rawJson: {
+          analysisRecords: [
+            { recordType: 'evidence_finding', recordId: 'EF1', title: 'declared', data: [] },
+          ],
+        },
+      });
+      const { records } = extractor.extract(result, makeResolvedDefinition());
+      expect(records[0]!.recordType).toBe('evidence_finding');
+      expect(records[0]!.data).not.toHaveProperty('rawRecordType');
+      expect(records[0]!.data).not.toHaveProperty('recordTypeSource');
+    });
+
+    it('control: an exploration-map-derived (Tier 3) record carries sectionType and no recordTypeSource', () => {
+      const result = makeAgentResult({
+        rawJson: {
+          explorationMaps: [{
+            metadata: { explorerName: 'meadows-explorer', framework: 'systems' },
+            sections: [
+              { type: 'inventory', label: 'Items', items: [{ key: 'k1', value: 'v1' }] },
+            ],
+          }],
+        },
+      });
+      const { records } = extractor.extract(result, makeResolvedDefinition());
+      expect(records[0]!.recordType).toBe('evidence_finding');
+      expect(records[0]!.data).toMatchObject({ sectionType: 'inventory' });
+      expect(records[0]!.data).not.toHaveProperty('recordTypeSource');
     });
 
     it('does not fabricate a type from a non-string value', () => {
@@ -671,9 +914,9 @@ describe('AnalysisSummaryExtractor', () => {
           makeAgentResult({ rawOutput: fenceWithType(value) }),
           makeResolvedDefinition(),
         );
-        expect(records[0].recordType).toBe('evidence_finding');
-        expect(records[0].recordType).not.toContain('object');
-        expect(records[0].data).toMatchObject({ rawRecordType: expectedRaw });
+        expect(records[0]!.recordType).toBe('evidence_finding');
+        expect(records[0]!.recordType).not.toContain('object');
+        expect(records[0]!.data).toMatchObject({ rawRecordType: expectedRaw });
       }
     });
 
@@ -694,9 +937,9 @@ describe('AnalysisSummaryExtractor', () => {
         },
       });
       const { records } = extractor.extract(result, makeResolvedDefinition());
-      expect(records[0].recordType).toBe('evidence_finding');
-      expect(records[0].severity).toBeNull();
-      expect(records[0].data).toEqual({
+      expect(records[0]!.recordType).toBe('evidence_finding');
+      expect(records[0]!.severity).toBeNull();
+      expect(records[0]!.data).toEqual({
         note: 'agent payload',
         rawSeverity: 'structural',
         rawRecordType: 'z'.repeat(51),
@@ -718,7 +961,7 @@ describe('AnalysisSummaryExtractor', () => {
         },
       });
       const { records } = extractor.extract(result, makeResolvedDefinition());
-      expect(records[0].data).toMatchObject({ rawRecordType: 'q'.repeat(51) });
+      expect(records[0]!.data).toMatchObject({ rawRecordType: 'q'.repeat(51) });
     });
 
     it('does not fabricate a type or title from a non-string on Tier 2 either', () => {
@@ -756,7 +999,7 @@ describe('AnalysisSummaryExtractor', () => {
         ],
       });
       const { records } = extractor.extract(result, makeResolvedDefinition());
-      expect(records[0].recordType).toBe('evidence_finding');
+      expect(records[0]!.recordType).toBe('evidence_finding');
     });
   });
 
@@ -773,7 +1016,7 @@ describe('AnalysisSummaryExtractor', () => {
           },
         }),
         makeResolvedDefinition(),
-      ).records[0];
+      ).records[0]!;
 
     it('accepts a title exactly at the 500-char bound untouched', () => {
       const atBound = 'y'.repeat(500);
@@ -831,7 +1074,8 @@ describe('AnalysisSummaryExtractor', () => {
       });
       expect(rec.recordType.length).toBeLessThanOrEqual(50);
       expect(rec.title.length).toBeLessThanOrEqual(500);
-      expect(rec.classification === null || rec.classification.length <= 50).toBe(true);
+      const classification = rec.classification ?? null;
+      expect(classification === null || classification.length <= 50).toBe(true);
       expect(rec.data).toMatchObject({
         rawRecordType: 'q'.repeat(90),
         rawTitle: 'z'.repeat(900),
@@ -849,13 +1093,13 @@ describe('AnalysisSummaryExtractor', () => {
           })}\n\`\`\`\n`,
         }),
         makeResolvedDefinition(),
-      ).records[0];
+      ).records[0]!;
       const viaRecs = extractor.extract(
         makeAgentResult({
           recommendations: [{ agent: 'test-validator', title: tooLong, priority: 'suggested' }],
         }),
         makeResolvedDefinition(),
-      ).records[0];
+      ).records[0]!;
       for (const rec of [viaFence, viaRecs]) {
         expect(rec.title).toHaveLength(500);
         expect(rec.data).toMatchObject({ rawTitle: tooLong });
@@ -875,8 +1119,8 @@ describe('AnalysisSummaryExtractor', () => {
     const bothTiers = (data: unknown) => {
       const rec = { recordType: 'fear', recordId: 'R1', title: 't', data };
       return [
-        extractor.extract(makeAgentResult({ rawOutput: fenceWith({ records: [rec] }) }), makeResolvedDefinition()).records[0],
-        extractor.extract(makeAgentResult({ rawJson: { analysisRecords: [rec] } }), makeResolvedDefinition()).records[0],
+        extractor.extract(makeAgentResult({ rawOutput: fenceWith({ records: [rec] }) }), makeResolvedDefinition()).records[0]!,
+        extractor.extract(makeAgentResult({ rawJson: { analysisRecords: [rec] } }), makeResolvedDefinition()).records[0]!,
       ];
     };
 
@@ -923,10 +1167,10 @@ describe('AnalysisSummaryExtractor', () => {
       const [t1, t2] = [
         extractor.extract(makeAgentResult({
           rawOutput: fenceWith({ records: [{ recordType: 'q'.repeat(60), recordId: 'R1', title: '', severity: 'structural', data: ['x'] }] }),
-        }), makeResolvedDefinition()).records[0],
+        }), makeResolvedDefinition()).records[0]!,
         extractor.extract(makeAgentResult({
           rawJson: { analysisRecords: [{ recordType: 'q'.repeat(60), recordId: 'R2', title: '', severity: 'structural', data: ['x'] }] },
-        }), makeResolvedDefinition()).records[0],
+        }), makeResolvedDefinition()).records[0]!,
       ];
       for (const rec of [t1, t2]) {
         expect(isPlainObject(rec.data)).toBe(true);
@@ -953,7 +1197,7 @@ describe('AnalysisSummaryExtractor', () => {
       });
       const { records } = extractor.extract(result, makeResolvedDefinition());
       expect(records).toHaveLength(1);
-      expect(records[0].recordId).toBe('T1');
+      expect(records[0]!.recordId).toBe('T1');
     });
 
     it('Tier 2 (structured) wins over Tier 3 (exploration maps) / Tier 4 (recommendations)', () => {
@@ -969,7 +1213,7 @@ describe('AnalysisSummaryExtractor', () => {
       });
       const { records } = extractor.extract(result, makeResolvedDefinition());
       expect(records).toHaveLength(1);
-      expect(records[0].recordId).toBe('T2');
+      expect(records[0]!.recordId).toBe('T2');
     });
 
     it('Tier 3 (exploration maps) wins over Tier 4 (recommendations)', () => {
@@ -985,7 +1229,7 @@ describe('AnalysisSummaryExtractor', () => {
       const { records } = extractor.extract(result, makeResolvedDefinition());
       // Map-derived, not recommendation-derived.
       expect(records).toHaveLength(1);
-      expect(records[0].title).toBe('M1');
+      expect(records[0]!.title).toBe('M1');
     });
   });
 
@@ -1102,11 +1346,11 @@ describe('AnalysisSummaryExtractor', () => {
       const { records } = extractor.extract(result, resolved);
 
       expect(records).toHaveLength(2);
-      expect(records[0].recordType).toBe('commitment');
-      expect(records[0].recordId).toBe('R-1');
-      expect(records[0].agentName).toBe('test-validator');
-      expect(records[1].recordType).toBe('inquiry_question');
-      expect(records[1].recordId).toBe('IQ-1');
+      expect(records[0]!.recordType).toBe('commitment');
+      expect(records[0]!.recordId).toBe('R-1');
+      expect(records[0]!.agentName).toBe('test-validator');
+      expect(records[1]!.recordType).toBe('inquiry_question');
+      expect(records[1]!.recordId).toBe('IQ-1');
     });
 
     it('uses agent epistemic_assessment over structured output', () => {
@@ -1187,8 +1431,8 @@ describe('AnalysisSummaryExtractor', () => {
         { name: 'Fact/Judgment Separation', weight: 30, score: 25 },
       ]);
       expect(records).toHaveLength(1);
-      expect(records[0].recordId).toBe('R-1');
-      expect(records[0].recordType).toBe('commitment');
+      expect(records[0]!.recordId).toBe('R-1');
+      expect(records[0]!.recordType).toBe('commitment');
     });
 
     it('falls back to structured output when no analysis block', () => {
@@ -1225,8 +1469,8 @@ describe('AnalysisSummaryExtractor', () => {
       const { records } = extractor.extract(result, resolved);
 
       expect(records).toHaveLength(1);
-      expect(records[0].recordId).toBe('R-1');
-      expect(records[0].agentName).toBe('test-validator');
+      expect(records[0]!.recordId).toBe('R-1');
+      expect(records[0]!.agentName).toBe('test-validator');
     });
 
     it('prefers the ```json analysis discriminator over an earlier ```json example in prose', () => {
@@ -1251,7 +1495,7 @@ describe('AnalysisSummaryExtractor', () => {
       const { records } = extractor.extract(result, resolved);
 
       expect(records).toHaveLength(1);
-      expect(records[0].recordId).toBe('CANONICAL');
+      expect(records[0]!.recordId).toBe('CANONICAL');
     });
   });
 });

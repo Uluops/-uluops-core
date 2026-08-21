@@ -82,7 +82,7 @@ After further analysis:
       expect(result.output.score).toBe(90);
       // Critical: the example payload's keys ("example") must NOT appear in
       // the parsed output — the canonical block won.
-      expect(result.output as Record<string, unknown>).not.toHaveProperty(
+      expect(result.output as unknown as Record<string, unknown>).not.toHaveProperty(
         'example',
       );
     });

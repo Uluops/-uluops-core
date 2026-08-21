@@ -262,6 +262,30 @@ describe('OutputNormalizer', () => {
       expect(allIssues.length).toBeGreaterThanOrEqual(1);
     });
 
+    it('preserves a non-string growth_trajectory_assessment impediment via String() coercion', () => {
+      const result = normalizer.normalizeOutput({
+        decision: 'VITAL',
+        growth_trajectory_assessment: [
+          { dimension: 'D', impediment: { nested: true } },
+        ],
+      }, 'analyst');
+      expect(result.categories).toBeDefined();
+      const allIssues = result.categories!.flatMap(c => c.findings.flatMap(f => f.issues));
+      expect(allIssues.length).toBe(1);
+      expect(allIssues[0]!.description).toContain('Impediment: [object Object]');
+    });
+
+    it('drops the growth_trajectory_assessment entry when impediment is null (control)', () => {
+      const result = normalizer.normalizeOutput({
+        decision: 'VITAL',
+        growth_trajectory_assessment: [
+          { dimension: 'D', impediment: null },
+        ],
+      }, 'analyst');
+      const allIssues = (result.categories ?? []).flatMap(c => c.findings.flatMap(f => f.issues));
+      expect(allIssues.length).toBe(0);
+    });
+
     it('resolves Gemini purpose_coherence_assessment conflicts', () => {
       const result = normalizer.normalizeOutput({
         decision: 'ATELEOLOGICAL',
@@ -286,6 +310,31 @@ describe('OutputNormalizer', () => {
       const allIssues = (result.categories ?? []).flatMap(c => c.findings.flatMap(f => f.issues));
       const purposeIssues = allIssues.filter(i => i.title === 'Purpose conflict identified');
       expect(purposeIssues).toHaveLength(0);
+    });
+  });
+
+  // ─── terminal-operand null sanitization ─────────────────────────────
+  //
+  // `??` only sanitizes non-terminal operands: `a ?? b ?? c` falls through to `c`
+  // unchanged if `c` is `null` — a literal `null` in LLM JSON therefore reached a
+  // field typed `string | undefined` on the LAST fallback in each chain. Assert
+  // `=== undefined`, never `!toBeTruthy()`/falsy checks — those pass vacuously on
+  // `null` too and would not have caught this.
+  describe('terminal-operand null sanitization (??)', () => {
+    it('sanitizes a literal null on the terminal operand of every affected ?? chain', () => {
+      const result = normalizer.normalizeOutput({
+        categories: [{
+          findings: [{
+            issues: [{ title: 'x', file: null, code: null }],
+          }],
+        }],
+        artifacts: [{ name: 'a', content_type: null }],
+      }, 'validator');
+
+      const issue = result.categories![0]!.findings[0]!.issues[0]!;
+      expect(issue.filePath).toBe(undefined);
+      expect(issue.failureCode).toBe(undefined);
+      expect(result.artifacts![0]!.contentType).toBe(undefined);
     });
   });
 

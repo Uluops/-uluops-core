@@ -1,8 +1,66 @@
 import { UluOpsError, type UluOpsErrorCode } from './UluOpsError.js';
+import type { AgentResult } from '../types/agent.js';
+import type { CommandResult } from '../types/command.js';
+import type { WorkflowResult } from '../types/workflow.js';
+import type { PipelineResult } from '../types/pipeline.js';
 
 export { UluOpsError, UluOpsErrorCodes, type UluOpsErrorCode } from './UluOpsError.js';
 
-/** Thrown when agent/command/workflow execution fails. May include a partial result. */
+/**
+ * Result shapes that can appear as a partial-execution result somewhere in
+ * this package's error contracts. No import cycle: nothing under `src/types/*`
+ * imports from `../errors`, and type-only imports are erased at emit anyway.
+ * `WorkflowError`/`PipelineError` use a member of this union in their typed
+ * `context.partialResult`; `ExecutionError.partialResult` stays `unknown` —
+ * see its doc comment for why.
+ */
+export type PartialExecutionResult = AgentResult | CommandResult | WorkflowResult | PipelineResult;
+
+/** Structural shape of an SDK API error, independent of which copy minted it. */
+export interface ApiErrorLike {
+  statusCode: number;
+  message: string;
+  code?: string;
+  requestId?: string;
+}
+
+/**
+ * Identity-free check for an SDK API error.
+ *
+ * WHY THIS EXISTS, and why `instanceof` must NOT be used at these boundaries:
+ * `@uluops/core` pins `@uluops/sdk-core` at an exact version and `@uluops/registry-sdk` pins a
+ * DIFFERENT exact version. Two exact pins can never dedupe, so two copies of `SdkApiError` always
+ * coexist and `error instanceof SdkApiError` is structurally false for anything registry-sdk threw
+ * — silently disabling 402 -> SubscriptionRequiredError, 404 handling, and 401/403 entitlement
+ * messaging. `isSdkApiError()` from sdk-core is itself `instanceof`-based and is equally unusable
+ * here.
+ *
+ * Tests `statusCode` rather than `name`: a 402 arrives as base `SdkApiError` while a 404 arrives as
+ * `NotFoundError`, so a name test would silently miss whole status classes. A plain `Error` has no
+ * `statusCode` and is correctly rejected.
+ *
+ * Prefer this over `instanceof` for ANY error that crossed a package boundary.
+ */
+export function isApiErrorLike(error: unknown): error is ApiErrorLike {
+  return (
+    typeof error === 'object' &&
+    error !== null &&
+    typeof (error as { statusCode?: unknown }).statusCode === 'number' &&
+    typeof (error as { message?: unknown }).message === 'string'
+  );
+}
+
+/**
+ * Thrown when agent/command/workflow execution fails.
+ *
+ * `partialResult` is typed `unknown` deliberately, not a member of
+ * {@link PartialExecutionResult}: no producer in this package populates it
+ * today. All six construction sites pass a message only (AgentExecutor.ts
+ * :530,:691; CommandExecutor.ts:76,:95,:192; ToolAdapter.ts:38), and
+ * {@link MaxStepsExhaustedError} explicitly passes `undefined`. Callers must
+ * not rely on this field being present — see {@link WorkflowError} and
+ * {@link PipelineError} for the sibling fields that ARE populated.
+ */
 export class ExecutionError extends UluOpsError {
   // Typed as the broader code union (not the bare literal) so subclasses such as
   // MaxStepsExhaustedError can override with a more specific code.
@@ -129,13 +187,24 @@ export class SubmissionError extends UluOpsError {
   }
 }
 
-/** Thrown when a workflow phase gate fails. Includes partial results for completed phases. */
+/**
+ * Thrown when a workflow phase gate fails. Includes partial results for
+ * completed phases.
+ *
+ * `context.partialResult` is heterogeneous across the five construction
+ * sites in WorkflowExecutor.ts: the all-steps-failed path (:356) passes the
+ * completed `CommandResult[]` directly; the outer catch (:99) passes
+ * `buildPartialResult(...)`, which returns `Partial<WorkflowResult>` (it
+ * omits required fields like `version`/`decision`/`score`/`metrics`, hence
+ * `Partial`, not `WorkflowResult`); the remaining three sites (:441,:452,:627)
+ * pass `undefined`. The field is therefore optional, matching those three.
+ */
 export class WorkflowError extends UluOpsError {
   readonly code = 'WORKFLOW_ERROR' as const;
 
   constructor(
     message: string,
-    public readonly context: { partialResult: unknown },
+    public readonly context: { partialResult?: Partial<WorkflowResult> | CommandResult[] },
   ) {
     super(message);
     this.name = 'WorkflowError';
@@ -152,7 +221,7 @@ export class PipelineError extends UluOpsError {
 
   constructor(
     message: string,
-    public readonly context: { partialResult?: unknown; stageName?: string; stageIndex?: number },
+    public readonly context: { partialResult?: PipelineResult; stageName?: string; stageIndex?: number },
   ) {
     super(message);
     this.name = 'PipelineError';

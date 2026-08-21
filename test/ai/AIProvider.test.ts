@@ -63,7 +63,7 @@ const mockConfig: ResolvedConfig = {
     defaultProvider: 'anthropic',
   },
   registryUrl: 'https://registry.example.com',
-  validationUrl: 'https://validation.example.com',
+  submissionUrl: 'https://ops.example.com/api',
   dashboardUrl: 'https://app.example.com',
   trackingEnabled: true,
 
@@ -71,6 +71,8 @@ const mockConfig: ResolvedConfig = {
   debug: false,
   defaultThinkingBudget: 10_000,
   contextBudget: 200_000,
+  maxConcurrency: 8,
+  allowStageSteps: false,
 };
 
 function makeResolvedModel(overrides?: Partial<ResolvedModel>): ResolvedModel {
@@ -80,6 +82,7 @@ function makeResolvedModel(overrides?: Partial<ResolvedModel>): ResolvedModel {
     providerModelId: 'claude-sonnet-4-5-20250929',
     tier: 'premium',
     capabilities: { tools: true, vision: true, streaming: true, extendedThinking: false },
+    registered: true,
     resolvedFrom: 'alias',
     ...overrides,
   };
@@ -431,6 +434,52 @@ describe('AIProvider', () => {
       })).rejects.toThrow(UnauthorizedError);
     });
 
+    // A provider 404 has two unrelated causes. Before `ResolvedModel.registered`
+    // they arrived identically at the mapper and the user was told only
+    // "Provider returned HTTP 404", which points at neither cause. These three
+    // tests are written so that collapsing the branches again fails them: the
+    // last one asserts the two messages actually DIFFER, which no single-branch
+    // implementation can satisfy.
+    async function capture404Message(registered: boolean): Promise<string> {
+      const { generateText } = await import('ai');
+      const mockGenerateText = vi.mocked(generateText);
+
+      const error = new Error('model not found');
+      Object.assign(error, { statusCode: 404 });
+      mockGenerateText.mockRejectedValueOnce(error);
+
+      const catalog = mockCatalog({
+        resolve: vi.fn().mockResolvedValue(makeResolvedModel({ registered })),
+      } as unknown as Partial<ModelCatalog>);
+
+      const provider = new AIProvider(mockConfig, catalog, noopLogger);
+      try {
+        await provider.generate({ model: 'sonnet', system: 'test', prompt: 'test' });
+      } catch (e) {
+        return (e as Error).message;
+      }
+      throw new Error('generate() resolved — expected it to throw, so the assertions below never ran');
+    }
+
+    it('404 on a REGISTERED model blames the stale catalog, not the model name', async () => {
+      const msg = await capture404Message(true);
+      expect(msg).toMatch(/STALE/);
+      // Must NOT send the user hunting for a typo — the name came from the catalog.
+      expect(msg).not.toMatch(/typos/);
+    });
+
+    it('404 on an UNREGISTERED model points at the name/access, not staleness', async () => {
+      const msg = await capture404Message(false);
+      expect(msg).toMatch(/typos|access/);
+      expect(msg).not.toMatch(/STALE/);
+    });
+
+    it('CONTROL — the two 404 messages differ (a collapsed branch fails here)', async () => {
+      const registeredMsg = await capture404Message(true);
+      const unregisteredMsg = await capture404Message(false);
+      expect(registeredMsg).not.toBe(unregisteredMsg);
+    });
+
     it('maps 403 to ForbiddenError', async () => {
       const { generateText } = await import('ai');
       const mockGenerateText = vi.mocked(generateText);
@@ -754,6 +803,7 @@ describe('AIProvider', () => {
         providerModelId: 'gpt-4o',
         tier: 'premium',
         capabilities: { tools: true, vision: true, streaming: true, extendedThinking: false },
+        registered: true,
         resolvedFrom: 'alias',
         ...overrides,
       };
@@ -963,6 +1013,7 @@ describe('AIProvider', () => {
         providerModelId: 'gemini-2.5-flash',
         tier: 'standard',
         capabilities: { tools: true, vision: true, streaming: true, extendedThinking: false },
+        registered: true,
         resolvedFrom: 'alias',
         ...overrides,
       };

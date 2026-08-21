@@ -14,8 +14,9 @@ const target = process.argv[2] ?? './src';
 
 // Uses the bundled starter definitions for resolution while tracking results
 // online. If your key lacks render access you'll see a non-fatal
-// "Render API unavailable — using raw YAML fallback" warning; the run still
-// completes. For a fully offline run, drop `apiKey` and add `trackingEnabled: false`.
+// "Render API key lacks render access — the agent prompt will be raw YAML"
+// warning (result marked completeness: 'partial'); the run still completes.
+// For a fully offline run, drop `apiKey` and add `trackingEnabled: false`.
 const client = new UluOpsClient({
   apiKey: process.env.ULUOPS_API_KEY!,
   localDefinitions: STARTER_DEFINITIONS_DIR,

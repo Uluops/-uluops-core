@@ -30,6 +30,26 @@ export interface ResolvedModel {
   capabilities: ModelCapabilities;
 
   /**
+   * Whether this model was found in the registry catalog.
+   *
+   * `false` means the catalog had no row and the fields above are fabricated
+   * defaults (`tier: 'standard'`, DEFAULT_CAPABILITIES) — the model may still
+   * be perfectly valid at the provider, e.g. private or preview access.
+   *
+   * This bit exists so a provider 404 can be explained correctly. Without it
+   * the two causes arrive identically at the error mapper and the user is told
+   * nothing useful:
+   *   registered && 404 -> the catalog is STALE; the model was withdrawn
+   *                        upstream and the local catalog has not caught up
+   *   !registered && 404 -> the name is likely wrong, or the account lacks
+   *                        access; there was never a catalog row to be stale
+   *
+   * Required, not optional, so every construction site must state its answer —
+   * a defaulted `false` would silently mislabel registered models as typos.
+   */
+  registered: boolean;
+
+  /**
    * Model's real context window in tokens (registry `limits.context`).
    * Undefined when the registry has no window for this model (null/0 limit, or
    * an unregistered model). Consumed by deriveContextBudget() to size the budget
@@ -228,6 +248,9 @@ export class ModelCatalog {
         providerModelId: modelId,
         tier: 'standard',
         capabilities: DEFAULT_CAPABILITIES,
+        // No catalog row — deliberately allowed through (the caller may have
+        // access to models the registry does not list).
+        registered: false,
         resolvedFrom: providerModelId,
       };
       this.validateCapabilities(resolved, opts?.requiredCapabilities);
@@ -242,6 +265,7 @@ export class ModelCatalog {
       capabilities: model.capabilities,
       contextWindow: model.limits?.context || undefined,
       cost: model.cost ?? undefined,
+      registered: true,
       resolvedFrom: providerModelId,
     };
 
@@ -285,6 +309,7 @@ export class ModelCatalog {
       capabilities: model.capabilities,
       contextWindow: model.limits?.context || undefined,
       cost: model.cost ?? undefined,
+      registered: true,
       resolvedFrom: tier,
     };
 
@@ -336,6 +361,10 @@ export class ModelCatalog {
       providerModelId: entry.modelId,
       tier: 'standard',
       capabilities: DEFAULT_CAPABILITIES,
+      // Registry was unreachable, so registration is UNKNOWN. Reported as
+      // false: claiming `true` here would let a stale-catalog message be shown
+      // on the strength of a lookup that never happened.
+      registered: false,
       resolvedFrom: alias,
     };
     this.validateCapabilities(resolved, opts?.requiredCapabilities);
@@ -361,6 +390,9 @@ export class ModelCatalog {
       capabilities: model?.capabilities ?? DEFAULT_CAPABILITIES,
       contextWindow: model?.limits?.context || undefined,
       cost: model?.cost ?? undefined,
+      // The alias resolved, but the response may carry no model object; only
+      // the object's presence proves a catalog row exists.
+      registered: model !== undefined,
       resolvedFrom: input,
     };
   }

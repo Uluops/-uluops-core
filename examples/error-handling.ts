@@ -45,17 +45,18 @@ try {
     // error.steps / error.finishReason.
     console.error(`Step ceiling hit (${error.steps} steps, finishReason=${error.finishReason}) — raise maxSteps or narrow the target.`);
   } else if (error instanceof ExecutionError) {
-    // Agent execution failed — may have partial results
+    // Agent execution failed. error.partialResult is typed `unknown` and is
+    // not populated by any producer in this package — don't rely on it.
     console.error('Execution failed:', error.message);
-    if (error.partialResult) {
-      console.error('Partial result available:', error.partialResult);
-    }
   } else if (error instanceof WorkflowError) {
-    // Phase gate failure — completed phases are in error.context.partialResult
+    // Phase gate failure. error.context.partialResult is
+    // Partial<WorkflowResult> | CommandResult[] | undefined, depending which
+    // internal path threw — narrow with Array.isArray() before reading fields.
     console.error('Workflow gate failed:', error.message);
   } else if (error instanceof SubscriptionRequiredError) {
     // Definition requires a higher subscription tier
-    console.error(`Upgrade required: needs "${error.requiredTier}". ${error.upgradeUrl}`);
+    console.error(`Upgrade required: needs "${error.requiredTier}" (you have "${error.currentTier}").`);
+    if (error.upgradeUrl) console.error(`Upgrade at: ${error.upgradeUrl}`);
   } else if (error instanceof ParseError) {
     // LLM output couldn't be parsed as structured JSON
     console.error('Parse error:', error.message);

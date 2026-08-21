@@ -101,7 +101,7 @@ describe('buildUpstreamContext', () => {
     const all = [stage('preflight', { type: 'steps', agents: undefined }), s];
     const prior: StageResult[] = [{
       id: 'preflight', name: 'preflight', type: 'command', status: 'completed',
-      steps: [{ name: 'detect', status: 'passed', output: 'DETECTED', durationMs: 5 }],
+      steps: [{ name: 'detect', command: 'echo DETECTED', status: 'passed', output: 'DETECTED', durationMs: 5 }],
       result: { ...makeCommandResult({ score: null, maxScore: null }), recommendations: [] },
       durationMs: 5,
     }];
@@ -384,7 +384,7 @@ function makeForwardingPipeline(stage2Overrides?: Partial<StageDefinition>): Res
           { id: 'synthesis', name: 'synthesis', type: 'agents', agents: [{ ref: 'synth@1.0.0' }], depends_on: ['analysis'], ...stage2Overrides },
         ],
       },
-    } as ResolvedDefinition['definition'],
+    } as PipelineDefinition,
     runtime: {} as ResolvedDefinition['runtime'],
     domain: 'software',
   };

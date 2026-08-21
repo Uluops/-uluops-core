@@ -201,24 +201,37 @@ describe('runPreflightChecks', () => {
       }
     });
 
-    // Pins CURRENT behaviour, which is fail-closed but not what preflight.ts:184-185
-    // claims. shellQuote correctly emits 'it'\''s' for a target containing a quote; the
-    // metacharacter guard then strips the quoted spans and trips on the leftover
-    // backslash, so a legitimately-named directory is refused. Safe (it rejects rather
-    // than executes) but it means apostrophes in a target path break command preflight
-    // checks. If that guard is ever taught to understand its own quoting, this test
-    // should flip to `.resolves` — it is here so the change is deliberate, not silent.
-    it('refuses (fail-closed) a target path containing a single quote', async () => {
+    // The metacharacter guard now runs against the command TEMPLATE, before
+    // $ARGUMENTS substitution (runPreflightChecks / validateCommandTemplate),
+    // rather than against the post-substitution string. Previously the guard
+    // saw shellQuote's OWN output: shellQuote correctly emits 'it'\''s' for a
+    // target containing a quote, but the guard then stripped the quoted spans
+    // and tripped on the leftover backslash — rejecting the output of the
+    // package's own quoting function for any target path containing an
+    // apostrophe. Guarding the template instead means the guard never sees
+    // target-derived text at all (only `command` is shell-interpreted, and it
+    // always routes $ARGUMENTS through shellQuote), so a legitimately-named
+    // directory now passes.
+    it('resolves for a target path containing a single quote (template-only metachar guard)', async () => {
       const base = await fs.mkdtemp(path.join(os.tmpdir(), 'preflight-quote-'));
       const target = path.join(base, "it's");
       await fs.mkdir(target, { recursive: true });
       try {
         const checks: PreflightCheck[] = [{ check: 'command', command: 'test -d $ARGUMENTS' }];
         await expect(runPreflightChecks(checks, { target } as ExecutionInput))
-          .rejects.toThrow('disallowed shell metacharacters');
+          .resolves.toBeUndefined();
       } finally {
         await fs.rm(base, { recursive: true, force: true });
       }
+    });
+
+    // Controls: the guard must still fire when the metacharacter is in the
+    // TEMPLATE (author-authored), not the substituted target — this is what
+    // proves the fix narrowed the guard's scope rather than disabling it.
+    it('still rejects a metacharacter in the command template (not the target)', async () => {
+      const checks: PreflightCheck[] = [{ check: 'command', command: 'test -d $ARGUMENTS; rm -rf /' }];
+      await expect(runPreflightChecks(checks, input))
+        .rejects.toThrow('disallowed shell metacharacters');
     });
   });
 

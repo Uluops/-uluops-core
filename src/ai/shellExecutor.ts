@@ -98,10 +98,14 @@ export async function executeShellAsOpenAIResult(
   defaultTimeoutMs: number,
   logger?: Logger,
 ): Promise<OpenAIShellOutput> {
-  const timeoutMs = action.timeoutMs ?? defaultTimeoutMs;
+  // Ceiling, not fallback: the model can only LOWER the timeout/output cap below the
+  // operator-configured default, never raise it. A `?? default` fallback would let a
+  // model-supplied value override the default upward — the exact hazard
+  // SHELL_COMMAND_TIMEOUT_MS was introduced to close (see constants.ts).
+  const timeoutMs = Math.min(action.timeoutMs ?? defaultTimeoutMs, defaultTimeoutMs);
   const results = [];
 
-  const maxLen = action.maxOutputLength;
+  const maxLen = Math.min(action.maxOutputLength ?? MAX_SHELL_OUTPUT, MAX_SHELL_OUTPUT);
 
   for (const command of action.commands) {
     const result = await runShellCommand(command, cwd, timeoutMs, logger);

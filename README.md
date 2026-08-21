@@ -14,7 +14,7 @@ The foundational execution engine for UluOps. Orchestrates AI-powered code analy
 
 ## Prerequisites
 
-- **Node.js 18+** with an ESM project (`"type": "module"` in package.json)
+- **Node.js 20.3+** with an ESM project (`"type": "module"` in package.json)
 - **[tsx](https://github.com/privatenumber/tsx)** for running TypeScript examples: `npm install -D tsx`
 - **UluOps API key** — get one at [app.uluops.ai](https://app.uluops.ai), or use bundled starter agents offline (see below)
 - **AI provider key** — at least one of `ANTHROPIC_API_KEY`, `OPENAI_API_KEY`, or `GOOGLE_API_KEY`
@@ -53,6 +53,8 @@ console.log(`Score: ${cmd.score} | Decision: ${cmd.decision}`);
 ```bash
 npx tsx validate.ts
 ```
+
+> **Plain JavaScript.** The snippet above contains no TypeScript-specific syntax — save it as `validate.mjs` (or `validate.js` in a `"type": "module"` package) and run `node validate.mjs`. The offline snippet below is likewise valid JS as written. `tsx` is needed only once you add type annotations.
 
 ### Offline Quick Start (No UluOps API Key)
 
@@ -306,7 +308,13 @@ console.log(`Decision: ${result.decision}`);
 Synchronous execution (blocks until complete):
 
 ```typescript
-const result = await client.runPipeline('foundations', { target: './src' });
+// `params` supplies run parameters read by stage/agent `condition:` expressions
+// and by `{{ params.x }}` substitutions in stage `steps:` commands.
+// An absent param reads as false in a condition (see below).
+const result = await client.runPipeline('foundations', {
+  target: './src',
+  params: { frontend: true, tier: 'pro' },
+});
 
 console.log(`Overall: ${result.decision} (score: ${result.score})`);
 for (const stage of result.stages) {
@@ -733,10 +741,12 @@ const client = new UluOpsClient({
                                       // falling back to 200k only when the window is unknown. When set, it caps the
                                       // budget at min(this, modelWindow). Set it to control cost on large-window models.
   maxRetries: 2,                      // Retries for transient LLM errors (429/5xx); exponential backoff via AI SDK
-  maxConcurrency: 8,                  // Global ceiling on concurrent in-flight LLM calls across the whole engine
-                                      // (or ULUOPS_MAX_CONCURRENCY). Bounds total requests regardless of how many
-                                      // workflow phases, parallel steps, or inline pipeline agents fan out at once —
-                                      // the global throttle that stops fan-out × retry from amplifying a rate limit.
+  maxConcurrency: 8,                  // Ceiling on concurrent in-flight LLM calls, per UluOpsClient instance
+                                      // (or ULUOPS_MAX_CONCURRENCY). Bounds this instance's total requests regardless
+                                      // of how many workflow phases, parallel steps, or inline pipeline agents fan out
+                                      // at once — the per-instance throttle that stops fan-out × retry from amplifying
+                                      // a rate limit. NOT process-wide: multiple UluOpsClient instances in one process
+                                      // each get their own ceiling and do not coordinate with each other.
                                       // Distinct from a workflow's per-level `max_parallel`, which caps one layer only.
   dashboardUrl: 'https://app.uluops.ai', // Dashboard link prefix for run URLs
 
@@ -790,7 +800,7 @@ you pass to `runAgent()` / `resolve()`.
 | `ULUOPS_ALLOWED_TOOLS` | Comma-separated tool allowlist (e.g., `bash`) | all except `bash` |
 | `ULUOPS_ALLOW_STAGE_STEPS` | Permit engine execution of PDL stage `steps:` blocks (host shell; exact string `true`) | `false` |
 | `ULUOPS_DISABLE_STAGE_FORWARDING` | Disable upstream stage-result forwarding engine-wide (`1` or `true`) | `false` |
-| `ULUOPS_MAX_CONCURRENCY` | Global ceiling on concurrent in-flight LLM calls | `8` |
+| `ULUOPS_MAX_CONCURRENCY` | Ceiling on concurrent in-flight LLM calls, per `UluOpsClient` instance | `8` |
 | `ULUOPS_DEBUG` | Enable detailed execution logging | `false` |
 
 ## TypeScript Support
@@ -816,6 +826,14 @@ import {
   type ExecutionOptions,
   // Async pipeline handle (return type of startPipeline)
   type PipelineHandle,
+  // Pipeline structure — stages and their opt-in `steps:` blocks
+  type StageDefinition,          // one stage of a PipelineDefinition
+  type StageResult,              // one entry of PipelineResult.stages
+  type StepDefinition,           // one entry of StageDefinition.steps (see Stage Steps)
+  type StepResult,               // one entry of StageResult.steps
+  // Registry types
+  type SubscriptionTier,         // 'free' | 'hobbyist' | 'plus' | 'pro' | 'enterprise';
+                                 // type of SubscriptionRequiredError.requiredTier / .currentTier
   // Decision classification
   classifyDecision,
   resolveDecisionCategory,
@@ -824,6 +842,7 @@ import {
   // Analysis & AI layer companion types (for direct Advanced Exports usage)
   type AnalysisExtractionResult, // return type of AnalysisSummaryExtractor
   type ResolvedModel,            // return type of ModelCatalog.resolve
+  type ResolveOptions,           // options for ModelCatalog.resolve — requiredCapabilities, preferredProvider
   // Completeness & degradation markers
   deriveCompleteness,
   resolutionMarkersFromLegacy, // migrate the deprecated degradations[] field
@@ -835,6 +854,7 @@ import {
   type ExecutionMetrics,        // type of result.metrics on every result type (camelCase)
   type UsageMetrics,            // raw AI-provider usage on AIGenerateResult.usage (advanced; snake_case)
   type AIGenerateResult,        // return type of AIProvider.generate() (advanced)
+  type AIGenerateOptions,       // parameter type of AIProvider.generate() (advanced)
   // Error classes
   ExecutionError,
   MaxStepsExhaustedError,
@@ -873,11 +893,11 @@ The SDK provides a structured error hierarchy:
 | `ModelNotFoundError` | `ModelCatalog.resolve()` | Model alias not found in registry catalog |
 | `CapabilityError` | `ModelCatalog.resolve()` | Resolved model lacks a required capability (e.g. tools, vision, extendedThinking) |
 | `PreflightError` | `CommandExecutor` (preflight phase) | Preflight check failed — missing env var, file not found, command unavailable |
-| `ExecutionError` | `AgentExecutor.execute()`, `CommandExecutor.execute()` | Agent execution failure or definition type mismatch. Check `error.partialResult` for partial output |
+| `ExecutionError` | `AgentExecutor.execute()`, `CommandExecutor.execute()` | Agent execution failure or definition type mismatch. `error.partialResult` is typed `unknown` — no producer in this package populates it; do not rely on it |
 | `MaxStepsExhaustedError` | `AgentExecutor.execute()` | The tool loop hit the `maxSteps` ceiling while the model was still calling tools, leaving empty output. Subclass of `ExecutionError` (code `MAX_STEPS_EXHAUSTED`); carries `error.steps` and `error.finishReason`. Raise `maxSteps`, narrow the target, or lower the context budget so wrap-up triggers earlier |
 | `ParseError` | `OutputExtractor.extractWithMetadata()` | LLM output could not be parsed as structured JSON. Check `error.contentPreview` for raw output |
 | `SubmissionError` | `SubmissionClient` methods | Validation service rejected a submission. Use `SubmissionErrorCodes` to narrow by code |
-| `WorkflowError` | `WorkflowExecutor.execute()` | Phase gate failure. Check `error.context.partialResult` for completed phase results |
+| `WorkflowError` | `WorkflowExecutor.execute()` | Phase gate failure. `error.context.partialResult` is `Partial<WorkflowResult> \| CommandResult[] \| undefined` — a partial aggregate object, a raw array of completed command results, or absent, depending which internal path threw |
 | `PipelineError` | `PipelineExecutor.execute()` | Pipeline stage failure. Check `error.context` for stage name/index |
 | `SubscriptionRequiredError` | `RegistryClient.resolve()` | Definition requires a higher subscription tier. Check `error.requiredTier`, `error.currentTier`, and `error.upgradeUrl` for upgrade guidance |
 | `IntegrityError` | `RegistryClient.resolve()` (caller-pinned) | A pinned `expectedHash`/`expectedPromptHash` did not match the resolved content, or a prompt pin was supplied for a definition with no rendered prompt. Check `error.kind` (`'yaml'`/`'prompt'`/`'unavailable'`), `error.expected`, `error.actual`, and `error.definitionName`/`error.definitionVersion` (which definition failed). Fail-closed — execution is refused |
@@ -899,12 +919,14 @@ try {
     console.error(`Hit the step ceiling (${error.steps} steps) — raise maxSteps or narrow the target.`);
   } else if (error instanceof ExecutionError) {
     console.error('Execution failed:', error.message);
-    console.log('Partial result:', error.partialResult);
+    // error.partialResult is `unknown` and unpopulated by any producer here — don't read it.
   } else if (error instanceof WorkflowError) {
-    // Phase gate failure — completed phases are in error.context.partialResult
+    // Phase gate failure — error.context.partialResult is
+    // Partial<WorkflowResult> | CommandResult[] | undefined
     console.error('Workflow gate failed:', error.message);
   } else if (error instanceof SubscriptionRequiredError) {
-    console.error(`Upgrade required: needs "${error.requiredTier}" (you have "${error.currentTier}"). ${error.upgradeUrl}`);
+    console.error(`Upgrade required: needs "${error.requiredTier}" (you have "${error.currentTier}").`);
+    if (error.upgradeUrl) console.error(`Upgrade at: ${error.upgradeUrl}`);
   }
 }
 ```

@@ -173,12 +173,15 @@ export interface UluOpsConfig {
   maxRetries?: number;
 
   /**
-   * Maximum number of concurrent in-flight LLM generation calls across the whole
-   * engine. A shared semaphore in AIProvider enforces this regardless of how many
-   * workflow phases, parallel steps, or inline pipeline agents fan out at once.
-   * This is the global throttle that prevents unbounded fan-out × retry from
-   * amplifying a provider rate limit. Falls back to the ULUOPS_MAX_CONCURRENCY
-   * env var, then DEFAULT_MAX_CONCURRENCY.
+   * Maximum number of concurrent in-flight LLM generation calls for this
+   * UluOpsClient/AIProvider instance. A shared semaphore in AIProvider enforces
+   * this regardless of how many workflow phases, parallel steps, or inline
+   * pipeline agents fan out at once WITHIN this instance. This is the
+   * per-instance throttle that prevents unbounded fan-out × retry from
+   * amplifying a provider rate limit — it is NOT process-wide; multiple
+   * UluOpsClient instances in one process each get their own ceiling and do
+   * not coordinate. Falls back to the ULUOPS_MAX_CONCURRENCY env var, then
+   * DEFAULT_MAX_CONCURRENCY.
    * @default 8
    */
   maxConcurrency?: number;
@@ -243,7 +246,9 @@ export interface ResolvedConfig {
    */
   contextBudget?: number;
   maxRetries?: number;
-  /** Global ceiling on concurrent in-flight LLM calls. Always set after resolution. */
+  /** Ceiling on concurrent in-flight LLM calls, per AIProvider/UluOpsClient
+   *  instance (not per process — see AIProvider.concurrencyLimiter). Always
+   *  set after resolution. */
   maxConcurrency: number;
   allowedTools?: string[];
   /** Engine execution of PDL stage steps. Always resolved; default false. */

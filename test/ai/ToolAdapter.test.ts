@@ -50,7 +50,7 @@ describe('ToolAdapter', () => {
       const tools = adapter.getTools();
       const readFile = tools['read_file']!;
       // The execute function exists on tools with execute
-      const exec = (readFile as { execute: (args: { path: string }) => Promise<string> }).execute;
+      const exec = (readFile as unknown as { execute: (args: { path: string }) => Promise<string> }).execute;
       const result = await exec({ path: 'test.ts' });
       expect(result).toBe('export const x = 1;\n');
     });
@@ -58,14 +58,14 @@ describe('ToolAdapter', () => {
     it('read_file throws on path traversal', async () => {
       const tools = adapter.getTools();
       const readFile = tools['read_file']!;
-      const exec = (readFile as { execute: (args: { path: string }) => Promise<string> }).execute;
+      const exec = (readFile as unknown as { execute: (args: { path: string }) => Promise<string> }).execute;
       await expect(exec({ path: '../../../etc/passwd' })).rejects.toThrow('outside the target directory');
     });
 
     it('list_files executes through ToolHandler', async () => {
       const tools = adapter.getTools();
       const listFiles = tools['list_files']!;
-      const exec = (listFiles as { execute: (args: { path: string; pattern?: string }) => Promise<string> }).execute;
+      const exec = (listFiles as unknown as { execute: (args: { path: string; pattern?: string }) => Promise<string> }).execute;
       const result = await exec({ path: '.' });
       // Now includes metadata: "test.ts (20 B, 2 lines)"
       expect(result).toContain('test.ts');
@@ -74,7 +74,7 @@ describe('ToolAdapter', () => {
     it('search_content executes through ToolHandler', async () => {
       const tools = adapter.getTools();
       const searchContent = tools['search_content']!;
-      const exec = (searchContent as { execute: (args: { pattern: string; file_pattern?: string; max_results?: number }) => Promise<string> }).execute;
+      const exec = (searchContent as unknown as { execute: (args: { pattern: string; file_pattern?: string; max_results?: number }) => Promise<string> }).execute;
       const result = await exec({ pattern: 'export' });
       const parsed = JSON.parse(result) as Array<{ file: string; line: number; content: string }>;
       expect(parsed.length).toBeGreaterThan(0);
@@ -96,7 +96,7 @@ describe('ToolAdapter', () => {
       const adapterWithBudget = new ToolAdapter(toolHandler, undefined, tracker);
       const tools = adapterWithBudget.getTools();
       const budgetTool = tools['get_token_budget']!;
-      const exec = (budgetTool as { execute: (args: Record<string, never>) => Promise<string> }).execute;
+      const exec = (budgetTool as unknown as { execute: (args: Record<string, never>) => Promise<string> }).execute;
       const result = await exec({});
       const parsed = JSON.parse(result);
       expect(parsed.budget).toBe(100_000);

@@ -90,7 +90,7 @@ import { WorkflowExecutor } from '../../src/executor/WorkflowExecutor.js';
 import { PipelineExecutor } from '../../src/executor/PipelineExecutor.js';
 import { createLogger } from '@uluops/sdk-core';
 import type { ResolvedDefinition } from '../../src/types/registry.js';
-import type { ValidatorAgentResult } from '../../src/types/agent.js';
+import type { AgentResult } from '../../src/types/agent.js';
 import type { CommandResult } from '../../src/types/command.js';
 import type { WorkflowResult } from '../../src/types/workflow.js';
 import type { PipelineResult } from '../../src/types/pipeline.js';
@@ -110,10 +110,10 @@ function makeResolvedDef(type: string, name = 'test-def'): ResolvedDefinition {
     runtime: {} as ResolvedDefinition['runtime'],
     domain: 'software',
     agentType: type === 'agent' ? 'validator' : undefined,
-  };
+  } as ResolvedDefinition;
 }
 
-function makeAgentResult(): ValidatorAgentResult {
+function makeAgentResult(): AgentResult {
   return {
     type: 'agent',
     agentType: 'validator',
@@ -158,7 +158,8 @@ function makeWorkflowResult(): WorkflowResult {
     metrics: {
       inputTokens: 1000, outputTokens: 400, totalEffectiveTokens: 1400,
       durationMs: 2000, model: 'mixed',
-      phasesExecuted: 2, phasesPassed: 2, phasesWarned: 0, phasesBlocked: 0, phasesSkipped: 0, commands: [],
+      phasesExecuted: 2, phasesPassed: 2, phasesWarned: 0, phasesBlocked: 0, phasesSkipped: 0,
+      phasesAborted: 0, commands: [],
     },
   };
 }
@@ -178,7 +179,7 @@ function makePipelineResult(): PipelineResult {
     metrics: {
       inputTokens: 2000, outputTokens: 800, totalEffectiveTokens: 2800,
       durationMs: 5000, model: 'mixed',
-      stagesExecuted: 3, stagesPassed: 3, stagesFailed: 0, stagesSkipped: 0,
+      stagesExecuted: 3, stagesPassed: 3, stagesFailed: 0, stagesWarned: 0, stagesSkipped: 0,
     },
   };
 }
@@ -952,22 +953,56 @@ describe('UluOpsClient', () => {
     // Trust-boundary invariant (security review, run #50): ExecutionOptions
     // is built from CONFIG ONLY — no field from the resolved definition may
     // reach it (a definition must never be able to flip allowStageSteps or
-    // other execution controls). This drives the real client path and asserts
-    // on the options the executor ACTUALLY receives.
-    it('builds ExecutionOptions from config only — definition fields never reach the executor options', async () => {
-      const client = new UluOpsClient({ apiKey: 'ulr_test-key-012345678901', trackingEnabled: false, timeout: 1234 });
+    // other execution controls). All three call sites that build this literal
+    // (runPipeline, run's pipeline branch, startPipeline — UluOpsClient.ts
+    // :216, :254, :293) construct it identically, so each is driven through
+    // the real client path with the same hostile fixture and asserted on the
+    // options the executor ACTUALLY receives.
+    function makeHostilePipelineDef(): ResolvedDefinition {
       // A hostile definition carrying execution-control-shaped fields at every
       // plausible level; none of them may surface in the options argument.
       const hostile = makeResolvedDef('pipeline');
       (hostile as unknown as Record<string, unknown>)['allowStageSteps'] = true;
       (hostile.definition as unknown as Record<string, Record<string, unknown>>)['pipeline']!['allowStageSteps'] = true;
       (hostile.definition as unknown as Record<string, Record<string, unknown>>)['pipeline']!['options'] = { allowStageSteps: true };
-      mockRegistryResolve.mockResolvedValue(hostile);
+      return hostile;
+    }
+
+    it('builds ExecutionOptions from config only — definition fields never reach the executor options (runPipeline)', async () => {
+      const client = new UluOpsClient({ apiKey: 'ulr_test-key-012345678901', trackingEnabled: false, timeout: 1234 });
+      mockRegistryResolve.mockResolvedValue(makeHostilePipelineDef());
       mockPipelineExecutorExecute.mockResolvedValue(makePipelineResult());
 
       await client.runPipeline('hostile-pipeline', { target: '/tmp/test' });
 
       const optionsArg = mockPipelineExecutorExecute.mock.calls.at(-1)?.[2] as Record<string, unknown>;
+      expect(Object.keys(optionsArg).sort()).toEqual(['model', 'timeoutMs']);
+      expect(optionsArg['timeoutMs']).toBe(1234);
+      expect('allowStageSteps' in optionsArg).toBe(false);
+    });
+
+    it('builds ExecutionOptions from config only — definition fields never reach the executor options (run, pipeline branch)', async () => {
+      const client = new UluOpsClient({ apiKey: 'ulr_test-key-012345678901', trackingEnabled: false, timeout: 1234 });
+      mockRegistryResolve.mockResolvedValue(makeHostilePipelineDef());
+      mockPipelineExecutorExecute.mockResolvedValue(makePipelineResult());
+
+      await client.run('hostile-pipeline', { target: '/tmp/test' });
+
+      const optionsArg = mockPipelineExecutorExecute.mock.calls.at(-1)?.[2] as Record<string, unknown>;
+      expect(Object.keys(optionsArg).sort()).toEqual(['model', 'timeoutMs']);
+      expect(optionsArg['timeoutMs']).toBe(1234);
+      expect('allowStageSteps' in optionsArg).toBe(false);
+    });
+
+    it('builds ExecutionOptions from config only — definition fields never reach the executor options (startPipeline)', async () => {
+      const client = new UluOpsClient({ apiKey: 'ulr_test-key-012345678901', trackingEnabled: false, timeout: 1234 });
+      mockRegistryResolve.mockResolvedValue(makeHostilePipelineDef());
+      const mockHandle = { executionId: 'pipe_hostile', wait: vi.fn(), cancel: vi.fn(), status: vi.fn() };
+      mockPipelineExecutorStart.mockResolvedValue(mockHandle);
+
+      await client.startPipeline('hostile-pipeline', { target: '/tmp/test' });
+
+      const optionsArg = mockPipelineExecutorStart.mock.calls.at(-1)?.[2] as Record<string, unknown>;
       expect(Object.keys(optionsArg).sort()).toEqual(['model', 'timeoutMs']);
       expect(optionsArg['timeoutMs']).toBe(1234);
       expect('allowStageSteps' in optionsArg).toBe(false);
@@ -1021,7 +1056,32 @@ describe('UluOpsClient', () => {
       const handle = await client.startPipeline('ci-pipeline', { target: '/tmp/test' });
 
       expect(handle.executionId).toBe('pipe_123');
-      expect(mockPipelineExecutorStart).toHaveBeenCalledWith(resolved, { target: '/tmp/test' });
+      // Regression guard for tracker fcfc1bd8: startPipeline used to call
+      // PipelineExecutor.start with no options at all, so async pipelines ran
+      // with no timeout and ignored ai.modelOverride — unlike runPipeline/run,
+      // which both pass { timeoutMs, model }. This asserts startPipeline now
+      // matches its siblings.
+      expect(mockPipelineExecutorStart).toHaveBeenCalledWith(resolved, { target: '/tmp/test' }, {
+        timeoutMs: 300_000, // DEFAULT_TIMEOUT_MS — no config.timeout override in this test
+        model: undefined, // no ai.modelOverride configured
+      });
+    });
+
+    it('threads config.timeout and ai.modelOverride into PipelineExecutor.start (control: pre-fix passed neither)', async () => {
+      const client = new UluOpsClient({
+        apiKey: 'ulr_test-key-012345678901',
+        timeout: 45_000,
+        ai: { providers: { anthropic: { apiKey: 'key' } }, modelOverride: 'haiku' },
+      });
+      const resolved = makeResolvedDef('pipeline');
+      mockRegistryResolve.mockResolvedValue(resolved);
+      const mockHandle = { executionId: 'pipe_456', wait: vi.fn(), cancel: vi.fn(), status: vi.fn() };
+      mockPipelineExecutorStart.mockResolvedValue(mockHandle);
+
+      await client.startPipeline('ci-pipeline', { target: '/tmp/test' });
+
+      const call = mockPipelineExecutorStart.mock.calls[0]!;
+      expect(call[2]).toEqual({ timeoutMs: 45_000, model: 'haiku' });
     });
 
     it('throws when resolved type is not pipeline', async () => {
