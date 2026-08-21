@@ -402,6 +402,46 @@ describe('ModelCatalog', () => {
       await expect(catalog.resolve('bad')).rejects.toThrow('listAliases()');
     });
 
+    it('inlines the valid tiers, which cost nothing to name', async () => {
+      const sdk = mockSdk({
+        resolveAlias: vi.fn().mockRejectedValue(makeNotFoundError()),
+      });
+      const catalog = new ModelCatalog(sdk);
+
+      await expect(catalog.resolve('bad')).rejects.toThrow(/budget.*standard.*premium.*reasoning/);
+    });
+
+    it('inlines the available aliases when the registry answers', async () => {
+      const sdk = mockSdk({
+        resolveAlias: vi.fn().mockRejectedValue(makeNotFoundError()),
+        listAliases: vi.fn().mockResolvedValue({
+          aliases: [{ alias: 'sonnet' }, { alias: 'opus' }],
+        }),
+      });
+      const catalog = new ModelCatalog(sdk);
+
+      await expect(catalog.resolve('bad')).rejects.toThrow('Available aliases: opus, sonnet');
+    });
+
+    // The property that matters. Enriching the message requires a registry
+    // round-trip; if that trip fails, the reader must still be told their MODEL
+    // NAME is wrong — not that the registry is down. Surfacing the lookup's own
+    // failure here would send them after an entirely different problem.
+    it('CONTROL — a failing alias lookup never masks the original ModelNotFoundError', async () => {
+      const sdk = mockSdk({
+        resolveAlias: vi.fn().mockRejectedValue(makeNotFoundError()),
+        listAliases: vi.fn().mockRejectedValue(new Error('registry is on fire')),
+      });
+      const catalog = new ModelCatalog(sdk);
+
+      await expect(catalog.resolve('bad')).rejects.toThrow(ModelNotFoundError);
+      await expect(catalog.resolve('bad')).rejects.toThrow('Cannot resolve model "bad"');
+      // The enrichment failure must be invisible to the caller.
+      await expect(catalog.resolve('bad')).rejects.not.toThrow('registry is on fire');
+      // And it falls back to the discovery-method hint rather than a bare message.
+      await expect(catalog.resolve('bad')).rejects.toThrow('listAliases()');
+    });
+
     it('re-throws network/auth errors from resolveAlias for aliases outside the offline table', async () => {
       const networkError = new Error('Network timeout');
       const sdk = mockSdk({

@@ -60,7 +60,11 @@ Every chain starts with `UluOpsClient.resolveByRef()`. This sub-chain is shared.
  5. [if agent has 'bash' tool] Resolve model → create provider shell tool
  6. Create ToolHandler + TokenBudgetTracker + ToolAdapter
  7. buildInitialMessage() — scan project structure via list_files tool
- 8. Universal agentOutputSchema (Zod) — categories + artifacts, both nullable.
+ 8. Universal agentOutputSchema (Zod) — categories + artifacts, both optional and
+    null-tolerant (they accept an explicit `null` and normalize it to `undefined`). Only the
+    six score-shaped fields (`score`/`maxScore` at two levels, `pointsEarned`/`pointsPossible`)
+    remain `.nullable()`, guarded by a compile-time assertion in `outputSchemas.ts` — `null`
+    is meaningful there (a scoreless result), where `undefined` would be ambiguous.
       All 6 agent types use the same schema. No type-specific routing.
  9. AIProvider.generate():
 10.   ModelCatalog.resolve() — alias → registry API → ResolvedModel

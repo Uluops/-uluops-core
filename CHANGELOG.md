@@ -54,14 +54,69 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) 
   `isCanonicalMode` fix below, this same release). Populated on both the tracking-enabled and
   tracking-disabled (`trackingEnabled: false`) response paths. Additive optional field on a
   public type — minor bump, not breaking.
-- **`DEFAULT_TEMPERATURE`** exported from `constants.ts` (value `0`, unchanged) — pure
+- **`DEFAULT_TEMPERATURE`** exported from the package root (value `0`, unchanged) — pure
   extraction of a value that was previously a bare `0` literal at three call sites
   (`AgentExecutor.resolveContext`, `AIProvider`'s debug log and generation options). No
   behavior change. Whether generator/explorer agent types should get a nonzero temperature
   floor instead of inheriting the validator-tuned default is an open policy question, not
   addressed here.
 
+  > This entry originally read "exported from `constants.ts`", which was true of the module and
+  > false of the package: the symbol was missing from `src/index.ts` (unlike its six siblings)
+  > and there is no `./constants` subpath in the `exports` map, so no consumer could reach it.
+  > Caught pre-publish by verifying against a real installed tarball rather than reading the
+  > source. Now genuinely reachable from `@uluops/core`.
+
+- **`isApiErrorLike` / `ApiErrorLike` exported from the package root.** Previously reachable
+  only via the `./errors` subpath, which is not where a consumer looks — and the proof of that
+  is in this repo's own ecosystem: `@uluops/cli` hand-reimplemented an identical interface and
+  guard, with matching rationale comments, because it could not import this one from the main
+  entry point. A guard that exists to stop people writing a broken `instanceof` check has to be
+  reachable from where they are actually importing.
+
 ### Changed
+
+- **`ModelNotFoundError` now names the valid options instead of only pointing at a method.**
+  The message previously read *"Not found as alias, tier, or provider:modelId. Use
+  catalog.listAliases() to see available aliases."* — correct, but it made the reader run an
+  extra async call to diagnose what is usually a typo. It now inlines the valid tiers (a static
+  const, so free) and the available aliases.
+
+  The alias list requires a registry round-trip and is therefore **best-effort**: if that call
+  fails, the original `ModelNotFoundError` is preserved and the message falls back to the
+  discovery-method hint. Masking "your model name is wrong" with "the registry is down" would
+  send the reader after a different problem entirely — guarded by a test that mutation-fails if
+  the enrichment error is allowed to propagate. Consumers matching on the exact message string
+  should note the prefix `Cannot resolve model "<input>"` is unchanged.
+
+- **Structured output: provider enforcement semantics changed on BOTH providers.** This is a
+  behavior change, not only a fix, and it produces no compiler error and no failing test on the
+  consumer side — which is why it is recorded here rather than left to the source comments that
+  already explain it.
+
+  - **OpenAI now runs with `strictJsonSchema: false`** (`AIProvider.buildOpenAIOptions`, applied
+    only when the caller has not specified it). A consumer who was relying on OpenAI strict mode
+    to *reject* a response that does not match the schema no longer gets that rejection — malformed
+    shapes now arrive for the parser to handle instead of erroring at the provider. This weakening
+    is the price of the Anthropic fix below and is deliberate; if you depended on strict-mode
+    rejection as a validation boundary, that boundary has moved into your own code.
+  - **Anthropic now uses `structuredOutputMode: 'jsonTool'`.** The SDK's default path emits the
+    deprecated `output_format`, which Anthropic rejects with HTTP 400 before the model ever runs —
+    structured output was entirely broken on Anthropic, not degraded.
+  - **23 fields in `agentOutputSchema` moved from `.nullable()` to a null-tolerant `.optional()`.**
+    The wire contract is unchanged for producers: an explicit `null` is still accepted and is
+    normalized to `undefined` (via `z.preprocess`, because a bare `.optional()` *rejects* explicit
+    `null` and would have turned working runs into `ExecutionError`). What changed is the emitted
+    JSON Schema — 29 union-typed params dropped to 6, under Anthropic's limit of 16, which is what
+    made the 400 fixable at all. Six score-shaped fields stay `.nullable()`, guarded by a
+    compile-time equality assertion: `null` means "scoreless" there and `undefined` would be
+    ambiguous.
+
+  Guarded by `test/parser/schemaUnionBudget.test.ts`, which converts the schema through
+  `@ai-sdk/provider-utils`' `zodSchema()` — the exact JSON Schema the SDK sends — and asserts the
+  union count stays under 16. It counted 29 before the fix, matching Anthropic's error digit for
+  digit, so it is a guard that has been watched fail.
+
 
 - **`AIProvider.mapError` now has a 404 branch.** Previously 404 fell through to the generic
   `SdkApiError(status, 'Provider returned HTTP 404: …')`, which named neither cause above and gave
@@ -131,6 +186,17 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) 
   typecheck` and in CI rather than never. (tracker `608388fa`)
 
 ### Fixed
+
+- **`examples/error-handling.ts` failed to demonstrate its own first branch.** The
+  `UluOpsClient` constructor resolves config eagerly and throws `ConfigurationError` when no API
+  key is present — the most likely outcome of running the file cold, and the first case the
+  example's `catch` chain teaches. Construction sat *above* the `try`, so that path produced an
+  unhandled stack trace instead of the handler being demonstrated. Moved inside.
+- **`examples/run-agent.ts` printed the entire rendered agent prompt on any failure.** The file
+  had no top-level `catch`, so Node's default uncaught-exception printer dumped the whole error
+  object — including `requestBodyValues.system` — burying a one-line "check your API key" under
+  kilobytes of YAML. Now catches and prints `error.message`.
+
 
 - **`startPipeline` ran async pipelines with no timeout and ignored `ai.modelOverride`.**
   `UluOpsClient.startPipeline` called `PipelineExecutor.start(resolved, input)` with no

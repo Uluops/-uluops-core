@@ -37,6 +37,7 @@ export {
   DEFAULT_GATE_THRESHOLD,
   DEFAULT_MAX_STEPS,
   DEFAULT_MAX_TOKENS,
+  DEFAULT_TEMPERATURE,
 } from './constants.js';
 export {
   UPSTREAM_STAGE_SLICE_CAP,
@@ -170,6 +171,14 @@ export type {
 } from '@uluops/sdk-core';
 
 // ─── Errors: Core SDK ─────────────────────────────────────────────────────────
+// `isApiErrorLike` is exported HERE, not only from './errors', because
+// `instanceof SdkApiError` is structurally always false for any error that
+// crosses the registry-sdk boundary (two exact sdk-core pins never dedupe, so
+// two class objects exist). A consumer reaching for the guard is reaching for
+// it from the main entry point; leaving it subpath-only is why @uluops/cli
+// ended up hand-reimplementing an identical copy rather than importing this one.
+export { isApiErrorLike, type ApiErrorLike } from './errors/index.js';
+
 export {
   UluOpsError,
   UluOpsErrorCodes,

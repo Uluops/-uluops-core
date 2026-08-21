@@ -22,11 +22,16 @@ import {
   UnauthorizedError,
 } from '@uluops/core';
 
-const client = new UluOpsClient({
-  apiKey: process.env.ULUOPS_API_KEY!,
-});
-
+// Construction is INSIDE the try on purpose. `new UluOpsClient()` resolves config
+// eagerly and throws ConfigurationError when no API key is present — which is the
+// single most likely outcome of running this file cold, and it is the first branch
+// this example teaches. Constructing above the try (as this file used to) meant the
+// demo crashed with an unhandled stack trace instead of showing its own handler.
 try {
+  const client = new UluOpsClient({
+    apiKey: process.env.ULUOPS_API_KEY!,
+  });
+
   const result = await client.runAgent('code-validator', './src');
   console.log(`Success: ${result.decision} (${result.score})`);
 } catch (error) {

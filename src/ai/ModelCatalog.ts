@@ -186,9 +186,27 @@ export class ModelCatalog {
     const tierResult = await this.resolveByTier(input, opts);
     if (tierResult) return tierResult;
 
+    // Inline what we can name for free. VALID_TIERS is a static const, so listing
+    // it costs nothing and covers the common typo. The alias list requires a
+    // registry round-trip and is therefore BEST-EFFORT: if that call fails we
+    // keep the original ModelNotFoundError rather than surfacing a network error
+    // in its place — masking "your model name is wrong" with "the registry is
+    // down" would send the reader after the wrong problem entirely.
+    let aliasHint = 'Use catalog.listAliases() to see available aliases.';
+    try {
+      const aliases = await this.listAliases();
+      if (aliases.length > 0) {
+        const names = aliases.map((a) => a.alias).sort();
+        const shown = names.slice(0, 20).join(', ');
+        aliasHint = `Available aliases: ${shown}${names.length > 20 ? `, … (${names.length} total, see catalog.listAliases())` : ''}.`;
+      }
+    } catch {
+      // Keep the discovery-method hint; the original failure is what matters.
+    }
+
     throw new ModelNotFoundError(
-      `Cannot resolve model "${input}". Not found as alias, tier, or provider:modelId. ` +
-      `Use catalog.listAliases() to see available aliases.`,
+      `Cannot resolve model "${input}". Not found as an alias, a tier, or provider:modelId. ` +
+      `Valid tiers: ${VALID_TIERS.join(', ')}. ${aliasHint}`,
     );
   }
 

@@ -17,21 +17,32 @@ const target = process.argv[2] ?? './src';
 // "Render API key lacks render access — the agent prompt will be raw YAML"
 // warning (result marked completeness: 'partial'); the run still completes.
 // For a fully offline run, drop `apiKey` and add `trackingEnabled: false`.
-const client = new UluOpsClient({
-  apiKey: process.env.ULUOPS_API_KEY!,
-  localDefinitions: STARTER_DEFINITIONS_DIR,
-});
+try {
+  const client = new UluOpsClient({
+    apiKey: process.env.ULUOPS_API_KEY!,
+    localDefinitions: STARTER_DEFINITIONS_DIR,
+  });
 
-const result = await client.runAgent('code-validator', target, {
-  model: 'sonnet',
-  thresholds: { pass: 80, warn: 60 },
-});
+  const result = await client.runAgent('code-validator', target, {
+    model: 'sonnet',
+    thresholds: { pass: 80, warn: 60 },
+  });
 
-console.log(`Agent:    ${result.name} v${result.version}`);
-console.log(`Decision: ${result.decision}`);
-console.log(`Score:    ${result.score}`);
-console.log(`Duration: ${result.durationMs}ms`);
-console.log(`Recommendations (${result.recommendations.length}):`);
-for (const rec of result.recommendations.slice(0, 5)) {
-  console.log(`  - [${rec.severity}] ${rec.title} ${rec.filePath ?? ''}`);
+  console.log(`Agent:    ${result.name} v${result.version}`);
+  console.log(`Decision: ${result.decision}`);
+  console.log(`Score:    ${result.score}`);
+  console.log(`Duration: ${result.durationMs}ms`);
+  console.log(`Recommendations (${result.recommendations.length}):`);
+  for (const rec of result.recommendations.slice(0, 5)) {
+    console.log(`  - [${rec.severity}] ${rec.title} ${rec.filePath ?? ''}`);
+  }
+} catch (error) {
+  // Print the MESSAGE, not the error object. Every error this SDK throws carries
+  // an actionable message; the object additionally carries `requestBodyValues`,
+  // which on a provider auth failure contains the entire rendered agent prompt.
+  // Node's default uncaught-exception printer dumps that whole object, burying a
+  // one-line "check your API key" under kilobytes of YAML. This is the shape worth
+  // copying into your own code.
+  console.error(error instanceof Error ? error.message : String(error));
+  process.exit(1);
 }

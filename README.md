@@ -652,7 +652,18 @@ const catalog = new ModelCatalog(registrySdk);
 const resolved = await catalog.resolve('sonnet', {
   requiredCapabilities: ['tools', 'extendedThinking'],
 });
-// → { provider: 'anthropic', modelId: 'claude-sonnet-4-...', providerModelId: 'claude-sonnet-4-...' }
+// → { provider: 'anthropic', modelId: 'claude-sonnet-4-...', providerModelId: 'claude-sonnet-4-...',
+//      tier: 'premium', capabilities: {...}, registered: true, resolvedFrom: 'sonnet' }
+
+// `registered` says whether the model was found in the registry catalog. `false` means no
+// catalog row existed and `tier`/`capabilities` are fabricated defaults — the model may still
+// be perfectly valid at the provider (private or preview access), so it is allowed through.
+// It is what lets a provider 404 be explained correctly: registered + 404 means the catalog is
+// STALE (retired upstream, not yet re-synced); unregistered + 404 means the name is likely
+// wrong. Without it both cases are indistinguishable.
+//
+// NOTE: `registered` is REQUIRED on ResolvedModel as of 0.41.0. Reading a ResolvedModel is
+// unaffected; if you CONSTRUCT one (test fixtures, adapters) you must add the field.
 
 // Enumerate available models and aliases
 const aliases = await catalog.listAliases();
@@ -944,6 +955,42 @@ try {
 | `ServiceUnavailableError` | 503 service unavailable |
 | `NetworkError` | Connection failures |
 | `TimeoutError` | Request timeout |
+
+> #### ⚠️ Do not use `instanceof` on these — use `isApiErrorLike`
+>
+> **`error instanceof SdkApiError` is structurally always `false`** for any error that crosses
+> the registry-sdk boundary, and it fails silently — no exception, no warning, just a branch
+> that never runs.
+>
+> The cause is a dual-package hazard: `@uluops/core` and `@uluops/registry-sdk` each carry an
+> exact pin of `@uluops/sdk-core`, and exact pins never dedupe. Two copies are installed, so
+> two distinct `SdkApiError` class objects exist, and an error minted inside one is not an
+> `instanceof` the other. `isSdkApiError` and its aliases are themselves `instanceof`-based and
+> are **not** an escape hatch.
+>
+> Use the identity-free guard instead — exported from the package root:
+>
+> ```typescript
+> import { isApiErrorLike } from '@uluops/core';
+>
+> try {
+>   await client.runAgent('code-validator', './src');
+> } catch (error) {
+>   if (isApiErrorLike(error)) {
+>     // Narrowed to { statusCode: number; message: string } regardless of which
+>     // copy of sdk-core minted it. Branch on the STATUS, not the class.
+>     if (error.statusCode === 402) console.error('Subscription required:', error.message);
+>     else if (error.statusCode === 404) console.error('Not found:', error.message);
+>     else console.error(`API error ${error.statusCode}:`, error.message);
+>   }
+> }
+> ```
+>
+> The guard deliberately tests `statusCode`, **not** `name`: a 402 arrives as the base
+> `SdkApiError` while a 404 arrives as `NotFoundError`, so a name check would miss one of them.
+>
+> This is why several `@throws {SdkApiError}` JSDoc tags in `SubmissionClient` describe what is
+> thrown but should not be read as a recommendation to match it with `instanceof`.
 
 ### Network Error Recovery
 
