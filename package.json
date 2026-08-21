@@ -1,6 +1,6 @@
 {
   "name": "@uluops/core",
-  "version": "0.37.1",
+  "version": "0.41.0",
   "description": "The foundational execution engine for UluOps. Orchestrates AI-powered code analysis through a 4-layer execution hierarchy (Agent > Command > Workflow > Pipeline), manages LLM tool loops via Vercel AI SDK, and integrates with UluOps Registry and Validation services.",
   "type": "module",
   "main": "dist/index.js",
@@ -29,12 +29,12 @@
   },
   "scripts": {
     "build": "tsc",
-    "typecheck": "tsc --noEmit",
+    "typecheck": "tsc --noEmit -p tsconfig.test.json",
     "test": "vitest run",
     "test:watch": "vitest watch",
     "test:coverage": "vitest run --coverage",
     "lint": "eslint src/ scripts/ examples/",
-    "prepublishOnly": "npm run lint && npm test && npm audit --audit-level=high --omit=dev && npm run build"
+    "prepublishOnly": "npm run lint && npm run typecheck && npm test && npm audit --audit-level=high --omit=dev && npm run build"
   },
   "keywords": [
     "uluops",

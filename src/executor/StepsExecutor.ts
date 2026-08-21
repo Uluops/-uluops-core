@@ -26,13 +26,17 @@ import * as path from 'node:path';
 import type { Logger } from '@uluops/sdk-core';
 import type { StepDefinition, StepResult } from '../types/pipeline.js';
 import type { ExecutionInput } from '../types/execution.js';
+import { checkRegexPatternSafety } from '../utils/regexSafety.js';
 
 const execFileAsync = promisify(execFile);
 
 /** Default per-step timeout (ms) — matches the PDL schema default. */
 const DEFAULT_STEP_TIMEOUT = 60_000;
-/** Step output retention cap (spec D4). */
-const MAX_OUTPUT_BYTES = 8 * 1024;
+/** Step output retention cap (spec D4). Unit is UTF-16 code units (String.length),
+ *  not bytes — multibyte output can exceed 8 KB on the wire. This is deliberate:
+ *  the cap exists to bound context/token cost, and character count is a closer
+ *  proxy for tokens than byte count would be. */
+const MAX_OUTPUT_CHARS = 8 * 1024;
 /** Caps on author-supplied retry knobs: unbounded retries × retry_delay would
  *  otherwise defeat the per-step timeout — the one resource control this
  *  executor implements (security review, PRA-FRA/M CWE-400). */
@@ -62,7 +66,7 @@ function shellQuote(s: string): string {
 }
 
 function truncate(s: string): string {
-  return s.length > MAX_OUTPUT_BYTES ? s.slice(0, MAX_OUTPUT_BYTES) + '…[truncated]' : s;
+  return s.length > MAX_OUTPUT_CHARS ? s.slice(0, MAX_OUTPUT_CHARS) + '…[truncated]' : s;
 }
 
 /** Matches any {{ … }} template span; the inner text is parsed in plain JS
@@ -230,6 +234,11 @@ export class StepsExecutor {
       });
       stdout = out.stdout;
     } catch (err) {
+      // SAFETY: single type-erasing cast on the promisified execFile rejection.
+      // Node's child_process contract guarantees stdout/stderr/code/killed on this
+      // rejection shape — no field is fabricated — and every read below is guarded
+      // (`e.stdout ?? ''`, `typeof e.code === 'number'`), so an unexpected shape
+      // degrades rather than throws.
       const e = err as NodeJS.ErrnoException & { stdout?: string; stderr?: string; code?: number | string; killed?: boolean };
       stdout = e.stdout ?? '';
       exitCode = typeof e.code === 'number' ? e.code : 1;
@@ -248,14 +257,25 @@ export class StepsExecutor {
       // Author-supplied pattern: a compile failure fails THIS step with an
       // actionable message, like every other per-step failure path — it must
       // not throw past the stage and discard accumulated step results.
-      try {
-        if (!new RegExp(step.expect_match).test(output)) {
-          status = 'failed';
-          error = `output did not match /${step.expect_match}/`;
-        }
-      } catch (e) {
+      // Length cap + catastrophic-backtracking heuristics (CWE-1333) mirror
+      // ToolHandler's search_content guard — see regexSafety.ts.
+      const patternSafetyIssue = checkRegexPatternSafety(step.expect_match);
+      if (patternSafetyIssue !== undefined) {
         status = 'failed';
-        error = `invalid expect_match regex /${step.expect_match}/: ${(e as Error).message}`;
+        error = `rejected expect_match regex /${step.expect_match}/: ${patternSafetyIssue}`;
+      } else {
+        try {
+          if (!new RegExp(step.expect_match).test(output)) {
+            status = 'failed';
+            error = `output did not match /${step.expect_match}/`;
+          }
+        } catch (e) {
+          // SAFETY: single type-erasing cast, scoped to this `new RegExp()` call —
+          // its only possible throw is SyntaxError, and `.message` is the sole
+          // field read from it.
+          status = 'failed';
+          error = `invalid expect_match regex /${step.expect_match}/: ${(e as Error).message}`;
+        }
       }
     }
 

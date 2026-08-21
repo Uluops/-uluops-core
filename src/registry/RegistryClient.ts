@@ -6,13 +6,12 @@ import type { ResolvedConfig } from '../types/config.js';
 import type { DefinitionType } from '../types/execution.js';
 import type { AgentDefinition } from '../types/agent.js';
 import type { ResolvedDefinition, DefinitionSummary } from '../types/registry.js';
-import { ConfigurationError, SubscriptionRequiredError, IntegrityError } from '../errors/index.js';
+import { ConfigurationError, SubscriptionRequiredError, IntegrityError, isApiErrorLike } from '../errors/index.js';
 import { normalizeDefinition, DefinitionValidationError } from './normalize.js';
 import { formatErrorMessage } from '../utils/formatError.js';
 import { DEFAULT_PASS_THRESHOLD, DEFAULT_MODEL_ALIAS } from '../constants.js';
 import type { Logger } from '@uluops/sdk-core';
 import { computeHash, computePromptHash, verifyHash, verifyPromptHash } from '@uluops/sdk-core';
-import { SdkApiError } from '@uluops/sdk-core/errors';
 
 /** Caller-supplied integrity pins, verified at resolve time against a trusted channel. */
 export interface ResolvePinOptions {
@@ -43,6 +42,10 @@ export class RegistryClient {
   private cache = new Map<string, ResolvedDefinition>();
   private sdk: RegistrySdk;
   private logger: Logger;
+  /** Dedup key ('entitlement' | 'unavailable') for tryRenderViaAPI's warn —
+   *  once per client instance per branch, so a pipeline resolving many local
+   *  definitions doesn't repeat the same warning per agent. */
+  private warnedRenderReasons = new Set<string>();
 
   /** Expose underlying registry SDK for direct access (e.g., model catalog) */
   get registrySdk(): RegistrySdk {
@@ -363,8 +366,11 @@ export class RegistryClient {
       });
     } catch (error) {
       // 402 = content-gated by pro-handler; rethrow as typed SubscriptionRequiredError
-      if (error instanceof SdkApiError && error.statusCode === 402) {
-        const d = error.details ?? {};
+      // isApiErrorLike, NOT instanceof: registry-sdk pins a different exact sdk-core
+      // version than core, so two SdkApiError classes coexist and instanceof is
+      // structurally always false for anything the SDK threw. See src/errors/index.ts.
+      if (isApiErrorLike(error) && error.statusCode === 402) {
+        const d = ((error as { details?: Record<string, unknown> }).details) ?? {};
         throw new SubscriptionRequiredError(
           error.message || `Definition "${name}" requires a higher subscription tier`,
           (d.requiredTier as string) ?? 'unknown',
@@ -377,7 +383,7 @@ export class RegistryClient {
       // runWorkflow) reaches here with a known type and would otherwise surface a
       // terse SDK NotFoundError. Rewrap with the same guidance the type-inference
       // path gives, so a misspelled name has a path forward.
-      if (error instanceof SdkApiError && error.statusCode === 404) {
+      if (isApiErrorLike(error) && error.statusCode === 404) {
         throw new ConfigurationError(
           `Definition "${name}" (${resolvedType}) not found in registry. ` +
           `Verify the name and type are correct and the definition is published. ` +
@@ -392,7 +398,16 @@ export class RegistryClient {
     let definition: ResolvedDefinition['definition'];
     const degradations: string[] = [];
     if (def.normalized && typeof def.normalized === 'object' && resolvedType in (def.normalized as Record<string, unknown>)) {
-      definition = def.normalized as unknown as ResolvedDefinition['definition'];
+      // Re-run the local port over server-normalized output. The port is a
+      // deliberate superset of the factory (see normalize.ts header) — every
+      // rule it applies is guarded on the target field's absence, so running
+      // it over already-normalized output is a verified no-op. This closes
+      // the gap where a port rule the factory hasn't picked up yet (e.g. the
+      // PDL single-entry `workflows[]` → `ref` hoist) would otherwise only
+      // apply on the local-YAML fallback path, never on server-resolved
+      // definitions — silently dropping a stage and every stage that depends
+      // on it, while the run still reports completed (tracker aafb93c2).
+      definition = this.normalizeLocally(def.normalized as Record<string, unknown>);
     } else if (def.normalized) {
       this.logger.warn(`Remote normalized definition missing expected section '${resolvedType}'; falling back to local normalization`);
       degradations.push('normalization-fallback');
@@ -674,14 +689,32 @@ export class RegistryClient {
       this.logger.debug(`Render via API: ${result.markdown.length} chars`);
       return result.markdown;
     } catch (error) {
-      // Falling back to raw YAML is non-fatal — the run continues. State that
-      // explicitly so a render-auth failure isn't mistaken for a hard error.
+      // Falling back to raw YAML is non-fatal — the run continues, but it is
+      // measurably lower fidelity: the agent's prompt is raw YAML instead of
+      // rendered instructions, and deriveCompleteness marks the run
+      // completeness: 'partial' for it (degradationMarkers.ts). State that
+      // consequence explicitly, and distinguish WHY the render didn't happen:
+      // 401/403 means the key is not ENTITLED to render (not a transport
+      // fault) — formatErrorMessage() discards statusCode, so read it directly
+      // here rather than widening that shared helper.
+      const isEntitlementFailure = isApiErrorLike(error) && (error.statusCode === 401 || error.statusCode === 403);
+      const msg = isEntitlementFailure
+        ? `Render API key lacks render access (${formatErrorMessage(error)}) — the agent prompt will be raw YAML ` +
+          `instead of rendered instructions, and this result is marked completeness: 'partial'. Request render ` +
+          `access for this key to get rendered prompts.`
+        : `Render API unavailable (non-fatal — using raw YAML fallback: ${formatErrorMessage(error)}) — the agent ` +
+          `prompt will be raw YAML instead of rendered instructions, and this result is marked completeness: 'partial'.`;
       // When no API key is configured (offline/local-only usage) this path is
-      // fully expected, so log at debug; otherwise warn. The degradation marker
-      // is recorded either way.
-      const msg = `Render API unavailable (non-fatal — using raw YAML fallback): ${formatErrorMessage(error)}`;
-      if (this.config.apiKey) this.logger.warn(msg);
-      else this.logger.debug(msg);
+      // fully expected, so log at debug; otherwise warn once per branch per
+      // client instance — a pipeline over several agents would otherwise
+      // repeat the identical warning once per definition.
+      const warnKey = isEntitlementFailure ? 'entitlement' : 'unavailable';
+      if (this.config.apiKey && !this.warnedRenderReasons.has(warnKey)) {
+        this.warnedRenderReasons.add(warnKey);
+        this.logger.warn(msg);
+      } else {
+        this.logger.debug(msg);
+      }
       degradations.push('render:api-unavailable');
       return null;
     }

@@ -6,6 +6,295 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) 
 
 ## [Unreleased]
 
+## [0.41.0] - 2026-08-21
+
+> **0.38.0, 0.39.0 and 0.40.0 have no entries because they were never released.** All three
+> were intermediate publishes to the local Verdaccio registry during validation of this same
+> body of work — each install iteration needed a fresh version to resolve cleanly — and none
+> reached npmjs. npm's latest was 0.37.1; everything below ships as 0.41.0, the first public
+> release since. Recorded rather than silently renumbered, because a gap in the version
+> sequence otherwise reads as a lost release.
+
+### Added
+
+- **`ResolvedModel.registered`** (`boolean`, **required**) — whether the model was found in the
+  registry catalog. `false` means no catalog row existed and `tier`/`capabilities` are fabricated
+  defaults; the model may still be valid at the provider (private or preview access), which is why
+  such models are still allowed through.
+
+  The field exists to make a provider 404 explainable. Two unrelated causes previously arrived
+  identically at the error mapper, because `ModelCatalog.resolveExplicit` fabricates a
+  `ResolvedModel` for unregistered models and discarded the fact that it had done so:
+
+  | catalog row | provider says 404 | correct diagnosis |
+  |---|---|---|
+  | present | yes | the local catalog is **stale** — model retired upstream, not yet re-synced |
+  | absent | yes | likely a **wrong name** or an account without access; there was never a row to be stale |
+
+  All five construction sites now state their answer explicitly. The offline baked-in alias
+  fallback reports `false` deliberately: the registry was unreachable, so registration is genuinely
+  *unknown*, and claiming `true` would let a stale-catalog message be shown on the strength of a
+  lookup that never happened.
+
+  > **Judgment call, flagged rather than buried: this field is REQUIRED, and `ResolvedModel` is
+  > publicly exported (`src/index.ts`).** Consumers that merely *read* a `ResolvedModel` are
+  > unaffected; any consumer that *constructs* one will fail to compile until it adds the field.
+  > Required was chosen over optional on purpose — a defaulted `false` would silently mislabel
+  > registered models as typos, which is the exact failure being fixed. Under 0.x this rides a
+  > minor bump; note that every consumer pinning `^0.x` is minor-locked and will not receive it
+  > without an explicit re-pin.
+
+
+- **`RunSubmissionResponse.repairedRecommendations`** (optional `number`) — the count of
+  recommendations `sanitizeRecommendation` had to repair (coerce an invalid required field,
+  omit an invalid optional field, or truncate an oversize one) before sending. Previously the
+  cost of a repair was recorded only as one `logger.warn` per recommendation and then went out
+  of scope entirely — no counter, no metric, no run-level aggregation. That gap is part of how
+  242 invented failure codes reached the datastore undetected across many releases (see the
+  `isCanonicalMode` fix below, this same release). Populated on both the tracking-enabled and
+  tracking-disabled (`trackingEnabled: false`) response paths. Additive optional field on a
+  public type — minor bump, not breaking.
+- **`DEFAULT_TEMPERATURE`** exported from `constants.ts` (value `0`, unchanged) — pure
+  extraction of a value that was previously a bare `0` literal at three call sites
+  (`AgentExecutor.resolveContext`, `AIProvider`'s debug log and generation options). No
+  behavior change. Whether generator/explorer agent types should get a nonzero temperature
+  floor instead of inheriting the validator-tuned default is an open policy question, not
+  addressed here.
+
+### Changed
+
+- **`AIProvider.mapError` now has a 404 branch.** Previously 404 fell through to the generic
+  `SdkApiError(status, 'Provider returned HTTP 404: …')`, which named neither cause above and gave
+  the operator nothing to act on. The branch now reports which case applies, and explicitly tells
+  the reader *not* to go hunting for a typo when the model came from the catalog. When no
+  `ResolvedModel` is available the message says provenance is unknown rather than guessing.
+
+  Verified by three tests including a control asserting the two messages **differ** — an assertion
+  no collapsed-branch implementation can satisfy. Confirmed by mutation: forcing both branches to
+  one message turns 2 tests red.
+
+
+
+- **`WorkflowError.context.partialResult` and `PipelineError.context.partialResult` are now
+  typed instead of `unknown`.** `WorkflowError.context.partialResult` is
+  `Partial<WorkflowResult> | CommandResult[] | undefined` — heterogeneous across its five
+  construction sites in `WorkflowExecutor.ts`: the outer catch passes a `Partial<WorkflowResult>`
+  (it omits required fields like `version`/`decision`/`score`, hence `Partial`, not the full
+  type); the all-steps-failed-in-a-phase path passes the completed `CommandResult[]` directly;
+  three sites pass `undefined`, so the field is now optional to match. `PipelineError.context
+  .partialResult` is `PipelineResult | undefined`. `ExecutionError.partialResult` deliberately
+  stays `unknown` — no producer in this package populates it (all six construction sites pass a
+  message only, and `MaxStepsExhaustedError` explicitly passes `undefined`); it is not unioned
+  with the new `PartialExecutionResult` type so callers don't get a false sense that it's
+  populated. A new exported `PartialExecutionResult` type
+  (`AgentResult | CommandResult | WorkflowResult | PipelineResult`) backs the two populated
+  fields. README and `examples/error-handling.ts` updated to match — the `ExecutionError`
+  guidance to "check `error.partialResult`" is removed as inaccurate, and the `WorkflowError`
+  guidance now states the real `Partial<WorkflowResult> | CommandResult[] | undefined` shape.
+  Consumers doing property access on `WorkflowError.context.partialResult` after an
+  `Array.isArray()`-unsafe narrowing will now see a type error and need to guard both arms —
+  intentional, since that access was already unsafe at runtime before this release, just
+  unflagged by the compiler.
+- **`RegistryClient` now re-normalizes server-provided `normalized` output** through the local
+  normalization port (`registry/normalize.ts`) before use, instead of trusting it verbatim. The
+  port has been a deliberate superset of the `@uluops/definition-factory` module the registry
+  API calls since at least 2026-07-07 (it carries the PDL single-entry `workflows[]` → `ref`
+  hoist, which the factory does not yet have) — server-normalized output that needed that rule
+  silently kept its un-hoisted shape, which then threw at `executeRefStage` and dropped that
+  stage and every stage depending on it, while the run still reported completed. Every rule in
+  the port is guarded on the target field's absence, so re-running it over already-normalized
+  output is a verified no-op for every rule the two implementations share — this is a top-up,
+  not a fallback (no `degradations` entry is pushed). **Behavior delta:** `normalizeLocally`
+  also runs `validateWorkflowStructure`/`validatePipelineStructure` and converts
+  `DefinitionValidationError` → `ConfigurationError`, so a malformed *server* response that
+  previously flowed through and crashed downstream now throws cleanly (as `ConfigurationError`)
+  at resolve time instead.
+- **Engine-synthesized results now carry a self-identifying placeholder version.** Aggregated
+  pipeline stages, steps-only pipeline stages, and crashed parallel workflow steps have no
+  backing definition, but previously emitted `version: '1.0.0'` (indistinguishable from a real
+  1.0.0 release) or `version: ''` (a literal empty string on the wire). They now emit
+  `version: '1.0.0-synthesized'` — deliberately non-parseable as a real release — and
+  `SubmissionClient` filters that sentinel (alongside the existing `'unknown'` sentinel) before
+  the `agents[]` payload reaches the tracker, so `definitionVersion` is omitted rather than sent
+  as fabricated or empty identity.
+
+- **`npm run typecheck` now covers `test/` as well as `src/`, and CI runs it.** Test files had never
+  been typechecked in this package's history: `tsconfig.json` excludes `test`, `typecheck` was a bare
+  `tsc --noEmit` that inherited that exclusion, `vitest` declares no `typecheck` block, and nothing in
+  CI or `prepublishOnly` invoked `typecheck` at all. A new `tsconfig.test.json` covers `src/**/*` +
+  `test/**/*`; `typecheck` now targets it, and it runs in CI (between Lint and Test) and in
+  `prepublishOnly`. Turning it on surfaced **135 pre-existing type errors**, all now fixed — including
+  tests importing types that no longer exist (`ValidatorAgentResult`, `ExecutorAgentResult`), fixtures
+  missing fields their types had since made required, a fixture asserting a model status
+  (`'active'`) that was never in the vocabulary, and the `priority` defect above. **Consumers are
+  unaffected** — no shipped code changed. Contributors will now see these errors at `npm run
+  typecheck` and in CI rather than never. (tracker `608388fa`)
+
+### Fixed
+
+- **`startPipeline` ran async pipelines with no timeout and ignored `ai.modelOverride`.**
+  `UluOpsClient.startPipeline` called `PipelineExecutor.start(resolved, input)` with no
+  third argument, while its two siblings — `runPipeline` and the `pipeline` branch of
+  `run()` — both pass `{ timeoutMs: config.timeout, model: config.ai.modelOverride }`.
+  `PipelineExecutor.start` already declared and threaded an `options` parameter; nothing
+  downstream needed to change. **Behavior delta:** an async pipeline started via
+  `startPipeline` now honors `config.timeout` (previously unbounded) and
+  `config.ai.modelOverride` (previously ignored on inline-agent stages). A caller relying on
+  `startPipeline` running unbounded regardless of configured timeout will now see it time
+  out. `executeRefStage` and `WorkflowExecutor.execute` were deliberately left untouched —
+  neither currently accepts an options parameter, and widening either is a design decision
+  the timeout-precedence spec has not yet made.
+- **Shell-tool timeout inherited the overall agent run budget instead of using its own
+  default.** `AIProvider.createProviderShellTool` declares a `timeoutMs = 30_000` default,
+  but its only caller (`AgentExecutor.setupTools`) always passed `context.timeoutMs` — the
+  agent's *run* budget, not a shell-call budget — making the declared default dead code. A
+  30-minute agent run authorized a single 30-minute `bash` call; a 5-minute run capped
+  *every* shell call at 5 minutes. Extracted the default to
+  `constants.ts#SHELL_COMMAND_TIMEOUT_MS` (30s, unchanged value) and added
+  `ExecutionOptions.shellTimeoutMs` so callers can override the shell-call budget
+  independently of the run timeout.
+- **`sanitizeRecordType`'s blank-fallback case was indistinguishable from a genuinely
+  declared `evidence_finding`.** Analysis records land on `evidence_finding` from four
+  distinct paths (Tier 4 recommendation-derived, Tier 3 exploration-map-derived, a real
+  declared value, and the blank/missing-type fallback), and nothing named which. Tier 3/4
+  were already recoverable from their `data` key signature (`sectionType`/`sectionLabel` vs.
+  `priority`/`failureMode`/`taxonomyVersion`) — the remaining ambiguous pair is now
+  disambiguated too: the fallback branch writes `data.recordTypeSource: 'fallback-blank'`
+  when there was nothing to preserve (a genuinely blank or missing type), leaving a real
+  `evidence_finding` declaration untouched. See SCOPE.md's new "Inherent Tensions" row —
+  pre-2026-08-20 rows predate the marker and remain permanently unattributable between the
+  two; that is an accepted, irreversible consequence, not an open defect.
+- **`AnalysisSummaryExtractor` silently dropped data at four more sites with no signal.**
+  Continuing the `warnings` channel introduced earlier in this release (exploration-map
+  section-cap truncation): Tier-2 `analysisRecords` entries missing
+  `recordType`/`recordId`/`title` (pre-sanitizer filter), exploration-map sections with an
+  off-vocabulary `type`, `domainMetrics` entries missing `key`/`value`, and
+  exploration-map-derived records past the 100-record cap now each push one aggregate
+  warning per site per run (never per item) instead of disappearing with no trace. No
+  change to what gets persisted — Tier-2's filter still drops the same records; only the
+  drop is now observable via `extract().warnings` / `logger.warn`.
+- **Submission payload total-data-loss on large runs.** `@uluops/ops-sdk`'s
+  `SaveRunInputSchema` enforces `.max(100)` client-side, before any HTTP call, on
+  `analysisRecords`, `agents`, and each exploration map's `sections`. Core accumulated all
+  three with no ceiling of its own — a pipeline with many stages/agents, or an explorer
+  producing a large map, could exceed 100 and throw a `ZodError` that lost the **entire run's**
+  analysis and agent data, not just the excess. Each is now capped at 100 with a
+  `logger.warn` naming the total produced and the number dropped (truncate-and-warn, per this
+  file's existing `sanitizeRecommendation` policy: never let a ceiling become a
+  submission-aborting throw).
+- **preflight command metacharacter guard rejected its own quoting function's output.**
+  `shellQuote()` emits `'…'\''…'` for a target path containing an apostrophe; the metachar
+  guard stripped single-quoted spans with `/'[^']*'/g` and then tripped on the leftover bare
+  `\` from that escape sequence — rejecting every command preflight check for a legitimately-
+  named target directory. The guard now validates the command **template**, before
+  `$ARGUMENTS` substitution, rather than the substituted string it previously saw exclusively;
+  only `command` is shell-interpreted among the substituted fields, and it always routes
+  target-derived text through `shellQuote()`, so template-only guarding is both correct and
+  sufficient. Fail-closed the whole time, so no security exposure — this is a false-rejection
+  fix, not a hardening.
+- **`OutputNormalizer` let a literal `null` in LLM JSON reach fields typed `string |
+  undefined`.** `??` only sanitizes non-terminal operands — `a ?? b ?? c` falls through to `c`
+  unchanged when `c` is `null`. Four fallback chains ended on an unchecked terminal operand
+  (`Issue.filePath`, `Issue.failureCode`, the `locations[]`-array `filePath` variant,
+  `ArtifactResult.contentType`), so e.g. `{"file": null}` in an agent's JSON output produced
+  `filePath: null` instead of `undefined`. Guarded with a new `asStr()` terminal-operand check.
+- **README Prerequisites overstated the supported Node.js floor.** Said "Node.js 18+"; the
+  engines field (and CI matrix) has required `>=20.3.0` since 2026-08-11. The README ships to
+  the npm package page regardless of the `files` allowlist, so a Node 18 user following it would
+  install and immediately hit `EBADENGINE`. Now reads "Node.js 20.3+", matching `package.json`.
+  Documentation only — the supported range itself is unchanged.
+- **`maxConcurrency` was documented as a process-wide ceiling; it has always been
+  per-instance.** `AIProvider`'s doc comment, `Semaphore`'s doc comment, `ResolvedConfig`'s
+  field comment, and two README sites all said "global"/"across the whole engine". There is
+  exactly one `AIProvider` construction site (`UluOpsClient`'s constructor), and the semaphore
+  is a plain instance field — nothing in this package coordinates across instances. A host
+  constructing multiple `UluOpsClient`s (e.g. one per tenant or per request) in one process
+  admits N × `maxConcurrency`, not `maxConcurrency`, and can overrun its provider's rate limit
+  as a result. Docs corrected to state the guarantee is per-`AIProvider`/per-`UluOpsClient`
+  instance; the underlying behavior is unchanged, so this narrows a documented guarantee a
+  consumer may have relied on — flagged here because the type signature carries no evidence of
+  the correction.
+- **The bash tool's shell provider could diverge from the model actually generating.**
+  `AgentExecutor.setupTools` resolved the shell tool's model with
+  `options?.model ?? runtime.defaults?.model ?? config.ai.modelOverride ?? DEFAULT_MODEL_ALIAS`
+  (override checked last), while the generation path (`resolveContext`'s
+  `budgetModelInput`, mirrored in `AIProvider.generate`) resolves with
+  `config.ai.modelOverride ?? context.model` (override checked first, unconditional). An
+  operator setting `modelOverride` to an OpenAI model on a bash-enabled agent declaring
+  `defaults.model: sonnet` got an Anthropic-shaped shell tool wired to an OpenAI-generating
+  run. `setupTools` now takes the already-resolved `context` and uses the same
+  `config.ai.modelOverride ?? context.model` idiom, so the precedence exists in one form
+  instead of two that can desynchronize.
+- **A model-supplied shell timeout/output cap could raise the operator-configured ceiling
+  instead of only lowering it.** `executeShellAsOpenAIResult` (OpenAI shell tool adapter)
+  used `action.timeoutMs ?? defaultTimeoutMs` and `action.maxOutputLength` (uncapped when
+  absent) — both fallbacks, not ceilings, so a model-supplied `timeoutMs` above the operator
+  default was honored verbatim. This is the exact hazard `SHELL_COMMAND_TIMEOUT_MS` (this
+  same release, above) was introduced to close, but the constant only reached the *caller*
+  (`AgentExecutor`); the enforcement site in `shellExecutor.ts` still let the model raise its
+  own limit. Both now clamp with `Math.min(modelValue ?? default, default)`; the OpenAI
+  output cap now also matches the Anthropic branch's `MAX_SHELL_OUTPUT` (100KB) hard cap
+  instead of having none. A below-ceiling model-supplied value is still honored — this is a
+  ceiling, not a new floor.
+- **`StepsExecutor`'s `expect_match` had no guard against catastrophic-backtracking
+  patterns.** Only a compile-failure catch existed; a pattern that compiles fine but
+  backtracks catastrophically (e.g. `(a+)+$` against pathological input) could hang the step
+  indefinitely. Added the same length cap (200 chars) and nested-quantifier/alternation
+  heuristics `ToolHandler.search_content` already uses against LLM-supplied patterns,
+  extracted to a shared `src/utils/regexSafety.ts` so the two call sites can't drift apart.
+  Severity is bounded: `StepsExecutor` is unreachable unless the operator opts in via
+  `allowStageSteps: true` (default `false`), and that opt-in already grants the definition
+  arbitrary shell execution — this closes a consistency gap, not a first-order vulnerability.
+- **A stage `depends_on` a forward-declared or nonexistent stage id skipped every run with no
+  diagnostic.** `PipelineExecutor.checkStageDependencies` only checked whether a dep id was
+  already `status: 'completed'` in `stageResults` — it never distinguished "not yet completed"
+  from "can never complete." Two cases were unsatisfiable forever: a `depends_on` pointing at a
+  stage declared *later* in the array (stages run in authored array order; a later stage cannot
+  have completed yet), and a `depends_on` naming an id that does not exist anywhere in the
+  pipeline (typo, or a stage removed during editing). Both landed in the same silent
+  `createSkippedStage(..., 'dependencies_not_met')` path as a legitimate failed/skipped-upstream
+  cascade, with no `logger.warn` call anywhere on the route — the pipeline reported `status:
+  'complete'`, `decision: 'PASS'` while an authored stage silently vanished into `skipReason`.
+  `checkStageDependencies` now takes the full stage list and emits a distinct `logger.warn`
+  identifying which case fired (forward dependency vs. unknown dependency) before the skip is
+  recorded; the legitimate failed/skipped-cascade case remains silent, unchanged. This is
+  diagnostics only — the skip behavior itself is unchanged, and no topological reordering was
+  introduced (deliberately: reordering stages would change which stages have completed when
+  `condition:` expressions evaluate, a PDL-version decision, not a bug fix).
+- **`RegistryClient`'s render-fallback warning couldn't distinguish "key not entitled to
+  render" from "render API unavailable," and repeated once per definition.** `tryRenderViaAPI`
+  logged the same "Render API unavailable (non-fatal — using raw YAML fallback)" message for
+  every failure, including `SdkApiError` 401/403 — an entitlement problem, not a transport
+  fault — and `formatErrorMessage()` discards `statusCode`, so the two were indistinguishable
+  from the log alone. The message also didn't state the consequence (the agent's prompt is raw
+  YAML instead of rendered instructions, and the result is marked `completeness: 'partial'`).
+  Read `statusCode` directly at this call site (without widening the shared
+  `formatErrorMessage` helper, which has other callers) to branch on 401/403 vs. everything
+  else, reworded both branches to name the cause/consequence/remedy, and deduplicated to one
+  `warn` per client instance per branch — a pipeline resolving many local definitions with an
+  under-entitled key previously repeated the identical warning once per agent.
+  `examples/run-agent.ts` updated to match the new wording. Degradation markers
+  (`render:api-unavailable`, `completeness: 'partial'`) are unchanged — this narrows the log
+  message and its volume, not the structured signal downstream code reads.
+- **`ExecutionInput.params`'s doc comment said condition-expression evaluation over `params`
+  "is Phase 3 of pdl-steps-execution-spec"** — future tense, describing an unshipped capability.
+  Phase 3 (condition evaluation) shipped in this same release (`conditions.ts#PARAMS_PATH_RE`,
+  wired at `PipelineExecutor.ts`'s stage/agent `condition:` evaluation) — the comment had not
+  been updated since, so IDE hover text told consumers to hand-roll param-based gating the
+  engine already does. Reworded to state the shipped behavior and the D5 absent-param-is-false
+  semantics, with a pointer to `conditions.ts` for the full three-valued rule.
+
+
+- **`Recommendation.priority` omitted `'high'`, a value the wire accepts.** `priority` was typed
+  `'critical' | 'suggested' | 'backlog'` at `types/command.ts` and `types/execution.ts`, while the
+  ops-sdk wire vocabulary is `PRIORITIES = ['critical', 'high', 'suggested', 'backlog']`.
+  `Recommendation` is exported from the package root, so a TypeScript consumer setting
+  `priority: 'high'` — legitimate, accepted by the tracker, and passed through untouched by
+  `sanitizeRecommendation` at runtime — got a spurious compile error and had to cast. Widened both
+  declarations to include `'high'`. **No runtime behaviour changes**; this only stops the type
+  rejecting a value the system already supported. The adjacent `severity` field was already correct
+  (it matches `SEVERITIES` exactly), which is what identified this as an omission rather than a
+  deliberate narrowing. Found by typechecking the test suite for the first time — see below.
 ## [0.37.1] - 2026-08-19
 
 ### Dependencies — `@uluops/registry-sdk` 0.47.1 → 0.49.0 (registry-api ADR-013 activation prerequisite)

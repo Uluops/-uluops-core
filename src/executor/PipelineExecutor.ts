@@ -124,7 +124,7 @@ export class PipelineExecutor {
         state.currentStageIndex = i;
 
         // Check dependencies
-        if (!this.checkStageDependencies(stage.depends_on, state.stageResults)) {
+        if (!this.checkStageDependencies(stage, def.pipeline.stages, state.stageResults)) {
           state.stageResults.push(this.createSkippedStage(stage, 'dependencies_not_met'));
           continue;
         }
@@ -295,7 +295,7 @@ export class PipelineExecutor {
     // from the definition's vocabulary; crashed agents fall back via classifyDecision.
     const stageFailed = agentResults.some(r => resolveDecisionCategory(r) === 'negative');
 
-    const stageEnd = Date.now() - startTime;
+    const stageDurationMs = Date.now() - startTime;
 
     // Aggregating AgentResult → CommandResult conversion for pipeline stages.
     // See CommandExecutor.wrapAgentResult for divergence rationale across all three sites.
@@ -307,7 +307,13 @@ export class PipelineExecutor {
       result: {
         type: 'command',
         name: stage.name,
-        version: '1.0.0',
+        // No definition backs this result — it's a synthesized aggregate over
+        // the stage's child agent results, not a real command. '1.0.0-synthesized'
+        // is deliberately non-parseable as a real release (a genuine definition
+        // is never versioned this way), so downstream consumers (SubmissionClient's
+        // realVersion) can tell it apart from an actual 1.0.0 release instead of
+        // reporting an invented version as real definition identity.
+        version: '1.0.0-synthesized',
         definitionHash: '',
         agentType: 'analyst',
         decision: stageFailed ? 'FAIL' : 'PASS',
@@ -319,17 +325,17 @@ export class PipelineExecutor {
         maxScore: 100,
         extractionConfidence: worstExtractionConfidence(agentResults),
         recommendations: agentResults.flatMap(r => r.recommendations),
-        durationMs: stageEnd,
+        durationMs: stageDurationMs,
         metrics: {
           ...sumTokenMetrics(agentResults.map(r => r.metrics)),
           costUsd: sumCostUsd(agentResults.map(r => r.metrics)),
-          durationMs: stageEnd,
+          durationMs: stageDurationMs,
           model: 'mixed',
           toolCalls: agentResults.reduce((sum, r) => sum + (r.metrics.toolCallCount ?? 0), 0),
         },
       },
       agentResults,
-      durationMs: stageEnd,
+      durationMs: stageDurationMs,
     };
   }
 
@@ -475,11 +481,43 @@ export class PipelineExecutor {
     return results;
   }
 
-  private checkStageDependencies(deps: string[] | undefined, results: StageResult[]): boolean {
+  /**
+   * Gate on `depends_on`: every listed dep must already be a *completed* entry
+   * in `results`. This is a completion gate over authored array order, NOT a
+   * topological sort — stages run in `def.pipeline.stages` array order
+   * (`executeAsync`'s `for` loop), and `parallel_stages` is unenacted
+   * (`types/pipeline.ts:37`). A dep declared later in the array, or a dep id
+   * that does not exist in the pipeline at all, can therefore never be
+   * satisfied; both cases are warned here (once, before the skip is recorded)
+   * so the disappearance isn't silent. A dep that exists earlier but is
+   * failed/skipped is a legitimate cascade and stays silent — see
+   * PipelineExecutor.test.ts:135-155.
+   */
+  private checkStageDependencies(stage: StageDefinition, allStages: StageDefinition[], results: StageResult[]): boolean {
+    const deps = stage.depends_on;
     if (!deps || deps.length === 0) return true;
-    return deps.every(dep =>
-      results.some(r => r.id === dep && r.status === 'completed'),
-    );
+    const currentIndex = allStages.indexOf(stage);
+    let allMet = true;
+    for (const dep of deps) {
+      if (results.some(r => r.id === dep && r.status === 'completed')) continue;
+      allMet = false;
+      const depIndex = allStages.findIndex(s => s.id === dep);
+      if (depIndex === -1) {
+        this.logger.warn(
+          `Stage "${stage.id}" declares depends_on: "${dep}", but no stage with that id exists in this pipeline ` +
+          `(unknown dependency) — this dependency can never be satisfied and "${stage.id}" will always be skipped.`,
+        );
+      } else if (depIndex > currentIndex) {
+        this.logger.warn(
+          `Stage "${stage.id}" depends on "${dep}", but stages run in authored array order and "${dep}" is ` +
+          `declared later in the pipeline (forward dependency) — "${dep}" cannot satisfy "${stage.id}" and this ` +
+          `stage will always be skipped. Reorder the stages.`,
+        );
+      }
+      // else: dep exists earlier in the array but hasn't completed (failed or
+      // skipped) — legitimate cascade behaviour, intentionally silent here.
+    }
+    return allMet;
   }
 
 
@@ -505,7 +543,11 @@ export class PipelineExecutor {
       result: {
         type: 'command',
         name: stage.name,
-        version: '1.0.0',
+        // No definition backs this result — it's a synthesized summary of a
+        // steps-only stage, not a real command. '1.0.0-synthesized' is deliberately
+        // non-parseable as a real release, so downstream consumers (SubmissionClient's
+        // realVersion) can tell it apart from an actual 1.0.0 release.
+        version: '1.0.0-synthesized',
         definitionHash: '',
         agentType: 'analyst',
         decision,

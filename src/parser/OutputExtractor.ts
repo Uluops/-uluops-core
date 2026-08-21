@@ -62,12 +62,16 @@ export class OutputExtractor {
   /**
    * Extract with full metadata about extraction method and confidence.
    *
-   * Tries four strategies in descending confidence and returns the first that
-   * succeeds, along with the method used and a confidence score:
+   * Tries the strategies in descending confidence and returns the first that
+   * succeeds, along with the method used and a confidence score. The ladder has
+   * five rungs but `method` has only four values: `inline_json` covers both
+   * whole-content JSON and JSON embedded in prose, which are trusted differently.
    * - `1.0` — AI SDK structured output (`options.structuredOutput`, short-circuits the rest)
    * - `0.95` — JSON code fence
-   * - `0.9` — inline JSON detection
+   * - `0.9` — whole trimmed content parses as JSON (method `inline_json`)
+   * - `0.75` — JSON embedded in surrounding prose (method `inline_json`; emits a warning)
    * - `0.5` — structured-text / regex pattern matching
+   * - `0` — nothing extracted; ERROR/null defaults (non-strict mode only)
    *
    * @param content - The raw LLM response text.
    * @param agentType - The agent type, used to shape normalization of the parsed output.
@@ -78,8 +82,9 @@ export class OutputExtractor {
    * ```typescript
    * const r = extractor.extractWithMetadata(llmText, 'validator');
    * // r.method:     'json_code_fence' | 'inline_json' | 'structured_text' | 'structured_output'
-   * // r.confidence: 1.0 (structured output) | 0.95 (fence) | 0.9 (inline) | 0.5 (regex)
-   * if (r.confidence < 0.9) console.warn('low-confidence extraction', r.warnings);
+   * // r.confidence: 1.0 (structured) | 0.95 (fence) | 0.9 (whole JSON)
+   * //               | 0.75 (embedded JSON) | 0.5 (regex) | 0 (nothing found)
+   * if (r.confidence < 0.7) console.warn('low-confidence extraction', r.warnings); // EXTRACTION_CONFIDENCE_THRESHOLD
    * ```
    */
   extractWithMetadata(

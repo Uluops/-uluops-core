@@ -62,6 +62,18 @@ export interface RunSubmissionResponse {
 
   /** Whether this was a deduplicated response */
   deduplicated: boolean;
+
+  /**
+   * Count of recommendations `sanitizeRecommendation` had to repair (coerce an
+   * invalid required field, omit an invalid optional field, or truncate an
+   * oversize one) before sending. Per-recommendation detail (which field, what
+   * value) is emitted via the configured logger's `warn`; this is the run-level
+   * tally so a caller can read/threshold on a number without grepping logs.
+   * Absent on `getRun()` (a later read of an already-saved run — repair
+   * happened, if at all, at the original `submit()` and isn't re-derivable
+   * from a fetched run).
+   */
+  repairedRecommendations?: number;
 }
 
 /**

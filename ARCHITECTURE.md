@@ -74,7 +74,7 @@ Every chain starts with `UluOpsClient.resolveByRef()`. This sub-chain is shared.
 15. [BRANCH] Extract output:
       a. Structured output present → mapStructuredOutput() (confidence: 1.0)
       b. Fallback → OutputExtractor.extractWithMetadata():
-         JSON code fence (0.95) > inline JSON (0.7) > regex patterns (0.5)
+         JSON code fence (0.95) > whole JSON (0.9) > embedded JSON (0.75) > regex (0.5) > fallback (0)
       Categories + artifacts extracted for all agent types (no type gating).
 16. flattenRecommendations() — categories → findings → issues → Recommendation[]
 17. classifyAgentDecision() — vocabulary map from definition → DecisionCategory

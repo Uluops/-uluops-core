@@ -289,7 +289,10 @@ export class UluOpsClient {
       throw new ConfigurationError(`${name} is not a pipeline (type: ${resolved.type}). Use runWorkflow() for workflows or runCommand() for commands.`);
     }
 
-    const handle = await this.pipelineExecutor.start(resolved, input);
+    const handle = await this.pipelineExecutor.start(resolved, input, {
+      timeoutMs: this.config.timeout,
+      model: this.config.ai.modelOverride,
+    });
 
     // Wrap wait() to track results on completion — without this, async pipeline
     // users get no tracking data (only runPipeline's synchronous path tracked).

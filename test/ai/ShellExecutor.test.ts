@@ -27,7 +27,7 @@ vi.mock('child_process', () => ({
   exec: execMock,
 }));
 
-const { runShellCommand, executeShellAsString, executeShellAsOpenAIResult } = await import('../../src/ai/shellExecutor');
+const { runShellCommand, executeShellAsString, executeShellAsOpenAIResult } = await import('../../src/ai/shellExecutor.js');
 
 function setupExec(result: { stdout?: string; stderr?: string } | Error) {
   mockExecFn.mockImplementation((...args: unknown[]) => {
@@ -142,9 +142,9 @@ describe('ShellExecutor', () => {
         5000,
       );
       expect(result.output).toHaveLength(2);
-      expect(result.output[0].stdout).toBe('output1');
-      expect(result.output[0].outcome).toEqual({ type: 'exit', exitCode: 0 });
-      expect(result.output[1].stdout).toBe('output2');
+      expect(result.output[0]!.stdout).toBe('output1');
+      expect(result.output[0]!.outcome).toEqual({ type: 'exit', exitCode: 0 });
+      expect(result.output[1]!.stdout).toBe('output2');
     });
 
     it('uses action timeoutMs over default', async () => {
@@ -156,7 +156,7 @@ describe('ShellExecutor', () => {
         '/tmp',
         30000,
       );
-      expect(result.output[0].outcome).toEqual({ type: 'timeout' });
+      expect(result.output[0]!.outcome).toEqual({ type: 'timeout' });
     });
 
     it('returns exit outcome for non-zero exit', async () => {
@@ -168,7 +168,7 @@ describe('ShellExecutor', () => {
         '/tmp',
         5000,
       );
-      expect(result.output[0].outcome).toEqual({ type: 'exit', exitCode: 42 });
+      expect(result.output[0]!.outcome).toEqual({ type: 'exit', exitCode: 42 });
     });
   });
 });

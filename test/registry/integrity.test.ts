@@ -26,13 +26,15 @@ const baseConfig: ResolvedConfig = {
   apiKey: 'test-key',
   ai: { providers: { anthropic: { apiKey: 'k' } }, defaultProvider: 'anthropic' },
   registryUrl: 'https://registry.example.com/api',
-  validationUrl: 'https://ops.example.com/api',
+  submissionUrl: 'https://ops.example.com/api',
   dashboardUrl: 'https://app.example.com',
   trackingEnabled: true,
   timeout: 30000,
   debug: false,
   defaultThinkingBudget: 10_000,
   contextBudget: 200_000,
+  maxConcurrency: 8,
+  allowStageSteps: false,
 };
 
 // A real-shaped agent YAML (interface present so config wiring engages).

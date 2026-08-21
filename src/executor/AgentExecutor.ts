@@ -20,7 +20,7 @@ import { mapCategory } from './mapCategory.js';
 import { renderUpstreamSection } from './upstreamContext.js';
 import type { UsageMetrics } from '../types/ai.js';
 import type { Logger } from '@uluops/sdk-core';
-import { DEFAULT_PASS_THRESHOLD, DEFAULT_WARN_THRESHOLD, DEFAULT_MAX_STEPS, DEFAULT_MAX_TOKENS, DEFAULT_MODEL_ALIAS, EXTRACTION_CONFIDENCE_THRESHOLD } from '../constants.js';
+import { DEFAULT_PASS_THRESHOLD, DEFAULT_WARN_THRESHOLD, DEFAULT_MAX_STEPS, DEFAULT_MAX_TOKENS, DEFAULT_MODEL_ALIAS, DEFAULT_TEMPERATURE, EXTRACTION_CONFIDENCE_THRESHOLD, SHELL_COMMAND_TIMEOUT_MS } from '../constants.js';
 
 /**
  * Maximum bytes retained from the LLM's raw text output on AgentResult.rawOutput.
@@ -88,8 +88,10 @@ export class AgentExecutor {
     this.logger.info(`Agent: ${resolved.name} v${resolved.version} (${agentType})`);
     this.logger.debug(`Target: ${input.target}`);
 
+    const runtime = this.assertAgentRuntime(resolved);
+
     // 1. Setup execution context and tools
-    const context = this.resolveContext(resolved, options);
+    const context = this.resolveContext(runtime, options);
     this.logger.debug(`Context: model=${context.model}, maxSteps=${context.maxSteps}, temp=${context.temperature}, timeout=${context.timeoutMs}ms`);
 
     // Reconcile the context budget against the resolved model's real window.
@@ -105,8 +107,7 @@ export class AgentExecutor {
       `Context budget: ${effectiveBudget} (window=${resolvedForBudget.contextWindow ?? 'unknown'}, operator=${this.config.contextBudget ?? 'unset'})`,
     );
 
-    const runtime = this.assertAgentRuntime(resolved);
-    const toolAdapter = await this.setupTools(runtime, input, options, context, effectiveBudget);
+    const toolAdapter = await this.setupTools(runtime, input, context, options, effectiveBudget);
 
     // 2. Execute LLM with tool loop
     const initialMessage = await this.buildInitialMessage(input, toolAdapter.toolHandler, agentType);
@@ -155,7 +156,7 @@ export class AgentExecutor {
     this.logExtraction(parsed, extraction);
 
     // 4. Warn on low-confidence extraction — the fallback path may be unreliable
-    if (extraction.confidence < 0.7) {
+    if (extraction.confidence < EXTRACTION_CONFIDENCE_THRESHOLD) {
       this.logger.warn(
         `Low extraction confidence (${extraction.confidence}) via ${extraction.method} — decision/score may be defaults, not agent output`,
       );
@@ -206,16 +207,18 @@ export class AgentExecutor {
   private async setupTools(
     runtime: AgentRuntime | ExecutorRuntime,
     input: ExecutionInput,
-    options: ExecutionOptions | undefined,
     context: ResolvedExecutionContext,
+    options: ExecutionOptions | undefined,
     effectiveBudget: number,
   ) {
     const agentTools = runtime.interface?.tools;
     let additionalTools: ToolSet | undefined;
     if (agentTools?.includes('bash') && this.isToolAllowed('bash')) {
-      const modelInput = options?.model ?? runtime.defaults?.model ?? this.config.ai.modelOverride ?? DEFAULT_MODEL_ALIAS;
+      // Same precedence idiom as the budget resolution above (modelOverride wins) —
+      // keeps the shell tool's provider in sync with the provider generate() will use.
+      const modelInput = this.config.ai.modelOverride ?? context.model;
       const resolvedModel = await this.aiProvider.resolveModel(modelInput);
-      additionalTools = this.aiProvider.createProviderShellTool(resolvedModel.provider, input.target, context.timeoutMs);
+      additionalTools = this.aiProvider.createProviderShellTool(resolvedModel.provider, input.target, options?.shellTimeoutMs ?? SHELL_COMMAND_TIMEOUT_MS);
     }
 
     const toolHandler = new ToolHandler(input.target, this.logger);
@@ -307,10 +310,24 @@ export class AgentExecutor {
    * Classify decision using agent definition vocabulary.
    */
   private classifyAgentDecision(resolved: ResolvedDefinition, decision: string | undefined): DecisionCategory {
-    const vocabularyMap = buildVocabularyMap(resolved.definition as {
-      decisions?: { vocabulary?: { positive?: string; negative?: string; conditional?: string | null } };
-      completion?: { vocabulary?: { complete?: string; partial?: string; failed?: string } };
-    });
+    // Read through the `agent:` wrapper. AgentDefinition mandates it (types/agent.ts:23-24)
+    // and normalization preserves it verbatim (registry/normalize.ts:222-225, "Agent
+    // definitions pass through unchanged"), so `definition.decisions` is ALWAYS undefined —
+    // which silently disabled every custom vocabulary in the corpus. `definition` is
+    // `AgentDefinition | Partial<AgentDefinition>` (types/registry.ts:75), so `agent` may be
+    // absent when no YAML was available; buildVocabularyMap treats undefined as "no custom
+    // vocabulary" and falls back to the core register. sdk-core's own doc example uses this
+    // same unwrapped-body form: buildVocabularyMap(agentDefinition.agent).
+    // Narrowed rather than cast: only the 'agent' branch of the union has an `agent` body.
+    // execute() calls assertAgentRuntime() first (:91), which throws for any other type, but
+    // that returns a runtime rather than acting as a type predicate — so narrow here instead
+    // of asserting a shape, which is precisely what hid this defect before.
+    // `?? {}` because buildVocabularyMap dereferences `definition.decisions` without guarding
+    // its own parameter — `agent` is absent whenever no YAML was available (the Partial branch
+    // of ResolvedDefinition['definition']), and an empty body correctly yields "no custom
+    // vocabulary", falling back to the core register.
+    const agentBody = resolved.type === 'agent' ? resolved.definition.agent : undefined;
+    const vocabularyMap = buildVocabularyMap(agentBody ?? {});
     const category = classifyDecision(decision, vocabularyMap);
     // A non-empty decision resolving 'neutral' means it is neither in the core
     // register nor in the definition's vocabulary — almost always a missing
@@ -326,7 +343,10 @@ export class AgentExecutor {
       const safeDecision = decision.slice(0, 80).replace(/[\x00-\x1f\x7f]/g, '_');
       this.logger.warn(
         `Decision "${safeDecision}" from agent "${resolved.name}" is not in the core register or the definition's vocabulary — ` +
-        `stamping decisionCategory 'neutral' (non-gating). Declare it in decisions.vocabulary or completion.vocabulary.`,
+        `stamping decisionCategory 'neutral' (non-gating). Declare it under agent.decisions.vocabulary ` +
+        `(positive/negative/conditional) or agent.completion.vocabulary (complete/partial/failed). ` +
+        `Note the schema allows ONE term per slot, so an agent emitting a third term needs that slot declared — ` +
+        `and tracking.category 'gate' forbids 'conditional', which requires 'safety' instead.`,
       );
     }
     return category;
@@ -501,17 +521,16 @@ export class AgentExecutor {
    * Priority: options > agent defaults > config defaults
    */
   private resolveContext(
-    resolved: ResolvedDefinition,
+    runtime: AgentRuntime | ExecutorRuntime,
     options?: ExecutionOptions,
   ): ResolvedExecutionContext {
-    const runtime = this.assertAgentRuntime(resolved);
-    const defaults = runtime?.defaults;
+    const defaults = runtime.defaults;
 
     return {
       model: options?.model ?? defaults?.model ?? this.config.ai.modelOverride ?? DEFAULT_MODEL_ALIAS,
       maxTokens: options?.maxTokens ?? defaults?.maxTokens ?? DEFAULT_MAX_TOKENS,
       timeoutMs: options?.timeoutMs ?? defaults?.timeout ?? this.config.timeout ?? 300_000,
-      temperature: options?.temperature ?? defaults?.temperature ?? 0,
+      temperature: options?.temperature ?? defaults?.temperature ?? DEFAULT_TEMPERATURE,
       maxSteps: options?.maxSteps ?? DEFAULT_MAX_STEPS,
       thresholds: this.resolveThresholds(
         options?.thresholds,

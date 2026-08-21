@@ -2,11 +2,12 @@
  * Minimal async counting semaphore — no external dependency.
  *
  * Bounds the number of concurrently-running async tasks. Used by AIProvider to
- * cap total in-flight LLM generation calls across the whole engine, regardless
- * of how many workflow phases, parallel steps, or inline pipeline agents fan
- * out at once. This prevents unbounded fan-out × per-request retry from
- * amplifying a provider rate limit (the protective retry inverting into the
- * dominant stressor).
+ * cap total in-flight LLM generation calls for ONE AIProvider instance,
+ * regardless of how many workflow phases, parallel steps, or inline pipeline
+ * agents fan out at once within that instance. This prevents unbounded
+ * fan-out × per-request retry from amplifying a provider rate limit (the
+ * protective retry inverting into the dominant stressor). The bound is per
+ * instance, not per process — see AIProvider.concurrencyLimiter.
  *
  * Permits are handed off directly from `release()` to the next waiter so the
  * available count never transiently overshoots the configured limit.

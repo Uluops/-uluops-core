@@ -9,7 +9,7 @@ import type { ResolvedConfig, ResolvedAIConfig } from '../types/config.js';
 import type { ModelCatalog, ResolvedModel } from './ModelCatalog.js';
 import { TokenBudgetTracker } from './TokenBudgetTracker.js';
 import { Semaphore } from './Semaphore.js';
-import { DEFAULT_MAX_STEPS, DEFAULT_MAX_TOKENS, ANTHROPIC_BASH_TOOL_VERSION, ANTHROPIC_CONTEXT_MANAGEMENT_TYPE, ANTHROPIC_CONTEXT_KEEP_TOOL_USES, DEFAULT_DYNAMIC_PROVIDERS, DEFAULT_CONTEXT_BUDGET, DEFAULT_MAX_CONCURRENCY } from '../constants.js';
+import { DEFAULT_MAX_STEPS, DEFAULT_MAX_TOKENS, DEFAULT_TEMPERATURE, ANTHROPIC_BASH_TOOL_VERSION, ANTHROPIC_CONTEXT_MANAGEMENT_TYPE, ANTHROPIC_CONTEXT_KEEP_TOOL_USES, DEFAULT_DYNAMIC_PROVIDERS, DEFAULT_CONTEXT_BUDGET, DEFAULT_MAX_CONCURRENCY } from '../constants.js';
 import { executeShellAsString, executeShellAsOpenAIResult } from './shellExecutor.js';
 import {
   SdkApiError,
@@ -161,10 +161,19 @@ export class AIProvider {
   private openaiInstance?: OpenAIProvider;
 
   /**
-   * Global ceiling on concurrent in-flight generate() calls. Shared across every
-   * executor (workflow phases, parallel steps, inline pipeline agents) that holds
-   * this AIProvider instance, so total request concurrency is bounded regardless
-   * of how wide any single fan-out is. See DEFAULT_MAX_CONCURRENCY.
+   * Ceiling on concurrent in-flight generate() calls for THIS AIProvider
+   * instance. Shared across every executor (workflow phases, parallel steps,
+   * inline pipeline agents) that holds this instance, so no single fan-out
+   * can overrun it. See DEFAULT_MAX_CONCURRENCY.
+   *
+   * This bound is per AIProvider, NOT per process. There is exactly one
+   * construction site workspace-wide (`client/UluOpsClient.ts`), so today one
+   * `UluOpsClient` means one AIProvider means one effective ceiling — but
+   * nothing in this package coordinates across instances. N `UluOpsClient`s
+   * constructed in one host process (e.g. one per tenant or per request) admit
+   * N × maxConcurrency, not maxConcurrency. A host fanning out over multiple
+   * clients must budget accordingly — this is a rate-limit guarantee, and
+   * overrunning it gets 429s from the provider.
    */
   private readonly concurrencyLimiter: Semaphore;
 
@@ -279,7 +288,7 @@ export class AIProvider {
     if (options.tools) {
       this.logger.debug(`Tools: ${Object.keys(options.tools).join(', ')}`);
     }
-    this.logger.debug(`Config: maxTokens=${options.maxTokens ?? DEFAULT_MAX_TOKENS}, maxSteps=${options.maxSteps ?? DEFAULT_MAX_STEPS}, temp=${options.temperature ?? 0}`);
+    this.logger.debug(`Config: maxTokens=${options.maxTokens ?? DEFAULT_MAX_TOKENS}, maxSteps=${options.maxSteps ?? DEFAULT_MAX_STEPS}, temp=${options.temperature ?? DEFAULT_TEMPERATURE}`);
 
     if (options.output && !useStructuredOutput) {
       this.logger.info(
@@ -313,7 +322,7 @@ export class AIProvider {
       tools: options.tools,
       maxOutputTokens: options.maxTokens ?? DEFAULT_MAX_TOKENS,
       stopWhen: stepCountIs(maxSteps + (useStructuredOutput ? 2 : 0)),
-      ...(isReasoning ? {} : { temperature: options.temperature ?? 0 }),
+      ...(isReasoning ? {} : { temperature: options.temperature ?? DEFAULT_TEMPERATURE }),
       maxRetries: options.maxRetries,
       abortSignal: options.timeoutMs
         ? AbortSignal.timeout(options.timeoutMs)
@@ -433,7 +442,7 @@ export class AIProvider {
         costUsd: this.computeCostUsd(usage, resolved.cost),
       };
     }
-    throw this.mapError(error, timeoutMs);
+    throw this.mapError(error, timeoutMs, resolved);
   }
 
   /**
@@ -573,6 +582,22 @@ export class AIProvider {
     const userAnthropicOpts = (userOptions?.anthropic ?? {}) as Record<string, unknown>;
     let anthropicOpts = { ...userAnthropicOpts };
 
+    // Route structured output through a json TOOL rather than the `output_format` field.
+    //
+    // WHY: the provider's default `structuredOutputMode: 'auto'` prefers `output_format`, which
+    // Anthropic has since DEPRECATED ("This field is deprecated. Use 'output_config'") and whose
+    // grammar compiler rejects our schema alongside the 7 filesystem tools with
+    // HTTP 400 "The compiled grammar is too large". Verified by capturing the real request: the
+    // failing call carried `output_format` plus the tools, and the identical tools succeed without
+    // it. 'jsonTool' is the provider's own supported alternative and sidesteps the retired path.
+    //
+    // This is the Anthropic-side counterpart to `strictJsonSchema: false` for OpenAI — both exist
+    // because one schema has to satisfy two providers with incompatible structured-output rules.
+    // The `in` check preserves an explicit caller override.
+    if (!('structuredOutputMode' in anthropicOpts)) {
+      anthropicOpts = { ...anthropicOpts, structuredOutputMode: 'jsonTool' };
+    }
+
     // Auto-enable extended thinking if model supports it and user hasn't specified
     if (resolved.capabilities.extendedThinking && !('thinking' in anthropicOpts)) {
       const budgetTokens = this.config.defaultThinkingBudget;
@@ -622,6 +647,24 @@ export class AIProvider {
   ): ProviderOptions | undefined {
     const userOpenAIOpts = (userOptions?.openai ?? {}) as Record<string, unknown>;
     let openaiOpts = { ...userOpenAIOpts };
+
+    // Disable OpenAI strict structured-output mode unless the caller asked otherwise.
+    //
+    // WHY: strict mode requires every property to appear in `required`, so it rejects
+    // `.optional()` outright. agentOutputSchema previously worked around that by making
+    // every field `.nullable()` instead — but Zod renders each nullable as a JSON-Schema
+    // union, and Anthropic hard-rejects (HTTP 400) any schema with more than 16 union
+    // parameters. At 29 the schema was unusable on Anthropic while fine on OpenAI.
+    //
+    // Relaxing strict mode is what lets the schema use `.optional()` and stay under
+    // Anthropic's budget. TRADE-OFF, stated plainly: OpenAI no longer enforces the schema
+    // as rigidly, so a malformed response is caught by our own parse/normalize path rather
+    // than refused by the provider. That path already exists and is exercised
+    // (mapStructuredOutput re-validates via agentOutputSchema.safeParse), which is what
+    // makes the trade acceptable rather than merely convenient.
+    if (!('strictJsonSchema' in openaiOpts)) {
+      openaiOpts = { ...openaiOpts, strictJsonSchema: false };
+    }
 
     // Auto-set reasoningEffort for reasoning models if user hasn't specified
     if (resolved.capabilities.extendedThinking && !('reasoningEffort' in openaiOpts)) {
@@ -964,7 +1007,7 @@ export class AIProvider {
    * Map AI SDK errors to sdk-core error types.
    * AI SDK normalizes all provider errors to APICallError with statusCode.
    */
-  private mapError(error: unknown, timeoutMs?: number): Error {
+  private mapError(error: unknown, timeoutMs?: number, resolved?: ResolvedModel): Error {
     this.logger.error(`AI SDK error: ${formatErrorMessage(error)}`);
 
     const cause = error instanceof Error ? error : undefined;
@@ -984,6 +1027,23 @@ export class AIProvider {
       } else if (status === 403) {
         mapped = new ForbiddenError(
           `Forbidden (HTTP 403). Check API key permissions or billing status. Provider message: ${error.message}`,
+        );
+      } else if (status === 404) {
+        // A provider 404 has two unrelated causes that are indistinguishable
+        // from the status code alone. `resolved.registered` is the only thing
+        // that separates them, which is why ModelCatalog carries it: a model
+        // present in the catalog but 404-ing at the provider means the catalog
+        // is stale (withdrawn upstream, local copy not yet retired); a model
+        // that was never in the catalog is far more likely a wrong name.
+        const modelRef = resolved ? `${resolved.provider}:${resolved.modelId}` : 'the requested model';
+        const diagnosis = resolved === undefined
+          ? 'Model provenance is unknown here — verify the model name against `ulu models list`.'
+          : resolved.registered
+            ? `${modelRef} IS in the model catalog but the provider does not recognize it — the catalog is very likely STALE (the model was retired upstream and the local catalog has not caught up). Re-sync the catalog; do not assume the name is wrong.`
+            : `${modelRef} is NOT in the model catalog, so it was passed through unvalidated. Check the model name for typos, or confirm your account has access to it.`;
+        mapped = new SdkApiError(
+          404,
+          `Provider returned HTTP 404 for ${modelRef}. ${diagnosis} Provider message: ${error.message}`,
         );
       } else if (status >= 500) {
         mapped = new ServiceUnavailableError(

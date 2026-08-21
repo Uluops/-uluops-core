@@ -8,6 +8,7 @@ import type { AIProvider, AIGenerateResult } from '../../src/ai/AIProvider.js';
 import type { TokenBudgetTracker } from '../../src/ai/TokenBudgetTracker.js';
 import type { ResolvedConfig } from '../../src/types/config.js';
 import type { ResolvedDefinition, AgentRuntime, ExecutorRuntime } from '../../src/types/registry.js';
+import type { AgentDefinition } from '../../src/types/agent.js';
 import type { Logger } from '@uluops/sdk-core';
 
 const noopLogger: Logger = { debug() {}, info() {}, warn() {}, error() {} };
@@ -26,13 +27,15 @@ const baseConfig: ResolvedConfig = {
     defaultProvider: 'anthropic',
   },
   registryUrl: 'https://registry.example.com/api',
-  validationUrl: 'https://ops.example.com/api',
+  submissionUrl: 'https://ops.example.com/api',
   dashboardUrl: 'https://app.example.com',
   trackingEnabled: true,
   timeout: 30000,
   debug: false,
   defaultThinkingBudget: 10_000,
   contextBudget: 200_000,
+  maxConcurrency: 8,
+  allowStageSteps: false,
 };
 
 function mockAIProvider(overrides?: Partial<AIGenerateResult>): AIProvider {
@@ -89,6 +92,7 @@ function mockAIProvider(overrides?: Partial<AIGenerateResult>): AIProvider {
       contextWindow: 200_000,
       resolvedFrom: 'sonnet',
     }),
+    createProviderShellTool: vi.fn().mockReturnValue(undefined),
   } as unknown as AIProvider;
 }
 
@@ -99,7 +103,7 @@ function makeValidatorDef(overrides?: Partial<ResolvedDefinition>): ResolvedDefi
     version: '1.0.0',
     hash: 'sha256:abc123',
     yaml: '',
-    definition: {} as ResolvedDefinition['definition'],
+    definition: {} as Partial<AgentDefinition>,
     runtime: {
       prompt: 'You are a test validator. Analyze the code.',
       defaults: { model: 'sonnet', timeout: 30000 },
@@ -108,7 +112,7 @@ function makeValidatorDef(overrides?: Partial<ResolvedDefinition>): ResolvedDefi
     domain: 'software',
     agentType: 'validator',
     ...overrides,
-  };
+  } as ResolvedDefinition;
 }
 
 function makeExecutorDef(): ResolvedDefinition {
@@ -118,7 +122,7 @@ function makeExecutorDef(): ResolvedDefinition {
     version: '1.0.0',
     hash: 'sha256:def456',
     yaml: '',
-    definition: {} as ResolvedDefinition['definition'],
+    definition: {} as Partial<AgentDefinition>,
     runtime: {
       prompt: 'You are a test executor. Perform the task.',
       defaults: { model: 'haiku', timeout: 60000 },
@@ -209,8 +213,13 @@ describe('AgentExecutor', () => {
       });
       const executor = new AgentExecutor(baseConfig, ai, logger);
       const def = makeValidatorDef();
-      (def.definition as { decisions?: unknown }).decisions = {
-        vocabulary: { positive: 'CLEAR', negative: 'BEWITCHED' },
+      // REAL SHAPE: AgentDefinition carries a mandatory top-level `agent:` wrapper
+      // (types/agent.ts:23-24) which survives resolution (normalize.ts:222-225).
+      // A fixture that sets `definition.decisions` directly asserts a shape that
+      // never occurs in production — that is what let the wrong-nesting read at
+      // classifyAgentDecision go unnoticed.
+      (def.definition as { agent?: { decisions?: unknown } }).agent = {
+        decisions: { vocabulary: { positive: 'CLEAR', negative: 'BEWITCHED' } },
       };
       const result = await executor.execute(def, { target: tmpDir });
       expect(result.decisionCategory).toBe('negative');
@@ -438,6 +447,76 @@ describe('AgentExecutor', () => {
 
       const generateCall = (ai.generate as ReturnType<typeof vi.fn>).mock.calls[0]![0] as Record<string, unknown>;
       expect(generateCall.model).toBe('opus');
+    });
+
+    // Regression guard for tracker 861bb64e: assertAgentRuntime used to run twice
+    // per execute() call — once inside resolveContext, once directly in execute().
+    // Both fired on the same `resolved` within one run; hoisting the single call
+    // ahead of resolveContext removed the duplicate.
+    it('calls assertAgentRuntime exactly once per execute()', async () => {
+      const spy = vi.spyOn(
+        AgentExecutor.prototype as unknown as { assertAgentRuntime: (r: ResolvedDefinition) => unknown },
+        'assertAgentRuntime',
+      );
+      const ai = mockAIProvider();
+      const executor = new AgentExecutor(baseConfig, ai, noopLogger);
+
+      await executor.execute(makeValidatorDef(), { target: tmpDir });
+
+      expect(spy).toHaveBeenCalledTimes(1);
+      spy.mockRestore();
+    });
+
+    it('a non-agent ResolvedDefinition still throws ExecutionError with the same message', async () => {
+      const ai = mockAIProvider();
+      const executor = new AgentExecutor(baseConfig, ai, noopLogger);
+      const workflowDef = makeValidatorDef({ type: 'workflow' } as Partial<ResolvedDefinition>);
+
+      await expect(executor.execute(workflowDef, { target: tmpDir })).rejects.toThrow(
+        "AgentExecutor received a 'workflow' definition (expected 'agent')",
+      );
+    });
+  });
+
+  describe('shell tool timeout (independent of agent run timeout)', () => {
+    // Regression guard for tracker b96b559a: the shell tool used to inherit
+    // context.timeoutMs (the overall agent run budget), so a 300s agent budget
+    // authorised a single 300s bash call instead of the intended 30s default.
+    function makeBashValidatorDef(): ResolvedDefinition {
+      return makeValidatorDef({
+        runtime: {
+          prompt: 'test',
+          defaults: { model: 'sonnet', timeout: 30000 },
+          config: { maxScore: 100, threshold: 75, categories: [], outputSchema: 'json' },
+          interface: { tools: ['bash'] },
+        } as unknown as AgentRuntime,
+      });
+    }
+
+    it('passes the shell-tool default (30_000ms), not the 300_000ms agent run timeout', async () => {
+      const ai = mockAIProvider();
+      const config: ResolvedConfig = { ...baseConfig, timeout: 300_000, allowedTools: ['bash'] };
+      const executor = new AgentExecutor(config, ai, noopLogger);
+
+      await executor.execute(makeBashValidatorDef(), { target: tmpDir }, { timeoutMs: 300_000 });
+
+      const shellCall = (ai.createProviderShellTool as ReturnType<typeof vi.fn>).mock.calls[0]!;
+      expect(shellCall[2]).toBe(30_000);
+    });
+
+    it('honors an explicit shellTimeoutMs override', async () => {
+      const ai = mockAIProvider();
+      const config: ResolvedConfig = { ...baseConfig, timeout: 300_000, allowedTools: ['bash'] };
+      const executor = new AgentExecutor(config, ai, noopLogger);
+
+      await executor.execute(
+        makeBashValidatorDef(),
+        { target: tmpDir },
+        { timeoutMs: 300_000, shellTimeoutMs: 45_000 },
+      );
+
+      const shellCall = (ai.createProviderShellTool as ReturnType<typeof vi.fn>).mock.calls[0]!;
+      expect(shellCall[2]).toBe(45_000);
     });
   });
 
@@ -813,6 +892,27 @@ describe('AgentExecutor', () => {
 
       expect(result.completeness).toBe('failed');
       expect(result.degradationMarkers?.map(d => d.code)).toContain('extraction.failed');
+    });
+
+    // Regression guard for tracker 2c7aa708: the low-confidence warn used to be a
+    // hardcoded `< 0.7` literal, independent of EXTRACTION_CONFIDENCE_THRESHOLD (the
+    // constant the degradation marker uses). A confidence of 0.75 sits above the
+    // default 0.7 threshold, so this only proves they stayed in sync — it cannot
+    // distinguish the fix from the pre-fix hardcoded literal at the DEFAULT value
+    // (both are 0.7). Desync was verified manually by temporarily raising the
+    // constant to 0.9 and observing the pre-fix code emit only the marker, not the
+    // warn, at confidence 0.75 (see tracker issue notes).
+    it('inline_json extraction (0.75, above default threshold) triggers neither the low-confidence warn nor the marker', async () => {
+      const warn = vi.fn();
+      const logger: Logger = { debug() {}, info() {}, warn, error() {} };
+      const ai = mockAIProvider({ text: 'The result is {"decision": "PASS", "score": 77} and that is final.' });
+      const executor = new AgentExecutor(baseConfig, ai, logger);
+
+      const result = await executor.execute(makeValidatorDef(), { target: tmpDir });
+
+      expect(result.extractionConfidence).toBe(0.75);
+      expect(warn.mock.calls.some(c => String(c[0]).includes('Low extraction confidence'))).toBe(false);
+      expect((result.degradationMarkers ?? []).map(d => d.code)).not.toContain('extraction.low-confidence');
     });
 
     it('resolution-phase degradations propagate as typed markers + preserve the legacy field', async () => {

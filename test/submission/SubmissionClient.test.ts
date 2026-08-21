@@ -3,6 +3,10 @@ import { SubmissionClient } from '../../src/submission/SubmissionClient.js';
 import type { ResolvedConfig } from '../../src/types/config.js';
 import type { RunSubmission } from '../../src/types/submission.js';
 import type { ExecutionResult } from '../../src/types/execution.js';
+import type { AgentResult } from '../../src/types/agent.js';
+import type { PipelineResult } from '../../src/types/pipeline.js';
+import type { WorkflowResult } from '../../src/types/workflow.js';
+import type { ResolvedDefinition } from '../../src/types/registry.js';
 
 // Mock the ops SDK
 const mockSave = vi.fn();
@@ -52,6 +56,8 @@ const baseConfig: ResolvedConfig = {
   debug: false,
   defaultThinkingBudget: 10_000,
   contextBudget: 200_000,
+  maxConcurrency: 8,
+  allowStageSteps: false,
 };
 
 function makeResult(overrides?: Partial<ExecutionResult>): ExecutionResult {
@@ -93,6 +99,104 @@ function makeSubmission(overrides?: Partial<RunSubmission>): RunSubmission {
     workflowType: 'post-implementation',
     result: makeResult(),
     ...overrides,
+  };
+}
+
+/** Minimal AgentResult carrying N Tier-2 structured analysis records via rawJson. */
+function makeAgentResultWithRecords(namePrefix: string, count: number): AgentResult {
+  return {
+    type: 'agent',
+    agentType: 'validator',
+    name: `${namePrefix}-validator`,
+    version: '1.0.0',
+    definitionHash: 'sha256:abc',
+    decision: 'PASS',
+    score: 85,
+    maxScore: 100,
+    recommendations: [],
+    durationMs: 1000,
+    metrics: {
+      inputTokens: 100, outputTokens: 50, totalEffectiveTokens: 150,
+      durationMs: 1000, model: 'claude-sonnet-4-5-20250929',
+    },
+    rawJson: {
+      analysisRecords: Array.from({ length: count }, (_, i) => ({
+        recordType: 'evidence_finding',
+        recordId: `${namePrefix}-${i}`,
+        title: `${namePrefix} finding ${i}`,
+        data: {},
+      })),
+    },
+  };
+}
+
+/** Minimal ResolvedDefinition sufficient for AnalysisSummaryExtractor.extract(). */
+function makeResolvedDefinitionForAnalysis(): ResolvedDefinition {
+  return {
+    type: 'agent',
+    name: 'test-validator',
+    version: '1.0.0',
+    hash: 'sha256:abc',
+    yaml: '',
+    definition: {
+      agent: {
+        interface: {
+          name: 'test-validator',
+          version: '1.0.0',
+          displayName: 'Test Validator',
+          description: 'A test validator',
+          agentType: 'validator',
+          domain: 'software',
+        },
+      },
+    },
+    runtime: {} as ResolvedDefinition['runtime'],
+  } as ResolvedDefinition;
+}
+
+/** Minimal PipelineResult whose stages carry preserved agentResults (inline-agent stages). */
+function makePipelineResultWithAgents(stageAgentCounts: number[][]): PipelineResult {
+  return {
+    type: 'pipeline',
+    name: 'test-pipeline',
+    version: '1.0.0',
+    definitionHash: 'sha256:pipe',
+    decision: 'PASS',
+    score: 88,
+    status: 'complete',
+    recommendations: [],
+    durationMs: 5000,
+    metrics: {
+      inputTokens: 2000, outputTokens: 800, totalEffectiveTokens: 2800,
+      durationMs: 5000, model: 'mixed',
+      stagesExecuted: stageAgentCounts.length, stagesPassed: stageAgentCounts.length,
+      stagesFailed: 0, stagesWarned: 0, stagesSkipped: 0,
+    },
+    stages: stageAgentCounts.map((agentCounts, stageIdx) => ({
+      id: `stage-${stageIdx}`,
+      name: `stage-${stageIdx}`,
+      type: 'command' as const,
+      status: 'completed' as const,
+      result: {
+        type: 'command' as const,
+        agentType: 'validator' as const,
+        name: `stage-${stageIdx}-command`,
+        version: '1.0.0',
+        definitionHash: 'sha256:cmd',
+        decision: 'PASS',
+        score: 85,
+        maxScore: 100,
+        recommendations: [],
+        durationMs: 1000,
+        metrics: {
+          inputTokens: 100, outputTokens: 50, totalEffectiveTokens: 150,
+          durationMs: 1000, model: 'claude-sonnet-4-5-20250929', toolCalls: 0,
+        },
+      },
+      agentResults: agentCounts.map((count, agentIdx) =>
+        makeAgentResultWithRecords(`s${stageIdx}a${agentIdx}`, count),
+      ),
+    })),
   };
 }
 
@@ -177,6 +281,68 @@ describe('SubmissionClient', () => {
       const sent = await submitWith(clean);
       expect(sent).toMatchObject(clean);
       expect(warnings).toEqual([]);
+    });
+
+    // repairedRecommendations: the run-level tally on RunSubmissionResponse. Before this,
+    // the cost of a repair (invented/off-taxonomy failure codes, oversize fields) was
+    // recorded only as one logger.warn per recommendation and then went out of scope —
+    // no counter, no metric, no payload field, no aggregation across the run.
+    describe('repairedRecommendations count', () => {
+      it('counts exactly the recommendations that needed repair, out of the total', async () => {
+        okSave();
+        const client = new SubmissionClient(baseConfig, testLogger);
+        const response = await client.submit(makeSubmission({
+          result: makeResult({
+            recommendations: [
+              { agent: 'a', title: 'ok', priority: 'high' },
+              { agent: 'a', title: 'bad priority', priority: 'nonsense' as never },
+              { agent: 'a', title: 'x'.repeat(600), priority: 'high' },
+            ],
+          }),
+        }));
+
+        expect(response.repairedRecommendations).toBe(2);
+        // Per-recommendation detail warns still fire alongside the run-level tally.
+        expect(warnings.some(w => w.includes('coerced'))).toBe(true);
+        expect(warnings.some(w => w.includes('truncated'))).toBe(true);
+        expect(warnings.some(w => w.includes('Submission repaired 2 of 3 recommendations'))).toBe(true);
+      });
+
+      // Positive control (required): without this, a counter fixed at a constant would
+      // pass the test above just as well.
+      it('control: an all-clean run reports 0 repaired recommendations', async () => {
+        okSave();
+        const client = new SubmissionClient(baseConfig, testLogger);
+        const response = await client.submit(makeSubmission({
+          result: makeResult({
+            recommendations: [
+              { agent: 'a', title: 'ok one', priority: 'high' },
+              { agent: 'a', title: 'ok two', priority: 'backlog' },
+            ],
+          }),
+        }));
+
+        expect(response.repairedRecommendations).toBe(0);
+        expect(warnings).toEqual([]);
+      });
+
+      it('reports 0 for the tracking-disabled local response when nothing needed repair', async () => {
+        const client = new SubmissionClient({ ...baseConfig, trackingEnabled: false }, testLogger);
+        const response = await client.submit(makeSubmission({
+          result: makeResult({ recommendations: [{ agent: 'a', title: 'ok', priority: 'high' }] }),
+        }));
+        expect(response.repairedRecommendations).toBe(0);
+      });
+
+      it('counts repairs for the tracking-disabled local response too', async () => {
+        const client = new SubmissionClient({ ...baseConfig, trackingEnabled: false }, testLogger);
+        const response = await client.submit(makeSubmission({
+          result: makeResult({
+            recommendations: [{ agent: 'a', title: 'bad priority', priority: 'nonsense' as never }],
+          }),
+        }));
+        expect(response.repairedRecommendations).toBe(1);
+      });
     });
   });
 
@@ -387,6 +553,207 @@ describe('SubmissionClient', () => {
       const input = mockSave.mock.calls[0]![0] as Record<string, unknown>;
       const recs = input.recommendations as Array<Record<string, unknown>>;
       expect(recs[0]!.agent).toBe('unknown');
+    });
+  });
+
+  // ─────────────────────────────────────────────────────────────────────────────
+  // analysis payload caps
+  //
+  // @uluops/ops-sdk's SaveRunInputSchema enforces `.max(100)` client-side, before
+  // any HTTP call, on `analysisRecords` and `agents`. Core accumulates both with no
+  // ceiling of its own — a pipeline with many stages/agents can produce >100 of
+  // either, and the ops-sdk cap turns that into a ZodError that loses the ENTIRE
+  // run's payload, not just the excess. These assert truncation-with-warning
+  // instead, and (required) that a payload safely under the cap is left untouched
+  // with no warning fired — without the control, a cap that truncated everything to
+  // zero would pass just as well.
+  // ─────────────────────────────────────────────────────────────────────────────
+
+  describe('analysis payload caps', () => {
+    const okSave = () => mockSave.mockResolvedValueOnce({
+      run: { id: 'r', projectId: 'p', runNumber: 1, allGatesPassed: true, averageScore: 85 },
+      agents: [], correlation: { newIssues: 0, recurringIssues: 0, regressions: 0 },
+    });
+
+    it('caps analysisRecords at 100 and warns naming the total and the drop, for a pipeline exceeding the wire limit', async () => {
+      okSave();
+      const client = new SubmissionClient(baseConfig, testLogger);
+      // 3 stages x 2 agents x 25 records = 150
+      const pipeline = makePipelineResultWithAgents([[25, 25], [25, 25], [25, 25]]);
+
+      await client.submit(makeSubmission({
+        result: pipeline,
+        resolvedDefinition: makeResolvedDefinitionForAnalysis(),
+      }));
+
+      const input = mockSave.mock.calls[0]![0] as Record<string, unknown>;
+      const records = input.analysisRecords as unknown[];
+      expect(records).toHaveLength(100);
+
+      const capWarning = warnings.find(w => w.includes('analysis records'));
+      expect(capWarning).toBeDefined();
+      expect(capWarning).toMatch(/150/);
+      expect(capWarning).toMatch(/50/);
+    });
+
+    it('control: 99 analysisRecords pass through untouched with no cap warning', async () => {
+      okSave();
+      const client = new SubmissionClient(baseConfig, testLogger);
+      // 3 stages x 33 records = 99, under the 100 cap
+      const pipeline = makePipelineResultWithAgents([[33], [33], [33]]);
+
+      await client.submit(makeSubmission({
+        result: pipeline,
+        resolvedDefinition: makeResolvedDefinitionForAnalysis(),
+      }));
+
+      const input = mockSave.mock.calls[0]![0] as Record<string, unknown>;
+      const records = input.analysisRecords as unknown[];
+      expect(records).toHaveLength(99);
+
+      expect(warnings.some(w => w.includes('analysis records'))).toBe(false);
+    });
+
+    it('caps agent entries at 100 for a pipeline whose stages decompose past the wire limit', async () => {
+      okSave();
+      const client = new SubmissionClient(baseConfig, testLogger);
+      // 3 stages x 40 agents (0 records each) = 120 agent entries
+      const pipeline = makePipelineResultWithAgents([
+        Array(40).fill(0), Array(40).fill(0), Array(40).fill(0),
+      ]);
+
+      await client.submit(makeSubmission({ result: pipeline }));
+
+      const input = mockSave.mock.calls[0]![0] as Record<string, unknown>;
+      const agents = input.agents as unknown[];
+      expect(agents).toHaveLength(100);
+      expect(warnings.some(w => w.includes('agent entries'))).toBe(true);
+    });
+  });
+
+  // ─────────────────────────────────────────────────────────────────────────────
+  // synthesized placeholder version filtering
+  //
+  // PipelineExecutor/WorkflowExecutor synthesize CommandResult entries with no
+  // backing definition (aggregated stages, steps-only stages, crashed steps) and
+  // mark them with the non-parseable version '1.0.0-synthesized'. Without
+  // filtering, a steps stage would reach the tracker as an agent at
+  // definitionVersion: '1.0.0', indistinguishable from a real 1.0.0 release, and
+  // a crashed workflow step would put a literal empty string on the wire.
+  // ─────────────────────────────────────────────────────────────────────────────
+
+  describe('synthesized placeholder version filtering', () => {
+    const okSave = () => mockSave.mockResolvedValueOnce({
+      run: { id: 'r', projectId: 'p', runNumber: 1, allGatesPassed: true, averageScore: 85 },
+      agents: [], correlation: { newIssues: 0, recurringIssues: 0, regressions: 0 },
+    });
+
+    it('omits definitionVersion for a pipeline steps stage (synthesized, no backing definition)', async () => {
+      okSave();
+      const pipeline: PipelineResult = {
+        type: 'pipeline',
+        name: 'test-pipeline',
+        version: '2.0.0',
+        definitionHash: 'sha256:pipe',
+        decision: 'PASS',
+        score: null,
+        status: 'complete',
+        recommendations: [],
+        durationMs: 1000,
+        metrics: {
+          inputTokens: 0, outputTokens: 0, totalEffectiveTokens: 0, durationMs: 1000, model: 'mixed',
+          stagesExecuted: 1, stagesPassed: 1, stagesFailed: 0, stagesWarned: 0, stagesSkipped: 0,
+        },
+        stages: [{
+          id: 'preflight',
+          name: 'Preflight',
+          type: 'command',
+          status: 'completed',
+          result: {
+            type: 'command',
+            agentType: 'analyst',
+            name: 'Preflight',
+            version: '1.0.0-synthesized',
+            definitionHash: '',
+            decision: 'PASS',
+            score: null,
+            maxScore: null,
+            recommendations: [],
+            durationMs: 500,
+            metrics: { durationMs: 500, model: 'none', toolCalls: 0, inputTokens: 0, outputTokens: 0, totalEffectiveTokens: 0 },
+          },
+        }],
+      };
+
+      const client = new SubmissionClient(baseConfig, testLogger);
+      await client.submit(makeSubmission({ result: pipeline }));
+
+      const input = mockSave.mock.calls[0]![0] as Record<string, unknown>;
+      const agents = input.agents as Array<Record<string, unknown>>;
+      expect(agents).toHaveLength(1);
+      expect(agents[0]!.definitionVersion).toBeUndefined();
+    });
+
+    it('omits definitionVersion (not empty string) for a crashed parallel workflow step', async () => {
+      okSave();
+      const workflow: WorkflowResult = {
+        type: 'workflow',
+        name: 'test-workflow',
+        version: '2.0.0',
+        definitionHash: 'sha256:wf',
+        decision: 'FAIL',
+        score: null,
+        recommendations: [],
+        durationMs: 1000,
+        metrics: {
+          inputTokens: 0, outputTokens: 0, totalEffectiveTokens: 0, durationMs: 1000, model: 'mixed',
+          phasesExecuted: 1, phasesPassed: 0, phasesWarned: 0, phasesBlocked: 1, phasesSkipped: 0,
+          phasesAborted: 0, commands: [],
+        },
+        phases: [{
+          id: 'p1',
+          name: 'Phase 1',
+          decision: 'blocked',
+          gateThreshold: 70,
+          score: null,
+          durationMs: 500,
+          commands: [{
+            type: 'command',
+            agentType: 'validator',
+            name: 'crashed-step',
+            version: '1.0.0-synthesized',
+            definitionHash: '',
+            decision: 'FAIL',
+            score: null,
+            maxScore: null,
+            recommendations: [],
+            durationMs: 200,
+            metrics: { durationMs: 200, model: 'none', toolCalls: 0, inputTokens: 0, outputTokens: 0, totalEffectiveTokens: 0 },
+          }],
+        }],
+      };
+
+      const client = new SubmissionClient(baseConfig, testLogger);
+      await client.submit(makeSubmission({ result: workflow }));
+
+      const input = mockSave.mock.calls[0]![0] as Record<string, unknown>;
+      const agents = input.agents as Array<Record<string, unknown>>;
+      expect(agents).toHaveLength(1);
+      expect(agents[0]!.definitionVersion).toBeUndefined();
+      // Not merely falsy — must not be a literal empty string either.
+      expect(agents[0]!.definitionVersion).not.toBe('');
+    });
+
+    // Control: a real 1.0.0 release must NOT be treated as a placeholder — only
+    // the '1.0.0-synthesized' sentinel is filtered.
+    it('control: a genuine version "1.0.0" is passed through, not treated as a placeholder', async () => {
+      okSave();
+      const client = new SubmissionClient(baseConfig, testLogger);
+      await client.submit(makeSubmission({ result: makeResult({ version: '1.0.0' }) }));
+
+      const input = mockSave.mock.calls[0]![0] as Record<string, unknown>;
+      const agents = input.agents as Array<Record<string, unknown>>;
+      expect(agents[0]!.definitionVersion).toBe('1.0.0');
     });
   });
 

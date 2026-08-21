@@ -23,7 +23,7 @@ function makeModel(overrides?: Partial<Model>): Model {
     capabilities: { vision: true, tools: true, streaming: true, extendedThinking: false },
     limits: { context: 200_000, output: 16_384 },
     tier: 'premium',
-    status: 'active',
+    status: 'available',
     ...overrides,
   };
 }
@@ -178,7 +178,7 @@ describe('ModelCatalog', () => {
 
     it('leaves contextWindow undefined when limits is absent', async () => {
       const noLimits = makeModel();
-      delete (noLimits as Record<string, unknown>).limits;
+      delete (noLimits as unknown as Record<string, unknown>).limits;
       const sdk = mockSdk({ getModel: vi.fn().mockResolvedValue(noLimits) });
       const result = await new ModelCatalog(sdk).resolve('anthropic:claude-sonnet-4-5-20250929');
       expect(result.contextWindow).toBeUndefined();

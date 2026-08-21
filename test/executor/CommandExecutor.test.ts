@@ -2,7 +2,8 @@ import { describe, it, expect, vi } from 'vitest';
 import { CommandExecutor } from '../../src/executor/CommandExecutor.js';
 import type { AgentExecutor } from '../../src/executor/AgentExecutor.js';
 import type { ResolvedDefinition } from '../../src/types/registry.js';
-import type { ExecutorAgentResult } from '../../src/types/agent.js';
+import type { AgentResult } from '../../src/types/agent.js';
+import type { CommandDefinition } from '../../src/types/command.js';
 import { makeAgentExecutor, makeRegistry, makeValidatorResult } from './fixtures.js';
 
 function makeCommandDef(overrides?: Record<string, unknown>): ResolvedDefinition {
@@ -23,7 +24,7 @@ function makeCommandDef(overrides?: Record<string, unknown>): ResolvedDefinition
         },
         ...overrides,
       },
-    } as ResolvedDefinition['definition'],
+    } as CommandDefinition,
     runtime: {} as ResolvedDefinition['runtime'],
     domain: 'software',
   };
@@ -72,14 +73,16 @@ describe('CommandExecutor', () => {
     });
 
     it('wraps executor agent result', async () => {
-      const execResult: ExecutorAgentResult = {
+      const execResult: AgentResult = {
         type: 'agent',
         agentType: 'executor',
         name: 'exec-agent',
         version: '1.0.0',
         definitionHash: 'sha256:exec',
         decision: 'COMPLETE',
-        artifacts: [{ name: 'output.md', type: 'file', content: '# Done' }],
+        score: null,
+        maxScore: null,
+        artifacts: [{ name: 'output.md', path: 'output.md', contentType: 'text/markdown' }],
         recommendations: [],
         durationMs: 2000,
         metrics: { inputTokens: 100, outputTokens: 50, totalEffectiveTokens: 150, durationMs: 2000, model: 'haiku' },

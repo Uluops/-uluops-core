@@ -173,7 +173,7 @@ export interface Finding {
  */
 export interface Issue {
   title: string;
-  priority: 'critical' | 'suggested' | 'backlog';
+  priority: 'critical' | 'high' | 'suggested' | 'backlog';
   severity: 'critical' | 'high' | 'medium' | 'low' | 'info';
   failureCode?: string;
   filePath?: string;

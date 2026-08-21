@@ -10,9 +10,10 @@ import type { CommandExecutor } from '../../src/executor/CommandExecutor.js';
 import type { WorkflowExecutor } from '../../src/executor/WorkflowExecutor.js';
 import type { RegistryClient } from '../../src/registry/RegistryClient.js';
 import type { ResolvedDefinition, AgentRuntime } from '../../src/types/registry.js';
-import type { AgentResult } from '../../src/types/agent.js';
+import type { AgentResult, AgentDefinition } from '../../src/types/agent.js';
 import type { CommandResult } from '../../src/types/command.js';
 import type { WorkflowResult } from '../../src/types/workflow.js';
+import type { DefinitionType } from '../../src/types/execution.js';
 
 // ─── Result Factories ────────────────────────────────────────────────────
 
@@ -89,6 +90,7 @@ export function makeWorkflowResult(overrides?: Partial<WorkflowResult>): Workflo
       phasesWarned: 0,
       phasesBlocked: 0,
       phasesSkipped: 0,
+      phasesAborted: 0,
       commands: [],
     },
     ...overrides,
@@ -104,7 +106,7 @@ export function makeAgentDef(name = 'test-agent'): ResolvedDefinition {
     version: '1.0.0',
     hash: 'sha256:agent',
     yaml: '',
-    definition: {} as ResolvedDefinition['definition'],
+    definition: {} as Partial<AgentDefinition>,
     runtime: {
       prompt: 'test',
       defaults: { model: 'sonnet', timeout: 30000 },
@@ -168,7 +170,7 @@ export function makeNamedCommandExecutor(
 
 export function makeRegistry(resolutions?: Record<string, ResolvedDefinition>): RegistryClient {
   return {
-    resolve: vi.fn().mockImplementation((name: string, version?: string, type?: string) => {
+    resolve: vi.fn().mockImplementation((name: string, version?: string, type?: DefinitionType) => {
       if (resolutions?.[name]) return Promise.resolve(resolutions[name]);
       const key = version ? `${name}@${version}` : name;
       if (resolutions?.[key]) return Promise.resolve(resolutions[key]);
@@ -181,7 +183,7 @@ export function makeRegistry(resolutions?: Record<string, ResolvedDefinition>): 
         definition: {} as ResolvedDefinition['definition'],
         runtime: {} as ResolvedDefinition['runtime'],
         domain: 'software',
-      } satisfies ResolvedDefinition);
+      } as ResolvedDefinition);
     }),
   } as unknown as RegistryClient;
 }

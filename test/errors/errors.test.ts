@@ -36,8 +36,8 @@ describe('Error hierarchy', () => {
       new ModelNotFoundError('m'),
       new CapabilityError('cap'),
       new SubmissionError('v'),
-      new WorkflowError('w', { partialResult: null }),
-      new PipelineError('pipe'),
+      new WorkflowError('w', {}),
+      new PipelineError('pipe', {}),
       new ParseError('parse', 'preview'),
       new SubscriptionRequiredError('sub', 'pro', 'free'),
     ];
@@ -55,8 +55,8 @@ describe('Error hierarchy', () => {
     expect(new ModelNotFoundError('m').name).toBe('ModelNotFoundError');
     expect(new CapabilityError('cap').name).toBe('CapabilityError');
     expect(new SubmissionError('v').name).toBe('SubmissionError');
-    expect(new WorkflowError('w', { partialResult: null }).name).toBe('WorkflowError');
-    expect(new PipelineError('pipe').name).toBe('PipelineError');
+    expect(new WorkflowError('w', {}).name).toBe('WorkflowError');
+    expect(new PipelineError('pipe', {}).name).toBe('PipelineError');
     expect(new ParseError('parse', 'p').name).toBe('ParseError');
     expect(new SubscriptionRequiredError('s', 'pro', 'free').name).toBe('SubscriptionRequiredError');
   });

@@ -172,6 +172,12 @@ export class OutputNormalizer {
       : undefined;
   }
 
+  /** Terminal-operand guard: `??` does not sanitize its LAST operand, so a
+   *  literal `null` in LLM JSON reaches a field typed `string | undefined`. */
+  private asStr(v: unknown): string | undefined {
+    return typeof v === 'string' ? v : undefined;
+  }
+
   /**
    * Scan all top-level object values for one that contains 'score' or 'decision'.
    * Handles arbitrary wrapper names (validation, validations, validationResults, etc.)
@@ -431,7 +437,7 @@ export class OutputNormalizer {
     if (trajectory) {
       for (const item of trajectory) {
         if (typeof item !== 'object' || item === null) continue;
-        const impediment = item['impediment'] as string | undefined;
+        const impediment = item['impediment'] == null ? undefined : String(item['impediment']);
         if (!impediment) continue;
         issues.push({
           title: `Growth impediment: ${String(item['dimension'] ?? 'Unknown')}`,
@@ -530,7 +536,7 @@ export class OutputNormalizer {
           severity: this.normalizeSeverity(item['severity']),
           failureCode: (item['failureCode'] as string | undefined)
             ?? (item['failure_code'] as string | undefined)
-            ?? (item['code'] as string | undefined),
+            ?? this.asStr(item['code']),
           filePath,
           lineNumber,
           description,
@@ -567,7 +573,7 @@ export class OutputNormalizer {
   private resolveFileLocation(item: Record<string, unknown>): { filePath?: string; lineNumber?: number } {
     let filePath = (item['filePath'] as string | undefined)
       ?? (item['file_path'] as string | undefined)
-      ?? (item['file'] as string | undefined);
+      ?? this.asStr(item['file']);
     let lineNumber = this.resolveLineNumber(item);
 
     // Handle combined fields: "file_line" or "location" like "src/foo.ts:42-50"
@@ -587,7 +593,7 @@ export class OutputNormalizer {
     if (!filePath && Array.isArray(item['locations']) && item['locations'].length > 0) {
       const loc = this.asRecord(item['locations'][0]);
       if (loc) {
-        filePath = (loc['file'] as string | undefined) ?? (loc['filePath'] as string | undefined);
+        filePath = (loc['file'] as string | undefined) ?? this.asStr(loc['filePath']);
         lineNumber = lineNumber ?? (typeof loc['line_start'] === 'number' ? loc['line_start'] : undefined);
       }
     }
@@ -632,7 +638,7 @@ export class OutputNormalizer {
         name: String(item['name'] ?? 'Untitled'),
         path: String(item['path'] ?? ''),
         size: typeof item['size'] === 'number' ? item['size'] : undefined,
-        contentType: (item['contentType'] as string | undefined) ?? (item['content_type'] as string | undefined),
+        contentType: (item['contentType'] as string | undefined) ?? this.asStr(item['content_type']),
       }));
   }
 

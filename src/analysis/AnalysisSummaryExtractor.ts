@@ -35,6 +35,16 @@ const ANALYSIS_RECORD_ID_MAX_LENGTH = 100;
  */
 const ANALYSIS_RECORD_TYPE_MAX_LENGTH = 50;
 
+/**
+ * Max sections per exploration map accepted by the tracker. Mirrors
+ * `sections: z.array(...).max(100)` inside `explorationMaps` on
+ * `AnalysisSummaryEntrySchema` (ops-sdk `SaveRunInputSchema`). Local constant
+ * for the same reason as ANALYSIS_RECORD_ID_MAX_LENGTH above — that cap is
+ * enforced client-side in ops-sdk before any HTTP call, so an unbounded
+ * section count throws a ZodError that costs the whole analysis summary.
+ */
+const MAX_EXPLORATION_MAP_SECTIONS = 100;
+
 /** Fallback when a record carries no usable type at all. */
 const FALLBACK_RECORD_TYPE = 'evidence_finding';
 
@@ -86,6 +96,15 @@ const VALID_SEVERITIES = new Set(['critical', 'high', 'medium', 'low', 'info']);
 export interface AnalysisExtractionResult {
   summary: AnalysisSummaryInput;
   records: AnalysisRecordInput[];
+  /**
+   * Non-fatal repair/truncation notices produced during extraction (e.g. an
+   * exploration map's sections truncated to the wire's cap). This class
+   * deliberately has no logger of its own (see the comment on
+   * `parseAnalysisBlock`'s catch block) — callers with a logger (currently
+   * only SubmissionClient) should surface these via `logger.warn`. Absent
+   * when extraction produced no repairs.
+   */
+  warnings?: string[];
 }
 
 /**
@@ -110,9 +129,11 @@ interface AgentAnalysisBlock {
  *    metrics, typed records with meaningful IDs, agent-specific epistemic
  *    assessment. This is what the MCP autosave hook has always captured.
  *
- * 2. **Structured output fields** (from rawJson via agentOutputSchema) —
- *    explorationMaps, epistemicAssessment, auditImplications added in v0.10.0.
- *    Used as fallback when the analysis block doesn't have them.
+ * 2. **Structured output fields** (read from `rawJson`, declared in
+ *    `agentOutputSchema` but not promoted onto the typed result by
+ *    `mapStructuredOutput`) — explorationMaps, epistemicAssessment,
+ *    auditImplications (v0.10.0), analysisRecords, domainMetrics. Used as
+ *    fallback when the analysis block doesn't have them.
  *
  * Execution telemetry (tokens, duration, model) is deliberately NOT part of
  * analysis data — it travels first-class on `agents[]` via
@@ -148,11 +169,14 @@ export class AnalysisSummaryExtractor {
    */
   extract(result: AgentResult, resolved: ResolvedDefinition): AnalysisExtractionResult {
     const analysisBlock = this.resolveAnalysisBlock(result);
+    const warnings: string[] = [];
 
-    return {
-      summary: this.buildSummary(result, resolved, analysisBlock),
-      records: this.buildAnalysisRecords(result, analysisBlock),
+    const extraction: AnalysisExtractionResult = {
+      summary: this.buildSummary(result, resolved, analysisBlock, warnings),
+      records: this.buildAnalysisRecords(result, analysisBlock, warnings),
     };
+    if (warnings.length > 0) extraction.warnings = warnings;
+    return extraction;
   }
 
   /**
@@ -187,6 +211,7 @@ export class AnalysisSummaryExtractor {
     result: AgentResult,
     resolved: ResolvedDefinition,
     analysisBlock: AgentAnalysisBlock | null,
+    warnings: string[],
   ): AnalysisSummaryInput {
     const definition = this.getAgentDefinition(resolved);
 
@@ -196,13 +221,13 @@ export class AnalysisSummaryExtractor {
       score: result.score,
       decisionVocabulary: this.buildDecisionVocabulary(definition),
       categoryScores: analysisBlock?.category_scores ?? this.buildCategoryScores(result, definition),
-      systemMetrics: this.buildSystemMetrics(result, analysisBlock),
+      systemMetrics: this.buildSystemMetrics(result, analysisBlock, warnings),
       epistemicAssessment: this.withExtractionFacts(
         this.resolveEpistemicAssessment(analysisBlock, result.rawJson),
         result,
       ),
       auditImplications: this.resolveAuditImplications(analysisBlock, result.rawJson),
-      explorationMaps: this.extractExplorationMaps(result.rawJson),
+      explorationMaps: this.extractExplorationMaps(result.rawJson, warnings),
     };
   }
 
@@ -328,32 +353,38 @@ export class AnalysisSummaryExtractor {
    * derivable from tokens + pricing; toolCallCount is an execution fact with
    * no analysis meaning.
    */
-  private buildSystemMetrics(result: AgentResult, analysisBlock: AgentAnalysisBlock | null): Record<string, unknown> | null {
+  private buildSystemMetrics(result: AgentResult, analysisBlock: AgentAnalysisBlock | null, warnings: string[]): Record<string, unknown> | null {
     // Prefer analysis block domain metrics (from JSON code fence)
     if (analysisBlock?.system_metrics && typeof analysisBlock.system_metrics === 'object') {
       return analysisBlock.system_metrics;
     }
 
     // Fall back to structured output domainMetrics (from agentOutputSchema)
-    return this.extractDomainMetrics(result.rawJson);
+    return this.extractDomainMetrics(result.rawJson, warnings);
   }
 
   /**
    * Extract domain metrics from structured output's domainMetrics array.
    * Converts [{key, value}] entries to a flat Record<string, unknown>.
    */
-  private extractDomainMetrics(rawJson: unknown): Record<string, unknown> | null {
+  private extractDomainMetrics(rawJson: unknown, warnings: string[]): Record<string, unknown> | null {
     const raw = this.extractJsonField(rawJson, 'domainMetrics', 'domain_metrics');
     if (!Array.isArray(raw) || raw.length === 0) return null;
 
     const metrics: Record<string, unknown> = {};
+    let dropped = 0;
     for (const entry of raw) {
       if (entry && typeof entry === 'object' && 'key' in entry && 'value' in entry) {
         const { key, value } = entry as { key: string; value: string };
         // Parse numeric strings back to numbers
         const num = Number(value);
         metrics[key] = isNaN(num) ? value : num;
+      } else {
+        dropped++;
       }
+    }
+    if (dropped > 0) {
+      warnings.push(`domainMetrics: dropped ${dropped} of ${raw.length} entries lacking key or value.`);
     }
     return Object.keys(metrics).length > 0 ? metrics : null;
   }
@@ -430,7 +461,7 @@ export class AnalysisSummaryExtractor {
    * (OpenAI strict mode compatible). The API expects per-type fields like
    * {type: 'inventory', items: [...]}. This method bridges the two formats.
    */
-  private extractExplorationMaps(rawJson: unknown): ExplorationMap[] | null {
+  private extractExplorationMaps(rawJson: unknown, warnings: string[]): ExplorationMap[] | null {
     const raw = this.extractJsonField(rawJson, 'explorationMaps', 'exploration_maps');
     if (!Array.isArray(raw)) return null;
 
@@ -441,10 +472,30 @@ export class AnalysisSummaryExtractor {
       if (typeof e.metadata !== 'object' || !Array.isArray(e.sections)) continue;
 
       const VALID_SECTION_TYPES = new Set(['inventory', 'topology', 'landscape', 'classification', 'mapping', 'synthesis', 'limitation', 'agenda']);
-      const sections = (e.sections as Array<Record<string, unknown>>)
-        .filter(s => typeof s.type === 'string' && typeof s.label === 'string' && VALID_SECTION_TYPES.has(s.type as string))
+      const rawSections = e.sections as Array<Record<string, unknown>>;
+      const typeFiltered = rawSections
+        .filter(s => typeof s.type === 'string' && typeof s.label === 'string' && VALID_SECTION_TYPES.has(s.type as string));
+      const metadata = e.metadata as { explorerName?: unknown } | undefined;
+      const explorerName = typeof metadata?.explorerName === 'string' ? metadata.explorerName : 'unknown';
+      if (typeFiltered.length < rawSections.length) {
+        warnings.push(
+          `Exploration map (explorer "${explorerName}"): dropped ${rawSections.length - typeFiltered.length} sections ` +
+          `with off-vocabulary type; valid types: ${Array.from(VALID_SECTION_TYPES).join(', ')}.`,
+        );
+      }
+      let sections = typeFiltered
         .map(s => this.reshapeSection(s))
         .filter((s): s is Record<string, unknown> & ExplorationSection => this.validateSectionShape(s));
+
+      if (sections.length > MAX_EXPLORATION_MAP_SECTIONS) {
+        warnings.push(
+          `Exploration map (explorer "${explorerName}") produced ${sections.length} sections, exceeding ` +
+          `the wire limit of ${MAX_EXPLORATION_MAP_SECTIONS}; dropping the last ` +
+          `${sections.length - MAX_EXPLORATION_MAP_SECTIONS} (mirrors the @uluops/ops-sdk client-side schema cap).`,
+        );
+        sections = sections.slice(0, MAX_EXPLORATION_MAP_SECTIONS);
+      }
+
       maps.push({
         metadata: e.metadata as ExplorationMap['metadata'],
         sections,
@@ -540,12 +591,13 @@ export class AnalysisSummaryExtractor {
   private buildAnalysisRecords(
     result: AgentResult,
     analysisBlock: AgentAnalysisBlock | null,
+    warnings: string[],
   ): AnalysisRecordInput[] {
     // sanitizeRecordData runs FIRST and the order is load-bearing: every sanitizer below
     // preserves its rejected value by spreading `record.data`, and spreading an array
     // yields {0:…, 1:…}. Normalizing data to a plain object up front is what makes those
     // spreads safe. Moving it later reintroduces the corruption it exists to prevent.
-    return this.collectAnalysisRecords(result, analysisBlock)
+    return this.collectAnalysisRecords(result, analysisBlock, warnings)
       .map(r => this.sanitizeRecordData(r))
       .map(r => this.sanitizeRecordSeverity(r))
       .map(r => this.sanitizeRecordType(r))
@@ -625,9 +677,15 @@ export class AnalysisSummaryExtractor {
     // non-string always carries information — it is a bug in the emitting agent, and the
     // shape is the evidence — so it is serialized rather than dropped.
     const hasContent = isUsable ? normalized.length > 0 : raw != null;
+    // hasContent === false means the fallback was taken with nothing to preserve — a
+    // genuinely blank or missing recordType, indistinguishable at this point from a
+    // Tier 3/4-derived record that never declared one at all. Mark that specific case so
+    // a later reader can tell "agent declared evidence_finding" apart from "agent declared
+    // nothing and this is the fallback" — without adding rawRecordType:"" noise to the
+    // field consumers read for content (see the comment above this branch).
     const preserved = hasContent
       ? { rawRecordType: isUsable ? raw : safeStringify(raw) }
-      : {};
+      : { recordTypeSource: 'fallback-blank' };
     return {
       ...record,
       recordType: FALLBACK_RECORD_TYPE,
@@ -748,6 +806,7 @@ export class AnalysisSummaryExtractor {
   private collectAnalysisRecords(
     result: AgentResult,
     analysisBlock: AgentAnalysisBlock | null,
+    warnings: string[],
   ): AnalysisRecordInput[] {
     // Tier 1: analysis block records (JSON code fence)
     if (analysisBlock?.records && Array.isArray(analysisBlock.records) && analysisBlock.records.length > 0) {
@@ -758,13 +817,13 @@ export class AnalysisSummaryExtractor {
     }
 
     // Tier 2: structured output analysisRecords
-    const structuredRecords = this.extractStructuredRecords(result.rawJson, result.name);
+    const structuredRecords = this.extractStructuredRecords(result.rawJson, result.name, warnings);
     if (structuredRecords.length > 0) {
       return structuredRecords;
     }
 
     // Tier 3: derived from exploration maps
-    const mapRecords = this.deriveRecordsFromExplorationMaps(result.rawJson, result.name);
+    const mapRecords = this.deriveRecordsFromExplorationMaps(result.rawJson, result.name, warnings);
     if (mapRecords.length > 0) {
       return mapRecords;
     }
@@ -806,13 +865,21 @@ export class AnalysisSummaryExtractor {
    * It now happens in sanitizeRecordData, for every tier — and handles the non-entries
    * array this inline version silently turned into `{undefined: undefined}`.
    */
-  private extractStructuredRecords(rawJson: unknown, agentName: string): AnalysisRecordInput[] {
+  private extractStructuredRecords(rawJson: unknown, agentName: string, warnings: string[]): AnalysisRecordInput[] {
     const raw = this.extractJsonField(rawJson, 'analysisRecords', 'analysis_records');
     if (!Array.isArray(raw) || raw.length === 0) return [];
 
-    return raw.filter((r): r is Record<string, unknown> =>
+    const filtered = raw.filter((r): r is Record<string, unknown> =>
       r && typeof r === 'object' && 'recordType' in r && 'recordId' in r && 'title' in r,
-    ).map(r => {
+    );
+    if (filtered.length < raw.length) {
+      warnings.push(
+        `Tier-2 analysisRecords: dropped ${raw.length - filtered.length} of ${raw.length} records missing ` +
+        `recordType/recordId/title (pre-sanitizer filter).`,
+      );
+    }
+
+    return filtered.map(r => {
       // recordType, title, classification and data are forwarded UNCONVERTED — deliberately.
       // The tier filter admits any record carrying these keys, whatever their JSON type,
       // and a String() here would erase that type before the sanitizers can see it:
@@ -846,7 +913,7 @@ export class AnalysisSummaryExtractor {
    *
    * Capped at 100 records to avoid overwhelming the tracker.
    */
-  private deriveRecordsFromExplorationMaps(rawJson: unknown, agentName: string): AnalysisRecordInput[] {
+  private deriveRecordsFromExplorationMaps(rawJson: unknown, agentName: string, warnings: string[]): AnalysisRecordInput[] {
     const raw = this.extractJsonField(rawJson, 'explorationMaps', 'exploration_maps');
     if (!Array.isArray(raw) || raw.length === 0) return [];
 
@@ -870,7 +937,10 @@ export class AnalysisSummaryExtractor {
 
         for (const item of items) {
           counter++;
-          if (counter > 100) break;
+          // Count every candidate item (even past the cap) so the warning below can
+          // report an exact drop count, rather than breaking immediately like the
+          // pre-fix three-level `if (counter > 100) break;` did.
+          if (counter > 100) continue;
 
           const key = typeof item === 'object' && item !== null && 'key' in item
             ? String((item as Record<string, unknown>).key)
@@ -893,9 +963,11 @@ export class AnalysisSummaryExtractor {
             },
           });
         }
-        if (counter > 100) break;
       }
-      if (counter > 100) break;
+    }
+
+    if (counter > 100) {
+      warnings.push(`Exploration-map-derived records capped at 100; ${counter - 100} items not converted.`);
     }
 
     return records;

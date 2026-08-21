@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest';
-import { agentOutputSchema } from '../../src/parser/outputSchemas';
+import { agentOutputSchema } from '../../src/parser/outputSchemas.js';
 
 /** Base valid output — all nullable analysis fields set to null */
 const baseOutput = {
@@ -32,7 +32,11 @@ describe('agentOutputSchema', () => {
         artifacts: null,
         ...baseOutput,
       };
-      expect(agentOutputSchema.parse(valid)).toEqual(valid);
+      // Not a round-trip any more: explicit nulls on optional fields are coerced to
+      // absent, so parse(valid) is intentionally NOT deep-equal to `valid`. Assert the
+      // fields that must survive rather than identity.
+      const parsed = agentOutputSchema.parse(valid);
+      expect(parsed).toMatchObject({ decision: valid.decision, score: valid.score, maxScore: valid.maxScore });
     });
 
     it('accepts null categories', () => {
@@ -45,7 +49,9 @@ describe('agentOutputSchema', () => {
         artifacts: null,
         ...baseOutput,
       });
-      expect(result.categories).toBeNull();
+      // Null is coerced to absent by optionalNullTolerant — the schema no longer
+      // emits a union for this field, which is what keeps it under Anthropic's ceiling.
+      expect(result.categories).toBeUndefined();
     });
 
     it('accepts issues with all nullable fields as null', () => {
@@ -76,7 +82,7 @@ describe('agentOutputSchema', () => {
         artifacts: null,
         ...baseOutput,
       });
-      expect(result.categories![0].findings[0].issues[0].title).toBe('SQL injection found');
+      expect(result.categories![0]!.findings[0]!.issues[0]!.title).toBe('SQL injection found');
     });
 
     it('validates issue priority enum', () => {
@@ -125,7 +131,11 @@ describe('agentOutputSchema', () => {
         }],
         ...baseOutput,
       };
-      expect(agentOutputSchema.parse(valid)).toEqual(valid);
+      // Not a round-trip any more: explicit nulls on optional fields are coerced to
+      // absent, so parse(valid) is intentionally NOT deep-equal to `valid`. Assert the
+      // fields that must survive rather than identity.
+      const parsed = agentOutputSchema.parse(valid);
+      expect(parsed).toMatchObject({ decision: valid.decision, score: valid.score, maxScore: valid.maxScore });
     });
 
     it('accepts null artifacts', () => {
@@ -138,7 +148,8 @@ describe('agentOutputSchema', () => {
         artifacts: null,
         ...baseOutput,
       });
-      expect(result.artifacts).toBeNull();
+      // Null is coerced to absent by optionalNullTolerant — see the categories case.
+      expect(result.artifacts).toBeUndefined();
     });
 
     it('accepts artifacts with null path and content', () => {
@@ -151,7 +162,7 @@ describe('agentOutputSchema', () => {
         artifacts: [{ type: 'report', path: null, content: null }],
         ...baseOutput,
       });
-      expect(result.artifacts![0].type).toBe('report');
+      expect(result.artifacts![0]!.type).toBe('report');
     });
   });
 
@@ -329,8 +340,8 @@ describe('agentOutputSchema', () => {
         }],
       });
       expect(result.explorationMaps).toHaveLength(1);
-      expect(result.explorationMaps![0].metadata.explorerName).toBe('bateson-explorer');
-      expect(result.explorationMaps![0].sections[0].type).toBe('topology');
+      expect(result.explorationMaps![0]!.metadata.explorerName).toBe('bateson-explorer');
+      expect(result.explorationMaps![0]!.sections[0]!.type).toBe('topology');
     });
 
     it('accepts epistemic assessment from cognitive lens agents', () => {
@@ -413,9 +424,9 @@ describe('agentOutputSchema', () => {
       expect(result.epistemicAssessment!.confidence).toBe('medium');
       expect(result.auditImplications).toHaveLength(1);
       expect(result.analysisRecords).toHaveLength(1);
-      expect(result.analysisRecords![0].recordType).toBe('commitment');
+      expect(result.analysisRecords![0]!.recordType).toBe('commitment');
       expect(result.domainMetrics).toHaveLength(2);
-      expect(result.domainMetrics![0].key).toBe('atomsIdentified');
+      expect(result.domainMetrics![0]!.key).toBe('atomsIdentified');
     });
   });
 });
