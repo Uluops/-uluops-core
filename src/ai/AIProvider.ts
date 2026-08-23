@@ -1,4 +1,14 @@
-import { generateText, Output, NoObjectGeneratedError, stepCountIs, type LanguageModel, type ToolSet } from 'ai';
+import {
+  generateText,
+  Output,
+  NoObjectGeneratedError,
+  NoOutputGeneratedError,
+  APICallError,
+  RetryError,
+  stepCountIs,
+  type LanguageModel,
+  type ToolSet,
+} from 'ai';
 import type { ProviderOptions } from '@ai-sdk/provider-utils';
 import { createAnthropic, type AnthropicProvider } from '@ai-sdk/anthropic';
 import { createOpenAI, type OpenAIProvider } from '@ai-sdk/openai';
@@ -67,6 +77,13 @@ export interface AIGenerateResult<TOutput = unknown> {
    * Absent/empty means no drift detected.
    */
   usageShapeDrift?: string[];
+
+  /** Provider warnings the AI SDK emitted for this call — unsupported settings, clamped
+   *  values, silently-dropped parameters. This is the SDK's OWN drift channel and core
+   *  used to discard it entirely, which is why a stale request option produced no signal
+   *  anywhere: provider option schemas STRIP unknown keys rather than rejecting them, so
+   *  a warning is the only evidence a setting did not take effect. Absent when empty. */
+  providerWarnings?: string[];
 
   /** Structured output object, if output schema was provided and model supports it.
    *  When present, this is already validated against the schema — no extraction needed.
@@ -361,12 +378,14 @@ export class AIProvider {
    */
   private computeCostUsd(usage: UsageMetrics, cost: ResolvedModel['cost']): number | undefined {
     if (!cost) return undefined;
-    const cached = usage.cached_input_tokens ?? 0;
-    const grossInput = Math.max(0, usage.input_tokens - cached);
-    let usd = grossInput * cost.input + usage.output_tokens * cost.output;
-    usd += cached * (cost.cacheRead ?? cost.input);
-    if (cost.cacheRead !== undefined) usd += (usage.cache_read_input_tokens ?? 0) * cost.cacheRead;
-    if (cost.cacheWrite !== undefined) usd += (usage.cache_creation_input_tokens ?? 0) * cost.cacheWrite;
+    // input_tokens is cache-exclusive (see mapUsage), so it is priced directly at the
+    // full input rate with NO cached subtraction — subtracting here would undercharge.
+    // The cache-served and cache-written portions are priced separately below, each
+    // falling back to the full input rate when the model has no dedicated cache rate
+    // (a documented conservative overstatement, never an undercount).
+    let usd = usage.input_tokens * cost.input + usage.output_tokens * cost.output;
+    usd += (usage.cache_read_input_tokens ?? 0) * (cost.cacheRead ?? cost.input);
+    usd += (usage.cache_creation_input_tokens ?? 0) * (cost.cacheWrite ?? cost.input);
     return usd / 1e6;
   }
 
@@ -382,7 +401,15 @@ export class AIProvider {
       (sum, step) => sum + (step.toolCalls?.length ?? 0),
       0,
     );
-    const usage = this.mapUsage(result.usage, result.providerMetadata);
+    // `result.usage` is the LAST STEP's usage; `result.totalUsage` is the sum across
+    // every step (ai/dist/index.d.ts GenerateTextResult: "The token usage of the last
+    // step" vs "The total token usage of all steps"). An agent loop runs up to
+    // DEFAULT_MAX_STEPS steps, so reading `usage` reported one step and silently
+    // discarded the rest — measured live 2026-08-22: a 7-tool-call run reported
+    // cache_read from the final step with cache_creation 0, a cache read with no
+    // corresponding write. Fall back to `usage` only for callers/mocks that predate
+    // totalUsage.
+    const usage = this.mapUsage(result.totalUsage ?? result.usage, result.providerMetadata, resolved.provider);
 
     this.logger.info(
       `Complete: ${result.steps.length} steps, ${toolCallCount} tool calls, finish=${result.finishReason}`,
@@ -393,6 +420,19 @@ export class AIProvider {
       (usage.cache_read_input_tokens ? ` / cache_read=${usage.cache_read_input_tokens}` : '') +
       (usage.thinking_tokens ? ` / thinking=${usage.thinking_tokens}` : ''),
     );
+
+    // Provider warnings — the SDK's own report of settings it could not honor
+    // ("temperature is not supported when thinking is enabled", max_tokens clamped,
+    // unknown context-management strategy, cache-breakpoint limit exceeded, …). Provider
+    // option schemas strip unknown keys silently, so this is the ONLY channel that says a
+    // request setting did not take effect. Logged at warn so it is visible without
+    // requiring debug, and carried on the result for callers that record telemetry.
+    const providerWarnings = (result.warnings ?? []).map((w) =>
+      typeof w === 'string' ? w : (w as { message?: string }).message ?? JSON.stringify(w),
+    );
+    for (const w of providerWarnings) {
+      this.logger.warn(`Provider warning (${resolved.provider}:${resolved.modelId}): ${w}`);
+    }
 
     const usageShapeDrift = this.detectUsageShapeDrift(
       result.providerMetadata as Record<string, unknown> | undefined,
@@ -407,8 +447,22 @@ export class AIProvider {
       steps: result.steps.length,
       finishReason: result.finishReason,
       costUsd: this.computeCostUsd(usage, resolved.cost),
-      structuredOutput: useStructuredOutput ? result.output : undefined,
+      // `result.output` is a THROWING GETTER, not a property: it raises
+      // NoOutputGeneratedError unless the SDK resolved an output, and the SDK only
+      // resolves one when the LAST step finished with 'stop'
+      // (ai/dist/index.js: `if (lastStep.finishReason === "stop") { … }`, and
+      // `get output() { if (this._output == null) throw new NoOutputGeneratedError(); }`).
+      // Reading it unconditionally therefore threw on every structured-output run that
+      // ended in 'tool-calls' (the step ceiling), 'length' (max output tokens),
+      // 'content-filter', 'error', or 'other' — collapsing MaxStepsExhaustedError and the
+      // steps.near-exhaustion marker into an opaque SdkApiError(0). Guard on the same
+      // condition the SDK uses, so a non-'stop' finish degrades to text extraction
+      // instead of failing the run.
+      structuredOutput: useStructuredOutput && result.finishReason === 'stop'
+        ? result.output
+        : undefined,
       ...(usageShapeDrift.length > 0 ? { usageShapeDrift } : {}),
+      ...(providerWarnings.length > 0 ? { providerWarnings } : {}),
     };
   }
 
@@ -421,6 +475,29 @@ export class AIProvider {
     useStructuredOutput: boolean,
     timeoutMs?: number,
   ): AIGenerateResult {
+    // NoOutputGeneratedError is a DISTINCT class from NoObjectGeneratedError — its own
+    // symbol marker, so NoObjectGeneratedError.isInstance() returns false for it
+    // (verified live 2026-08-23). The finishReason guard at the read site should keep it
+    // from being raised at all; this is the belt-and-braces catch so that if it ever is,
+    // the run degrades to text extraction rather than dying as SdkApiError(0).
+    if (useStructuredOutput && NoOutputGeneratedError.isInstance(error)) {
+      this.logger.warn(
+        'Structured output was requested but the model produced none (non-"stop" finish) — falling back to text extraction.',
+      );
+      const usage = this.mapUsage({ inputTokens: 0, outputTokens: 0 });
+      return {
+        text: '',
+        structuredOutput: undefined,
+        usage,
+        toolCallCount: 0,
+        model: `${resolved.provider}:${resolved.modelId}`,
+        provider: resolved.provider,
+        steps: 0,
+        finishReason: 'error',
+        costUsd: this.computeCostUsd(usage, resolved.cost),
+      };
+    }
+
     if (useStructuredOutput && NoObjectGeneratedError.isInstance(error)) {
       this.logger.warn(
         `Structured output generation failed — falling back to text extraction: ${(error as Error).message}`,
@@ -883,12 +960,29 @@ export class AIProvider {
       inputTokens: number | undefined;
       outputTokens: number | undefined;
       inputTokenDetails?: {
+        noCacheTokens?: number | undefined;
         cacheReadTokens?: number | undefined;
         cacheWriteTokens?: number | undefined;
       };
+      outputTokenDetails?: {
+        textTokens?: number | undefined;
+        reasoningTokens?: number | undefined;
+      };
     },
     providerMetadata?: Record<string, unknown>,
+    provider?: string,
   ): UsageMetrics {
+    // input_tokens is CACHE-EXCLUSIVE. AI SDK v6 flattens `inputTokens` from the
+    // provider's `inputTokens.total`, which INCLUDES cache reads and cache writes
+    // (ai/dist/index.js: `inputTokens: usage.inputTokens.total`). Reading it as if
+    // it were the uncached input — the v5 shape — double-counts cache_creation and
+    // charges cache_read at the full input rate. `noCacheTokens` carries the
+    // uncached figure and is uniform across providers:
+    //   anthropic  total = input + cacheCreation + cacheRead ; noCache = input_tokens
+    //   openai     total = prompt_tokens                     ; noCache = prompt − cached
+    //   google     total = promptTokenCount                  ; noCache = prompt − cached
+    // Held as the raw flat total during extraction and normalized at the end of this
+    // method, once the provider tiers have had a chance to report a cached portion.
     const base: UsageMetrics = {
       input_tokens: usage.inputTokens ?? 0,
       output_tokens: usage.outputTokens ?? 0,
@@ -898,6 +992,19 @@ export class AIProvider {
     if (usage.inputTokenDetails) {
       base.cache_read_input_tokens = usage.inputTokenDetails.cacheReadTokens ?? undefined;
       base.cache_creation_input_tokens = usage.inputTokenDetails.cacheWriteTokens ?? undefined;
+    }
+
+    // 1b. Internal reasoning tokens, from the UNIFIED v6 field. Both providers that
+    // report them route through `outputTokens.reasoning`:
+    //   openai  completion_tokens_details.reasoning_tokens -> outputTokens.reasoning
+    //   google  usageMetadata.thoughtsTokenCount           -> outputTokens.reasoning
+    // Core keeps two separate reporting fields, so route by provider. Both remain
+    // SUBSETS of output_tokens and are never added to the effective total.
+    // Set before the metadata tiers so those act as fallbacks for older SDK shapes.
+    const unifiedReasoning = usage.outputTokenDetails?.reasoningTokens;
+    if (unifiedReasoning) {
+      if (provider === 'google') base.thinking_tokens = unifiedReasoning;
+      else base.reasoning_tokens = unifiedReasoning;
     }
 
     // 2-4. Extract provider-specific metadata
@@ -915,6 +1022,14 @@ export class AIProvider {
       this.extractGenericUsage(base, providerMetadata);
     }
 
+    // 6. NORMALIZE input_tokens to be CACHE-EXCLUSIVE — the contract every downstream
+    // consumer assumes (UsageMetrics.input_tokens, calculateEffectiveTokens, computeCostUsd).
+    // Preferred source is the SDK's own `noCacheTokens`, which is exact and uniform.
+    // Otherwise fall back to subtracting the cached portion a provider tier reported,
+    // which is what an unknown provider with no token details still gives us.
+    base.input_tokens = usage.inputTokenDetails?.noCacheTokens
+      ?? Math.max(0, base.input_tokens - (base.cached_input_tokens ?? 0));
+
     return base;
   }
 
@@ -928,7 +1043,13 @@ export class AIProvider {
    */
   private static readonly RECOGNIZED_USAGE_KEYS: Record<string, readonly string[]> = {
     anthropic: ['cacheCreationInputTokens', 'cacheReadInputTokens', 'usage'],
-    openai: ['cachedPromptTokens', 'reasoningTokens', 'responseId'],
+    // v6 reality (verified against @ai-sdk/openai 3.0.33, live 2026-08-22): the openai
+    // block carries `responseId`/`serviceTier` on the Responses path and
+    // `acceptedPredictionTokens`/`rejectedPredictionTokens`/`logprobs` on Chat
+    // Completions. It carries NO usage fields — cached input and reasoning tokens both
+    // live in the unified usage shape now. Listing `cachedPromptTokens`/`reasoningTokens`
+    // here previously implied this detector was watching them; it was not.
+    openai: ['responseId', 'serviceTier', 'acceptedPredictionTokens', 'rejectedPredictionTokens', 'logprobs'],
     google: ['usageMetadata'],
   };
 
@@ -943,6 +1064,21 @@ export class AIProvider {
    * keys we recognize. The resulting marker is info-severity — metrics
    * quality, not verdict evidence — so a false positive costs a log line,
    * not a completeness downgrade.
+   */
+  /**
+   * KNOWN LIMITATION — this detector is satisfied by ANY overlap.
+   * `keys.some(k => recognized.includes(k))` means a single surviving key suppresses
+   * the warning for every key that vanished alongside it. That is exactly how the v6
+   * OpenAI drift went unreported: `responseId` survived and was on the recognized
+   * list, while `cachedPromptTokens` and `reasoningTokens` — the only two fields the
+   * extract tier actually consumed — were gone. The instrument reported "shape is
+   * fine" about a block that no longer contained anything it read.
+   *
+   * A correct detector would assert that the keys a tier DEPENDS ON are present,
+   * rather than that some recognized key is. That is a change to the warning contract
+   * (and to what counts as noise), so it is recorded here as a decision to make rather
+   * than made in passing. Lower stakes now that mapUsage reads the unified usage shape
+   * and treats metadata as fallback, but the weakness is structural, not incidental.
    */
   private detectUsageShapeDrift(providerMetadata?: Record<string, unknown>): string[] {
     if (!providerMetadata) return [];
@@ -972,13 +1108,20 @@ export class AIProvider {
     base.cache_read_input_tokens ??= meta.cacheReadInputTokens;
   }
 
+  /**
+   * LEGACY FALLBACK ONLY. Neither field this reads exists in `@ai-sdk/openai` 3.0.33:
+   * `cachedPromptTokens` moved to `usage.inputTokenDetails.cacheReadTokens` and
+   * `reasoningTokens` to `usage.outputTokenDetails.reasoningTokens`. Verified live
+   * 2026-08-22 against gpt-5-nano — `providerMetadata.openai` carried only
+   * `{responseId, serviceTier}` while the provider reported 512 reasoning tokens.
+   * Both are now read from the unified usage shape in mapUsage; this remains only to
+   * keep an older provider build working, and must never be the sole source.
+   */
   private extractOpenAIUsage(base: UsageMetrics, providerMetadata?: Record<string, unknown>): void {
     const meta = (providerMetadata as { openai?: { cachedPromptTokens?: number; reasoningTokens?: number } } | undefined)?.openai;
     if (!meta) return;
-    // DISENTANGLE (§3.2): OpenAI cachedPromptTokens is cached *input*, not a cache read.
-    // Route to cached_input_tokens so the canonical total_effective subtracts it.
     base.cached_input_tokens ??= meta.cachedPromptTokens;
-    if (meta.reasoningTokens) base.reasoning_tokens = meta.reasoningTokens;
+    base.reasoning_tokens ??= meta.reasoningTokens || undefined;
   }
 
   private extractGoogleUsage(base: UsageMetrics, providerMetadata?: Record<string, unknown>): void {
@@ -986,7 +1129,9 @@ export class AIProvider {
     if (!gUsage) return;
     // DISENTANGLE (§3.2): Google cachedContentTokenCount is cached *input*, not a cache read.
     base.cached_input_tokens ??= gUsage.cachedContentTokenCount;
-    if (gUsage.thoughtsTokenCount) base.thinking_tokens = gUsage.thoughtsTokenCount;
+    // Fallback only — mapUsage prefers the unified outputTokenDetails.reasoningTokens,
+    // which is where the provider now routes thoughtsTokenCount.
+    base.thinking_tokens ??= gUsage.thoughtsTokenCount || undefined;
   }
 
   private extractGenericUsage(base: UsageMetrics, providerMetadata: Record<string, unknown>): void {
@@ -1057,13 +1202,36 @@ export class AIProvider {
     }
 
     if (isRetryError(error)) {
-      const mapped = new SdkApiError(0, `Retries exhausted: ${error.message}`);
+      // A RetryError WRAPS the real cause — it carries no statusCode of its own, so
+      // returning SdkApiError(0) here discarded the very thing a caller needs. A run
+      // rate-limited into exhaustion must still surface as RateLimitError so backoff
+      // logic can key off it. Re-map the last underlying attempt, then annotate with
+      // the attempt count and reason ('maxRetriesExceeded' | 'errorNotRetryable' | 'abort').
+      const attempts = Array.isArray(error.errors) ? error.errors.length : undefined;
+      const last = Array.isArray(error.errors) && error.errors.length > 0
+        ? error.errors[error.errors.length - 1]
+        : error.lastError;
+      const detail = `Retries exhausted${attempts ? ` after ${attempts} attempt(s)` : ''}`
+        + `${error.reason ? ` (${error.reason})` : ''}`;
+
+      if (last !== undefined && last !== error) {
+        const mapped = this.mapError(last, timeoutMs, resolved);
+        mapped.message = `${detail}: ${mapped.message}`;
+        mapped.cause = cause;
+        return mapped;
+      }
+      const mapped = new SdkApiError(0, `${detail}: ${error.message}`);
       mapped.cause = cause;
       return mapped;
     }
 
-    // Timeout (AbortError)
-    if (error instanceof Error && error.name === 'AbortError') {
+    // Abort / timeout. `AbortSignal.timeout()` — which is what core installs at the
+    // generateText call — aborts with a DOMException named 'TimeoutError', NOT
+    // 'AbortError' (verified live 2026-08-23). Matching only 'AbortError' meant every
+    // timeout fell through to SdkApiError(0) and the TimeoutError branch was dead.
+    // The name set mirrors the SDK's own isAbortError guard in @ai-sdk/provider-utils.
+    if (error instanceof Error
+      && (error.name === 'TimeoutError' || error.name === 'AbortError' || error.name === 'ResponseAborted')) {
       const mapped = new TimeoutError(timeoutMs ?? this.config.timeout);
       mapped.cause = cause;
       return mapped;
@@ -1076,15 +1244,36 @@ export class AIProvider {
 }
 
 /**
- * Type guard for AI SDK's APICallError
+ * Type guard for AI SDK's APICallError.
+ *
+ * Uses the SDK's own symbol-branded guard rather than `'statusCode' in error`.
+ * The structural check false-positives on anything carrying a statusCode — core's
+ * OWN SdkApiError, registry/HTTP client errors, any third-party error — and it also
+ * matches an APICallError whose statusCode is `undefined` (the field is assigned
+ * unconditionally in the constructor), yielding "Provider returned HTTP 0".
+ * `isInstance` is brand-based, which is what makes it correct across the nine copies
+ * of `ai` installed in this workspace, where `instanceof` would fail across realms.
  */
-function isAPICallError(error: unknown): error is Error & { statusCode?: number } {
-  return error instanceof Error && 'statusCode' in error;
+function isAPICallError(error: unknown): error is Error & {
+  statusCode?: number;
+  responseHeaders?: Record<string, string>;
+  isRetryable?: boolean;
+} {
+  return APICallError.isInstance(error);
 }
 
 /**
- * Type guard for AI SDK's RetryError
+ * Type guard for AI SDK's RetryError.
+ *
+ * NOT `error.name === 'RetryError'` — the SDK prefixes every error name with `AI_`,
+ * so the runtime value is `'AI_RetryError'` (verified live 2026-08-23). That check
+ * never matched, which meant retry exhaustion never reached its branch and surfaced
+ * as SdkApiError(0) instead of the underlying RateLimit/ServiceUnavailable cause.
  */
-function isRetryError(error: unknown): error is Error & { lastError?: Error } {
-  return error instanceof Error && error.name === 'RetryError';
+function isRetryError(error: unknown): error is Error & {
+  lastError?: unknown;
+  errors?: unknown[];
+  reason?: string;
+} {
+  return RetryError.isInstance(error);
 }

@@ -30,14 +30,33 @@ const t0 = Date.now();
 const result = await client.runAgent('code-validator', '.', { model: 'sonnet', timeoutMs: 900_000 });
 const m = result.metrics;
 
+// ─────────────────────────────────────────────────────────────────────────────
+// KNOWN LIMITATION — read before trusting a green run.
+//
+// The "hand computation" below is a TRANSCRIPTION of computeCostUsd, not an
+// independent oracle. It shares the engine's premises, so it can only ever prove
+// the engine agrees with a copy of itself. On 2026-07-26 it reported
+// "matches exactly" ($0.331447) while BOTH sides were inflated: inputTokens then
+// carried the AI SDK v6 cache-INCLUSIVE total, so cache reads and writes were
+// priced at the full input rate on both sides of the comparison and the difference
+// stayed zero. The defect was invisible precisely because this check is tautological.
+//
+// A genuinely independent oracle would price the PROVIDER's own raw usage block
+// (usage.raw, available in v6) against published rates. Core does not surface raw
+// usage on ExecutionMetrics yet; until it does, the positive control at the bottom
+// is what keeps this script honest — it proves the assertion is capable of failing.
+// ─────────────────────────────────────────────────────────────────────────────
+
+// input_tokens is CACHE-EXCLUSIVE as of the v6 normalization: it is priced directly
+// with no cached subtraction, and each cache pool is priced once at its own rate.
 const cached = m.cachedInputTokens ?? 0;
-const expected = (
-  (m.inputTokens - cached) * rates.input +
-  cached * (rates.cacheRead ?? rates.input) +
-  m.outputTokens * rates.output +
-  (rates.cacheRead !== undefined ? (m.cacheReadTokens ?? 0) * rates.cacheRead : 0) +
-  (rates.cacheWrite !== undefined ? (m.cacheCreationTokens ?? 0) * rates.cacheWrite : 0)
+const priceOf = (metrics) => (
+  metrics.inputTokens * rates.input +
+  metrics.outputTokens * rates.output +
+  (metrics.cacheReadTokens ?? 0) * (rates.cacheRead ?? rates.input) +
+  (metrics.cacheCreationTokens ?? 0) * (rates.cacheWrite ?? rates.input)
 ) / 1e6;
+const expected = priceOf(m);
 
 console.log('\n[live] decision:', result.decision, '| score:', result.score);
 console.log('[live] model:', m.model, '| duration:', Math.round((Date.now()-t0)/1000)+'s');

@@ -776,18 +776,20 @@ export class AgentExecutor {
   }
 
   private calculateEffectiveTokens(usage: UsageMetrics): number {
-    // Canonical: (input − cached_input) + output_gross + cache_creation. §2.3/§3.2.
+    // Canonical: uncached_input + output_gross + cache_creation. §2.3/§3.2.
+    // Cache READS are excluded — they are the cheap, already-paid-for portion.
     //
-    // − cached_input: OpenAI/Google report GROSS input that includes cache-served
-    //   tokens billed at a steep discount. Subtract them (the analog of Anthropic's
-    //   excluded cache_read). Clamped at 0 — a provider could report cached > input.
-    //   0 for Anthropic/OpenCode (cached_input_tokens undefined).
+    // input_tokens is cache-exclusive as of the mapUsage fix (it reads AI SDK v6's
+    // `inputTokenDetails.noCacheTokens`, not the cache-inclusive flat total), so there
+    // is NO cached_input subtraction here. Subtracting again would undercount.
+    // cached_input_tokens remains a recorded component on ExecutionMetrics; it no
+    // longer participates in this arithmetic.
     //
     // output_gross: reasoning_tokens (OpenAI) AND thinking_tokens (Google) are BOTH
     //   already folded INTO output_tokens by the AI SDK — adding either double-counts
     //   (verified live, gemini-3-flash-preview: outputTokens includes thoughtsTokenCount).
     //   Both stay recorded components on ExecutionMetrics; neither is re-added here.
-    return Math.max(0, usage.input_tokens - (usage.cached_input_tokens ?? 0))
+    return usage.input_tokens
       + usage.output_tokens
       + (usage.cache_creation_input_tokens ?? 0);
   }

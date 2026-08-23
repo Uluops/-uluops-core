@@ -864,7 +864,7 @@ describe('RegistryClient', () => {
       return fs.writeFile(path.join(dir, `${name}.agent.yaml`), agentYaml);
     }
 
-    it('warns once per client instance with entitlement wording on 401/403, across multiple resolutions', async () => {
+    it('warns once per client instance on a rejected credential, across multiple resolutions', async () => {
       await writeAgentYaml(tmpDir, 'agent-a');
       await writeAgentYaml(tmpDir, 'agent-b');
       mockRenderPreview.mockRejectedValue(new SdkApiError(401, 'Unauthorized', 'UNAUTHORIZED'));
@@ -877,8 +877,28 @@ describe('RegistryClient', () => {
       await client.resolve('agent-b');
 
       expect(warn).toHaveBeenCalledTimes(1);
-      expect(warn.mock.calls[0]![0]).toMatch(/lacks render access/);
+      expect(warn.mock.calls[0]![0]).toMatch(/rejected the credential/);
       expect(warn.mock.calls[0]![0]).toMatch(/raw YAML/);
+      // 401 must NOT recommend requesting access — the credential was not accepted,
+      // so no entitlement grant would help. This is the misdirection being guarded.
+      expect(warn.mock.calls[0]![0]).not.toMatch(/Request render access/);
+    });
+
+    it('distinguishes 403 (valid key, unpermitted) from 401 (rejected credential)', async () => {
+      await writeAgentYaml(tmpDir, 'agent-a403');
+      mockRenderPreview.mockRejectedValue(new SdkApiError(403, 'Forbidden', 'FORBIDDEN'));
+
+      const warn = vi.fn();
+      const logger: Logger = { debug() {}, info() {}, warn, error() {} };
+      const client = new RegistryClient({ ...baseConfig, localDefinitions: tmpDir }, logger);
+
+      await client.resolve('agent-a403');
+
+      expect(warn).toHaveBeenCalledTimes(1);
+      expect(warn.mock.calls[0]![0]).toMatch(/lacks render access/);
+      expect(warn.mock.calls[0]![0]).toMatch(/Request render access/);
+      // CONTROL — if the two statuses are ever re-collapsed into one message, this fails.
+      expect(warn.mock.calls[0]![0]).not.toMatch(/rejected the credential/);
     });
 
     it('warns with "unavailable" wording, not entitlement wording, on a transport-level failure', async () => {

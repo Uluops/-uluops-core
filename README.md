@@ -486,15 +486,18 @@ console.log(`Input: ${metrics.inputTokens}, Output: ${metrics.outputTokens}`);
 console.log(`Cache: ${metrics.cacheCreationTokens ?? 0} created, ${metrics.cacheReadTokens ?? 0} read`);
 console.log(`Harness: ${metrics.harness ?? 'unknown'}`); // producing runtime ('uluops-core'), v0.26.0
 
-// Cross-harness components (v0.26.0). cachedInputTokens is the cache-served portion of
-// gross input (OpenAI/Google), SUBTRACTED in totalEffectiveTokens. reasoningOutputTokens
-// (OpenAI) and thinkingTokens (Google) are subsets of gross outputTokens — exposed for
-// cost breakdown only, NEVER added to totalEffectiveTokens (the AI SDK already folds them in).
+// inputTokens is CACHE-EXCLUSIVE — input the model processed fresh, excluding cache reads
+// and writes. It is NOT the provider's headline input count (AI SDK v6 reports that as a
+// cache-INCLUSIVE total); do not subtract a cached figure from it again, or you undercount.
+// cachedInputTokens is a recorded component only and no longer participates in the total.
+// reasoningOutputTokens (OpenAI) and thinkingTokens (Google) are subsets of gross
+// outputTokens — exposed for cost breakdown only, NEVER added (the AI SDK already folds them in).
 if (metrics.cachedInputTokens) console.log(`Cached input: ${metrics.cachedInputTokens}`);
 if (metrics.reasoningOutputTokens) console.log(`Reasoning: ${metrics.reasoningOutputTokens}`);
 if (metrics.thinkingTokens) console.log(`Thinking: ${metrics.thinkingTokens}`);
 
-// Canonical: (inputTokens − cachedInputTokens) + outputTokens (gross) + cacheCreationTokens.
+// Canonical: inputTokens (cache-exclusive) + outputTokens (gross) + cacheCreationTokens.
+// Summed across every step of the tool loop, not just the last one.
 console.log(`Effective total: ${metrics.totalEffectiveTokens}`);
 ```
 

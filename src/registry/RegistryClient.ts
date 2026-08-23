@@ -697,13 +697,28 @@ export class RegistryClient {
       // 401/403 means the key is not ENTITLED to render (not a transport
       // fault) — formatErrorMessage() discards statusCode, so read it directly
       // here rather than widening that shared helper.
-      const isEntitlementFailure = isApiErrorLike(error) && (error.statusCode === 401 || error.statusCode === 403);
-      const msg = isEntitlementFailure
-        ? `Render API key lacks render access (${formatErrorMessage(error)}) — the agent prompt will be raw YAML ` +
-          `instead of rendered instructions, and this result is marked completeness: 'partial'. Request render ` +
-          `access for this key to get rendered prompts.`
-        : `Render API unavailable (non-fatal — using raw YAML fallback: ${formatErrorMessage(error)}) — the agent ` +
-          `prompt will be raw YAML instead of rendered instructions, and this result is marked completeness: 'partial'.`;
+      // 401 and 403 are DIFFERENT diagnoses and were previously collapsed into one
+      // "lacks render access — request render access" message. That is the right remedy
+      // for 403 (valid credential, insufficient permission) and the WRONG one for 401
+      // (credential rejected: expired, rotated, or malformed), where no amount of
+      // granting access helps. The common real-world cause of 401 here is a rotated key
+      // that a long-lived shell never picked up, and the entitlement wording sends the
+      // reader hunting permissions instead of checking the credential. core's own
+      // mapError already separates these two; this now matches it.
+      const status = isApiErrorLike(error) ? error.statusCode : undefined;
+      const isRejectedCredential = status === 401;
+      const isForbidden = status === 403;
+      const consequence = `the agent prompt will be raw YAML instead of rendered instructions, `
+        + `and this result is marked completeness: 'partial'.`;
+      const msg = isRejectedCredential
+        ? `Render API rejected the credential (401) — ${consequence} The key was not accepted at all: it may be `
+          + `expired, rotated, or malformed. Verify ULUOPS_API_KEY (note a long-running shell keeps the value it `
+          + `started with, so a rotation elsewhere will not have reached this process).`
+        : isForbidden
+          ? `Render API key lacks render access (403) — ${consequence} The key is valid but not permitted to `
+            + `render. Request render access for this key.`
+          : `Render API unavailable (non-fatal — using raw YAML fallback: ${formatErrorMessage(error)}) — ${consequence}`;
+      const isEntitlementFailure = isRejectedCredential || isForbidden;
       // When no API key is configured (offline/local-only usage) this path is
       // fully expected, so log at debug; otherwise warn once per branch per
       // client instance — a pipeline over several agents would otherwise

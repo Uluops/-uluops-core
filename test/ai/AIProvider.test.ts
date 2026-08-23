@@ -4,6 +4,7 @@ import { TokenBudgetTracker } from '../../src/ai/TokenBudgetTracker.js';
 import type { ModelCatalog, ResolvedModel } from '../../src/ai/ModelCatalog.js';
 import type { ResolvedConfig } from '../../src/types/config.js';
 import type { Logger } from '@uluops/sdk-core';
+import { APICallError, RetryError } from 'ai';
 import {
   RateLimitError,
   UnauthorizedError,
@@ -16,8 +17,35 @@ import {
 
 const noopLogger: Logger = { debug() {}, info() {}, warn() {}, error() {} };
 
-// Mock the AI SDK
-vi.mock('ai', () => ({
+/**
+ * A REAL `APICallError` — symbol-branded, the way the provider actually raises it.
+ * A plain Error with a `statusCode` bolted on is NOT one, and core's guard is now
+ * brand-based, so a lookalike no longer maps. Building the genuine article is what
+ * makes these tests exercise the branch they claim to.
+ */
+function makeApiCallError(message: string, statusCode: number): Error {
+  return new APICallError({
+    message,
+    url: 'https://api.anthropic.com/v1/messages',
+    requestBodyValues: {},
+    statusCode,
+  });
+}
+
+// PARTIAL mock of the AI SDK. `generateText` is stubbed; everything else — crucially
+// the error classes (APICallError, RetryError, NoObjectGeneratedError,
+// NoOutputGeneratedError) — comes from the REAL module.
+//
+// This used to be a total mock, which meant the SDK's error classes did not exist in
+// these tests at all. That forced the error-mapping tests to fabricate lookalikes
+// (`Object.assign(new Error(), { statusCode: 403 })`, `error.name = 'RetryError'`), and
+// those lookalikes only ever matched because core's guards were structural. The mock
+// and the guards agreed with each other and both disagreed with the SDK: `RetryError`
+// is really named `AI_RetryError`, and `AbortSignal.timeout()` raises `TimeoutError`,
+// not `AbortError` — so two mapping branches were dead while their tests stayed green.
+// Keeping the real classes here is what makes these tests capable of failing.
+vi.mock('ai', async (importOriginal) => ({
+  ...(await importOriginal<typeof import('ai')>()),
   generateText: vi.fn(),
   stepCountIs: vi.fn((n: number) => ({ type: 'stepCount', count: n })),
   tool: vi.fn((t: unknown) => t),
@@ -406,8 +434,7 @@ describe('AIProvider', () => {
       const { generateText } = await import('ai');
       const mockGenerateText = vi.mocked(generateText);
 
-      const error = new Error('Rate limited');
-      Object.assign(error, { statusCode: 429 });
+      const error = makeApiCallError('Rate limited', 429);
       mockGenerateText.mockRejectedValueOnce(error);
 
       const provider = new AIProvider(mockConfig, mockCatalog(), noopLogger);
@@ -422,8 +449,7 @@ describe('AIProvider', () => {
       const { generateText } = await import('ai');
       const mockGenerateText = vi.mocked(generateText);
 
-      const error = new Error('Invalid API key');
-      Object.assign(error, { statusCode: 401 });
+      const error = makeApiCallError('Invalid API key', 401);
       mockGenerateText.mockRejectedValueOnce(error);
 
       const provider = new AIProvider(mockConfig, mockCatalog(), noopLogger);
@@ -444,8 +470,7 @@ describe('AIProvider', () => {
       const { generateText } = await import('ai');
       const mockGenerateText = vi.mocked(generateText);
 
-      const error = new Error('model not found');
-      Object.assign(error, { statusCode: 404 });
+      const error = makeApiCallError('model not found', 404);
       mockGenerateText.mockRejectedValueOnce(error);
 
       const catalog = mockCatalog({
@@ -484,8 +509,7 @@ describe('AIProvider', () => {
       const { generateText } = await import('ai');
       const mockGenerateText = vi.mocked(generateText);
 
-      const error = new Error('Forbidden');
-      Object.assign(error, { statusCode: 403 });
+      const error = makeApiCallError('Forbidden', 403);
       mockGenerateText.mockRejectedValueOnce(error);
 
       const provider = new AIProvider(mockConfig, mockCatalog(), noopLogger);
@@ -500,8 +524,7 @@ describe('AIProvider', () => {
       const { generateText } = await import('ai');
       const mockGenerateText = vi.mocked(generateText);
 
-      const error = new Error('Internal server error');
-      Object.assign(error, { statusCode: 500 });
+      const error = makeApiCallError('Internal server error', 500);
       mockGenerateText.mockRejectedValueOnce(error);
 
       const provider = new AIProvider(mockConfig, mockCatalog(), noopLogger);
@@ -516,8 +539,8 @@ describe('AIProvider', () => {
       const { generateText } = await import('ai');
       const mockGenerateText = vi.mocked(generateText);
 
-      const error = new Error('Aborted');
-      error.name = 'AbortError';
+      // What AbortSignal.timeout() actually raises (verified live): name 'TimeoutError'.
+      const error = new DOMException('The operation was aborted due to timeout', 'TimeoutError');
       mockGenerateText.mockRejectedValueOnce(error);
 
       const provider = new AIProvider(mockConfig, mockCatalog(), noopLogger);
@@ -532,8 +555,11 @@ describe('AIProvider', () => {
       const { generateText } = await import('ai');
       const mockGenerateText = vi.mocked(generateText);
 
-      const error = new Error('Retries exhausted');
-      error.name = 'RetryError';
+      const error = new RetryError({
+        message: 'Retries exhausted',
+        reason: 'maxRetriesExceeded',
+        errors: [new Error('attempt 1'), new Error('attempt 2')],
+      });
       mockGenerateText.mockRejectedValueOnce(error);
 
       const provider = new AIProvider(mockConfig, mockCatalog(), noopLogger);
@@ -1342,35 +1368,62 @@ describe('computeCostUsd (spec v0.6.0 Phase 1b — unit criterion 1b.5)', () => 
     expect(usd).toBeCloseTo((10_000 * 3 + 1_000 * 15 + 100_000 * 0.3 + 20_000 * 3.75) / 1e6, 10);
   });
 
-  it('prices cached_input (OpenAI/Google gross-input portion) at cacheRead, subtracted from gross input', () => {
-    // gross 100k input of which 40k cached: 60k*3 + 40k*0.3 + 10k out*15
-    const usd = compute({ input_tokens: 100_000, output_tokens: 10_000, cached_input_tokens: 40_000 }, sonnet);
+  // NOTE ON FIXTURE SHAPE: input_tokens reaching computeCostUsd is CACHE-EXCLUSIVE —
+  // mapUsage normalizes it (see UsageMetrics.input_tokens). The pre-v6 fixtures below
+  // passed a GROSS input alongside cached_input_tokens and relied on this function to
+  // subtract; that state is no longer reachable. The expected TOTALS are unchanged —
+  // only the shape that produces them moved.
+
+  it('prices the cache-served portion at cacheRead, on top of cache-exclusive input', () => {
+    // 100k gross of which 40k cache-served arrives as 60k input + 40k cache_read:
+    // 60k*3 + 40k*0.3 + 10k out*15
+    const usd = compute(
+      { input_tokens: 60_000, output_tokens: 10_000, cache_read_input_tokens: 40_000 },
+      sonnet,
+    );
     expect(usd).toBeCloseTo((60_000 * 3 + 40_000 * 0.3 + 10_000 * 15) / 1e6, 10);
   });
 
-  it('falls back to the input rate for cached_input when no cacheRead rate exists (conservative overstatement)', () => {
-    const usd = compute({ input_tokens: 100_000, output_tokens: 0, cached_input_tokens: 40_000 }, { input: 3, output: 15 });
+  it('falls back to the input rate for cache reads when no cacheRead rate exists (conservative overstatement)', () => {
+    const usd = compute(
+      { input_tokens: 60_000, output_tokens: 0, cache_read_input_tokens: 40_000 },
+      { input: 3, output: 15 },
+    );
     expect(usd).toBeCloseTo((100_000 * 3) / 1e6, 10);
   });
 
-  it('does not double-count when BOTH cache pools are non-zero simultaneously (run #69 F1/F2)', () => {
-    // gross input 100k of which 40k cached (OpenAI-style) + 5k Anthropic-style
-    // cache reads (separate channel, NOT part of gross input) + 2k cache writes.
+  it('does not double-count when reads and writes are both non-zero (run #69 F1/F2)', () => {
+    // v6 unifies both cache-read channels into cache_read_input_tokens: the former
+    // 40k "cached input" + 5k "genuine cache reads" is one 45k pool. Input is the
+    // cache-exclusive 60k remainder; 2k cache writes priced at their own rate.
     const usd = compute(
       {
-        input_tokens: 100_000,
+        input_tokens: 60_000,
         output_tokens: 10_000,
-        cached_input_tokens: 40_000,
-        cache_read_input_tokens: 5_000,
+        cache_read_input_tokens: 45_000,
         cache_creation_input_tokens: 2_000,
       },
       sonnet,
     );
-    // (100k-40k)*3 + 40k*0.3 + 10k*15 + 5k*0.3 + 2k*3.75 — each pool priced once.
+    // Identical total to the pre-v6 expectation — each pool still priced exactly once.
     expect(usd).toBeCloseTo(
-      (60_000 * 3 + 40_000 * 0.3 + 10_000 * 15 + 5_000 * 0.3 + 2_000 * 3.75) / 1e6,
+      (60_000 * 3 + 45_000 * 0.3 + 10_000 * 15 + 2_000 * 3.75) / 1e6,
       10,
     );
+  });
+
+  it('does not charge cache-inclusive input at the full rate (the v6 regression)', () => {
+    // Live capture 2026-08-22, claude-haiku-4-5 cache-READ step: raw input 8,
+    // cache_read 9904, output 4. Pre-fix, input_tokens carried the 9912 total and the
+    // 9904 was charged at the full input rate AND again at the cache rate.
+    const usd = compute(
+      { input_tokens: 8, output_tokens: 4, cache_read_input_tokens: 9904 },
+      sonnet,
+    );
+    expect(usd).toBeCloseTo((8 * 3 + 4 * 15 + 9904 * 0.3) / 1e6, 10);
+    // The pre-fix value, asserted as a floor the fix must stay below.
+    const preFix = (9912 * 3 + 4 * 15 + 9904 * 0.3) / 1e6;
+    expect(usd!).toBeLessThan(preFix);
   });
 
   it('returns undefined — never 0 — when the model carries no pricing', () => {
@@ -1380,5 +1433,353 @@ describe('computeCostUsd (spec v0.6.0 Phase 1b — unit criterion 1b.5)', () => 
 
   it('returns a REAL 0 for zero usage on a priced model (error-fallback polarity)', () => {
     expect(compute({ input_tokens: 0, output_tokens: 0 }, sonnet)).toBe(0);
+  });
+});
+
+describe('mapUsage — AI SDK v6 cache-inclusive input normalization', () => {
+  const map = (usage: unknown, providerMetadata?: Record<string, unknown>): Record<string, number | undefined> => {
+    const provider = new AIProvider(mockConfig, mockCatalog(), noopLogger);
+    return (provider as unknown as {
+      mapUsage: (u: unknown, pm?: Record<string, unknown>) => Record<string, number | undefined>;
+    }).mapUsage(usage, providerMetadata);
+  };
+
+  // These fixtures are VERBATIM AI SDK v6 usage objects captured from live calls on
+  // 2026-08-22 (claude-haiku-4-5, ~10k cached prefix). They exist because every prior
+  // token test hand-built a UsageMetrics and so bypassed this function entirely —
+  // which is why the v5→v6 change in `inputTokens` semantics went undetected.
+  // `inputTokens` here is the provider's `inputTokens.total`: it INCLUDES cache.
+
+  it('excludes cache WRITES from input_tokens (live Anthropic capture)', () => {
+    const u = map({
+      inputTokens: 9912,
+      outputTokens: 4,
+      inputTokenDetails: { noCacheTokens: 8, cacheReadTokens: 0, cacheWriteTokens: 9904 },
+    });
+    expect(u.input_tokens).toBe(8);
+    expect(u.cache_creation_input_tokens).toBe(9904);
+    expect(u.cache_read_input_tokens).toBe(0);
+  });
+
+  it('excludes cache READS from input_tokens (live Anthropic capture)', () => {
+    const u = map({
+      inputTokens: 9912,
+      outputTokens: 4,
+      inputTokenDetails: { noCacheTokens: 8, cacheReadTokens: 9904, cacheWriteTokens: 0 },
+    });
+    expect(u.input_tokens).toBe(8);
+    expect(u.cache_read_input_tokens).toBe(9904);
+  });
+
+  it('never returns the cache-inclusive total as input_tokens', () => {
+    // The single assertion that would have caught the regression at the v6 upgrade.
+    const u = map({
+      inputTokens: 9912,
+      outputTokens: 4,
+      inputTokenDetails: { noCacheTokens: 8, cacheReadTokens: 9904, cacheWriteTokens: 0 },
+    });
+    expect(u.input_tokens).not.toBe(9912);
+  });
+
+  it('falls back to subtracting a reported cached portion when a provider sends no details', () => {
+    // Unknown provider via the generic tier: no inputTokenDetails, cached figure only
+    // in providerMetadata. Normalization must still yield cache-exclusive input.
+    const u = map({ inputTokens: 100_000, outputTokens: 10_000 }, { someprovider: { cachedTokens: 40_000 } });
+    expect(u.cached_input_tokens).toBe(40_000);
+    expect(u.input_tokens).toBe(60_000);
+  });
+
+  it('clamps the fallback at zero when the cached figure exceeds input', () => {
+    const u = map({ inputTokens: 100, outputTokens: 50 }, { someprovider: { cachedTokens: 250 } });
+    expect(u.input_tokens).toBe(0);
+  });
+
+  it('passes a no-cache call through unchanged (control — the fix must not move this)', () => {
+    const u = map({
+      inputTokens: 1234,
+      outputTokens: 56,
+      inputTokenDetails: { noCacheTokens: 1234, cacheReadTokens: 0, cacheWriteTokens: 0 },
+    });
+    expect(u.input_tokens).toBe(1234);
+    expect(u.output_tokens).toBe(56);
+  });
+});
+
+describe('aggregate usage across a multi-step tool loop', () => {
+  beforeEach(() => { vi.clearAllMocks(); });
+
+  it('reports totalUsage (all steps), not usage (last step only)', async () => {
+    const { generateText } = await import('ai');
+    vi.mocked(generateText).mockResolvedValueOnce({
+      text: 'ok',
+      // Last step only — what the engine used to report.
+      usage: {
+        inputTokens: 4530, outputTokens: 120,
+        inputTokenDetails: { noCacheTokens: 8, cacheReadTokens: 4522, cacheWriteTokens: 0 },
+      },
+      // Sum across all 8 steps of the loop.
+      totalUsage: {
+        inputTokens: 30_000, outputTokens: 2018,
+        inputTokenDetails: { noCacheTokens: 1687, cacheReadTokens: 24_000, cacheWriteTokens: 4313 },
+      },
+      steps: [{ toolCalls: [{ id: '1' }] }, { toolCalls: [{ id: '2' }] }],
+      finishReason: 'stop',
+      providerMetadata: {},
+    } as never);
+
+    const provider = new AIProvider(mockConfig, mockCatalog(), noopLogger);
+    const result = await provider.generate({ model: 'sonnet', system: 's', prompt: 'p' });
+
+    expect(result.usage.input_tokens).toBe(1687);
+    expect(result.usage.output_tokens).toBe(2018);
+    expect(result.usage.cache_creation_input_tokens).toBe(4313);
+    // The last-step figures must NOT be what surfaced.
+    expect(result.usage.output_tokens).not.toBe(120);
+  });
+
+  it('falls back to usage when totalUsage is absent (pre-v6 mocks/callers)', async () => {
+    const { generateText } = await import('ai');
+    vi.mocked(generateText).mockResolvedValueOnce({
+      text: 'ok',
+      usage: { inputTokens: 100, outputTokens: 50 },
+      steps: [],
+      finishReason: 'stop',
+      providerMetadata: {},
+    } as never);
+
+    const provider = new AIProvider(mockConfig, mockCatalog(), noopLogger);
+    const result = await provider.generate({ model: 'sonnet', system: 's', prompt: 'p' });
+    expect(result.usage.input_tokens).toBe(100);
+    expect(result.usage.output_tokens).toBe(50);
+  });
+});
+
+describe('mapUsage — unified reasoning/thinking tokens (v6)', () => {
+  const map = (
+    usage: unknown,
+    providerMetadata?: Record<string, unknown>,
+    provider?: string,
+  ): Record<string, number | undefined> => {
+    const p = new AIProvider(mockConfig, mockCatalog(), noopLogger);
+    return (p as unknown as {
+      mapUsage: (u: unknown, pm?: Record<string, unknown>, pr?: string) => Record<string, number | undefined>;
+    }).mapUsage(usage, providerMetadata, provider);
+  };
+
+  // Fixtures are verbatim v6 usage captured live 2026-08-22 from gpt-5-nano. The
+  // openai providerMetadata block genuinely contains no usage fields — that is the
+  // whole point: extractOpenAIUsage had nothing left to read.
+  const OPENAI_META = { openai: { responseId: 'resp_06fec687', serviceTier: 'default' } };
+
+  it('records OpenAI reasoning tokens from outputTokenDetails, not providerMetadata', () => {
+    const u = map(
+      {
+        inputTokens: 11_464,
+        outputTokens: 595,
+        inputTokenDetails: { noCacheTokens: 11_464, cacheReadTokens: 0 },
+        outputTokenDetails: { textTokens: 83, reasoningTokens: 512 },
+      },
+      OPENAI_META,
+      'openai',
+    );
+    expect(u.reasoning_tokens).toBe(512);
+    expect(u.thinking_tokens).toBeUndefined();
+  });
+
+  it('routes Google reasoning to thinking_tokens', () => {
+    const u = map(
+      {
+        inputTokens: 20_000,
+        outputTokens: 1_500,
+        inputTokenDetails: { noCacheTokens: 18_000, cacheReadTokens: 2_000 },
+        outputTokenDetails: { textTokens: 1_100, reasoningTokens: 400 },
+      },
+      undefined,
+      'google',
+    );
+    expect(u.thinking_tokens).toBe(400);
+    expect(u.reasoning_tokens).toBeUndefined();
+  });
+
+  it('keeps reasoning a SUBSET of output — never added on top', () => {
+    const u = map(
+      { inputTokens: 100, outputTokens: 595, outputTokenDetails: { textTokens: 83, reasoningTokens: 512 } },
+      OPENAI_META,
+      'openai',
+    );
+    // 83 text + 512 reasoning === the 595 reported total; output_tokens is the gross.
+    expect(u.output_tokens).toBe(595);
+  });
+
+  it('would have recorded NOTHING under the metadata-only path (the regression)', () => {
+    // Same live call, but with outputTokenDetails absent — i.e. what the old
+    // metadata-only extractor had to work with. Asserts the loss this fix closes.
+    const u = map({ inputTokens: 11_464, outputTokens: 595 }, OPENAI_META, 'openai');
+    expect(u.reasoning_tokens).toBeUndefined();
+  });
+
+  it('still honours a legacy provider build that reports reasoning in metadata', () => {
+    const u = map(
+      { inputTokens: 100, outputTokens: 300 },
+      { openai: { reasoningTokens: 250, responseId: 'resp_x' } },
+      'openai',
+    );
+    expect(u.reasoning_tokens).toBe(250);
+  });
+});
+
+describe('error mapping — branches that were dead under v5-shaped guards', () => {
+  beforeEach(() => { vi.clearAllMocks(); });
+
+  const generateWith = async (error: unknown) => {
+    const { generateText } = await import('ai');
+    vi.mocked(generateText).mockRejectedValueOnce(error);
+    const provider = new AIProvider(mockConfig, mockCatalog(), noopLogger);
+    return provider.generate({ model: 'sonnet', system: 's', prompt: 'p' });
+  };
+
+  it('unwraps a RetryError to its underlying cause — 429 exhaustion is a RateLimitError', async () => {
+    // Previously mapped to SdkApiError(0), so a caller backing off on RateLimitError
+    // saw nothing. RetryError carries no statusCode of its own; the cause does.
+    const err = new RetryError({
+      message: 'Failed after 3 attempts',
+      reason: 'maxRetriesExceeded',
+      errors: [makeApiCallError('rate limited', 429), makeApiCallError('rate limited', 429)],
+    });
+    await expect(generateWith(err)).rejects.toThrow(RateLimitError);
+  });
+
+  it('reports the attempt count and reason on an exhausted retry', async () => {
+    const err = new RetryError({
+      message: 'Failed',
+      reason: 'maxRetriesExceeded',
+      errors: [makeApiCallError('boom', 503), makeApiCallError('boom', 503)],
+    });
+    await expect(generateWith(err)).rejects.toThrow(/2 attempt\(s\).*maxRetriesExceeded/);
+  });
+
+  it('maps a real AbortSignal.timeout rejection (name "TimeoutError") to TimeoutError', async () => {
+    const err = new DOMException('The operation was aborted due to timeout', 'TimeoutError');
+    await expect(generateWith(err)).rejects.toThrow(TimeoutError);
+  });
+
+  it('does NOT treat a foreign error carrying statusCode as a provider error', async () => {
+    // The old structural guard (`'statusCode' in error`) matched core's own errors and
+    // any third-party HTTP error, remapping them as if the provider had returned them.
+    const foreign = Object.assign(new Error('registry lookup failed'), { statusCode: 404 });
+    // It still normalizes to SdkApiError (everything does), but it must NOT be given
+    // the provider-404 diagnosis, which would blame a stale model catalog for what is
+    // actually an unrelated HTTP failure.
+    await expect(generateWith(foreign)).rejects.toThrow(/registry lookup failed/);
+    await expect(generateWith(foreign)).rejects.not.toThrow(/STALE|Provider returned HTTP 404/);
+  });
+});
+
+describe('structured output — non-"stop" finish must not kill the run (P0)', () => {
+  beforeEach(() => { vi.clearAllMocks(); });
+
+  // useStructuredOutput requires the CAPABILITY, not just an `output` option. Without
+  // this the guard under test is never reached and the assertions pass vacuously.
+  const structuredOutputCatalog = () => mockCatalog({
+    resolve: vi.fn().mockResolvedValue(
+      makeResolvedModel({ capabilities: { tools: true, vision: true, streaming: true, extendedThinking: false, structuredOutput: true } as never }),
+    ),
+  } as never);
+
+  it('returns undefined structuredOutput instead of throwing when the loop hits the step ceiling', async () => {
+    const { generateText } = await import('ai');
+    // A result whose `output` getter THROWS, exactly as the SDK builds it when the last
+    // step did not finish with 'stop'. Reading it unconditionally used to collapse the
+    // run into SdkApiError(0) and make MaxStepsExhaustedError unreachable.
+    vi.mocked(generateText).mockResolvedValueOnce({
+      text: 'partial work',
+      usage: { inputTokens: 10, outputTokens: 5 },
+      totalUsage: { inputTokens: 10, outputTokens: 5 },
+      steps: [{ toolCalls: [{ id: '1' }] }],
+      finishReason: 'tool-calls',
+      providerMetadata: {},
+      get output() { throw new Error('NoOutputGeneratedError: must not be read'); },
+    } as never);
+
+    const provider = new AIProvider(mockConfig, structuredOutputCatalog(), noopLogger);
+    const result = await provider.generate({
+      model: 'sonnet',
+      system: 's',
+      prompt: 'p',
+      output: { type: 'output-object', schema: {} } as never,
+    });
+
+    expect(result.finishReason).toBe('tool-calls');
+    expect(result.structuredOutput).toBeUndefined();
+    expect(result.text).toBe('partial work');
+  });
+
+  it('still reads output when the run finished with "stop"', async () => {
+    const { generateText } = await import('ai');
+    vi.mocked(generateText).mockResolvedValueOnce({
+      text: '{}',
+      usage: { inputTokens: 10, outputTokens: 5 },
+      totalUsage: { inputTokens: 10, outputTokens: 5 },
+      steps: [],
+      finishReason: 'stop',
+      providerMetadata: {},
+      output: { score: 91 },
+    } as never);
+
+    const provider = new AIProvider(mockConfig, structuredOutputCatalog(), noopLogger);
+    const result = await provider.generate({
+      model: 'sonnet',
+      system: 's',
+      prompt: 'p',
+      output: { type: 'output-object', schema: {} } as never,
+    });
+    expect(result.structuredOutput).toEqual({ score: 91 });
+  });
+});
+
+describe('provider warnings — the SDK drift channel core used to discard', () => {
+  beforeEach(() => { vi.clearAllMocks(); });
+
+  it('surfaces provider warnings on the result and logs them', async () => {
+    const { generateText } = await import('ai');
+    vi.mocked(generateText).mockResolvedValueOnce({
+      text: 'ok',
+      usage: { inputTokens: 10, outputTokens: 5 },
+      totalUsage: { inputTokens: 10, outputTokens: 5 },
+      steps: [],
+      finishReason: 'stop',
+      providerMetadata: {},
+      warnings: [
+        { type: 'other', message: 'temperature is not supported when thinking is enabled' },
+        { type: 'other', message: 'max_tokens clamped to model ceiling' },
+      ],
+    } as never);
+
+    const warn = vi.fn();
+    const provider = new AIProvider(mockConfig, mockCatalog(), { debug() {}, info() {}, warn, error() {} });
+    const result = await provider.generate({ model: 'sonnet', system: 's', prompt: 'p' });
+
+    expect(result.providerWarnings).toEqual([
+      'temperature is not supported when thinking is enabled',
+      'max_tokens clamped to model ceiling',
+    ]);
+    expect(warn).toHaveBeenCalledWith(expect.stringContaining('temperature is not supported'));
+  });
+
+  it('omits the field entirely when the provider warned about nothing', async () => {
+    const { generateText } = await import('ai');
+    vi.mocked(generateText).mockResolvedValueOnce({
+      text: 'ok',
+      usage: { inputTokens: 1, outputTokens: 1 },
+      totalUsage: { inputTokens: 1, outputTokens: 1 },
+      steps: [],
+      finishReason: 'stop',
+      providerMetadata: {},
+      warnings: [],
+    } as never);
+
+    const provider = new AIProvider(mockConfig, mockCatalog(), noopLogger);
+    const result = await provider.generate({ model: 'sonnet', system: 's', prompt: 'p' });
+    expect(result.providerWarnings).toBeUndefined();
   });
 });

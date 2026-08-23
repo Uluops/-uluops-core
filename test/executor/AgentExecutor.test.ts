@@ -305,12 +305,14 @@ describe('AgentExecutor', () => {
       expect(result.metrics.thinkingTokens).toBe(THINKING_TOKENS);
     });
 
-    it('subtracts cached_input from the effective total and records it as a component (§3.2)', async () => {
-      // Live shape (§1.5, gemini-3-flash-preview): gross input includes cache-served
-      // tokens; canonical effective = (input − cached_input) + output + cache_creation.
+    it('does NOT subtract cached_input again — input_tokens arrives cache-exclusive', async () => {
+      // Same live shape as before (§1.5, gemini-3-flash-preview) but expressed under the
+      // v6 contract: mapUsage has already removed the cache-served portion, so
+      // input_tokens is 15099 − 8098 = 7001 and cached_input_tokens is a recorded
+      // component only. Subtracting it a second time here would UNDERCOUNT.
       const ai = mockAIProvider({
         usage: {
-          input_tokens: 15099,
+          input_tokens: 7001,
           output_tokens: 2334,
           cached_input_tokens: 8098,
           reasoning_tokens: 0,
@@ -321,22 +323,51 @@ describe('AgentExecutor', () => {
 
       const result = await executor.execute(makeValidatorDef(), { target: tmpDir });
 
-      // (15099 − 8098) + 2334 + 0 = 9335 — NOT the old 17433 gross or 17922 over-count.
+      // 7001 + 2334 + 0 = 9335 — the same effective total as the pre-v6 arithmetic
+      // produced from gross input, reached without a second subtraction.
       expect(result.metrics.totalEffectiveTokens).toBe(9335);
       expect(result.metrics.cachedInputTokens).toBe(8098);
       expect(result.metrics.harness).toBe('uluops-core');
     });
 
-    it('clamps cached_input subtraction at zero when cached exceeds input', async () => {
+    it('adds cache_creation exactly once (it is not inside cache-exclusive input)', async () => {
+      // Anthropic cache-WRITE step, real numbers captured live 2026-08-22 on
+      // claude-haiku-4-5: raw input_tokens 8, cache_creation 9904, output 4.
+      // The pre-fix engine reported 19820 here — the write counted twice, once
+      // inside the cache-inclusive total and once added back.
       const ai = mockAIProvider({
-        usage: { input_tokens: 100, output_tokens: 50, cached_input_tokens: 250 },
+        usage: {
+          input_tokens: 8,
+          output_tokens: 4,
+          cache_creation_input_tokens: 9904,
+          cache_read_input_tokens: 0,
+        },
       });
       const executor = new AgentExecutor(baseConfig, ai, noopLogger);
 
       const result = await executor.execute(makeValidatorDef(), { target: tmpDir });
 
-      // Math.max(0, 100 − 250) + 50 = 50 (never negative).
-      expect(result.metrics.totalEffectiveTokens).toBe(50);
+      expect(result.metrics.totalEffectiveTokens).toBe(9916);
+    });
+
+    it('excludes cache_read entirely from the effective total', async () => {
+      // Anthropic cache-READ step, same live capture: raw input_tokens 8,
+      // cache_read 9904, output 4. Genuine effective work is 12 tokens. The pre-fix
+      // engine reported 9916 — an 826x overstatement, and every step after the
+      // first in a real agent run is a cache read.
+      const ai = mockAIProvider({
+        usage: {
+          input_tokens: 8,
+          output_tokens: 4,
+          cache_creation_input_tokens: 0,
+          cache_read_input_tokens: 9904,
+        },
+      });
+      const executor = new AgentExecutor(baseConfig, ai, noopLogger);
+
+      const result = await executor.execute(makeValidatorDef(), { target: tmpDir });
+
+      expect(result.metrics.totalEffectiveTokens).toBe(12);
     });
 
     it('passes threshold from options', async () => {

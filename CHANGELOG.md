@@ -6,6 +6,206 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) 
 
 ## [Unreleased]
 
+### Fixed
+
+- **Token accounting reported only the LAST step of a multi-step tool loop.** `AIProvider`
+  read `generateText`'s `result.usage`, which the AI SDK documents as *"the token usage of the
+  last step"*; `result.totalUsage` is *"the total token usage of all steps"*. An agent loop runs
+  up to `DEFAULT_MAX_STEPS` steps, so every multi-step run silently discarded all but the final
+  step's tokens — and with them the cost. Now reads `totalUsage`, falling back to `usage` for
+  callers and mocks that predate it.
+
+  The tell was an impossible signature: a run reporting cache **reads** with zero cache
+  **writes**. Measured live 2026-08-22 on `claude-haiku-4-5`; after the fix the same shape of
+  run reports 4,654 cache-write and 37,232 cache-read tokens together, as one loop must.
+
+- **`input_tokens` carried a cache-INCLUSIVE total, inflating effective tokens and cost.**
+  AI SDK v6 reports `usage.inputTokens` as the provider's `inputTokens.total`, which includes
+  cache reads and cache writes for every provider. Core read it as though it were uncached
+  input — the v5 shape — so `calculateEffectiveTokens` added `cache_creation` a second time
+  and `computeCostUsd` charged both cache pools at the full input rate *on top of* their own
+  cache rates.
+
+  `mapUsage` now normalizes `input_tokens` to be cache-exclusive, preferring the SDK's exact
+  `inputTokenDetails.noCacheTokens` and falling back to subtracting a provider-reported cached
+  figure when a provider sends no details. `noCache` is uniform across providers: Anthropic
+  reports it as its own `input_tokens`; OpenAI and Google as `prompt − cached`.
+
+  Measured live 2026-08-22 on `claude-haiku-4-5`: an isolated cache-read step of 12 genuine
+  effective tokens was reported as 9,916. On a real 8-tool-call `security-analyst` run the
+  same defect inflated the aggregate by 3.34x (17,876 → 59,762).
+
+  This also repaired a latent OpenAI defect with the same root: `extractOpenAIUsage` compensates
+  by reading `providerMetadata.openai.cachedPromptTokens`, and that field **does not exist in
+  v6** (zero occurrences in `@ai-sdk/openai` 3.0.33), so OpenAI's compensation had silently
+  stopped applying. Normalization no longer depends on it.
+
+- **Structured-output runs that did not finish with `'stop'` failed the whole run.**
+  `result.output` is a THROWING GETTER, not a property: the SDK resolves an output only
+  when the last step finished `'stop'`, and the getter raises `NoOutputGeneratedError`
+  otherwise. Core read it unconditionally, so any structured-output run ending in
+  `'tool-calls'` (the step ceiling), `'length'` (max output tokens), `'content-filter'`,
+  `'error'`, or `'other'` threw — and the fallback tested only
+  `NoObjectGeneratedError.isInstance`, which is a **different class with a different
+  symbol marker** and returns false. The run collapsed into an opaque `SdkApiError(0)`.
+
+  Consequence: `MaxStepsExhaustedError` and the `steps.near-exhaustion` degradation
+  marker were **unreachable on every non-report-mode run**, because those diagnose
+  exactly the `'tool-calls'` finish this defect turned into a hard failure. Core now
+  guards on the same condition the SDK uses, and catches `NoOutputGeneratedError` in the
+  fallback as a belt-and-braces second line.
+
+- **Retry exhaustion never mapped to its underlying cause.** `isRetryError` tested
+  `error.name === 'RetryError'`, but the SDK prefixes every error name with `AI_` — the
+  runtime value is `'AI_RetryError'` (verified live 2026-08-23). The branch never fired,
+  and because `RetryError` carries no `statusCode` of its own it also missed the
+  `APICallError` branch, so a run rate-limited into exhaustion surfaced as
+  `SdkApiError(0)` and callers backing off on `RateLimitError` saw nothing. Now uses
+  `RetryError.isInstance()` and **unwraps to the last underlying attempt**, so a 429
+  exhaustion maps to `RateLimitError`, annotated with the attempt count and the SDK's
+  `reason` (`maxRetriesExceeded` / `errorNotRetryable` / `abort`).
+
+- **Timeouts never mapped to `TimeoutError`.** The mapper matched `error.name ===
+  'AbortError'`, but `AbortSignal.timeout()` — which is what core installs — aborts with
+  a `DOMException` named **`'TimeoutError'`** (verified live 2026-08-23). That branch was
+  dead and every timeout became `SdkApiError(0)`. Now matches the same name set the
+  SDK's own `isAbortError` guard uses (`TimeoutError` / `AbortError` / `ResponseAborted`).
+
+- **`isAPICallError` was a structural check that both over- and under-matched.**
+  `'statusCode' in error` matched core's own `SdkApiError`, registry/HTTP client errors,
+  and any third-party error carrying that field — remapping them as provider failures,
+  including handing an unrelated 404 the "your model catalog is stale" diagnosis. It also
+  matched a real `APICallError` whose `statusCode` was `undefined`, producing "Provider
+  returned HTTP 0". Now uses `APICallError.isInstance()`, which is symbol-branded and
+  therefore correct across the **nine copies of `ai`** installed in this workspace, where
+  `instanceof` would fail across module realms.
+
+- **The render-fallback warning gave the wrong remedy for a rejected key.** 401 and 403
+  were collapsed into one "Render API key lacks render access — Request render access for
+  this key" message. That is correct for **403** (valid credential, insufficient
+  permission) and wrong for **401**, where the credential was not accepted at all and no
+  entitlement grant would help. The two now carry distinct diagnoses, matching the
+  separation core's own `mapError` already draws. The 401 text names the most common real
+  cause: a rotated key that a long-running shell never picked up, since a process keeps
+  the environment it started with.
+
+  Observed in practice — every live run during this work rendered from raw YAML and was
+  marked `completeness: 'partial'` because the shell's `ULUOPS_API_KEY` predated a
+  rotation, while the entitlement wording pointed at permissions instead of the key.
+
+- **OpenAI reasoning tokens were never recorded.** `extractOpenAIUsage` read
+  `providerMetadata.openai.reasoningTokens`, which does not exist in `@ai-sdk/openai`
+  3.0.33 — reasoning moved to the unified `usage.outputTokenDetails.reasoningTokens`
+  (`completion_tokens_details.reasoning_tokens` → `outputTokens.reasoning`). Its sibling
+  `cachedPromptTokens` moved likewise. Verified live 2026-08-22 against `gpt-5-nano`:
+  `providerMetadata.openai` carried only `{responseId, serviceTier}` while the provider
+  reported 512 reasoning tokens on one call and 384 on the next.
+
+  `mapUsage` now reads the unified `outputTokenDetails.reasoningTokens` and routes it by
+  provider — `thinking_tokens` for Google, `reasoning_tokens` otherwise — since both
+  providers funnel internal reasoning through the same field (Google's
+  `thoughtsTokenCount` also lands in `outputTokens.reasoning`). The metadata extract tiers
+  are retained as fallbacks for older provider builds and now use `??=` so they can never
+  override the unified value. `mapUsage` takes an optional `provider` argument for this.
+
+  Effective tokens and cost were NOT affected — reasoning is a subset of gross
+  `output_tokens` and was always counted there. What was lost was the breakdown: on a real
+  `code-validator` run against `gpt-5-nano`, 5,952 of 8,188 output tokens (73%) were
+  reasoning and the field read empty. Google was unaffected throughout, because
+  `providerMetadata.google.usageMetadata` still exists — so the two providers had silently
+  diverged on the same metric.
+
+### Changed
+
+- **`UsageMetrics.input_tokens` is now CACHE-EXCLUSIVE** — a semantics change with no signature
+  change, so nothing downstream fails to compile. Consumers computing their own totals must
+  **stop** subtracting a cached figure from it; doing so now undercounts. `total_effective` is
+  `input + output + cache_creation`, unchanged in meaning and now correct in value.
+
+- **`cached_input_tokens` no longer participates in effective-token or cost arithmetic.** It
+  remains a recorded component and the fallback source for normalization. AI SDK v6 dissolved
+  the provider-shape difference that motivated the §3.2 disentangle: Anthropic cache reads and
+  OpenAI/Google cached input now both arrive as `inputTokenDetails.cacheReadTokens`.
+
+### Added
+
+- **`AIGenerateResult.providerWarnings`** — the AI SDK reports settings it could not
+  honor (`temperature is not supported when thinking is enabled`, clamped `max_tokens`,
+  unknown context-management strategy, cache-breakpoint limits) on `result.warnings`.
+  Core discarded that array entirely. It now surfaces on the result and logs at `warn`.
+
+  This matters more than it looks: provider option schemas parse with a plain Zod object
+  in **strip** mode — no `.strict()`, no `.passthrough()` — so an unknown or renamed
+  option key is silently dropped before the request is built. It does not error and it
+  does not warn. A provider warning is therefore the ONLY runtime evidence that a setting
+  did not take effect, which makes this the missing instrument for the entire class of
+  defect this release is about.
+
+### Design Notes
+
+- **Two provider-behaviour findings recorded, NOT fixed — both need a decision.**
+
+  1. **`structuredOutputMode: 'jsonTool'` voids the context-budget wrap-up on Anthropic.**
+     Selecting `jsonTool` makes the Anthropic provider append a JSON response tool and
+     hard-override the caller's `toolChoice` with `{type:'required'}` — the value from
+     `prepareStep` is never referenced on that branch. So `buildBudgetPrepareStep`'s
+     `toolChoice: 'none'`, core's only mid-run cost brake, is a **no-op for every
+     Anthropic structured-output run** — the dominant path. Worse, `TokenBudgetTracker`
+     still latches `forcedWrapUp`, so the run **reports a forced wrap-up that never
+     happened**. OpenAI and Google are unaffected (they implement structured output via
+     a response format, not a tool), so the brake works on two providers and silently
+     does not on the third. Fixing it means changing the structured-output strategy on
+     Anthropic, which is a behaviour and cost decision, not a mechanical repair.
+
+  2. **Context eviction is inferred from a token delta while the provider states it
+     exactly.** `TokenBudgetTracker.update` flags eviction from a >5% step-over-step drop
+     in input tokens — the comment correctly notes that was the only uniform signal in
+     v5. In v6, Anthropic reports
+     `providerMetadata.anthropic.contextManagement.appliedEdits[].clearedInputTokens`,
+     the measured value. The heuristic is both false-positive-prone (any window shrink)
+     and false-negative-prone (evictions under the threshold), and the `evictedTokens`
+     figure in the `context.evicted` marker is an estimate standing in for a number the
+     provider hands over.
+
+- **`detectUsageShapeDrift` is satisfied by ANY overlap, and that is why this drift went
+  unreported.** The check is `keys.some(k => recognized.includes(k))`, so one surviving key
+  suppresses the warning for every key that vanished beside it. `responseId` was on the
+  recognized list and survived; `cachedPromptTokens` and `reasoningTokens` — the only two
+  fields the extract tier consumed — did not. The instrument reported "shape is fine" about
+  a metadata block that no longer contained anything it read.
+
+  `RECOGNIZED_USAGE_KEYS.openai` has been corrected to the fields v6 actually emits, so it
+  no longer implies this detector is watching fields that are gone. The any-overlap
+  weakness itself is **recorded, not fixed**: a correct detector would assert that the keys
+  a tier depends on are present, which changes the warning contract and what counts as
+  noise. Lower stakes now that `mapUsage` reads the unified usage shape and treats metadata
+  as fallback, but the weakness is structural rather than incidental.
+
+### Internal
+
+- **The `'ai'` test mock is now PARTIAL.** It was a total mock, so the SDK's error
+  classes did not exist in the test environment at all. That forced every error-mapping
+  test to fabricate lookalikes (`Object.assign(new Error(), {statusCode})`,
+  `error.name = 'RetryError'`) — which matched only because core's guards were equally
+  structural. The mock and the guards agreed with each other and both disagreed with the
+  SDK, so two mapping branches were dead while their tests stayed green. Real
+  `APICallError` / `RetryError` / `DOMException('…','TimeoutError')` instances are now
+  used, and the guard fixes above were confirmed by watching each restored branch fail
+  before it passed.
+
+- The `scripts/live-costusd-e2e.mjs` "hand computation" was a term-for-term
+  transcription of `computeCostUsd`, so it could only ever prove the engine agreed with
+  a copy of itself. It reported "matches exactly" on 2026-07-26 while both sides carried
+  the cache-inclusive input total. Updated to the corrected formula, with the tautology
+  documented in the file — an independent oracle would price the provider's own
+  `usage.raw`, which core does not surface yet.
+
+- Added the first unit tests for `mapUsage`. Every prior token test hand-constructed a
+  `UsageMetrics` and so bypassed this function entirely, which is the structural reason the
+  v5→v6 change in `inputTokens` semantics went undetected by a green suite. The new fixtures
+  are verbatim v6 usage objects captured from live calls, including a control asserting that
+  `input_tokens` is never the cache-inclusive total.
+
 ## [0.41.0] - 2026-08-21
 
 > **0.38.0, 0.39.0 and 0.40.0 have no entries because they were never released.** All three
