@@ -2406,3 +2406,89 @@ describe('AIProvider — the wrap-up latch does not claim a brake that cannot en
     expect(warn).toHaveBeenCalledWith(expect.stringContaining('cannot engage'));
   });
 });
+
+/**
+ * A throw during result ASSEMBLY must be mapped AND must not lose the billed usage.
+ *
+ * Narrowing generate()'s try to the provider call alone was right — a throw there is not
+ * a generation failure and must not be reported as a zero-cost fallback. But leaving
+ * assembly bare traded one defect for another: `result.output` is a throwing getter and
+ * mapUsage runs there too, so a throw escaped generate() WITHOUT reaching mapError.
+ *
+ * POSITIVE CONTROL: remove the second try/catch around buildGenerateResult and both tests
+ * below fail — the first with a raw (unmapped) error, the second because no result comes
+ * back at all. The previous suite passed that mutation untouched: nothing made assembly
+ * throw, so the branch was defended and unexercised, which is indistinguishable from
+ * absent. Found by the stage-2 validator's own mutation probe, not by this file's author.
+ */
+describe('AIProvider — a throw during result assembly is mapped and keeps the usage', () => {
+  beforeEach(async () => {
+    vi.clearAllMocks();
+    const { generateText } = await import('ai');
+    vi.mocked(generateText).mockReset();
+  });
+
+  /**
+   * Drive real steps (so usage IS billed), return a result whose `output` getter throws
+   * during assembly — the SDK's actual shape for an unresolved structured output.
+   */
+  const runWithThrowingAssembly = async () => {
+    const { generateText } = await import('ai');
+    vi.mocked(generateText).mockImplementationOnce((async (o: unknown) => {
+      const g = o as { onStepFinish?: (s: unknown) => void };
+      g.onStepFinish?.({
+        finishReason: 'stop', text: 'partial', toolCalls: [{ toolName: 'read_file' }],
+        usage: {
+          inputTokens: 10_000, outputTokens: 500,
+          inputTokenDetails: { noCacheTokens: 10_000, cacheReadTokens: undefined, cacheWriteTokens: undefined },
+          outputTokenDetails: { textTokens: 500, reasoningTokens: undefined },
+        },
+      });
+      const result: Record<string, unknown> = {
+        text: 'partial', steps: [{ toolCalls: [] }], finishReason: 'stop',
+        usage: { inputTokens: 10_000, outputTokens: 500 },
+        totalUsage: { inputTokens: 10_000, outputTokens: 500 },
+        providerMetadata: {}, warnings: [],
+      };
+      // The throwing getter, exactly as the SDK declares it.
+      Object.defineProperty(result, 'output', {
+        get() { throw new NoOutputGeneratedError(); },
+      });
+      return result;
+    }) as never);
+
+    const catalog = mockCatalog({
+      resolve: vi.fn().mockResolvedValue(
+        makeResolvedModel({
+          cost: { input: 3, output: 15 },
+          capabilities: { tools: true, vision: true, streaming: true, extendedThinking: false, structuredOutput: true } as never,
+        } as never),
+      ),
+    } as never);
+
+    return new AIProvider(mockConfig, catalog, noopLogger).generate({
+      model: 'sonnet', system: 's', prompt: 'p',
+      output: { type: 'output-object', schema: {} } as never,
+    });
+  };
+
+  it('does not let a raw AI_NoOutputGeneratedError escape generate()', async () => {
+    // Unmapped, the caller receives an SDK-internal class instead of a core error type,
+    // and every `catch (UluOpsError)` handler misses it.
+    const result = await runWithThrowingAssembly();
+    expect(result).toBeDefined();
+    expect(result.finishReason).toBe('error');
+  });
+
+  it('still reports the usage that was already billed before the throw', async () => {
+    // The half that a bare try/catch would also get wrong: mapping the error but losing
+    // the tokens just converts a fabricated zero into a rejection. stepTotals still holds
+    // the real numbers, so the degraded result must carry them.
+    const result = await runWithThrowingAssembly();
+
+    expect(result.usage.input_tokens).toBe(10_000);
+    expect(result.usage.output_tokens).toBe(500);
+    expect(result.costUsd).toBeCloseTo((10_000 * 3 + 500 * 15) / 1e6, 10);
+    expect(result.costUsd).not.toBe(0);
+  });
+});

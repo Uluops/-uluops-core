@@ -3,6 +3,7 @@ import * as fs from 'node:fs/promises';
 import * as path from 'node:path';
 import * as os from 'node:os';
 import { AgentExecutor } from '../../src/executor/AgentExecutor.js';
+import { crashMetrics } from '../../src/utils/crashMetrics.js';
 import { MaxStepsExhaustedError } from '../../src/errors/index.js';
 import type { AIProvider, AIGenerateResult } from '../../src/ai/AIProvider.js';
 import type { TokenBudgetTracker } from '../../src/ai/TokenBudgetTracker.js';
@@ -805,6 +806,49 @@ describe('AgentExecutor', () => {
 
       await expect(executor.execute(makeValidatorDef(), { target: tmpDir }))
         .rejects.toBeInstanceOf(MaxStepsExhaustedError);
+    });
+
+    it('carries the ALREADY-BILLED usage on the thrown MaxStepsExhaustedError', async () => {
+      // POSITIVE CONTROL: drop the `this.buildMetrics(...)` argument at the throw site
+      // (AgentExecutor's exhaustion guard) and this test fails; the previous suite passed
+      // that mutation untouched, because the sibling test above asserts only the error
+      // TYPE and crashMetrics was covered only in isolation. The wiring between them —
+      // the thing INVARIANT 2 actually depends on — was unverified.
+      //
+      // This matters because a step-ceiling run is by construction the LONGEST run the
+      // engine produces: the maximum-cost class. The throw follows a successful,
+      // already-billed generate(), so an error that carries nothing makes the downstream
+      // rejection handlers fabricate zero tokens for the most expensive run there is.
+      const ai = mockAIProvider({ text: '', finishReason: 'tool-calls', steps: 50, costUsd: 0.42 });
+      const executor = new AgentExecutor(baseConfig, ai, noopLogger);
+
+      const error = await executor.execute(makeValidatorDef(), { target: tmpDir })
+        .then(() => { throw new Error('expected MaxStepsExhaustedError'); }, (e: unknown) => e);
+
+      expect(error).toBeInstanceOf(MaxStepsExhaustedError);
+      const billed = (error as MaxStepsExhaustedError).billedMetrics;
+      expect(billed).toBeDefined();
+      expect(billed!.inputTokens).toBe(MOCK_INPUT_TOKENS);
+      expect(billed!.outputTokens).toBe(MOCK_OUTPUT_TOKENS);
+      expect(billed!.totalEffectiveTokens).toBe(MOCK_TOTAL_EFFECTIVE_TOKENS);
+      expect(billed!.costUsd).toBe(0.42);
+      // The specific fabrication this replaces.
+      expect(billed!.inputTokens).not.toBe(0);
+    });
+
+    it('feeds those billed metrics through crashMetrics instead of fabricating zeros', async () => {
+      // The other half of the wiring: the error is only useful if the consumer reads it.
+      // Asserted end-to-end so a change to EITHER side breaks a test.
+      const ai = mockAIProvider({ text: '', finishReason: 'tool-calls', steps: 50, costUsd: 0.42 });
+      const executor = new AgentExecutor(baseConfig, ai, noopLogger);
+
+      const error = await executor.execute(makeValidatorDef(), { target: tmpDir })
+        .then(() => null, (e: unknown) => e);
+
+      const metrics = crashMetrics(error);
+      expect(metrics.inputTokens).toBe(MOCK_INPUT_TOKENS);
+      expect(metrics.costUsd).toBe(0.42);
+      expect(metrics.model).not.toBe('unknown');
     });
 
     it('does NOT throw on empty output when the model finished normally', async () => {

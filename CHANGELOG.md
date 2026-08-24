@@ -315,15 +315,28 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) 
 
 ### Internal
 
-- **39 tests added for the class sweep, each carrying a POSITIVE CONTROL.** The previous
+- **43 tests added for the class sweep, each carrying a POSITIVE CONTROL.** The previous
   round's failure was not that its tests were absent — it was that they passed vacuously
   (the `sawUsage` test covered only the zero-step case, where the flag stayed false for an
   unrelated reason). Every new test here was run against the reverted code and confirmed to
-  FAIL first; eight mutations were applied and all eight were caught: reverting `sawUsage`
-  to the wrapper test, fabricating `noCacheTokens: 0`, restoring the reduced fallback path,
-  casting `CallWarning` instead of narrowing, dropping two of the three abort names,
-  reverting each of the two cost roll-ups, and latching the wrap-up unconditionally. The
-  control assertions are recorded in each test's comment.
+  FAIL first: reverting `sawUsage` to the wrapper test, fabricating `noCacheTokens: 0`,
+  restoring the reduced fallback path, casting `CallWarning` instead of narrowing, dropping
+  two of the three abort names, reverting each of the two cost roll-ups, and latching the
+  wrap-up unconditionally. The control assertions are recorded in each test's comment.
+
+  > **Ten targeted mutations, not an exhaustive sweep — and the distinction is the whole
+  > lesson.** The first eight were chosen by the same author who wrote the fixes, so they
+  > tested what that author already believed was load-bearing; an instrument aimed at where
+  > you believe the answer is can only confirm. A reviewing agent then probed two sites this
+  > list had not thought to try — **the `billedMetrics` argument at the exhaustion throw
+  > site, and the assembly `try`/`catch` around `buildGenerateResult`** — and **both mutants
+  > survived the full 1,164-test suite**. Each sits at a site this very entry names as a
+  > headline fix: the underlying helpers (`crashMetrics`, `MaxStepsExhaustedError`) were
+  > unit-tested in isolation while the WIRING between them was not, which is the same
+  > citation-versus-class shape the release exists to close, one level up in the test suite
+  > rather than in the source. Both gaps are now covered end-to-end and both mutants die.
+  > The count is recorded as *targeted*, deliberately: a mutation set is evidence about the
+  > mutations you ran, never about the ones you did not think of.
 
 - **Coverage closed on two branches flagged as untested.** The `CallWarning`
   `'unsupported'`/`'compatibility'` discriminants — which carry `feature`/`details` and no
