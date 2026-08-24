@@ -1,5 +1,6 @@
 import type { AgentType } from '../types/execution.js';
 import type { Issue, ArtifactResult } from '../types/command.js';
+import { parseExternalNumber } from '../utils/externalValue.js';
 import type {
   ParsedOutput,
   ParsedCategory,
@@ -45,7 +46,7 @@ export class OutputNormalizer {
     if (typeof rawScore === 'number') {
       output.score = rawScore;
     } else if (typeof rawScore === 'string') {
-      const parsed = parseFloat(rawScore);
+      const parsed = parseExternalNumber(rawScore) ?? NaN;
       if (!isNaN(parsed)) output.score = parsed;
     }
 
@@ -105,7 +106,7 @@ export class OutputNormalizer {
     if (typeof rawMaxScore === 'number') {
       output.maxScore = rawMaxScore;
     } else if (typeof rawMaxScore === 'string') {
-      const parsed = parseInt(rawMaxScore, 10);
+      const parsed = parseExternalNumber(rawMaxScore) ?? NaN;
       if (!isNaN(parsed)) output.maxScore = parsed;
     }
 
@@ -247,7 +248,10 @@ export class OutputNormalizer {
       for (const scoreKey of ['score', 'total_score', 'score_total']) {
         const s = source[scoreKey];
         if (typeof s === 'number') return s;
-        if (typeof s === 'string' && s.trim() !== '' && !isNaN(Number(s))) return s;
+        // EXTERNAL-OK: a TYPE probe, not a value read — it asks whether the string looks numeric
+  // so the caller can decide which branch to take. The value itself is coerced through
+  // parseExternalNumber at the sites that actually use it.
+  if (typeof s === 'string' && s.trim() !== '' && !isNaN(Number(s))) return s;
         // Handle score as object: { total: 85, ... }
         if (s && typeof s === 'object') {
           const sObj = s as Record<string, unknown>;
@@ -481,20 +485,20 @@ export class OutputNormalizer {
         // Pair-resolution with non-null Number() gating: null pair when no score key
         // is present; else the score with its scale (default 100). Avoids null → NaN.
         const sRaw = item['score'] ?? item['points'];
-        let score = sRaw == null ? null : Number(sRaw);
+        let score = sRaw == null ? null : (parseExternalNumber(sRaw) ?? NaN);
         let mRaw = item['maxScore'] ?? item['max_score'] ?? item['maxPoints'] ?? item['max_points'] ?? item['max'] ?? item['total'];
         // Fraction-string scores ("21/25") carry their own scale; an explicit max key wins over the denominator.
         if (typeof sRaw === 'string' && Number.isNaN(score)) {
           const frac = /^\s*(\d+(?:\.\d+)?)\s*\/\s*(\d+(?:\.\d+)?)\s*$/.exec(sRaw);
           if (frac) {
-            score = Number(frac[1]);
-            mRaw ??= Number(frac[2]);
+            score = parseExternalNumber(frac[1]) ?? NaN;
+            mRaw ??= parseExternalNumber(frac[2]) ?? NaN;
           }
         }
         // Unparseable score stays null (null-iff-null pair invariant, score-nullability spec);
         // a non-positive or non-numeric max is broken scale data, not a scale — default it.
         if (score !== null && Number.isNaN(score)) score = null;
-        const mNum = mRaw == null ? null : Number(mRaw);
+        const mNum = mRaw == null ? null : (parseExternalNumber(mRaw) ?? NaN);
         const maxScore = score === null ? null : (mNum != null && Number.isFinite(mNum) && mNum > 0 ? mNum : 100);
         return {
           name: String(item['name'] ?? item['category'] ?? 'Unknown'),
@@ -519,8 +523,8 @@ export class OutputNormalizer {
         const ppRaw = item['pointsPossible'] ?? item['points_possible'] ?? item['maxScore'] ?? item['maxPoints'];
         return {
           criterion: String(item['criterion'] ?? item['name'] ?? 'Unknown'),
-          pointsEarned: peRaw == null ? null : Number(peRaw),
-          pointsPossible: ppRaw == null ? null : Number(ppRaw),
+          pointsEarned: peRaw == null ? null : (parseExternalNumber(peRaw) ?? null),
+          pointsPossible: ppRaw == null ? null : (parseExternalNumber(ppRaw) ?? null),
           issues: this.parseIssues(
             Array.isArray(item['issues']) ? item['issues'] : [],
           ),
@@ -586,7 +590,7 @@ export class OutputNormalizer {
         const flMatch = (item[combinedKey] as string).match(/^([\w/.@-]+\.\w+):(\d+)/);
         if (flMatch) {
           filePath = flMatch[1];
-          lineNumber = lineNumber ?? parseInt(flMatch[2]!, 10);
+          lineNumber = lineNumber ?? parseExternalNumber(flMatch[2]);
         } else if (combinedKey === 'file_line') {
           filePath = item[combinedKey] as string;
         }
@@ -612,7 +616,7 @@ export class OutputNormalizer {
       if (typeof val === 'number') return val;
       if (typeof val === 'string') {
         const match = val.match(/^(\d+)/);
-        if (match) return parseInt(match[1]!, 10);
+        if (match) return parseExternalNumber(match[1]);
       }
     }
     return undefined;

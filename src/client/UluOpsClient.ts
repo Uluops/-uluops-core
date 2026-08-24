@@ -1,3 +1,4 @@
+import { finitePositive } from '../utils/externalValue.js';
 import * as path from 'node:path';
 import { RegistryClient, type ResolvePinOptions } from '../registry/RegistryClient.js';
 import { SubmissionClient } from '../submission/SubmissionClient.js';
@@ -751,7 +752,14 @@ export function resolveConfig(config: UluOpsConfig, env: NodeJS.ProcessEnv = pro
     debug: config.debug ?? (env['ULUOPS_DEBUG'] === 'true'),
     contextBudget: config.contextBudget,
     maxRetries: config.maxRetries,
-    maxConcurrency: config.maxConcurrency ?? parseMaxConcurrency(env['ULUOPS_MAX_CONCURRENCY']) ?? DEFAULT_MAX_CONCURRENCY,
+    // config.maxConcurrency is PUBLIC API and bypassed parseMaxConcurrency entirely — the
+    // env path was validated and the programmatic path was not, which is the same
+    // primary/degraded split this release keeps finding.
+    maxConcurrency: finitePositive(config.maxConcurrency)
+      // EXTERNAL-OK: parseMaxConcurrency IS the seam for this value — it applies an
+      // explicit Number.isFinite + range check before returning.
+      ?? parseMaxConcurrency(env['ULUOPS_MAX_CONCURRENCY'])
+      ?? DEFAULT_MAX_CONCURRENCY,
     allowedTools: config.allowedTools ?? parseAllowedTools(env['ULUOPS_ALLOWED_TOOLS']),
     allowStageSteps: config.allowStageSteps ?? (env['ULUOPS_ALLOW_STAGE_STEPS'] === 'true'),
   };
@@ -802,6 +810,8 @@ export function resolveAIConfig(ai: AIConfig | undefined, env: NodeJS.ProcessEnv
  */
 function parseMaxConcurrency(envValue?: string): number | undefined {
   if (!envValue) return undefined;
+  // EXTERNAL-OK: guarded on the next lines by an explicit Number.isFinite + range check
+  // before use; this is the one env value that already had a real validator.
   const n = Number.parseInt(envValue, 10);
   return Number.isFinite(n) && n > 0 ? n : undefined;
 }

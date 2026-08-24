@@ -1,3 +1,4 @@
+import { parseExternalNumber } from '../utils/externalValue.js';
 import { createHash } from 'node:crypto';
 import type { AnalysisSummaryInput, AnalysisRecordInput, CategoryScore, ExplorationMap } from '@uluops/ops-sdk';
 
@@ -376,9 +377,14 @@ export class AnalysisSummaryExtractor {
     for (const entry of raw) {
       if (entry && typeof entry === 'object' && 'key' in entry && 'value' in entry) {
         const { key, value } = entry as { key: string; value: string };
-        // Parse numeric strings back to numbers
-        const num = Number(value);
-        metrics[key] = isNaN(num) ? value : num;
+        // Parse numeric strings back to numbers.
+        //
+        // `Number('Infinity')` IS `Infinity`, and the old `isNaN(num)` guard passed it — so
+        // an analysis metric could arrive as Infinity and serialize to `null` on the wire.
+        // parseExternalNumber returns undefined for any non-finite result, and an
+        // unparseable value correctly stays a string.
+        const num = parseExternalNumber(value);
+        metrics[key] = num ?? value;
       } else {
         dropped++;
       }

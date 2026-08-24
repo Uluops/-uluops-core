@@ -6,6 +6,7 @@ import type { Logger } from '@uluops/sdk-core';
 import { formatErrorMessage } from '../utils/formatError.js';
 import { checkRegexPatternSafety } from '../utils/regexSafety.js';
 import { extractSymbols } from './symbols.js';
+import { externalInt, finitePositive } from '../utils/externalValue.js';
 
 /** No-op logger for when none is provided */
 const noopLogger: Logger = { debug() {}, info() {}, warn() {}, error() {} };
@@ -96,15 +97,25 @@ export class ToolHandler {
 
       switch (toolUse.name) {
         case 'read_file':
+          // Line numbers are 1-based and bounded. Unbounded before: `start_line: 100,
+          // end_line: 200` on a 4-line file returned the header "[Lines 100-4 of 4]" with an
+          // EMPTY body — a range that never existed, presented as read, with no error. A
+          // NaN rendered the literal text "NaN" into the model's context.
           return await this.readFile(toolUse.id, fullPath, {
-            startLine: toNumber(input['start_line']),
-            endLine: toNumber(input['end_line']),
+            startLine: externalLineNumber(input['start_line']),
+            endLine: externalLineNumber(input['end_line']),
           });
 
         case 'list_files':
           return await this.listFiles(toolUse.id, fullPath, {
             pattern: toString(input['pattern']),
-            maxResults: toNumber(input['max_results']) ?? DEFAULT_LIST_MAX_RESULTS,
+            // Measured before this bound: `max_results: -1` produced "... and 8 more
+            // files" in a directory of seven; `1.5` produced "and 5.5 more files"; `0`
+            // reported an empty directory; `NaN` suppressed even the overflow marker, so
+            // the model was told an empty directory. All were schema-valid.
+            maxResults: externalInt(input['max_results'], {
+              min: 1, max: DEFAULT_LIST_MAX_RESULTS, fallback: DEFAULT_LIST_MAX_RESULTS,
+            }),
           });
 
         case 'search_content': {
@@ -113,9 +124,16 @@ export class ToolHandler {
           return await this.searchContent(toolUse.id, {
             pattern: toString(input['pattern']) ?? '',
             filePattern: toString(input['file_pattern']),
-            maxResults: toNumber(input['max_results']) ?? 50,
+            // `Infinity` is schema-valid here (the Zod schema declares `z.number()` with
+            // no `.int()`), and the search loops break on `results.length >= maxResults` —
+            // so it removed the 50-match bound entirely, sending unbounded tool output into
+            // the context window, billed as input tokens on every later step. `0` and `-5`
+            // broke on entry and told the model "no matches" for a search never performed.
+            maxResults: externalInt(input['max_results'], { min: 1, max: 50, fallback: 50 }),
             mode,
-            contextLines: Math.min(toNumber(input['context_lines']) ?? 0, 5),
+            // min 0 is deliberate: "no surrounding context" is a real request, not a
+            // malformed one. Math.min alone bounded only the top.
+            contextLines: externalInt(input['context_lines'], { min: 0, max: 5, fallback: 0 }),
           });
         }
 
@@ -124,7 +142,9 @@ export class ToolHandler {
 
         case 'get_directory_tree':
           return await this.getDirectoryTree(toolUse.id, fullPath, {
-            maxDepth: Math.min(toNumber(input['max_depth']) ?? 3, 10),
+            // Bounded below as well: -1 and NaN both flattened the tree to depth 0 and
+            // returned it with no marker, indistinguishable from an empty directory.
+            maxDepth: externalInt(input['max_depth'], { min: 1, max: 10, fallback: 3 }),
             includeSizes: input['include_sizes'] !== false,
           });
 
@@ -644,10 +664,19 @@ const LANG_MAP: Record<string, string> = {
   '.bash': 'Shell',
 };
 
-/** Narrow unknown to number (runtime typeof check instead of `as` cast). */
-function toNumber(v: unknown): number | undefined {
-  return typeof v === 'number' ? v : undefined;
+/**
+ * A 1-based line number supplied by the MODEL, or undefined.
+ *
+ * `toNumber` below is a TYPE narrow, not a value validation — it admits NaN, Infinity,
+ * negatives and fractions, every one of which produced a user-visible defect here. Line
+ * numbers get their own reader because their floor is 1 and their ceiling is the file's
+ * length, which is not known at this layer; the read site clamps the top.
+ */
+function externalLineNumber(v: unknown): number | undefined {
+  const n = finitePositive(v);
+  return n !== undefined && Number.isInteger(n) ? n : undefined;
 }
+
 
 /** Narrow unknown to string (runtime typeof check instead of `as` cast). */
 function toString(v: unknown): string | undefined {

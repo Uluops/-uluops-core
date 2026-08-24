@@ -65,3 +65,61 @@ describe('shellExecutor — model-supplied bounds are clamped on both sides', ()
     expect(res.output[0]!.stdout).not.toBe('');
   }, 20_000);
 });
+
+/**
+ * A process that was SIGKILLed is not a process that timed out.
+ *
+ * POSITIVE CONTROL: revert the classification to `if (err.killed || err.signal)` and the
+ * first test fails — a SIGKILL is reported to the model as a timeout.
+ *
+ * Node's own error shapes, measured:
+ *   real timeout   { killed: true,  signal: 'SIGTERM' }
+ *   external kill  { killed: false, signal: 'SIGKILL' }   <- swept up by `|| err.signal`
+ *   maxBuffer      { code: 'ERR_CHILD_PROCESS_STDIO_MAXBUFFER' }  (a STRING code)
+ *
+ * The old guard turned the second into "Command timed out after Nms" — a duration nobody
+ * measured, for an event that did not occur, handed to a model that will rationally respond
+ * by asking for a longer timeout, which cannot help. Node distinguishes these; the code was
+ * discarding the distinction.
+ */
+describe('shellExecutor — termination modes are not conflated', () => {
+  it('reports an externally-killed process as a signal, not a timeout', async () => {
+    const res = await executeShellAsOpenAIResult(
+      { commands: ["sh -c 'kill -9 $$'"] } as never, '/tmp', 10_000,
+    );
+    // The measured defect: outcome {type:'timeout'} for a process nothing timed out.
+    expect(res.output[0]!.outcome).not.toEqual({ type: 'timeout' });
+    expect(String(res.output[0]!.stderr)).toMatch(/signal/i);
+  }, 20_000);
+
+  it('still reports a REAL timeout as a timeout — the negative control', async () => {
+    // Without this, "not a timeout" would pass for a classifier that never reports
+    // timeouts at all, hiding the condition the ceiling exists to enforce.
+    const res = await executeShellAsOpenAIResult(
+      { commands: ['sleep 5'] } as never, '/tmp', 300,
+    );
+    expect(res.output[0]!.outcome).toEqual({ type: 'timeout' });
+  }, 20_000);
+
+  it('does not fabricate an exit code when output exceeds the buffer', async () => {
+    // maxBuffer overflow yields a STRING error code, so `typeof err.code === 'number'`
+    // was false and the code invented `exitCode: 1` for a command whose real exit status
+    // was never observed — while discarding all its output with no marker.
+    const res = await executeShellAsOpenAIResult(
+      { commands: ["head -c 2000000 /dev/zero | tr '\\0' 'a'"] } as never, '/tmp', 15_000,
+    );
+    const first = res.output[0]!;
+    if (first.outcome.type === 'exit' && first.outcome.exitCode === 1) {
+      // If it reports a failure, it must SAY the status was unobserved rather than
+      // presenting 1 as the command's own exit code.
+      expect(String(first.stderr)).toMatch(/buffer|not observed|exceeded/i);
+    }
+  }, 30_000);
+
+  it('reports a normal non-zero exit unchanged', async () => {
+    const res = await executeShellAsOpenAIResult(
+      { commands: ['exit 3'] } as never, '/tmp', 5_000,
+    );
+    expect(res.output[0]!.outcome).toEqual({ type: 'exit', exitCode: 3 });
+  }, 20_000);
+});

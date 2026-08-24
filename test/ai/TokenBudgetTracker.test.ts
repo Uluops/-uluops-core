@@ -141,3 +141,51 @@ describe('TokenBudgetTracker', () => {
     expect(tracker.forcedWrapUp).toBe(false);
   });
 });
+
+/**
+ * A library consumer is an external input source.
+ *
+ * POSITIVE CONTROL: revert the constructor to `constructor(private budget: number) {}` and
+ * the malformed cases below fail — every guard reports as though the budget were fine.
+ *
+ * This class is exported from the package root, so `new TokenBudgetTracker(NaN)` is
+ * reachable from outside. Two waivers in this file previously justified unguarded reads
+ * with "deriveContextBudget rejects such budgets upstream" — true of the single in-package
+ * call path, and false of the TYPE, which requires no such caller. The failure was silent
+ * in the worst way: isOverThreshold() permanently false and markBrakeInert() unreachable,
+ * so a run with no working cost ceiling reported no degradation at all.
+ */
+describe('TokenBudgetTracker — a malformed budget cannot silently disable the guards', () => {
+  it.each([[NaN], [Infinity], [-Infinity], [-1000]])(
+    'falls back to a usable budget for %s and warns', (bad) => {
+      const warn = vi.fn();
+      const tracker = new TokenBudgetTracker(bad as number, { debug() {}, info() {}, warn, error() {} });
+
+      tracker.update(500_000, 1_000);
+      // The guard must be able to fire at all — with NaN it never could.
+      expect(Number.isFinite(tracker.getStatus().budget)).toBe(true);
+      expect(tracker.getStatus().budget).toBeGreaterThan(0);
+      expect(tracker.isOverThreshold(0.8)).toBe(true);
+      // And nothing degrades silently.
+      expect(warn).toHaveBeenCalledWith(expect.stringContaining('silently inert'));
+    });
+
+  it('PRESERVES a deliberate zero budget — the negative control', () => {
+    // 0 means "no budget" and is a tested contract (percentUsed 0, remaining 0). It is NOT
+    // malformed, and collapsing it into the fallback would replace a documented behaviour
+    // with a guess — over-generalizing the class until it swallows an intentional case.
+    const warn = vi.fn();
+    const tracker = new TokenBudgetTracker(0, { debug() {}, info() {}, warn, error() {} });
+
+    expect(tracker.getStatus().percentUsed).toBe(0);
+    expect(tracker.getStatus().remaining).toBe(0);
+    expect(warn).not.toHaveBeenCalled();
+  });
+
+  it('leaves a well-formed budget completely alone', () => {
+    const tracker = new TokenBudgetTracker(100_000);
+    tracker.update(50_000, 500);
+    expect(tracker.getStatus().budget).toBe(100_000);
+    expect(tracker.getStatus().usedTotal).toBe(50_000);
+  });
+});

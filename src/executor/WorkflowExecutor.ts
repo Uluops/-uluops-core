@@ -639,9 +639,15 @@ export class WorkflowExecutor {
         severity: 'critical',
         failureCode: 'PRA-FRA/C',
       }],
-      // FABRICATION-OK: nothing ran, so no time elapsed — 0 is the MEASURED duration of a
-      // non-event, not an unknown standing in for one.
-      durationMs: 0,
+      // Read from the metrics below rather than asserted as 0. The previous waiver here
+      // said "nothing ran, so no time elapsed" — false of this object from the moment
+      // `crashMetrics` was wired in two lines down, since a MaxStepsExhaustedError carries
+      // a REAL measured durationMs. The literal contradicted its own sibling.
+      //
+      // Note the shape: an identical waiver on createBlockedPhase was corrected earlier in
+      // this same release as "a waiver whose reason the code had already outgrown", and
+      // this sibling was left. Same text, same file, fifty lines apart.
+      durationMs: crashMetrics(reason).durationMs,
       // See crashMetrics: billed usage survives the throw; absent cost stays absent.
       // The zeros are DEFAULTS, applied under the spread rather than over it, so a
       // MaxStepsExhaustedError's measured toolCallCount survives — writing them after the

@@ -331,8 +331,51 @@ describe('PipelineExecutor', () => {
       await new Promise(r => setTimeout(r, 0));
 
       const result = await handle.status();
-      expect(result.stages).toHaveLength(1); // Only stage-1 ran; stage-2 was cancelled
       expect(result.status).toBe('cancelled');
+
+      // POSITIVE CONTROL: revert the `skipRemaining(..., 'cancelled')` call in the cancel
+      // branch to a bare `break` and this fails with length 1.
+      //
+      // BOTH stages appear: stage-1 executed, stage-2 is RECORDED AS SKIPPED. It used to be
+      // absent entirely, which made "cancelled at stage 2 of 6" indistinguishable from "a
+      // 2-stage pipeline" — computeStageMetrics reported stagesSkipped: 0 and buildResult
+      // computed a full-looking score over a partial run. Un-run work must leave a trace;
+      // the gate-abort path has always done this via the same helper.
+      expect(result.stages).toHaveLength(2);
+      expect(result.stages[0]!.status).toBe('completed');
+      expect(result.stages[1]!.status).toBe('skipped');
+      expect(result.stages[1]!.skipReason).toBe('cancelled');
+    });
+
+    it('reports a cancel as cancelled even when the in-flight stage then throws', async () => {
+      // POSITIVE CONTROL: remove the `status === 'cancelled'` guard from executeAsync's
+      // catch and this fails — wait() rejects with a PipelineError.
+      //
+      // Cancelling usually interrupts work in progress, so the in-flight stage throwing
+      // AFTER cancel() is the LIKELY case, not the exotic one. The catch used to overwrite
+      // 'cancelled' with 'failed', reporting a user-initiated stop as a pipeline failure.
+      let rejectCmd: ((e: Error) => void) | undefined;
+      const slowCmd = new Promise<CommandResult>((_, rej) => { rejectCmd = rej; });
+      const cmdExec = { execute: vi.fn().mockReturnValue(slowCmd) } as unknown as CommandExecutor;
+      const executor = new PipelineExecutor(
+        makeWorkflowExecutor(), cmdExec, agentExec, makeRegistry(), noopLogger,
+      );
+
+      const handle = await executor.start(makePipelineDef({
+        stages: [
+          { id: 'stage-1', name: 'Stage 1', type: 'command', ref: 'slow@1.0.0' },
+          { id: 'stage-2', name: 'Stage 2', type: 'command', ref: 'fast@1.0.0' },
+        ],
+      }), { target: '/tmp/test' });
+
+      await handle.cancel();
+      rejectCmd!(new Error('interrupted mid-flight'));
+      await new Promise(r => setTimeout(r, 0));
+      await new Promise(r => setTimeout(r, 0));
+
+      const result = await handle.status();
+      expect(result.status).toBe('cancelled');
+      expect(result.status).not.toBe('failed');
     });
 
     it('handle.cancel() throws on already-complete pipeline', async () => {

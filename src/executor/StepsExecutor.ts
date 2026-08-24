@@ -27,6 +27,7 @@ import type { Logger } from '@uluops/sdk-core';
 import type { StepDefinition, StepResult } from '../types/pipeline.js';
 import type { ExecutionInput } from '../types/execution.js';
 import { checkRegexPatternSafety } from '../utils/regexSafety.js';
+import { clampModelBound, externalInt } from '../utils/externalValue.js';
 
 const execFileAsync = promisify(execFile);
 
@@ -199,9 +200,25 @@ export class StepsExecutor {
       }
     }
 
-    const timeout = step.timeout ?? DEFAULT_STEP_TIMEOUT;
-    const maxAttempts = 1 + Math.min(MAX_STEP_RETRIES, Math.max(0, step.retries ?? 0));
-    const retryDelay = Math.min(step.retry_delay ?? 0, MAX_RETRY_DELAY);
+    // All three come from an AUTHORED definition — registry-resolved YAML that
+    // RegistryClient type-erases with `as Record<string, unknown>` and no runtime schema —
+    // so they are external input, and `.nan`/`.inf` are directly authorable in YAML.
+    //
+    // `timeout` was the odd one out: its two siblings below were already clamped and it was
+    // not, on the line above them. Measured: `execFile` with `timeout: 0` RESOLVED after a
+    // full 2 s sleep — no timeout at all — and `NaN` threw ERR_OUT_OF_RANGE, which
+    // `attempt()` reports as `exitCode: 1`, presenting a configuration fault to a gate as a
+    // failed command. A steps stage runs host shell commands, so this is the operator's
+    // only liveness control over it.
+    const timeout = clampModelBound(step.timeout, DEFAULT_STEP_TIMEOUT);
+
+    // `retries` needed a floor for a sharper reason than bounds hygiene. Measured:
+    // `retries: .nan` made `maxAttempts` NaN, so `attempt <= NaN` was false, the loop body
+    // NEVER EXECUTED, the command never ran — and `return lastResult!` returned `undefined`
+    // through a non-null assertion into `stepResults[]`, where PipelineExecutor then read
+    // `s.status` off it.
+    const maxAttempts = 1 + externalInt(step.retries, { min: 0, max: MAX_STEP_RETRIES, fallback: 0 });
+    const retryDelay = externalInt(step.retry_delay, { min: 0, max: MAX_RETRY_DELAY, fallback: 0 });
 
     let lastResult: StepResult | undefined;
     for (let attempt = 1; attempt <= maxAttempts; attempt++) {
@@ -212,7 +229,18 @@ export class StepsExecutor {
       if (lastResult.status === 'passed') return lastResult;
       this.logger.debug(`Step "${step.name}" attempt ${attempt}/${maxAttempts} failed`);
     }
-    return lastResult!;
+    // NOT `lastResult!`. The assertion was false whenever the loop did not execute, and it
+    // put `undefined` into stepResults[] for a consumer that reads `.status` off it.
+    //
+    // With `externalInt` above, maxAttempts is >= 1 by construction, so this fallback is
+    // UNREACHABLE — and a mutation sweep confirms it: removing it alone breaks no test.
+    // That is stated rather than hidden. Its value is not runtime coverage; it is that the
+    // PAIR fails safe. Delete the clamp and this returns a well-formed failed result;
+    // delete both and `undefined` leaks into stepResults[]. The retries test asserts the
+    // command actually ran (`status: 'passed'`, `output: 'ok'`), which fails in either
+    // single-removal case, so the pair is covered as a pair even though this line is not
+    // independently reachable.
+    return lastResult ?? fail(`Step "${step.name}" produced no result`);
   }
 
   private async attempt(

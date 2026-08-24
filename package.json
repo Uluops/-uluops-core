@@ -36,7 +36,9 @@
     "lint": "eslint src/ scripts/ examples/",
     "prepublishOnly": "npm run lint && npm run typecheck && npm test && npm audit --audit-level=high --omit=dev && npm run build",
     "check:fabrication": "node scripts/audit-fabricated-values.mjs",
-    "check:fabrication:control": "node scripts/audit-fabricated-values.mjs --control"
+    "check:fabrication:control": "node scripts/audit-fabricated-values.mjs --control",
+    "check:external-inputs": "node scripts/audit-external-inputs.mjs",
+    "check:external-inputs:control": "node scripts/audit-external-inputs.mjs --control"
   },
   "keywords": [
     "uluops",

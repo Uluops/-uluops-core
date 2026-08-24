@@ -118,7 +118,15 @@ export class PipelineExecutor {
 
     try {
       for (let i = 0; i < def.pipeline.stages.length; i++) {
-        if (state.status === 'cancelled') break;
+        if (state.status === 'cancelled') {
+          // Record what did not run, exactly as the gate-abort path does via skipRemaining.
+          // A bare `break` left un-run stages ABSENT from stageResults[], so
+          // computeStageMetrics reported `stagesSkipped: 0` for a 6-stage pipeline stopped
+          // at stage 2, and buildResult computed a full-looking score over a partial run.
+          // A consumer could not distinguish "cancelled at stage 2" from "had 2 stages".
+          this.skipRemaining(def.pipeline.stages, i, state, 'cancelled');
+          break;
+        }
 
         const stage = def.pipeline.stages[i];
         if (!stage) break;
@@ -212,8 +220,17 @@ export class PipelineExecutor {
         state.status = 'completed';
       }
     } catch (error) {
-      state.status = 'failed';
-      state.error = formatErrorMessage(error);
+      // A cancel is NOT a failure. If the in-flight stage throws AFTER cancel() flipped the
+      // flag — likely, since cancelling often interrupts work in progress — this catch used
+      // to overwrite `cancelled` with `failed`, and wait() then THREW a PipelineError at a
+      // user who had asked to stop. The user-initiated outcome wins over the fallout it
+      // caused.
+      if (state.status === 'cancelled') {
+        this.logger.debug(`Stage threw after cancellation (reporting cancelled): ${formatErrorMessage(error)}`);
+      } else {
+        state.status = 'failed';
+        state.error = formatErrorMessage(error);
+      }
     }
   }
 
@@ -447,8 +464,14 @@ export class PipelineExecutor {
       return true;
     });
 
+    // Per-agent elapsed time, captured so a CRASHED agent can report how long it actually
+    // ran. crashMetrics defaults durationMs to 0 when the error carries no billed metrics,
+    // which meant an inline agent that consumed 45 s before failing reported 0 ms — a
+    // number nobody measured, in the field that says how much work was done.
+    const dispatchStart = dispatched.map(() => Date.now());
     const settled = await Promise.allSettled(
-      dispatched.map(async (a) => {
+      dispatched.map(async (a, idx) => {
+        dispatchStart[idx] = Date.now();
         const [name, version] = parseRef(a.ref);
         const resolved = await this.registry.resolve(name, version, 'agent');
         return this.agentExecutor.execute(resolved, input, options);
@@ -477,7 +500,9 @@ export class PipelineExecutor {
             failureCode: 'PRA-FRA/H',
           }],
           // See crashMetrics: billed usage survives the throw; absent cost stays absent.
-          metrics: crashMetrics(outcome.reason),
+          // The measured elapsed time is supplied through `extra` — it is knowable here
+          // even when the tokens are not, and the two are independent facts.
+          metrics: crashMetrics(outcome.reason, { durationMs: Date.now() - (dispatchStart[i] ?? Date.now()) }),
         } as AgentResult);
       }
     }

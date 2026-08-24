@@ -470,6 +470,97 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) 
 
   Current state: **0 unwaived sites, 29 waived with written reasons.**
 
+- **Sixth sweep — the class was never "provider payloads". It is EXTERNAL INPUT, and the
+  guard is now organised by provenance.**
+
+  Audit pass 6 (77/100, AF-006) diagnosed the framing error precisely, and it applied to the
+  guard as much as to the code: the static check written after pass 5 enumerated by FIELD
+  NAME and had been extended with exactly the four names pass 5 cited (`timeoutMs`,
+  `maxOutputLength`, `weight`, `budget`). `max_results`, `start_line`, `max_depth`,
+  `context_lines`, `step.timeout` and `step.retries` were never in view — not judged safe,
+  never met. **A name list is an OPEN set and cannot terminate; provenance is a CLOSED set.**
+
+  Before rebuilding on that claim, an independent agent was asked to FALSIFY the provenance
+  enumeration rather than review the fix. It found the claim wrong in five ways — three
+  missing channels, one mislocated, three miscounted — which is why the rewrite rests on a
+  verified surface instead of an asserted one.
+
+  New criticals, all measured:
+
+  - **`max_results: Infinity` is Zod-valid and removed the 50-match search bound entirely** —
+    the loops break on `results.length >= maxResults` — sending unbounded tool output into
+    the context window, billed as input tokens on every later step of a BYOK run. `0` and
+    `-5` broke on entry and told the model **"no matches" for a search never performed**.
+  - **`list_files` reported "... and 8 more files" in a directory of seven** (`max_results:
+    -1`), "and 5.5 more files" (`1.5`), and with `NaN` suppressed even the overflow marker —
+    reporting an **empty directory**.
+  - **`retries: .nan` meant the command NEVER RAN.** `maxAttempts` became NaN, `attempt <=
+    NaN` was false, the loop body never executed — and `return lastResult!` pushed
+    `undefined` through a non-null assertion into `stepResults[]`, where PipelineExecutor
+    read `.status` off it. `step.timeout` was likewise unclamped while its two siblings on
+    the next two lines were not.
+  - **An externally SIGKILLed process was reported to the model as a timeout.** Node
+    distinguishes them (`{killed:true,signal:'SIGTERM'}` vs `{killed:false,signal:'SIGKILL'}`)
+    and the `|| err.signal` disjunct swept both up, so the model received "Command timed out
+    after Nms" — a duration nobody measured, for an event that did not occur, which it would
+    rationally answer by asking for a longer timeout. maxBuffer overflow returns a STRING
+    error code, so `typeof err.code === 'number'` was false and it fabricated `exitCode: 1`
+    for a command whose real status was never observed.
+  - **`z.number()` ACCEPTS `Infinity`.** Verified against the pinned zod 3.25.76 with a
+    control proving the probe is not vacuous (`NaN` IS rejected). `outputSchemas.ts` had 8
+    `z.number()` uses and ZERO constraints — on the STRUCTURED-OUTPUT path, which
+    `OutputExtractor` treats as extraction confidence 1.0 *because the SDK validated it*. So
+    an unconstrained schema conferred a trust it did not verify, and `Infinity < threshold`
+    is `false`, so it fail-opened a gate. `.finite()` is now on every numeric field.
+    **Range is deliberately still NOT enforced there** — `AgentExecutor` clamps to [0,100]
+    *and warns*, a division a test pins explicitly, and a schema reject would replace a
+    visible warning with a silent degrade.
+  - **`parseFloat('Infinity')` and `Number('Infinity')` return `Infinity`** and survive the
+    usual `!isNaN(...)` guard, so the same fail-open arrived through model PROSE on the
+    text-extraction rung. Sixteen coercions in `parser/` and `analysis/` now route through
+    `parseExternalNumber`.
+  - **A library consumer is external.** `new TokenBudgetTracker(NaN)` made
+    `isOverThreshold()` permanently false and `markBrakeInert()` unreachable — a budget that
+    silently does not exist. Two waivers had justified this with "deriveContextBudget rejects
+    such budgets upstream", true of one in-package call path and false of the type. Note the
+    constructor accepts `0`: that is a tested contract meaning "no budget", and collapsing it
+    into the malformed cases would be over-generalizing the class until it swallows an
+    intentional value — the mirror image of this release's own defect.
+  - **`config.maxConcurrency` bypassed the validator its env twin had** — the env path went
+    through `parseMaxConcurrency`, the programmatic path went through nothing.
+  - Cancellation: un-run stages are now RECORDED as skipped (they used to vanish, so
+    "cancelled at stage 2 of 6" was indistinguishable from "a 2-stage pipeline"), and a stage
+    throwing *after* `cancel()` no longer overwrites `cancelled` with `failed` — a
+    user-initiated stop was being reported as a pipeline failure.
+
+- **`src/utils/externalValue.ts` — ONE seam, replacing three.**
+
+  `clampModelBound`, `usableWeight` and `usableBudget` were written on three separate passes
+  for three separate citations. That trio WAS the citation pattern in miniature: three
+  implementations of one idea, none aware of the others. They now derive from
+  `finitePositive`; adding a fourth would have been the seventh repetition.
+
+- **`scripts/audit-external-inputs.mjs` replaces the name-based guard, and can DISCOVER.**
+
+  Two halves. The **inventory** lists entry points in a numeric context and requires each to
+  be routed or waived — that half can only confirm. The **census** records per-channel entry
+  point COUNTS in a committed baseline and fails when one moves, so a new `JSON.parse`, a new
+  service client or a new tool argument announces itself. *The surface moving is how every
+  one of the six audit passes actually began*, and that is now a gate rather than a discovery.
+
+  The predecessor is kept, marked superseded, because its header records why a name list
+  cannot work — reasoning that cost six passes to learn.
+
+  Two self-corrections worth recording: the census initially reported "surface unchanged"
+  **with no baseline to compare against** — a check claiming success when it had not run,
+  which is the exact defect class, in the instrument. It now reports `DRIFT NOT CHECKED`.
+  And the inventory was first written to demand a waiver on all 84 entry points, including
+  service CALLS that fabricate nothing; a gate that reports 84 things, 70 needing no action,
+  is one people learn to scroll past. Census counts everything; inventory demands action only
+  where a number is produced.
+
+  Current state: **75 entry points across 7 channels, 11 in numeric contexts, none unguarded.**
+
 ### Changed
 
 - **`UsageMetrics.input_tokens` is now CACHE-EXCLUSIVE** — a semantics change with no signature
@@ -575,7 +666,7 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) 
 
 ### Internal
 
-- **91 tests added for the class sweep, each carrying a POSITIVE CONTROL.** The previous
+- **125 tests added for the class sweep, each carrying a POSITIVE CONTROL.** The previous
   round's failure was not that its tests were absent — it was that they passed vacuously
   (the `sawUsage` test covered only the zero-step case, where the flag stayed false for an
   unrelated reason). Every new test here was run against the reverted code and confirmed to

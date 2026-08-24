@@ -1,6 +1,7 @@
 import { exec } from 'child_process';
 import { promisify } from 'util';
 import type { Logger } from '@uluops/sdk-core';
+import { clampModelBound } from '../utils/externalValue.js';
 
 const execAsync = promisify(exec);
 
@@ -11,6 +12,23 @@ interface ShellResult {
   stderr: string;
   timedOut: boolean;
   exitCode: number;
+  /**
+   * How the process actually ended. `timedOut` alone could not distinguish these, and the
+   * conflation was reported to the MODEL as fact.
+   *
+   * Node's own error shapes, measured:
+   *   real timeout   { killed: true,  signal: 'SIGTERM' }
+   *   external kill  { killed: false, signal: 'SIGKILL' }   <- was reported as a timeout
+   *   maxBuffer      { code: 'ERR_CHILD_PROCESS_STDIO_MAXBUFFER' }  (a STRING code)
+   *   normal exit    { killed: false, signal: null, code: 3 }
+   *
+   * The old guard was `if (err.killed || err.signal)`, so the `|| err.signal` disjunct
+   * swept up every signalled death — and `executeShellAsString` then told the model
+   * "Command timed out after Nms", a duration nobody measured for an event that did not
+   * occur. A model reading that will rationally ask for a longer timeout, which cannot
+   * help. Node distinguishes these; the code was discarding the distinction.
+   */
+  termination: 'exited' | 'timeout' | 'signal' | 'output-limit';
 }
 
 interface OpenAIShellAction {
@@ -52,17 +70,51 @@ export async function runShellCommand(
       timeout: timeoutMs,
       maxBuffer: 1024 * 1024, // 1MB
     });
-    return { stdout: stdout || '', stderr: stderr || '', timedOut: false, exitCode: 0 };
+    return { stdout: stdout || '', stderr: stderr || '', timedOut: false, exitCode: 0, termination: 'exited' };
   } catch (error) {
-    const err = error as { killed?: boolean; signal?: string; stderr?: string; code?: number; stdout?: string };
-    if (err.killed || err.signal) {
-      return { stdout: err.stdout || '', stderr: err.stderr || '', timedOut: true, exitCode: 1 };
+    // `code` is typed `number | string`: Node uses a STRING code for its own internal
+    // failures (ERR_CHILD_PROCESS_STDIO_MAXBUFFER), which the old `typeof === 'number'`
+    // test silently turned into a fabricated `exitCode: 1`.
+    const err = error as {
+      killed?: boolean; signal?: string; stderr?: string; code?: number | string; stdout?: string;
+    };
+
+    // A TIMEOUT is specifically Node killing the child because our timeout elapsed:
+    // killed === true. An external signal leaves killed false and must not claim a
+    // duration that was never measured.
+    if (err.killed === true) {
+      return {
+        stdout: err.stdout || '', stderr: err.stderr || '',
+        timedOut: true, exitCode: 1, termination: 'timeout',
+      };
     }
+
+    // maxBuffer overflow. The 1 MB ceiling sits ABOVE the 100 KB MAX_SHELL_OUTPUT that
+    // markTruncation reports, and this path discards ALL output while reporting a failure
+    // that may not have occurred — the command's real exit code was never observed. Say so
+    // rather than inventing an exit code.
+    if (err.code === 'ERR_CHILD_PROCESS_STDIO_MAXBUFFER') {
+      return {
+        stdout: err.stdout || '',
+        stderr: err.stderr || 'Output exceeded the 1MB buffer limit; the command\'s exit status was not observed.',
+        timedOut: false, exitCode: 1, termination: 'output-limit',
+      };
+    }
+
+    if (err.signal) {
+      return {
+        stdout: err.stdout || '',
+        stderr: err.stderr || `Process terminated by signal ${err.signal}.`,
+        timedOut: false, exitCode: 1, termination: 'signal',
+      };
+    }
+
     return {
       stdout: err.stdout || '',
       stderr: err.stderr || String(error),
       timedOut: false,
       exitCode: typeof err.code === 'number' ? err.code : 1,
+      termination: 'exited',
     };
   }
 }
@@ -92,7 +144,11 @@ export async function executeShellAsString(
   logger?: Logger,
 ): Promise<string> {
   const result = await runShellCommand(command, cwd, timeoutMs, logger);
-  if (result.timedOut) return `Command timed out after ${timeoutMs}ms`;
+  // Each termination reports what actually happened. Returning "timed out" for a SIGKILL
+  // or a buffer overflow hands the model a false premise it will then act on.
+  if (result.termination === 'timeout') return `Command timed out after ${timeoutMs}ms`;
+  if (result.termination === 'signal') return result.stderr;
+  if (result.termination === 'output-limit') return result.stderr;
   const output = result.stdout || result.stderr || '(no output)';
   if (output.length > MAX_SHELL_OUTPUT) {
     return output.substring(0, MAX_SHELL_OUTPUT) + `\n\n[truncated — ${output.length} chars total, showing first ${MAX_SHELL_OUTPUT}]`;
@@ -100,36 +156,6 @@ export async function executeShellAsString(
   return output;
 }
 
-/**
- * Clamp a MODEL-SUPPLIED numeric bound into the operator's allowed range.
- *
- * The model's tool arguments are EXTERNAL INPUT, exactly like a provider payload, and
- * `Math.min(x ?? d, d)` is not a clamp — it is a ceiling with no floor. The smallest legal
- * value defeats it:
- *
- *   Math.min(0 ?? 2000, 2000) === 0, and Node's child_process treats a timeout of 0 as
- *   NO TIMEOUT AT ALL.
- *
- * Measured against the built code with a control: with the operator ceiling at 2000 ms, a
- * model omitting the field had its 5-second command killed at 2004 ms; a model sending
- * `timeoutMs: 0` ran the full 5011 ms to completion and reported a clean `exitCode: 0`.
- * That directly falsified the comment this file carried — "the model can only LOWER the
- * timeout ... never raise it" — because at zero it raises it to unbounded. The bash tool
- * grants full host OS access, so this is the operator's only liveness control over it.
- *
- * Negative and NaN values were no better: they reach `execFile` and throw
- * ERR_OUT_OF_RANGE, which the catch reports as `exitCode: 1` — a configuration error
- * presented to the model as a failed command.
- *
- * So: a value the model did not supply, or supplied unusably, falls back to the operator
- * default; a usable value is bounded on BOTH sides.
- */
-function clampModelBound(supplied: number | undefined, operatorDefault: number): number {
-  if (typeof supplied !== 'number' || !Number.isFinite(supplied) || supplied < 1) {
-    return operatorDefault;
-  }
-  return Math.min(supplied, operatorDefault);
-}
 
 /**
  * OpenAI shell tool adapter — returns structured output.
@@ -158,7 +184,11 @@ export async function executeShellAsOpenAIResult(
       // model concludes. Two adapters over one shell, one of them honest.
       stdout: markTruncation(result.stdout, maxLen),
       stderr: markTruncation(result.stderr, maxLen),
-      outcome: result.timedOut
+      // Only a genuine timeout reports `timeout`. The SDK's outcome union has no member
+      // for "killed by an external signal" or "output limit exceeded", so those report an
+      // exit — but their stderr (set at the classification site) says what actually
+      // happened, rather than the exit code silently standing in for a story that is false.
+      outcome: result.termination === 'timeout'
         ? { type: 'timeout' as const }
         : { type: 'exit' as const, exitCode: result.exitCode },
     });

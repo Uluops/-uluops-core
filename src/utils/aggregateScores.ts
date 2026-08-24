@@ -1,3 +1,4 @@
+import { usableWeight } from './externalValue.js';
 /**
  * Shared score aggregation for multi-agent/multi-phase results.
  *
@@ -25,15 +26,6 @@ export interface ScoredItem {
  * @param weights - Weight map keyed by item key (defaults to equal weight of 1)
  * @returns Aggregated score, rounded for average/weighted_average
  */
-/**
- * An authored weight is usable only if it is a finite positive number; anything else
- * degrades to the neutral weight 1 — the same weight an unlisted key already gets, so one
- * malformed entry costs the weighting rather than the aggregate. See the call site for the
- * measured failure modes (NaN -> a fabricated 0, Infinity -> a NaN that FAIL-OPENS a gate).
- */
-function usableWeight(authored: number | undefined): number {
-  return typeof authored === 'number' && Number.isFinite(authored) && authored > 0 ? authored : 1;
-}
 
 export function aggregateScores(
   items: ScoredItem[],

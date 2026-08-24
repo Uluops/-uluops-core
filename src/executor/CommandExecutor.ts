@@ -148,7 +148,7 @@ export class CommandExecutor {
    * the unhardened twin was the common path. Extracting the shape is the fix — two call
    * sites that must agree are two chances to disagree.
    */
-  private crashPlaceholder(ref: string, reason: unknown): AgentResult {
+  private crashPlaceholder(ref: string, reason: unknown, startedAt?: number): AgentResult {
     const msg = reason instanceof Error ? reason.message : String(reason);
     return {
       name: ref,
@@ -167,7 +167,10 @@ export class CommandExecutor {
       // Reads real usage off the error when it carries any (MaxStepsExhaustedError
       // is thrown after a successful, already-billed call); otherwise zero tokens with
       // costUsd ABSENT, never a fabricated $0. See crashMetrics.
-      metrics: crashMetrics(reason),
+      // Elapsed time is knowable even when tokens are not; supply it when the caller
+      // captured a start. crashMetrics only defaults to 0 for a caller that genuinely has
+      // no measurement.
+      metrics: crashMetrics(reason, startedAt !== undefined ? { durationMs: Date.now() - startedAt } : undefined),
     } as AgentResult;
   }
 
@@ -187,10 +190,11 @@ export class CommandExecutor {
   ): Promise<AgentResult[]> {
     const results: AgentResult[] = [];
     for (const ref of refs) {
+      const startedAt = Date.now();
       try {
         results.push(await fn(ref));
       } catch (error) {
-        results.push(this.crashPlaceholder(ref, error));
+        results.push(this.crashPlaceholder(ref, error, startedAt));
         // Fail-fast: stop dispatching, keep everything already billed.
         break;
       }
@@ -211,7 +215,11 @@ export class CommandExecutor {
     refs: string[],
     fn: (ref: string) => Promise<AgentResult>,
   ): Promise<AgentResult[]> {
-    const settled = await Promise.allSettled(refs.map(fn));
+    const startedAt = refs.map(() => Date.now());
+    const settled = await Promise.allSettled(refs.map((ref, i) => {
+      startedAt[i] = Date.now();
+      return fn(ref);
+    }));
     const results: AgentResult[] = [];
     const agentErrors: string[] = [];
 
@@ -223,7 +231,7 @@ export class CommandExecutor {
         const ref = refs[i]!;
         const msg = outcome.reason instanceof Error ? outcome.reason.message : String(outcome.reason);
         agentErrors.push(`Agent ${ref} failed: ${msg}`);
-        results.push(this.crashPlaceholder(ref, outcome.reason));
+        results.push(this.crashPlaceholder(ref, outcome.reason, startedAt[i]));
       }
     }
 

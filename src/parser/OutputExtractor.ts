@@ -7,6 +7,7 @@ import type {
 } from '../types/parser.js';
 import { ParseError } from '../errors/index.js';
 import { OutputNormalizer } from './OutputNormalizer.js';
+import { parseExternalNumber } from '../utils/externalValue.js';
 
 /**
  * Extracts structured output from LLM responses using a 4-strategy fallback:
@@ -335,19 +336,19 @@ export class OutputExtractor {
     };
 
     if (scoreMatch?.[1]) {
-      const parsed = parseFloat(scoreMatch[1]);
+      const parsed = parseExternalNumber(scoreMatch[1]) ?? NaN;
       if (!isNaN(parsed)) output.score = parsed;
     }
 
     if (agentType === 'validator') {
       // Extract maxScore from fraction pattern (95/100) or explicit pattern
       if (scoreMatch?.[2]) {
-        const parsed = parseInt(scoreMatch[2], 10);
+        const parsed = parseExternalNumber(scoreMatch[2]) ?? NaN;
         if (!isNaN(parsed)) output.maxScore = parsed;
       } else {
         const maxScoreMatch = content.match(patterns.maxScore);
         if (maxScoreMatch?.[1]) {
-          const parsed = parseInt(maxScoreMatch[1], 10);
+          const parsed = parseExternalNumber(maxScoreMatch[1]) ?? NaN;
           if (!isNaN(parsed)) output.maxScore = parsed;
         }
       }
@@ -391,7 +392,7 @@ export class OutputExtractor {
           severity: this.inferSeverityFromContext(content, match.index),
           failureCode: failureCode?.trim(),
           filePath,
-          lineNumber: lineStr ? parseInt(lineStr, 10) : undefined,
+          lineNumber: parseExternalNumber(lineStr),
           description: title.trim(),
         });
       }

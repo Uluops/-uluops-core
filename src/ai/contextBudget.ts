@@ -1,4 +1,5 @@
 import { DEFAULT_CONTEXT_BUDGET } from '../constants.js';
+import { usableBudget } from '../utils/externalValue.js';
 
 export { DEFAULT_CONTEXT_BUDGET };
 
@@ -30,12 +31,6 @@ export interface DeriveContextBudgetInput {
  * wrap-up guard sitting above their hard limit (run died on provider HTTP 400
  * instead of degrading gracefully).
  */
-/** A budget is usable only if it is a finite, positive number. Absent, 0, negative, NaN
- *  and Infinity are all "no usable budget" — see deriveContextBudget for what each does
- *  when it slips through. */
-function usableBudget(n: number | null | undefined): number | undefined {
-  return typeof n === 'number' && Number.isFinite(n) && n > 0 ? n : undefined;
-}
 
 export function deriveContextBudget(input: DeriveContextBudgetInput): number {
   const window = usableBudget(input.modelWindow);

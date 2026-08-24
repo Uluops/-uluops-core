@@ -1,3 +1,4 @@
+import { parseExternalNumber } from '../utils/externalValue.js';
 /**
  * Condition-expression evaluation for PDL stages and inline agents
  * (pdl-steps-execution-spec-v0_1_1 Phase 3 / D5).
@@ -214,15 +215,17 @@ function evaluateTerm(term: string, ctx: ConditionContext): ConditionVerdict {
       return null;
     }
     const expected: string | number | boolean =
-      num !== undefined ? Number(num)
+      // EXTERNAL-OK: `num` is already a finite number here — parseExternalNumber ran on the
+    // operands above. This re-reads a validated value, not an external one.
+    num !== undefined ? Number(num)
       : bool !== undefined ? bool === 'true'
       : (str1 ?? str2)!;
     // Ordering comparators over a non-numeric operand are ill-formed: yield
     // unknown (fail-open) rather than NaN-comparison false — a false verdict
     // under run-gate semantics would silently SKIP the stage on a typo.
     if (op !== '==' && op !== '!=') {
-      const a = Number(actual);
-      const e = Number(expected);
+      const a = parseExternalNumber(actual) ?? NaN;
+      const e = parseExternalNumber(expected) ?? NaN;
       if (Number.isNaN(a) || Number.isNaN(e)) return null;
       switch (op) {
         case '>=': return negate(a >= e);

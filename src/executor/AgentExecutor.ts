@@ -1,3 +1,4 @@
+import { parseExternalNumber } from '../utils/externalValue.js';
 import type { ToolSet } from 'ai';
 import type { AIProvider, AIGenerateResult } from '../ai/AIProvider.js';
 import { ToolHandler, extToLanguage } from './ToolHandler.js';
@@ -715,7 +716,10 @@ export class AgentExecutor {
     if (countLine) {
       const match = /\.\.\. and (\d+) more files/.exec(countLine);
       if (match) {
-        fileCount = fileList.length - 1 + parseInt(match[1]!, 10);
+        // This re-parses THIS package's own formatted tool output, but its content is
+        // model-argument-dependent (the "... and N more files" marker comes from max_results),
+        // so a channel-1 defect used to surface here as a fabricated fileCount.
+        fileCount = fileList.length - 1 + (parseExternalNumber(match[1]) ?? 0);
       }
     }
 

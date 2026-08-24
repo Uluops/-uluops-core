@@ -35,6 +35,7 @@ import {
 } from '../errors/index.js';
 import type { ModelCapabilities } from '@uluops/registry-sdk';
 import type { Logger } from '@uluops/sdk-core';
+import { usableBudget } from '../utils/externalValue.js';
 
 /**
  * What `mapUsage` accepts — DERIVED from the AI SDK's own `LanguageModelUsage`
@@ -538,9 +539,24 @@ export class AIProvider {
     // downgraded to 'partial' completeness for a non-event. The log line still fires, so
     // the budget crossing remains visible; only the false claim is withdrawn.
     const brakeIsHonored = !(useStructuredOutput && this.isAnthropicJsonToolMode(providerOptions));
-    const prepareStep = options.contextBudget
-      ? this.buildBudgetPrepareStep(options.contextBudget, budgetTracker, brakeIsHonored)
+    // `usableBudget`, not truthiness. AIGenerateOptions.contextBudget is PUBLIC, so a
+    // library consumer is an external input source: `contextBudget: 0` is falsy, which
+    // meant no prepareStep, no brake — AND markBrakeInert() never reached, so the run
+    // reported `complete` with no marker at all. contextBudget.ts names this exact failure
+    // and closes it at deriveContextBudget; it was open again one layer above that.
+    const requestedBudget = usableBudget(options.contextBudget);
+    const prepareStep = requestedBudget !== undefined
+      ? this.buildBudgetPrepareStep(requestedBudget, budgetTracker, brakeIsHonored)
       : undefined;
+    if (options.contextBudget !== undefined && requestedBudget === undefined) {
+      // Nothing degrades silently (types/degradation.ts invariant 1): a caller who asked
+      // for a budget and got none must be told, not left to infer it from behaviour.
+      this.logger.warn(
+        `contextBudget was supplied but is not a usable positive number (${String(options.contextBudget)}); `
+        + 'no wrap-up brake will be installed for this run.',
+      );
+      budgetTracker?.markBrakeInert();
+    }
     const maxSteps = options.maxSteps ?? DEFAULT_MAX_STEPS;
 
     return generateText({
@@ -1018,7 +1034,14 @@ export class AIProvider {
     // the operator cap) to leave room for the final response. Keep the 5 most recent
     // tool uses so the model retains working context.
     if (!('contextManagement' in anthropicOpts)) {
-      const evictionBudget = effectiveBudget ?? this.config.contextBudget ?? DEFAULT_CONTEXT_BUDGET;
+      // The SECOND reader of contextBudget, and it bypassed the guard the first one got.
+      // `usableBudget` guards the DERIVATION path (deriveContextBudget); this is a
+      // different path reading the same config field raw, so `0` produced
+      // `trigger: {value: 0}` — Anthropic context management evicting tool uses from step 1,
+      // silently — and NaN serialized to `null` on the wire.
+      const evictionBudget = usableBudget(effectiveBudget)
+        ?? usableBudget(this.config.contextBudget)
+        ?? DEFAULT_CONTEXT_BUDGET;
       const contextTrigger = Math.round(evictionBudget * 0.5);
       anthropicOpts = {
         ...anthropicOpts,

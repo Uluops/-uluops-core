@@ -1,5 +1,6 @@
 import { describe, it, expect } from 'vitest';
 import { agentOutputSchema } from '../../src/parser/outputSchemas.js';
+import { z } from 'zod';
 
 /** Base valid output — all nullable analysis fields set to null */
 const baseOutput = {
@@ -428,5 +429,61 @@ describe('agentOutputSchema', () => {
       expect(result.domainMetrics).toHaveLength(2);
       expect(result.domainMetrics![0]!.key).toBe('atomsIdentified');
     });
+  });
+});
+
+/**
+ * `z.number()` accepts Infinity — the schema confers a trust it does not verify.
+ *
+ * POSITIVE CONTROL: remove `.finite()` from any field below and its test fails.
+ *
+ * Verified against the pinned zod (3.25.76), with a control proving the probe is not
+ * vacuous — NaN IS rejected, so the schema is genuinely running:
+ *
+ *     Infinity   ACCEPTED -> Infinity      -Infinity  ACCEPTED
+ *     NaN        rejected                  5.5        ACCEPTED
+ *
+ * This matters more here than anywhere else in the package: OutputExtractor treats the
+ * structured-output path as extraction confidence 1.0 BECAUSE the SDK schema-validated it.
+ * An unconstrained `z.number()` therefore stamps `Infinity` as trustworthy, and
+ * `Infinity < threshold` is `false`, so it fail-opens a gate — the same shape as the
+ * NaN-weight and the inert-budget defects, arriving through the most-trusted rung.
+ */
+describe('outputSchemas — numeric fields reject non-finite values', () => {
+  const base = {
+    decision: 'PASS',
+    summary: null,
+    categories: null,
+    artifacts: null,
+    ...baseOutput,
+  };
+
+  it('proves the control: bare z.number() DOES accept Infinity', () => {
+    // If this ever starts failing, zod changed its default and the `.finite()` calls below
+    // may be redundant — but verify before removing them.
+    expect(z.number().safeParse(Infinity).success).toBe(true);
+    expect(z.number().safeParse(NaN).success).toBe(false);
+  });
+
+  it.each([[Infinity], [-Infinity]])('rejects a non-finite top-level score (%s)', (bad) => {
+    expect(agentOutputSchema.safeParse({ ...base, score: bad, maxScore: 100 }).success).toBe(false);
+  });
+
+  it('rejects a non-finite per-category score', () => {
+    // These nested fields have NO downstream clamp of any kind — unlike the top-level
+    // score, which AgentExecutor clamps to [0,100] with a warning. They flow to consumers
+    // as-is, which is why the schema is their only seam.
+    expect(agentOutputSchema.safeParse({
+      ...base, score: 80, maxScore: 100,
+      categories: [{ name: 'x', score: Infinity, maxScore: 100 }],
+    }).success).toBe(false);
+  });
+
+  it('STILL accepts an out-of-range but finite score — the negative control', () => {
+    // Range is deliberately enforced downstream at AgentExecutor (clamp + warn), not here.
+    // Without this assertion, "rejects bad numbers" would pass for a schema that had
+    // swallowed the range contract too, replacing a visible warning with a silent reject.
+    expect(agentOutputSchema.safeParse({ ...base, score: -5, maxScore: 100 }).success).toBe(true);
+    expect(agentOutputSchema.safeParse({ ...base, score: 5000, maxScore: 100 }).success).toBe(true);
   });
 });

@@ -1,3 +1,7 @@
+import type { Logger } from '@uluops/sdk-core';
+import { finiteNonNegative } from '../utils/externalValue.js';
+import { DEFAULT_CONTEXT_BUDGET } from '../constants.js';
+
 /**
  * Tracks context window usage across steps and provides budget status.
  *
@@ -35,7 +39,43 @@ export class TokenBudgetTracker {
    */
   private static readonly EVICTION_DROP_FRACTION = 0.05;
 
-  constructor(private budget: number) {}
+  /**
+   * @param budget context-token budget. Validated HERE, not assumed validated upstream.
+   *
+   * TokenBudgetTracker is exported from the package root, so a library consumer can
+   * construct it directly and IS an external input source. Two waivers in this file
+   * previously justified unguarded reads with "deriveContextBudget rejects such budgets
+   * upstream" — true of the one in-package call path, and false of the type, which requires
+   * no such caller. `new TokenBudgetTracker(NaN)` made `isOverThreshold()` permanently
+   * false, `percentUsed` 0, and `markBrakeInert()` unreachable: a budget that silently does
+   * not exist, which is precisely the "nothing degrades silently" invariant
+   * `budget.brake-inert` was added to satisfy.
+   *
+   * An unusable budget falls back to the documented default rather than throwing: this is a
+   * telemetry object, and failing a whole run because a cost ceiling was malformed trades a
+   * reporting fault for an execution fault. The warning is how it stops being silent.
+   */
+  constructor(budget: number, logger?: Logger) {
+    // finiteNonNegative, NOT usableBudget — the distinction is load-bearing and tested.
+    //
+    // ZERO IS A DELIBERATE VALUE HERE ("no budget"), pinned by a test asserting
+    // `percentUsed: 0, remaining: 0`. NaN/Infinity/negative are MALFORMED. Collapsing the
+    // two would replace a documented contract with a fallback — the mirror image of the
+    // defect this release is about: over-generalizing a class until it swallows an
+    // intentional case. `deriveContextBudget` treats 0 as unusable because a zero
+    // *derivation* has no threshold to compute; a zero tracker is just a tracker of zero.
+    const usable = finiteNonNegative(budget);
+    if (usable === undefined) {
+      logger?.warn(
+        `TokenBudgetTracker received a non-finite or negative budget (${String(budget)}); `
+        + `falling back to ${DEFAULT_CONTEXT_BUDGET}. Every budget guard would otherwise be `
+        + 'silently inert — isOverThreshold() permanently false and markBrakeInert() unreachable.',
+      );
+    }
+    this.budget = usable ?? DEFAULT_CONTEXT_BUDGET;
+  }
+
+  private readonly budget: number;
 
   /**
    * Record the final state of the budget wrap-up latch. Set when the latch

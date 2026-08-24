@@ -2,6 +2,47 @@ import { z } from 'zod';
 import type { Issue } from '../types/command.js';
 
 /**
+ * ── Why every `z.number()` here carries `.finite()` ────────────────────────────────────
+ *
+ * **`z.number()` ACCEPTS `Infinity` and `-Infinity`.** Verified against the pinned zod
+ * (3.25.76) with a control that proves the probe is not vacuous — `NaN` IS rejected, so the
+ * schema is running:
+ *
+ *     Infinity   ACCEPTED -> Infinity
+ *     -Infinity  ACCEPTED -> -Infinity
+ *     NaN        rejected
+ *     5.5        ACCEPTED -> 5.5
+ *
+ * This file validates the STRUCTURED-OUTPUT path, which OutputExtractor treats as the most
+ * trusted rung — extraction confidence 1.0, on the grounds that the SDK schema-validated it.
+ * So an unconstrained `z.number()` is not a weak guard, it is a guard that confers trust it
+ * does not verify: `score: Infinity` arrives stamped "schema-validated".
+ *
+ * The consequence is the fail-open shape this release has now met three times
+ * (`usableWeight`, `usableBudget`, and here): a gate compares `score < threshold`, and
+ * `Infinity < 70` is `false`, so the gate PASSES a run whose score is not a number. It then
+ * JSON-serializes to `null`, so nothing downstream can tell it apart from an unscored run.
+ *
+ * `.finite()` on every numeric field is the seam for this channel. Do not remove it to
+ * "simplify" a schema: the constraint IS the validation, and the type says nothing.
+ *
+ * ── RANGE is deliberately NOT enforced here ────────────────────────────────────────────
+ *
+ * Only finiteness. Range lives downstream at `AgentExecutor` (~:533), which clamps an
+ * out-of-range score into [0,100] AND WARNS — a test pins that division explicitly
+ * ("accepts score below 0 (range enforced downstream at AgentExecutor, not schema)").
+ * Adding `.nonnegative()` here would replace a clamp-with-a-visible-warning by a hard
+ * schema reject that silently degrades the run to text extraction, losing the warning that
+ * tells an operator their agent is emitting nonsense.
+ *
+ * Finiteness and range are enforced in different places on purpose. `Infinity` is not an
+ * out-of-range score, it is not a score at all, and the nested fields below
+ * (`pointsEarned`, `pointsPossible`, `lineNumber`, `groundingRatio`, per-category
+ * `score`/`maxScore`) have NO downstream clamp of any kind — they flow straight to
+ * consumers. That is the gap this closes.
+ */
+
+/**
  * Optional field that also tolerates an explicit `null` from the model.
  *
  * Emits NO union in the JSON schema — the field is simply absent from `required` — which is what
@@ -48,7 +89,7 @@ const issueSchema = z.object({
   severity: optionalNullTolerant(z.enum(['critical', 'high', 'medium', 'low', 'info']).optional()
     .describe('Issue severity level')),
   filePath: optionalNullTolerant(z.string().optional().describe('File path where the issue was found')),
-  lineNumber: optionalNullTolerant(z.number().optional().describe('Line number in the file')),
+  lineNumber: optionalNullTolerant(z.number().finite().optional().describe('Line number in the file')),
   failureCode: optionalNullTolerant(z.string().optional().describe('Machine-readable failure code')),
 });
 
@@ -57,12 +98,12 @@ const issueSchema = z.object({
  */
 const categorySchema = z.object({
   name: z.string().describe('Category name (e.g., "Code Quality", "Security")'),
-  score: z.number().nullable().describe('Points earned in this category (null iff maxScore null)'),
-  maxScore: z.number().nullable().describe('Maximum score possible (null for scoreless agents)'),
+  score: z.number().finite().nullable().describe('Points earned in this category (null iff maxScore null)'),
+  maxScore: z.number().finite().nullable().describe('Maximum score possible (null for scoreless agents)'),
   findings: z.array(z.object({
     criterion: z.string().describe('What is being evaluated'),
-    pointsEarned: z.number().nullable(),
-    pointsPossible: z.number().nullable(),
+    pointsEarned: z.number().finite().nullable(),
+    pointsPossible: z.number().finite().nullable(),
     issues: z.array(issueSchema).describe('Issues found for this criterion'),
   })).describe('Findings within this category'),
 });
@@ -130,7 +171,7 @@ const explorationMapSchema = z.object({
  */
 const epistemicAssessmentSchema = z.object({
   confidence: z.enum(['high', 'medium', 'low']).describe('Overall confidence in the analysis'),
-  groundingRatio: optionalNullTolerant(z.number().optional().describe('Ratio of grounded claims to total claims (0-1)')),
+  groundingRatio: optionalNullTolerant(z.number().finite().optional().describe('Ratio of grounded claims to total claims (0-1)')),
   keyUncertainties: optionalNullTolerant(z.array(z.string()).optional().describe('Major sources of uncertainty in the analysis')),
   methodology: optionalNullTolerant(z.string().optional().describe('Analytical methodology applied')),
 });
@@ -201,9 +242,9 @@ export const agentOutputSchema = z.object({
   // min/max on numbers and OpenAI strict rejects .optional(); required+nullable
   // is the only cross-provider shape. Range (0-100) is enforced at the
   // AgentExecutor mapping layer instead. Invariant: score null iff maxScore null.
-  score: z.number().nullable()
+  score: z.number().finite().nullable()
     .describe('Overall score 0-100, or null for generators/executors producing artifacts not scores'),
-  maxScore: z.number().nullable()
+  maxScore: z.number().finite().nullable()
     .describe('Maximum possible score; null iff score is null'),
   summary: optionalNullTolerant(z.string().optional()
     .describe('Brief human-readable summary of the result')),

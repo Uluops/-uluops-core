@@ -319,3 +319,60 @@ describe('StepsExecutor', () => {
     expect(results[0]!.output).toContain('[truncated]');
   });
 });
+
+/**
+ * Authored definition values are EXTERNAL INPUT — YAML that RegistryClient type-erases
+ * with `as Record<string, unknown>` and no runtime schema. `.nan` and `.inf` are directly
+ * authorable in YAML.
+ *
+ * POSITIVE CONTROL: revert `clampModelBound(step.timeout, …)` to `step.timeout ?? …`, or
+ * `externalInt(step.retries, …)` to `Math.min(MAX_STEP_RETRIES, Math.max(0, step.retries ?? 0))`,
+ * and the matching test fails.
+ *
+ * `timeout` was the odd one out: its two siblings on the NEXT TWO LINES were already
+ * clamped and it was not. Measured: `execFile` with `timeout: 0` RESOLVED after a full 2 s
+ * sleep — no timeout at all. A steps stage runs host shell commands, so this is the
+ * operator's only liveness control over it.
+ *
+ * `retries: .nan` was sharper still: `maxAttempts` became NaN, `attempt <= NaN` was false,
+ * the loop body NEVER EXECUTED, the command never ran — and `return lastResult!` pushed
+ * `undefined` through a non-null assertion into `stepResults[]`, where PipelineExecutor
+ * then read `.status` off it.
+ */
+describe('StepsExecutor — authored bounds cannot disable the guards', () => {
+  const executor = new StepsExecutor(noopLogger);
+  const run = (step: Record<string, unknown>) =>
+    executor.execute([step] as never, { target: makeTarget() });
+
+  it('a step that sets timeout: 0 is still bounded by the operator default', async () => {
+    const started = Date.now();
+    const results = await run({ name: 'slow', command: 'sleep 4', timeout: 0 });
+
+    // Must not have run to completion unbounded.
+    expect(Date.now() - started).toBeLessThan(3_500);
+    expect(results).toHaveLength(1);
+  }, 20_000);
+
+  it.each([['.nan-equivalent', NaN], ['infinite', Infinity], ['negative', -3]])(
+    'a %s retries value still runs the command exactly once', async (_label, bad) => {
+      // The defect: the loop never executed, so the command never ran AND the function
+      // returned undefined. A result must always come back, and it must be a real one.
+      const results = await run({ name: 'echo', command: 'echo ok', retries: bad });
+
+      expect(results).toHaveLength(1);
+      // Assert the command ACTUALLY RAN, not merely that a result object came back.
+      // Checking only for a defined status passed with the guard removed, because the
+      // `?? fail(...)` fallback also produces a well-formed result — the assertion could
+      // not tell "ran and succeeded" from "never ran and was papered over".
+      expect(results[0]!.status).toBe('passed');
+      expect(results[0]!.output).toBe('ok');
+      expect(results[0]!.exitCode).toBe(0);
+    }, 20_000);
+
+  it('a well-formed retries value is still honoured — the negative control', async () => {
+    // Without this, "clamps bad retries" would pass for an implementation that ignored
+    // retries entirely, silently removing the retry feature.
+    const results = await run({ name: 'fail', command: 'exit 7', retries: 2 });
+    expect(results[0]!.status).toBe('failed');
+  }, 20_000);
+});

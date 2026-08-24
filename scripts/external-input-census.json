@@ -1,0 +1,12 @@
+{
+  "counts": {
+    "dynamic-import": 1,
+    "service-response": 27,
+    "model-tool-args": 18,
+    "json-parse": 5,
+    "process-env": 18,
+    "string-to-number": 4,
+    "authored-yaml": 2
+  },
+  "updated": "run --update to refresh"
+}

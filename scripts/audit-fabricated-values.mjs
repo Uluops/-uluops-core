@@ -1,5 +1,21 @@
 #!/usr/bin/env node
 /**
+ * SUPERSEDED by `audit-external-inputs.mjs`. Kept for one reason: the header below records
+ * WHY a field-name enumeration cannot work, and deleting it would delete the reasoning that
+ * cost six audit passes to learn.
+ *
+ * This script enumerated by FIELD NAME. Audit pass 6 demonstrated that it had been hardened
+ * at the citations of pass 5 — extended with exactly the four names pass 5 reported — and
+ * was structurally blind to the seven model tool arguments and two authored step bounds
+ * nobody had met yet. A name list is an OPEN set; it cannot terminate.
+ *
+ * Its replacement enumerates by PROVENANCE (a closed set) and adds a census-drift check, so
+ * a NEW entry point announces itself instead of waiting for an audit to stumble on it.
+ *
+ * Do not re-wire this into CI. `npm run check:external-inputs` is the live gate.
+ *
+ * ─────────────────────────────────────────────────────────────────────────────────────────
+ *
  * Enumerate the defect class that aborted the 0.42.0 ship gate four times.
  *
  * THE CLASS
