@@ -116,7 +116,7 @@ export function buildUpstreamContext(
       continue;
     }
 
-    if (result.steps && result.steps.length > 0 && !result.result?.score && !result.result?.recommendations?.length) {
+    if (result.steps && result.steps.length > 0 && result.result?.score == null && !result.result?.recommendations?.length) {
       // Steps-only stage — nothing forwardable; condition expressions are the channel.
       continue;
     }

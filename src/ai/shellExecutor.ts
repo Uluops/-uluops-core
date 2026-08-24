@@ -67,6 +67,19 @@ export async function runShellCommand(
   }
 }
 
+/**
+ * Truncate to a bound, saying so when it happens.
+ *
+ * `executeShellAsString` has appended a `[truncated — N chars total]` marker since it was
+ * written; this adapter substringed silently. Silence here is the same absent-vs-zero
+ * conflation the rest of this release corrects, in text: the model receives a shorter
+ * string and has no way to know it is not the whole story.
+ */
+function markTruncation(text: string, maxLen: number): string {
+  if (text.length <= maxLen) return text;
+  return `${text.substring(0, maxLen)}\n\n[truncated — ${text.length} chars total, showing first ${maxLen}]`;
+}
+
 /** Max shell output size returned to the LLM context. Prevents a single tool call from
  *  consuming the entire context budget (e.g., `cat /dev/urandom | base64 | head -c 500000`). */
 const MAX_SHELL_OUTPUT = 100_000; // ~100KB, well within 1MB maxBuffer but bounded for context
@@ -88,6 +101,37 @@ export async function executeShellAsString(
 }
 
 /**
+ * Clamp a MODEL-SUPPLIED numeric bound into the operator's allowed range.
+ *
+ * The model's tool arguments are EXTERNAL INPUT, exactly like a provider payload, and
+ * `Math.min(x ?? d, d)` is not a clamp — it is a ceiling with no floor. The smallest legal
+ * value defeats it:
+ *
+ *   Math.min(0 ?? 2000, 2000) === 0, and Node's child_process treats a timeout of 0 as
+ *   NO TIMEOUT AT ALL.
+ *
+ * Measured against the built code with a control: with the operator ceiling at 2000 ms, a
+ * model omitting the field had its 5-second command killed at 2004 ms; a model sending
+ * `timeoutMs: 0` ran the full 5011 ms to completion and reported a clean `exitCode: 0`.
+ * That directly falsified the comment this file carried — "the model can only LOWER the
+ * timeout ... never raise it" — because at zero it raises it to unbounded. The bash tool
+ * grants full host OS access, so this is the operator's only liveness control over it.
+ *
+ * Negative and NaN values were no better: they reach `execFile` and throw
+ * ERR_OUT_OF_RANGE, which the catch reports as `exitCode: 1` — a configuration error
+ * presented to the model as a failed command.
+ *
+ * So: a value the model did not supply, or supplied unusably, falls back to the operator
+ * default; a usable value is bounded on BOTH sides.
+ */
+function clampModelBound(supplied: number | undefined, operatorDefault: number): number {
+  if (typeof supplied !== 'number' || !Number.isFinite(supplied) || supplied < 1) {
+    return operatorDefault;
+  }
+  return Math.min(supplied, operatorDefault);
+}
+
+/**
  * OpenAI shell tool adapter — returns structured output.
  * Shell tool action shape (verified from @ai-sdk/openai index.d.ts:718-722):
  *   { commands: string[], timeoutMs?: number, maxOutputLength?: number }
@@ -98,20 +142,22 @@ export async function executeShellAsOpenAIResult(
   defaultTimeoutMs: number,
   logger?: Logger,
 ): Promise<OpenAIShellOutput> {
-  // Ceiling, not fallback: the model can only LOWER the timeout/output cap below the
-  // operator-configured default, never raise it. A `?? default` fallback would let a
-  // model-supplied value override the default upward — the exact hazard
-  // SHELL_COMMAND_TIMEOUT_MS was introduced to close (see constants.ts).
-  const timeoutMs = Math.min(action.timeoutMs ?? defaultTimeoutMs, defaultTimeoutMs);
+  // Bounded on BOTH sides — see clampModelBound. The model can lower these below the
+  // operator default and cannot raise them, including by sending 0, a negative, or NaN.
+  const timeoutMs = clampModelBound(action.timeoutMs, defaultTimeoutMs);
   const results = [];
 
-  const maxLen = Math.min(action.maxOutputLength ?? MAX_SHELL_OUTPUT, MAX_SHELL_OUTPUT);
+  const maxLen = clampModelBound(action.maxOutputLength, MAX_SHELL_OUTPUT);
 
   for (const command of action.commands) {
     const result = await runShellCommand(command, cwd, timeoutMs, logger);
     results.push({
-      stdout: maxLen !== undefined ? result.stdout.substring(0, maxLen) : result.stdout,
-      stderr: maxLen !== undefined ? result.stderr.substring(0, maxLen) : result.stderr,
+      // Truncation is MARKED, matching the Anthropic twin above. This path substringed
+      // silently, so a model could not tell "the command produced no output" from "the
+      // output was discarded" — and at the 100 KB ceiling that difference changes what the
+      // model concludes. Two adapters over one shell, one of them honest.
+      stdout: markTruncation(result.stdout, maxLen),
+      stderr: markTruncation(result.stderr, maxLen),
       outcome: result.timedOut
         ? { type: 'timeout' as const }
         : { type: 'exit' as const, exitCode: result.exitCode },

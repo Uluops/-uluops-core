@@ -293,12 +293,27 @@ export class AgentExecutor {
    */
   private buildMetrics(result: AIGenerateResult, durationMs: number): ExecutionMetrics {
     return {
+      // FABRICATION-OK: reads UsageMetrics, which mapUsage has ALREADY clamped at the provider boundary.
+      // This is an internal field copy, not an external read; clamping twice would only
+      // hide a regression in the real clamp.
       inputTokens: result.usage.input_tokens,
+      // FABRICATION-OK: reads UsageMetrics, already clamped by mapUsage at the provider boundary. An
+      // internal field copy, not an external read.
       outputTokens: result.usage.output_tokens,
+      // FABRICATION-OK: reads UsageMetrics, already clamped by mapUsage at the provider boundary. An
+      // internal field copy, not an external read.
       cacheCreationTokens: result.usage.cache_creation_input_tokens,
+      // FABRICATION-OK: reads UsageMetrics, already clamped by mapUsage at the provider boundary. An
+      // internal field copy, not an external read.
       cacheReadTokens: result.usage.cache_read_input_tokens,
+      // FABRICATION-OK: reads UsageMetrics, already clamped by mapUsage at the provider boundary. An
+      // internal field copy, not an external read.
       cachedInputTokens: result.usage.cached_input_tokens,
+      // FABRICATION-OK: reads UsageMetrics, already clamped by mapUsage at the provider boundary. An
+      // internal field copy, not an external read.
       reasoningOutputTokens: result.usage.reasoning_tokens,
+      // FABRICATION-OK: reads UsageMetrics, already clamped by mapUsage at the provider boundary. An
+      // internal field copy, not an external read.
       thinkingTokens: result.usage.thinking_tokens,
       totalEffectiveTokens: this.calculateEffectiveTokens(result.usage),
       durationMs,
@@ -828,6 +843,8 @@ export class AgentExecutor {
     // Clamped. mapUsage guards its inputs, but this is the last arithmetic before the
     // number is persisted, and a negative effective total would SUBTRACT from a
     // pipeline roll-up rather than merely misreport one agent.
+    // FABRICATION-OK: reviewed 2026-08-24 — reads an already-clamped internal value, or tests for the
+    // PRESENCE of a measurement rather than its magnitude. Not an external read.
     return Math.max(0, usage.input_tokens)
       + Math.max(0, usage.output_tokens)
       + Math.max(0, usage.cache_creation_input_tokens ?? 0);

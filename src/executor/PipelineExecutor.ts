@@ -559,11 +559,16 @@ export class PipelineExecutor {
         maxScore: null,
         recommendations: [],
         durationMs,
+        // FABRICATION-OK: a steps stage runs NO LLM by construction, so these are MEASURED zeros for a
+      // non-event. sumCostUsd documents this exact case (run #69 F5): a real $0 that sums
+      // cleanly, as opposed to the absent cost that poisons a roll-up to undefined.
         metrics: { durationMs, model: 'none', toolCalls: 0, inputTokens: 0, outputTokens: 0, totalEffectiveTokens: 0,
           // REAL zero, not absent: a steps stage runs no LLM by construction, so its
           // cost is a known $0. Leaving it undefined would poison every mixed
           // pipeline's sumCostUsd rollup (run #69 F5) — undefined is reserved for
           // LLM work that cannot be priced (unpriced model, crash with unreported usage).
+          // FABRICATION-OK: see above — a steps stage genuinely cost $0. Absent here would poison every
+      // mixed pipeline rollup to undefined forever.
           costUsd: 0 },
       },
       durationMs,

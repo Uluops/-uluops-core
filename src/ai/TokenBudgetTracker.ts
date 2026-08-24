@@ -112,7 +112,11 @@ export class TokenBudgetTracker {
     // SDK step hook exposes uniformly.
     const drop = this.currentContextTokens - inputTokens;
     if (
+      // FABRICATION-OK: "is there a PRIOR measurement to compare against" — a zero previous window
+      // means no baseline, not a measured zero.
       this.currentContextTokens > 0 &&
+      // FABRICATION-OK: asks whether there IS a measurement, not what it is — a zero window gives no
+      // delta to compare against.
       inputTokens > 0 &&
       drop > this.currentContextTokens * TokenBudgetTracker.EVICTION_DROP_FRACTION
     ) {
@@ -139,6 +143,8 @@ export class TokenBudgetTracker {
   } {
     const usedTotal = this.currentContextTokens;
     const remaining = Math.max(0, this.budget - usedTotal);
+    // FABRICATION-OK: division guard. A zero budget cannot yield a percentage; 0 is the only
+    // non-NaN answer and deriveContextBudget now rejects a zero budget upstream anyway.
     const percentUsed = this.budget > 0 ? Math.round((usedTotal / this.budget) * 100) : 0;
 
     return {
@@ -155,6 +161,8 @@ export class TokenBudgetTracker {
    * Check if context window usage has exceeded a threshold percentage.
    */
   isOverThreshold(threshold: number): boolean {
+    // FABRICATION-OK: a non-positive budget has no threshold to be over; returning false is the
+    // safe answer and deriveContextBudget rejects such budgets upstream.
     return this.budget > 0 && this.currentContextTokens >= this.budget * threshold;
   }
 }

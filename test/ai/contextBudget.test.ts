@@ -33,3 +33,47 @@ describe('deriveContextBudget', () => {
     expect(DEFAULT_CONTEXT_BUDGET).toBe(200_000);
   });
 });
+
+/**
+ * The operator budget is CONFIG — external input — and was passed through on `!= null`.
+ *
+ * POSITIVE CONTROL: restore `if (input.operatorBudget != null)` and the tests below fail.
+ * Both unusable values fail badly and neither announces itself:
+ *
+ *   0   -> upperThreshold 0, so the wrap-up latch engages on step 1 and the agent can
+ *          never call a tool, while reporting a forced-wrap-up marker and 'partial'
+ *          completeness — a real degradation with a false stated cause.
+ *   NaN -> every threshold comparison is false, so the brake is SILENTLY INERT with no
+ *          markBrakeInert() call. That is exactly the gap `budget.brake-inert` was added
+ *          to close, reopened one layer up: degradation.ts invariant (1) is "nothing
+ *          degrades silently".
+ */
+describe('deriveContextBudget — an unusable operator budget is treated as absent', () => {
+  it.each([[0], [-1], [Number.NaN], [Number.POSITIVE_INFINITY]])(
+    'falls through to the model window for operatorBudget %s', (bad) => {
+      const budget = deriveContextBudget({ operatorBudget: bad as number, modelWindow: 200_000 });
+      expect(Number.isFinite(budget)).toBe(true);
+      expect(budget).toBeGreaterThan(0);
+      expect(budget).toBe(200_000);
+    });
+
+  it('falls back to the documented default when the window is unknown too', () => {
+    const budget = deriveContextBudget({ operatorBudget: Number.NaN });
+    expect(Number.isFinite(budget)).toBe(true);
+    expect(budget).toBeGreaterThan(0);
+  });
+
+  it('still HONOURS a usable operator budget — the negative control', () => {
+    // Without this, "rejects unusable budgets" would pass for a function that ignored the
+    // operator entirely, removing the only cost control the config exposes.
+    expect(deriveContextBudget({ operatorBudget: 50_000, modelWindow: 200_000 })).toBe(50_000);
+    expect(deriveContextBudget({ operatorBudget: 500_000, modelWindow: 200_000 })).toBe(200_000);
+  });
+
+  it('never returns a budget that would make a threshold comparison meaningless', () => {
+    for (const bad of [0, -1, Number.NaN, Number.POSITIVE_INFINITY, undefined]) {
+      const b = deriveContextBudget({ operatorBudget: bad as number, modelWindow: 128_000 });
+      expect(Number.isFinite(b) && b > 0).toBe(true);
+    }
+  });
+});

@@ -1892,6 +1892,13 @@ describe('WorkflowExecutor — billed work survives a blocked phase and a thrown
     // The measured defect: 49,000 effective tokens reported as 0.
     expect(blocked.commands[0]!.metrics.inputTokens).toBe(49_000);
     expect(result.metrics.totalEffectiveTokens).toBeGreaterThanOrEqual(50_000);
+    // POSITIVE CONTROL: set `durationMs: 0` back in createBlockedPhase and this fails.
+    // The carried commands DID run and DID bill, so the phase consumed real wall-clock;
+    // reporting 0 asserted that nothing ran, which the line two above it disproves. The
+    // waiver that used to sit here said exactly that, and was false from the moment the
+    // recovery was added.
+    expect(blocked.durationMs).toBe(9_000);
+    expect(blocked.durationMs).not.toBe(0);
   });
 
   it('reports prior phases’ metrics and score on a THROWN workflow', async () => {
@@ -1919,6 +1926,15 @@ describe('WorkflowExecutor — billed work survives a blocked phase and a thrown
     expect(partial).toBeDefined();
     expect(partial['metrics']).toBeDefined();
     expect(partial['metrics'].totalEffectiveTokens).toBeGreaterThan(0);
+    // POSITIVE CONTROL: set `durationMs: 0` on the synthesized "Failed phase" in
+    // executeAsync's catch and this fails. There are TWO recovery sites with the same
+    // shape — this one and createBlockedPhase — and a mutation sweep found only the other
+    // one covered. Two sites that must agree are two chances to disagree, which is the
+    // whole subject of this release.
+    const recovered = (partial['phases'] as Array<Record<string, any>>).find(p => p['id'] === 'failed');
+    expect(recovered).toBeDefined();
+    expect(recovered!['durationMs']).toBe(9_000);
+    expect(recovered!['durationMs']).not.toBe(0);
   });
 
   it('a SKIPPED phase reports no score — it never ran', async () => {

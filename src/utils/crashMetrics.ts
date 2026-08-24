@@ -36,10 +36,18 @@ export function crashMetrics(error: unknown, extra?: Partial<ExecutionMetrics>):
     // because their types admit no absence; costUsd is OMITTED, which is the field that
     // carries the unknown. See this function's doc comment.
     inputTokens: 0,
+    // FABRICATION-OK: see inputTokens above — the documented "nothing known" branch,
+    // where costUsd is the field that carries the unknown.
     outputTokens: 0,
     // FABRICATION-OK: see inputTokens above — the documented "nothing known" branch,
     // where costUsd is the field that carries the unknown.
     totalEffectiveTokens: 0,
+    // Wall-clock is knowable even when tokens are not, so every caller that HOLDS a
+    // duration now supplies it through `extra`. This line was previously covered by the
+    // waiver four lines up, whose reason speaks only about TOKENS and COST — a
+    // waiver-bleed the old 4-line lookback allowed, and which the scoped lookback now
+    // prevents. A network failure 30 seconds in reported 0 ms.
+    // FABRICATION-OK: floor for a caller that genuinely holds no duration.
     durationMs: 0,
     model: 'unknown',
     ...extra,

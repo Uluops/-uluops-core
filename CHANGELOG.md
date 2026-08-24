@@ -403,6 +403,73 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) 
   array lengths where absence and zero genuinely coincide, event counts that carry no price,
   and the documented "nothing is known" branch in `crashMetrics`.
 
+- **Fifth sweep — the class was in the wrong place, and the instrument was the thing that
+  needed auditing.** The fourth-pass enumerator was pointed at the auditor, which found 13
+  coverage blind spots hiding 8 real sites, one waiver bleeding onto a line its reason did
+  not describe, two waivers asserting things false of the code, and — most importantly —
+  **the class living somewhere the four rules structurally could not see.**
+
+  The framing error was mine and it is the same one, one level up: clamp discipline was
+  extended to *provider payloads* and stopped there. The class is **unclamped external
+  input**. Model tool arguments and definition-authored config are external input too.
+
+  - **A model-supplied `timeoutMs: 0` disabled the operator's shell timeout entirely and
+    reported a clean exit.** `Math.min(x ?? d, d)` is a ceiling with no floor, and Node's
+    `child_process` treats a timeout of `0` as NO TIMEOUT. Measured against the built code
+    with a control: at a 2,000 ms operator ceiling, a model omitting the field had its
+    5-second command killed at 2,004 ms; a model sending `0` ran the full 5,011 ms to
+    completion and reported `{type:'exit', exitCode:0}`. That falsifies this file's own
+    load-bearing comment — *"the model can only LOWER the timeout … never raise it"* — at
+    the smallest legal value, and the bash tool it guards grants full host OS access, so
+    this was the operator's only liveness control over it. Negative and NaN reached
+    `execFile` and threw `ERR_OUT_OF_RANGE`, reported to the model as `exitCode: 1` — a
+    configuration fault presented as a failed command. Both bounds are now clamped on both
+    sides via `clampModelBound`.
+
+  - **Unvalidated authored score weights fabricated a score, and one of them FAIL-OPENED a
+    gate.** `weights[item.key] ?? 1` read definition YAML/JSON raw. Measured with true
+    scores of 90 and 95 (93 unweighted): a `NaN` weight reported **0**, failing every gate;
+    an `Infinity` weight produced **NaN**, and because `NaN < threshold` is `false` **the
+    gate PASSES** a run with no valid score, which then JSON-serializes to `null`. YAML makes
+    `.nan` and `.inf` directly authorable. Unusable weights now degrade to the neutral
+    weight `1` — the same weight an unlisted key already gets — so one malformed entry costs
+    the weighting rather than the aggregate.
+
+  - **`contextBudget` was unvalidated**: `0` latched the wrap-up brake on step 1 so the
+    agent could never call a tool (while reporting a forced-wrap-up marker and `partial`
+    completeness — a real degradation with a false stated cause), and `NaN` made every
+    threshold comparison false, leaving the brake **silently inert with no
+    `markBrakeInert()` call**. That is precisely the gap `budget.brake-inert` was added to
+    close, reopened one layer up.
+
+  - The OpenAI shell adapter **truncated output silently** while its Anthropic twin has
+    appended a `[truncated — N chars total]` marker since it was written, so a model could
+    not distinguish "no output" from "output discarded". `crashMetrics` and both blocked-phase
+    recovery sites reported `durationMs: 0` for children that consumed real wall-clock. And
+    the latent truthy test on an upstream score is now an explicit null check.
+
+- **The enumerator was hardened against every blind spot the audit found, and its control
+  now carries the adversarial variants permanently.**
+
+  `MEASURED` gained prefix wildcards and the non-provider external inputs (`weight`,
+  `timeoutMs`, `maxOutputLength`, `budget`). Rule C matches inline objects and last
+  properties, not just line-start-with-trailing-comma. Rule B models the whole truthy
+  family — negation, `&&` guards, ternaries, `> 0` presence tests — not just `if (x)` and
+  `x || undefined`. Rule D covers optional chaining, bracket access, object properties and
+  `return`, and no longer skips bare declarations (the exemption through which the
+  unified-reasoning defect escaped). The whole-line `CLAMPS` exemption is gone — a clamp
+  must guard *that value*, not merely appear on the same line. **The waiver window is scoped
+  to the contiguous comment block directly above a line**, so it can never cover a sibling
+  it does not describe.
+
+  The control now plants 12 adversarial variants and fails if **any single one** goes
+  uncaught, rather than only checking that each rule fired somewhere. It earned that
+  immediately, twice: it caught rule D not firing because rule B was false-positiving on a
+  TypeScript optional property (`x?: number` parsed as a ternary) and masking it, and it
+  caught a multi-line object's opening line being miscounted as known-bad.
+
+  Current state: **0 unwaived sites, 29 waived with written reasons.**
+
 ### Changed
 
 - **`UsageMetrics.input_tokens` is now CACHE-EXCLUSIVE** — a semantics change with no signature
@@ -508,7 +575,7 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) 
 
 ### Internal
 
-- **73 tests added for the class sweep, each carrying a POSITIVE CONTROL.** The previous
+- **91 tests added for the class sweep, each carrying a POSITIVE CONTROL.** The previous
   round's failure was not that its tests were absent — it was that they passed vacuously
   (the `sawUsage` test covered only the zero-step case, where the flag stayed false for an
   unrelated reason). Every new test here was run against the reverted code and confirmed to

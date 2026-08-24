@@ -156,6 +156,9 @@ function formatCallWarnings(warnings: readonly CallWarning[] | undefined): strin
 
 function emptyStepTotals(): StepTotals {
   return {
+    // FABRICATION-OK: accumulator SEEDS. Presence is carried by the sawUsage/sawNoCache/sawCacheRead/
+    // sawCacheWrite/sawReasoning flags, and stepTotalsToUsage emits undefined for any pool
+    // whose flag is false.
     steps: 0, toolCalls: 0, inputTokens: 0, outputTokens: 0,
     // FABRICATION-OK: accumulator SEEDS, not reported values. Presence is carried
     // separately by the sawNoCache/sawCacheRead/sawCacheWrite flags, and
@@ -609,9 +612,15 @@ export class AIProvider {
         if (usage.inputTokens !== undefined || usage.outputTokens !== undefined) {
           stepTotals.sawUsage = true;
         }
-          // FABRICATION-OK: inside the sawUsage presence guard. Adding 0 for a field this
-          // step did not report is correct — there is nothing to add — and the flag, not the
-          // sum, is what tells the consumer whether anything was measured at all.
+          // FABRICATION-OK: adding 0 for a field this step did not report is correct —
+          // there is nothing to add — and the sawUsage flag, not the sum, is what tells a
+          // consumer whether anything was measured at all.
+          //
+          // A previous version of this waiver said "inside the sawUsage presence guard".
+          // That was FALSE: the guard opens and closes above this line, and only the
+          // comment's indentation implied nesting. The behaviour was right for a different
+          // reason than the one written down, which is its own defect — a waiver is only
+          // worth as much as its reason.
         stepTotals.inputTokens += usage.inputTokens ?? 0;
           // FABRICATION-OK: see inputTokens above.
         stepTotals.outputTokens += usage.outputTokens ?? 0;
@@ -646,6 +655,8 @@ export class AIProvider {
    */
   private computeCostUsd(usage: UsageMetrics, cost: ResolvedModel['cost']): number | undefined {
     if (!cost) return undefined;
+    // FABRICATION-OK: reads UsageMetrics, which mapUsage has ALREADY clamped, not a raw provider
+    // payload. The rates on the other side of this multiply are clamped by sanitizeModelCost.
     let usd = usage.input_tokens * cost.input + usage.output_tokens * cost.output;
 
     // The cache-SERVED portion reaches us under one of two names, never both meaning
@@ -656,8 +667,12 @@ export class AIProvider {
     // input_tokens, so if nothing charges them here, nothing charges them at all.
     // Prefer cache_read (0 is a real value, not a miss) and fall back to cached_input,
     // so exactly one of the two is priced and neither is double-counted.
+    // FABRICATION-OK: post-clamp UsageMetrics; the `?? 0` is the documented "neither pool reported"
+    // case, where nothing cache-served was billed.
     const cacheServed = usage.cache_read_input_tokens ?? usage.cached_input_tokens ?? 0;
     usd += cacheServed * (cost.cacheRead ?? cost.input);
+    // FABRICATION-OK: post-clamp UsageMetrics; absent means none was billed. The RATES on the other side
+    // of this multiply are clamped by sanitizeModelCost.
     usd += (usage.cache_creation_input_tokens ?? 0) * (cost.cacheWrite ?? cost.input);
     return usd / 1e6;
   }
@@ -690,8 +705,15 @@ export class AIProvider {
     );
     this.logger.info(
       `Usage: ${usage.input_tokens}in / ${usage.output_tokens}out` +
+      // FABRICATION-OK: LOG FORMATTING only. These ternaries omit a zero pool from a debug line; the value
+      // reaches no metric, no cost, and no consumer. Rendering "/ cache_write=0" would be
+      // noise, not information.
       (usage.cache_creation_input_tokens ? ` / cache_write=${usage.cache_creation_input_tokens}` : '') +
+      // FABRICATION-OK: LOG FORMATTING only — omits a zero pool from a debug line. The value reaches no
+      // metric, no cost and no consumer; rendering "=0" would be noise, not information.
       (usage.cache_read_input_tokens ? ` / cache_read=${usage.cache_read_input_tokens}` : '') +
+      // FABRICATION-OK: LOG FORMATTING only — omits a zero pool from a debug line. The value reaches no
+      // metric, no cost and no consumer; rendering "=0" would be noise, not information.
       (usage.thinking_tokens ? ` / thinking=${usage.thinking_tokens}` : ''),
     );
 
@@ -1383,6 +1405,8 @@ export class AIProvider {
     // cache_read/cache_creation instead, and subtracting only cached_input left
     // input_tokens cache-INCLUSIVE — the pool was then charged again at its own rate
     // (measured $0.0334692 against a true $0.0037572).
+    // FABRICATION-OK: this IS the absent-vs-zero discriminator — it selects the exact branch over the
+    // legacy branch. Both arms clamp.
     base.input_tokens = usage.inputTokenDetails?.noCacheTokens !== undefined
       ? safeTokenCount(usage.inputTokenDetails.noCacheTokens)
       : Math.max(0, base.input_tokens
@@ -1559,6 +1583,8 @@ export class AIProvider {
     for (const [key, value] of Object.entries(providerMetadata)) {
       if (KNOWN_PROVIDERS.has(key) || typeof value !== 'object' || !value) continue;
       const meta = value as Record<string, unknown>;
+      // FABRICATION-OK: guarded on the next line by an explicit typeof + Number.isFinite + > 0 check
+      // before use, and routed through optionalTokenCount when assigned.
       const cached = meta['cachedTokens'] ?? meta['cachedContentTokenCount'] ?? meta['cachedPromptTokens'];
       if (typeof cached === 'number' && Number.isFinite(cached) && cached > 0) {
         // DISENTANGLE (§3.2): unknown-provider cached input → cached_input_tokens, not cache_read.

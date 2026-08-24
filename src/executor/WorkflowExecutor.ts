@@ -120,7 +120,13 @@ export class WorkflowExecutor {
         ? [...phaseResults, {
             id: 'failed', name: 'Failed phase', decision: 'blocked' as const,
             commands: carried, gateThreshold: DEFAULT_GATE_THRESHOLD,
-            score: null, durationMs: 0, error: formatErrorMessage(error),
+            score: null,
+            // The carried commands DID run and DID bill, so this phase consumed real
+            // wall-clock; sum what they measured rather than reporting 0.
+            // FABRICATION-OK: summing MEASURED per-command durations; the `|| 0` guards a child that reported
+            // none, and durationMs is a required number so absence cannot propagate.
+            durationMs: carried.reduce((sum, c) => sum + (c.metrics.durationMs || 0), 0),
+            error: formatErrorMessage(error),
           } as PhaseResult]
         : phaseResults;
       throw new WorkflowError(
@@ -641,6 +647,8 @@ export class WorkflowExecutor {
       // MaxStepsExhaustedError's measured toolCallCount survives — writing them after the
       // spread overwrote the real count on the run class that by construction made the
       // most tool calls.
+      // FABRICATION-OK: these are DEFAULTS UNDER the spread, so a MaxStepsExhaustedError's measured
+      // toolCallCount overrides them. Writing them after the spread was the bug.
       metrics: { toolCallCount: 0, toolCalls: 0, ...crashMetrics(reason) },
     } as CommandResult;
   }
@@ -679,9 +687,14 @@ export class WorkflowExecutor {
       // positive-control test for it, and left `score: 0` two lines below untouched. The
       // citation was fixed; the class was not.
       score: null,
-      // FABRICATION-OK: nothing ran, so no time elapsed — 0 is the MEASURED duration of a
-      // non-event, not an unknown standing in for one.
-      durationMs: 0,
+      // NOT zero-by-default: `commands: carried` above are exactly the commands that DID
+      // run and DID bill, so this phase consumed real time. The previous waiver here
+      // asserted "nothing ran, so no time elapsed", which was false of this object from
+      // the moment the recovery was added two lines above it — a waiver whose reason the
+      // code had already outgrown.
+      // FABRICATION-OK: summing MEASURED per-command durations; the `|| 0` guards a child that reported
+            // none, and durationMs is a required number so absence cannot propagate.
+      durationMs: carried.reduce((sum, c) => sum + (c.metrics.durationMs || 0), 0),
       ...(error ? { error: formatErrorMessage(error) } : {}),
     };
   }

@@ -140,3 +140,57 @@ describe('aggregateScores', () => {
     });
   });
 });
+
+/**
+ * Authored weights are EXTERNAL INPUT — definition YAML/JSON — and were read raw.
+ *
+ * POSITIVE CONTROL: restore `const w = weights[item.key] ?? 1` and every test below fails.
+ * Measured before the fix, with true scores of 90 and 95 aggregating to 93 unweighted:
+ *
+ *   NaN weight       -> 0     a fabricated failing score
+ *   Infinity weight  -> NaN   and `NaN < threshold` is FALSE, so the gate PASSES
+ *   0 / negative     -> 0
+ *
+ * The fail-OPEN case is the dangerous one: a quality gate silently stops gating, and the
+ * score JSON-serializes to null. YAML makes `.nan` and `.inf` directly authorable.
+ */
+describe('aggregateScores — malformed authored weights cannot fabricate a score', () => {
+  const items = [{ key: 'a', score: 20 }, { key: 'b', score: 100 }];
+  const w = (weights: Record<string, number>) => aggregateScores(items, 'weighted_average', weights);
+
+  it.each([
+    ['NaN', { a: Number.NaN, b: 1 }],
+    ['Infinity', { a: Number.POSITIVE_INFINITY, b: 1 }],
+    ['zero', { a: 0, b: 0 }],
+    ['negative', { a: -5, b: -5 }],
+  ])('degrades a %s weight to neutral rather than fabricating', (_label, weights) => {
+    const score = w(weights as Record<string, number>);
+
+    expect(Number.isFinite(score)).toBe(true);
+    expect(Number.isNaN(score)).toBe(false);
+    // A NaN score fail-OPENS a gate, because NaN < threshold is false.
+    expect(score < 70).toBe(true);
+    expect(JSON.stringify({ score })).not.toContain('null');
+  });
+
+  it('a NaN weight no longer reports 0 for agents that scored 20 and 100', () => {
+    expect(w({ a: Number.NaN, b: 1 })).toBe(60);
+    expect(w({ a: Number.NaN, b: 1 })).not.toBe(0);
+  });
+
+  it('still WEIGHTS when the weights are usable — the negative control', () => {
+    // Without this, "degrades to neutral" would pass for an implementation that ignored
+    // weights entirely, silently removing the feature.
+    expect(aggregateScores(items, 'average')).toBe(60);
+    expect(w({ a: 9, b: 1 })).toBe(28);
+    expect(w({ a: 1, b: 9 })).toBe(92);
+  });
+
+  it('a NaN score can never pass a gate comparison, whatever the weights', () => {
+    // The invariant behind all of the above, asserted directly.
+    for (const weights of [{ a: Number.NaN, b: 1 }, { a: Number.POSITIVE_INFINITY, b: 1 }, { a: 0, b: 0 }]) {
+      const score = w(weights as Record<string, number>);
+      expect(Number.isNaN(score)).toBe(false);
+    }
+  });
+});
