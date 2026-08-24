@@ -134,13 +134,63 @@ export class CommandExecutor {
     );
   }
 
+  /**
+   * The placeholder a crashed agent becomes. ONE construction, shared by the sequential
+   * and parallel branches.
+   *
+   * It existed inline in `executeParallel` only, which is how the two branches diverged:
+   * parallel contained its crashes and kept survivors, sequential let the throw escape
+   * `execute()` and discarded every already-billed prior agent's metrics AND
+   * recommendations. Sequential is the DEFAULT (`sequential: false` selects parallel), so
+   * the unhardened twin was the common path. Extracting the shape is the fix — two call
+   * sites that must agree are two chances to disagree.
+   */
+  private crashPlaceholder(ref: string, reason: unknown): AgentResult {
+    const msg = reason instanceof Error ? reason.message : String(reason);
+    return {
+      name: ref,
+      agentType: 'validator',
+      decision: 'FAIL',
+      decisionCategory: 'negative',
+      // Crashed agent — no agent ran, so no score. Null pair, not fabricated 0/100.
+      score: null,
+      maxScore: null,
+      recommendations: [{
+        title: `Agent ${ref} failed: ${msg}`,
+        priority: 'critical',
+        severity: 'critical',
+        failureCode: 'PRA-FRA/C',
+      }],
+      // Reads real usage off the error when it carries any (MaxStepsExhaustedError
+      // is thrown after a successful, already-billed call); otherwise zero tokens with
+      // costUsd ABSENT, never a fabricated $0. See crashMetrics.
+      metrics: crashMetrics(reason),
+    } as AgentResult;
+  }
+
+  /**
+   * Execute agent refs sequentially, FAIL-FAST but not lossy.
+   *
+   * Fail-fast is deliberate and preserved: no agent after the crash runs. What changed is
+   * that the crash no longer throws out of here, discarding the work of every agent that
+   * already ran and billed. The crashed agent becomes the same null-score,
+   * negative-category placeholder the parallel branch synthesizes, so `aggregateResults`'
+   * scoreless-negative guard still fails the command — identical gate outcome, with the
+   * survivors' metrics and recommendations intact.
+   */
   private async executeSequentially(
     refs: string[],
     fn: (ref: string) => Promise<AgentResult>,
   ): Promise<AgentResult[]> {
     const results: AgentResult[] = [];
     for (const ref of refs) {
-      results.push(await fn(ref));
+      try {
+        results.push(await fn(ref));
+      } catch (error) {
+        results.push(this.crashPlaceholder(ref, error));
+        // Fail-fast: stop dispatching, keep everything already billed.
+        break;
+      }
     }
     return results;
   }
@@ -170,25 +220,7 @@ export class CommandExecutor {
         const ref = refs[i]!;
         const msg = outcome.reason instanceof Error ? outcome.reason.message : String(outcome.reason);
         agentErrors.push(`Agent ${ref} failed: ${msg}`);
-        results.push({
-          name: ref,
-          agentType: 'validator',
-          decision: 'FAIL',
-          decisionCategory: 'negative',
-          // Crashed agent — no agent ran, so no score. Null pair, not fabricated 0/100.
-          score: null,
-          maxScore: null,
-          recommendations: [{
-            title: `Agent ${ref} failed: ${msg}`,
-            priority: 'critical',
-            severity: 'critical',
-            failureCode: 'PRA-FRA/C',
-          }],
-          // Reads real usage off the error when it carries any (MaxStepsExhaustedError
-          // is thrown after a successful, already-billed call); otherwise zero tokens with
-          // costUsd ABSENT, never a fabricated $0. See crashMetrics.
-          metrics: crashMetrics(outcome.reason),
-        } as AgentResult);
+        results.push(this.crashPlaceholder(ref, outcome.reason));
       }
     }
 

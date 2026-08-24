@@ -2492,3 +2492,170 @@ describe('AIProvider — a throw during result assembly is mapped and keeps the 
     expect(result.costUsd).not.toBe(0);
   });
 });
+
+/**
+ * Provider metadata is EXTERNAL data on every tier, not just the primary one.
+ *
+ * POSITIVE CONTROL: drop `optionalTokenCount` from any metadata tier and the matching test
+ * below fails. Confirmed by mutation on the anthropic tier.
+ *
+ * The rule is stated in mapUsage's own doc — "Provider payloads are EXTERNAL data; `?? 0`
+ * reads like a numeric guarantee and is not one" — and was enforced, and tested, only on
+ * the SDK-standard path. The four metadata tiers, which ARE the legacy/unknown-provider
+ * fallback route this release exists to correct, assigned raw. Measured before the fix:
+ * `cacheReadInputTokens: -5000` against 10,000 reported input produced `input_tokens:
+ * 15000` — a 50% inflation — and $0.0435 against a true $0.030, FINITE the whole way, so
+ * both sumCostUsd's and sumTokenMetrics' finiteness guards passed it straight through.
+ */
+describe('AIProvider — metadata tiers guard external numbers', () => {
+  beforeEach(async () => {
+    vi.clearAllMocks();
+    const { generateText } = await import('ai');
+    vi.mocked(generateText).mockReset();
+  });
+
+  const runWithMetadata = async (providerMetadata: unknown, provider = 'anthropic') => {
+    const { generateText } = await import('ai');
+    vi.mocked(generateText).mockResolvedValueOnce({
+      text: 'ok',
+      // No inputTokenDetails: forces the legacy/metadata route these tiers serve.
+      usage: { inputTokens: 10_000, outputTokens: 100 },
+      totalUsage: { inputTokens: 10_000, outputTokens: 100 },
+      steps: [], finishReason: 'stop', warnings: [],
+      providerMetadata,
+    } as never);
+
+    const catalog = mockCatalog({
+      resolve: vi.fn().mockResolvedValue(
+        makeResolvedModel({ provider, cost: { input: 3, output: 15 } } as never),
+      ),
+    } as never);
+    const config = provider === 'anthropic' ? mockConfig : {
+      ...mockConfig,
+      ai: { ...mockConfig.ai, providers: { ...mockConfig.ai.providers, [provider]: { apiKey: 'k' } } },
+    } as ResolvedConfig;
+
+    return new AIProvider(config, catalog, noopLogger).generate({ model: 'm', system: 's', prompt: 'p' });
+  };
+
+  it('clamps a NEGATIVE cache figure instead of inflating input_tokens', async () => {
+    const result = await runWithMetadata({
+      anthropic: { cacheReadInputTokens: -5_000, cacheCreationInputTokens: 0 },
+    });
+
+    // The measured defect: subtracting -5000 ADDED 5000, yielding 15000 from 10000.
+    expect(result.usage.input_tokens).toBe(10_000);
+    expect(result.usage.input_tokens).not.toBe(15_000);
+    expect(result.usage.cache_read_input_tokens).toBe(0);
+    // And the dollar figure that rode on it.
+    expect(result.costUsd).toBeCloseTo((10_000 * 3 + 100 * 15) / 1e6, 10);
+    expect(result.costUsd).not.toBeCloseTo(0.0435, 4);
+  });
+
+  it('neutralises a NaN cache figure so the run stays priced', async () => {
+    // NaN was the worse case: it produced a NaN cost, which JSON-serializes to null and
+    // is then indistinguishable from an unpriced model — blanking a whole pipeline.
+    const result = await runWithMetadata({
+      anthropic: { cacheReadInputTokens: NaN, cacheCreationInputTokens: NaN },
+    });
+
+    expect(Number.isFinite(result.usage.input_tokens)).toBe(true);
+    expect(Number.isFinite(result.costUsd!)).toBe(true);
+    expect(Number.isNaN(result.costUsd!)).toBe(false);
+  });
+
+  it('guards the Google tier the same way', async () => {
+    const result = await runWithMetadata({
+      google: { usageMetadata: { cachedContentTokenCount: -1_000, thoughtsTokenCount: NaN } },
+    }, 'google');
+
+    // EXACT values, not `isFinite` and `>= 0`. Those weaker assertions passed with the
+    // guard REMOVED — an unguarded -1,000 gets subtracted (10,000 − −1,000 = 11,000), and
+    // 11,000 is both finite and positive, so the test could only ever confirm. The
+    // discriminating question is the number itself.
+    expect(result.usage.input_tokens).toBe(10_000);
+    expect(result.usage.input_tokens).not.toBe(11_000);
+    expect(result.usage.cached_input_tokens).toBe(0);
+    // 0, not undefined: optionalTokenCount preserves "not reported" as undefined but
+    // clamps a reported-yet-unusable value (NaN) to 0. A garbage figure IS a report, and
+    // this matches the contract already applied on the SDK-standard path.
+    expect(result.usage.thinking_tokens).toBe(0);
+    expect(Number.isFinite(result.costUsd!)).toBe(true);
+  });
+
+  it('still passes a WELL-FORMED metadata figure through — the negative control', async () => {
+    // Proves the guards clamp bad values rather than discarding every value.
+    const result = await runWithMetadata({
+      anthropic: { cacheReadInputTokens: 4_000, cacheCreationInputTokens: 0 },
+    });
+
+    expect(result.usage.cache_read_input_tokens).toBe(4_000);
+    expect(result.usage.input_tokens).toBe(6_000); // 10,000 total − 4,000 cache-served
+  });
+});
+
+/**
+ * The budget tracker must not treat a null-usage step as a zero-size context window.
+ *
+ * POSITIVE CONTROL: remove the presence guard at the `budgetTracker.update` call and the
+ * first test fails, reporting `usedTotal: 0` after a real 50,000-token step.
+ *
+ * This call sits three lines above the StepTotals accumulator that received exactly this
+ * fix, fed `?? 0` from the same `usage` object — the one the SDK materializes with every
+ * member undefined when a provider reports nothing. `update()` assigns
+ * `currentContextTokens` unconditionally, so one null-usage step reset the tracked window
+ * to 0: `get_token_budget` then told the model it had the full budget remaining mid-run.
+ */
+describe('AIProvider — a null-usage step does not reset the tracked context window', () => {
+  beforeEach(async () => {
+    vi.clearAllMocks();
+    const { generateText } = await import('ai');
+    vi.mocked(generateText).mockReset();
+  });
+
+  const nullUsageStep = {
+    inputTokens: undefined, outputTokens: undefined,
+    inputTokenDetails: { noCacheTokens: undefined, cacheReadTokens: undefined, cacheWriteTokens: undefined },
+    outputTokenDetails: { textTokens: undefined, reasoningTokens: undefined },
+  };
+
+  const driveSteps = async (steps: unknown[], tracker: TokenBudgetTracker) => {
+    const { generateText } = await import('ai');
+    vi.mocked(generateText).mockImplementationOnce((async (o: unknown) => {
+      const g = o as { onStepFinish?: (s: unknown) => void };
+      for (const s of steps) g.onStepFinish?.(s);
+      return { text: 'ok', usage: { inputTokens: 1, outputTokens: 1 }, totalUsage: { inputTokens: 1, outputTokens: 1 },
+        steps: [], finishReason: 'stop', warnings: [], providerMetadata: {} };
+    }) as never);
+
+    await new AIProvider(mockConfig, mockCatalog(), noopLogger).generate({
+      model: 'sonnet', system: 's', prompt: 'p', contextBudget: 100_000, budgetTracker: tracker,
+    });
+  };
+
+  it('preserves the window measured by the previous real step', async () => {
+    const tracker = new TokenBudgetTracker(100_000);
+    await driveSteps([
+      { finishReason: 'tool-calls', text: '', toolCalls: [], usage: { ...nullUsageStep, inputTokens: 50_000, outputTokens: 100 } },
+      { finishReason: 'tool-calls', text: '', toolCalls: [], usage: nullUsageStep },
+    ], tracker);
+
+    // The null-usage step carries no information about the window, so the last real
+    // measurement must stand.
+    expect(tracker.getStatus().usedTotal).toBe(50_000);
+    expect(tracker.getStatus().usedTotal).not.toBe(0);
+    expect(tracker.getStatus().remaining).toBe(50_000);
+  });
+
+  it('still tracks a step that reports a genuine ZERO', async () => {
+    // Absent and zero must stay distinguishable in BOTH directions — a provider that
+    // really reports 0 has reported something, and the tracker should take it.
+    const tracker = new TokenBudgetTracker(100_000);
+    await driveSteps([
+      { finishReason: 'tool-calls', text: '', toolCalls: [], usage: { ...nullUsageStep, inputTokens: 50_000, outputTokens: 100 } },
+      { finishReason: 'tool-calls', text: '', toolCalls: [], usage: { ...nullUsageStep, inputTokens: 0, outputTokens: 0 } },
+    ], tracker);
+
+    expect(tracker.getStatus().usedTotal).toBe(0);
+  });
+});

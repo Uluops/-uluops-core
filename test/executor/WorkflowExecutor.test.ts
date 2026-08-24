@@ -1687,3 +1687,154 @@ describe('WorkflowExecutor — crashed step reads billed metrics off the error',
     expect(crashed!.metrics.costUsd).not.toBe(0);
   });
 });
+
+/**
+ * A crashed phase must not fabricate a score into the workflow average.
+ *
+ * POSITIVE CONTROL: set `score: 0` back in `createBlockedPhase` and the first test fails
+ * with 45 instead of 90. Confirmed by mutation.
+ *
+ * `aggregate()` filters 'skipped' and 'aborted' but NOT 'blocked' — the crash case — so a
+ * fabricated 0 entered the weighted average and dragged reported quality down in
+ * proportion to how many phases crashed. The PipelineExecutor sibling guards the identical
+ * situation and explains why in an eight-line comment.
+ *
+ * Recorded because of WHERE it was found: the previous commit fixed `commands: []` in this
+ * same object literal for the cost roll-up, wrote a positive-control test for it, and left
+ * `score: 0` two lines below untouched.
+ */
+describe('WorkflowExecutor — a thrown phase contributes no score', () => {
+  const twoPhasesOneLevel = () => makeWorkflowDef({
+    orchestration: {
+      phases: [
+        { id: 'good', name: 'Good', commands: ['code-validator'],
+          gate: { threshold: 0, aggregate: 'average', on_fail: 'continue' } },
+        { id: 'crash', name: 'Crash', commands: ['second-validator'],
+          gate: { threshold: 0, aggregate: 'average', on_fail: 'continue' } },
+      ],
+      on_failure: 'continue',
+    } as never,
+  });
+
+  const survivorPlusCrash = () => ({
+    execute: vi.fn().mockImplementation((resolved: ResolvedDefinition) =>
+      resolved.name === 'code-validator'
+        ? Promise.resolve(makeCommandResult({ name: resolved.name, score: 90 }))
+        : Promise.reject(new Error('network timeout'))),
+  } as unknown as CommandExecutor);
+
+  it('does not drag the workflow score down with a fabricated 0', async () => {
+    const result = await new WorkflowExecutor(survivorPlusCrash(), makeRegistry())
+      .execute(twoPhasesOneLevel(), { target: '/tmp/test' });
+
+    const blocked = result.phases.find(p => p.decision === 'blocked');
+    expect(blocked).toBeDefined();
+    expect(blocked!.score).toBeNull();
+    // The measured defect: 90 and a fabricated 0 averaged to 45.
+    expect(result.score).toBe(90);
+    expect(result.score).not.toBe(45);
+  });
+
+  it('still reports the crash — the phase is blocked, not quietly dropped', async () => {
+    // Excluding a crash from the SCORE must not also hide it. Score nullity and outcome
+    // visibility are separate concerns and both have to hold.
+    const result = await new WorkflowExecutor(survivorPlusCrash(), makeRegistry())
+      .execute(twoPhasesOneLevel(), { target: '/tmp/test' });
+
+    expect(result.phases.some(p => p.decision === 'blocked')).toBe(true);
+    expect(result.metrics.phasesBlocked).toBe(1);
+  });
+
+  it('keeps an AUTHORED-empty phase at 0 — the opposite case, deliberately', async () => {
+    // Guards the distinction the fix rests on. An authored-empty phase must still block at
+    // its gate; only a CRASHED phase is excluded from the average. Without this, someone
+    // "simplifying" createBlockedPhase and aggregatePhaseScore to agree would silently let
+    // empty phases pass.
+    const def = makeWorkflowDef({
+      orchestration: {
+        phases: [{ id: 'empty', name: 'Empty', commands: [],
+          gate: { threshold: 70, aggregate: 'average', on_fail: 'stop' } }],
+        on_failure: 'stop',
+      } as never,
+    });
+
+    const result = await new WorkflowExecutor(makeCommandExecutor(), makeRegistry())
+      .execute(def, { target: '/tmp/test' });
+
+    expect(result.phases[0]!.score).toBe(0);
+    expect(result.phases[0]!.decision).toBe('blocked');
+  });
+});
+
+/**
+ * Sequential phase execution is FAIL-FAST but not lossy.
+ *
+ * POSITIVE CONTROL: remove the try/catch from the non-parallel branch of executePhase and
+ * the first test fails — the throw escapes and the survivor's billed work is gone.
+ */
+describe('WorkflowExecutor — sequential branch contains crashes like its parallel twin', () => {
+  const sequentialPhase = () => makeWorkflowDef({
+    orchestration: {
+      phases: [{
+        id: 'validate', name: 'Validation',
+        commands: ['code-validator', 'second-validator'],
+        parallel: false,
+        gate: { threshold: 0, aggregate: 'average', on_fail: 'continue' },
+      }],
+      on_failure: 'continue',
+    } as never,
+  });
+
+  it('keeps a completed step’s billed work when a later step throws', async () => {
+    const cmdExec = {
+      execute: vi.fn().mockImplementation((resolved: ResolvedDefinition) =>
+        resolved.name === 'code-validator'
+          ? Promise.resolve(makeCommandResult({ name: resolved.name, score: 90 }))
+          : Promise.reject(new Error('boom'))),
+    } as unknown as CommandExecutor;
+
+    const result = await new WorkflowExecutor(cmdExec, makeRegistry())
+      .execute(sequentialPhase(), { target: '/tmp/test' });
+
+    // Survivor present with its metrics, crash present as a null-score placeholder.
+    expect(result.phases[0]!.commands).toHaveLength(2);
+    expect(result.phases[0]!.commands[0]!.score).toBe(90);
+    expect(result.phases[0]!.commands[1]!.score).toBeNull();
+    expect(result.metrics.inputTokens).toBeGreaterThan(0);
+  });
+
+  it('still THROWS when every sequential step fails — fail-fast parity preserved', async () => {
+    // The all-failed check governs both branches; a single-step phase that fails must
+    // behave exactly as it did before this change.
+    const cmdExec = {
+      execute: vi.fn().mockRejectedValue(new Error('boom')),
+    } as unknown as CommandExecutor;
+
+    const def = makeWorkflowDef({
+      orchestration: {
+        phases: [{ id: 'validate', name: 'Validation', commands: ['code-validator'], parallel: false,
+          gate: { threshold: 0, aggregate: 'average', on_fail: 'continue' } }],
+        on_failure: 'continue',
+      } as never,
+    });
+
+    await expect(new WorkflowExecutor(cmdExec, makeRegistry())
+      .execute(def, { target: '/tmp/test' })).rejects.toBeInstanceOf(WorkflowError);
+  });
+
+  it('stops dispatching after a crash — fail-fast is not weakened', async () => {
+    const cmdExec = {
+      execute: vi.fn().mockImplementation((resolved: ResolvedDefinition) =>
+        resolved.name === 'code-validator'
+          ? Promise.reject(new Error('boom'))
+          : Promise.resolve(makeCommandResult({ name: resolved.name, score: 90 }))),
+    } as unknown as CommandExecutor;
+
+    await new WorkflowExecutor(cmdExec, makeRegistry())
+      .execute(sequentialPhase(), { target: '/tmp/test' })
+      .catch(() => undefined);
+
+    // The second command must never have been dispatched.
+    expect(vi.mocked(cmdExec.execute)).toHaveBeenCalledTimes(1);
+  });
+});

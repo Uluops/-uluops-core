@@ -1,5 +1,5 @@
 import type { ExecutionMetrics } from '../types/execution.js';
-import { MaxStepsExhaustedError } from '../errors/index.js';
+import { hasBilledMetrics } from '../errors/index.js';
 
 /**
  * Build the `metrics` for a child whose execution ended in a thrown error.
@@ -25,7 +25,10 @@ import { MaxStepsExhaustedError } from '../errors/index.js';
  * Never write `costUsd: 0` here. That is the fabrication this helper exists to prevent.
  */
 export function crashMetrics(error: unknown, extra?: Partial<ExecutionMetrics>): ExecutionMetrics {
-  if (error instanceof MaxStepsExhaustedError && error.billedMetrics) {
+  // Identity-free, NOT `instanceof` — see hasBilledMetrics. This is the one seam in the
+  // package where real money survives a crash, so a false negative here silently zeroes
+  // the most expensive run class the engine produces.
+  if (hasBilledMetrics(error)) {
     return { ...error.billedMetrics, ...extra };
   }
   return {

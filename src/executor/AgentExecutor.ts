@@ -394,6 +394,24 @@ export class AgentExecutor {
       });
     }
 
+    // The budget threshold was crossed while the brake provably could not act (Anthropic
+    // jsonTool overrides toolChoice). INFO, not degraded: nothing was cut short, so the
+    // run really is complete and must not be downgraded to 'partial' — that would
+    // re-introduce the false partial 0.42.0 just removed. What failed is the caller's cost
+    // ceiling, which they configured and are entitled to know did not apply. Marking it
+    // keeps degradation.ts invariant (1) — nothing degrades silently — without lying in
+    // the other direction.
+    if (budgetTracker.brakeInert) {
+      markers.push({
+        code: 'budget.brake-inert',
+        phase: 'execution',
+        severity: 'info',
+        detail: 'Context budget crossed its threshold but the wrap-up brake could not engage '
+          + '(the provider overrode toolChoice for structured output), so tool calls continued. '
+          + 'Coverage is unaffected; the configured cost ceiling did not apply.',
+      });
+    }
+
     if (budgetTracker.contextEvicted) {
       markers.push({
         code: 'context.evicted',

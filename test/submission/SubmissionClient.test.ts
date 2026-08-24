@@ -85,9 +85,13 @@ function makeResult(overrides?: Partial<ExecutionResult>): ExecutionResult {
       outputTokens: 500,
       cacheCreationTokens: 200,
       cacheReadTokens: 100,
+      // Both of these were DROPPED by extractTokens despite existing on the wire type.
+      cachedInputTokens: 300,
+      reasoningOutputTokens: 400,
       totalEffectiveTokens: 1300,
       durationMs: 5000,
       model: 'claude-sonnet-4-5-20250929',
+      harness: 'uluops-core',
     },
     ...overrides,
   };
@@ -438,6 +442,23 @@ describe('SubmissionClient', () => {
       expect(tokens.cacheCreationTokens).toBe(200);
       expect(tokens.cacheReadTokens).toBe(100);
       expect(tokens.totalEffectiveTokens).toBe(1300);
+      // POSITIVE CONTROL: remove either line from extractTokens and these fail.
+      //
+      // Both fields are populated on ExecutionMetrics AND declared on ops-sdk's wire
+      // TokenUsage, and both were silently dropped in the mapping — so an OpenAI reasoning
+      // run's entire reasoning pool never reached the tracker, and the cached-input pool
+      // the engine prices was invisible to anything reading a run back. That also
+      // falsified the recorded justification for not sending costUsd at all ("derivable
+      // from tokens + pricing"): it is not derivable from a token set with the
+      // cache-served pool removed.
+      expect(tokens.cachedInputTokens).toBe(300);
+      expect(tokens.reasoningOutputTokens).toBe(400);
+
+      // harness: set by the engine on every run, declared on the wire as AgentInput.harness,
+      // and never forwarded — so every run this package produced was indistinguishable on
+      // the wire from one produced by any other harness. It was asserted at the PRODUCER by
+      // a test that passed identically whether this mapping line existed or not.
+      expect(agents[0]!.harness).toBe('uluops-core');
 
       // Recommendations
       const recs = input.recommendations as Array<Record<string, unknown>>;

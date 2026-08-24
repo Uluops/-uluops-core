@@ -716,3 +716,85 @@ describe('CommandExecutor', () => {
     });
   });
 });
+
+/**
+ * Sequential agent execution is FAIL-FAST but not lossy.
+ *
+ * POSITIVE CONTROL: remove the try/catch from `executeSequentially` and the first two
+ * tests fail — the throw escapes `execute()` and every already-billed prior agent's
+ * metrics and recommendations are gone. Confirmed by mutation.
+ *
+ * Sequential is the DEFAULT dispatch mode, so the unhardened branch was the common path
+ * while its parallel sibling had contained crashes since issue 77febff2. Both now build
+ * the placeholder through one shared factory, so they cannot drift apart again.
+ */
+describe('CommandExecutor — sequential crash keeps survivors', () => {
+  const seqDef = () => makeCommandDef({
+    agents: ['agent-a@1.0.0', 'agent-b@1.0.0', 'agent-c@1.0.0'],
+    execution: { model: { default: 'sonnet' }, timeout: 30000, thresholds: { pass: 75, warn: 50 }, sequential: true },
+  });
+
+  it('keeps the completed agent’s work when a later agent throws', async () => {
+    const agentExec = {
+      execute: vi.fn()
+        .mockResolvedValueOnce(makeValidatorResult({ name: 'agent-a', score: 90 }))
+        .mockRejectedValueOnce(new Error('registry timeout')),
+    } as unknown as AgentExecutor;
+
+    const result = await new CommandExecutor(agentExec, makeRegistry())
+      .execute(seqDef(), { target: '/tmp/test' });
+
+    // Survivor's score survives; the crash is a null-score placeholder, not a lost result.
+    expect(result.score).toBe(90);
+    expect(result.metrics.inputTokens).toBeGreaterThan(0);
+    // And the crash is visible rather than swallowed.
+    expect(result.recommendations.some(r => r.title.includes('agent-b@1.0.0 failed'))).toBe(true);
+  });
+
+  it('fails the command — containing the crash must not turn it into a pass', async () => {
+    // The scoreless-negative guard still gates. Keeping billed work and reporting an
+    // honest verdict are separate properties and both must hold.
+    const agentExec = {
+      execute: vi.fn()
+        .mockResolvedValueOnce(makeValidatorResult({ name: 'agent-a', score: 90 }))
+        .mockRejectedValueOnce(new Error('registry timeout')),
+    } as unknown as AgentExecutor;
+
+    const result = await new CommandExecutor(agentExec, makeRegistry())
+      .execute(seqDef(), { target: '/tmp/test' });
+
+    expect(result.decision).toBe('FAIL');
+    expect(result.decisionCategory).toBe('negative');
+  });
+
+  it('stops dispatching after the crash — fail-fast is preserved', async () => {
+    const agentExec = {
+      execute: vi.fn()
+        .mockResolvedValueOnce(makeValidatorResult({ name: 'agent-a', score: 90 }))
+        .mockRejectedValueOnce(new Error('boom')),
+    } as unknown as AgentExecutor;
+
+    await new CommandExecutor(agentExec, makeRegistry())
+      .execute(seqDef(), { target: '/tmp/test' }).catch(() => undefined);
+
+    // Three agents declared, crash on the second: the third must never run.
+    expect(vi.mocked(agentExec.execute)).toHaveBeenCalledTimes(2);
+  });
+
+  it('carries a crashed agent’s ALREADY-BILLED usage through the sequential path too', async () => {
+    const billed = {
+      inputTokens: 120_000, outputTokens: 8_000, totalEffectiveTokens: 128_000,
+      durationMs: 412_000, model: 'anthropic:claude-sonnet-4-5', costUsd: 0.48,
+    };
+    const agentExec = {
+      execute: vi.fn()
+        .mockResolvedValueOnce(makeValidatorResult({ name: 'agent-a', score: 90 }))
+        .mockRejectedValueOnce(new MaxStepsExhaustedError('exhausted', 50, 'tool-calls', billed)),
+    } as unknown as AgentExecutor;
+
+    const result = await new CommandExecutor(agentExec, makeRegistry())
+      .execute(seqDef(), { target: '/tmp/test' });
+
+    expect(result.metrics.inputTokens).toBeGreaterThanOrEqual(120_000);
+  });
+});

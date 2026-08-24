@@ -233,6 +233,96 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) 
   the config reference and the degradation-marker contract — since `providerWarnings`
   cannot surface a core-internal override.
 
+- **Third sweep of the same class — six more instances, two of them AF-006 criticals.** A
+  third code-auditor pass found the class again, and the sharpest instance was inside the
+  object the previous round had just edited:
+
+  - **A thrown phase contributed a fabricated `0` to the workflow score.**
+    `createBlockedPhase` returned `{ commands: [], score: 0 }`; the previous release fixed
+    `commands: []` for the cost roll-up, wrote a positive-control test for it, and left
+    `score: 0` **two lines below in the same object literal**. `aggregate()` filters
+    `skipped` and `aborted` but not `blocked` — the crash case — so the fabricated zero
+    entered the weighted average. Measured: a workflow whose one real phase scored 90
+    reported **45** when a sibling phase threw a network timeout. The PipelineExecutor
+    sibling guards this exact case and explains why in an eight-line comment. Now `null`,
+    which `aggregateScores` already filters.
+
+    An *authored*-empty phase still scores 0 deliberately — it must block at its gate
+    rather than pass unexamined — and a test now pins that distinction, because the two
+    cases look identical (`commands: []`) and have opposite correct answers.
+
+  - **All four provider-metadata extract tiers assigned raw external numbers.**
+    `mapUsage`'s own doc states the rule — *"Provider payloads are EXTERNAL data; `?? 0`
+    reads like a numeric guarantee and is not one"* — and it was enforced, and tested, only
+    on the SDK-standard path, while these tiers **are** the legacy/unknown-provider fallback
+    route this release exists to correct. Measured: `cacheReadInputTokens: -5000` against
+    10,000 reported input produced `input_tokens: 15000` (a 50% inflation) and **$0.0435
+    against a true $0.030** — finite the whole way, so both `sumCostUsd`'s and
+    `sumTokenMetrics`' finiteness guards passed it straight through. A NaN produced a NaN
+    cost, blanking a whole run's spend.
+
+- **The sequential branches of both executors lost every already-billed result on a crash.**
+  `CommandExecutor.executeSequentially` and `WorkflowExecutor.executePhase`'s non-parallel
+  arm had no per-item containment, while their parallel siblings had used
+  `allSettled` + a crash placeholder since issue 77febff2. **Sequential is the default
+  dispatch mode**, so the unhardened twin was the common path. Both now build the
+  placeholder through one shared factory — two call sites that must agree are two chances
+  to disagree — and fail-fast is preserved exactly: no item after the crash is dispatched,
+  and the all-failed throw now governs both branches rather than living inside the parallel
+  arm (that placement was itself part of how they drifted).
+
+- **The token-budget tracker treated a null-usage step as a zero-size context window.** The
+  `budgetTracker.update(usage.inputTokens ?? 0, …)` call sits **three lines above** the
+  `StepTotals` accumulator that received the absent-is-not-zero fix, reading the same
+  `usage` object. `update()` assigns `currentContextTokens` unconditionally, so one
+  null-usage step reset the tracked window to 0 — `get_token_budget` then told the model
+  `usedTotal: 0, remaining: <full budget>` mid-run, `isOverThreshold` read false, and an
+  eviction spanning that step became undetectable. A step reporting no numbers carries no
+  information about the window, so the tracker is now left alone.
+
+- **`cachedInputTokens` and `reasoningOutputTokens` never reached the tracker.** Both are
+  populated on `ExecutionMetrics` and declared on the wire (`ops-sdk` `TokenUsage`), and
+  `extractTokens` dropped both. An OpenAI reasoning run's entire reasoning pool was
+  invisible to anything reading a run back. This also falsified a justification recorded
+  elsewhere in the codebase — that `costUsd` need not be sent because it "is derivable from
+  tokens + pricing". It is not derivable from a token set with the cache-served pool
+  removed.
+
+- **`harness` was set, documented, producer-tested, and never written.** The engine stamps
+  `harness: 'uluops-core'` on every `ExecutionMetrics`, `types/execution.ts` documents it as
+  emitted, a test asserts it at the producer — and the submission mapping omitted it, so
+  every run this package produced was indistinguishable on the wire from one produced by
+  any other harness. The producer test passed identically whether the mapping line existed
+  or not: the test-suite form of this same class.
+
+- **`crashMetrics` used `instanceof` at the one seam where real money survives a crash.**
+  `errors/index.ts` already warns against `instanceof` for any error crossing a package
+  boundary, because two copies of this package in one tree mean two class identities and a
+  silent false negative. New identity-free `hasBilledMetrics()` tests the stable `code`
+  discriminant instead.
+
+- **`budget.brake-inert`** — a new `info`-severity degradation marker. Withdrawing the false
+  `budget.forced-wrap-up` (above) was right, but replacing a false claim with *silence*
+  trades one reporting defect for another: `types/degradation.ts` rests the PASS+partial
+  decision on invariant (1), *"every coverage reduction emits a marker; nothing degrades
+  silently"*, and a caller whose configured cost ceiling provably did not apply needs to
+  know. **`info`, not `degraded`, deliberately** — nothing was cut short, so the run really
+  is `complete`; marking it `degraded` would re-introduce the exact false `partial` just
+  removed. What failed is the caller's cost ceiling, not the agent's coverage.
+
+- **`detectUsageShapeDrift`'s doc block claimed both "fixed" and "recorded as a decision to
+  make" about the same live code.** Both halves were true of different providers and
+  neither said so. It now states the boundary: presence-of-depended-on-keys is asserted for
+  anthropic and google; **`openai` still uses the old overlap test**, because its
+  depended-on set is legitimately empty in v6 — so *the exact drift that motivated this
+  detector remains undetectable for the exact provider it happened to*. Closing that needs
+  an instrument watching the unified usage shape, not a tuning of this one.
+
+- One reported finding was **rejected after investigation, not adopted**: that
+  `aggregatePhaseScore` returning `0` for a command-less phase is a fabricated zero. It is
+  a deliberate, twice-tested contract — an authored-empty phase must block at its gate. The
+  rationale is now recorded at the line so the next reader does not re-open it.
+
 ### Changed
 
 - **`UsageMetrics.input_tokens` is now CACHE-EXCLUSIVE** — a semantics change with no signature
@@ -338,7 +428,7 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) 
 
 ### Internal
 
-- **43 tests added for the class sweep, each carrying a POSITIVE CONTROL.** The previous
+- **61 tests added for the class sweep, each carrying a POSITIVE CONTROL.** The previous
   round's failure was not that its tests were absent — it was that they passed vacuously
   (the `sawUsage` test covered only the zero-step case, where the flag stayed false for an
   unrelated reason). Every new test here was run against the reverted code and confirmed to
@@ -360,6 +450,19 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) 
   > rather than in the source. Both gaps are now covered end-to-end and both mutants die.
   > The count is recorded as *targeted*, deliberately: a mutation set is evidence about the
   > mutations you ran, never about the ones you did not think of.
+  >
+  > **That held again, twice more.** A later review found `sanitizeModelCost` unwired at all
+  > three of its call sites passing the *entire* suite — a helper with eight unit tests and
+  > no coverage able to tell wired from unwired. Rather than fix the one site and wait for
+  > the next report, every call site this release introduced was then swept mechanically,
+  > which surfaced **three more survivors** (all three `crashMetrics` consumers). And on the
+  > round after that, one newly-written test still survived its own mutation because it
+  > asserted `isFinite` and `>= 0` where the unguarded value was 11,000 — finite and
+  > positive, so the assertion could only ever confirm. Fixed by asserting the exact number.
+  >
+  > The shape has a name now, and it is the same one as the source-level defect, one level
+  > up: **a helper proven correct and not proven CONNECTED is not proven** — and an
+  > assertion that cannot distinguish the two answers is not a test.
 
 - **Coverage closed on two branches flagged as untested.** The `CallWarning`
   `'unsupported'`/`'compatibility'` discriminants — which carry `feature`/`details` and no

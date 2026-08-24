@@ -317,6 +317,10 @@ export class WorkflowExecutor {
   private async executePhase(phase: PhaseDefinition, input: ExecutionInput): Promise<PhaseResult> {
     const phaseStart = Date.now();
     const commandResults: CommandResult[] = [];
+    // Phase-scoped, not branch-scoped: "every step failed" is a property of the PHASE,
+    // not of how it dispatched. Declaring it inside the parallel arm is part of how the
+    // two branches drifted apart.
+    const errors: string[] = [];
 
     // Collect all step executables: command refs + agent refs
     type StepRef = { type: 'command' | 'agent'; ref: string };
@@ -329,7 +333,6 @@ export class WorkflowExecutor {
       const settled = await Promise.allSettled(
         stepRefs.map(step => this.executeStep(step.type, step.ref, input)),
       );
-      const errors: string[] = [];
       for (let j = 0; j < settled.length; j++) {
         const outcome = settled[j]!;
         if (outcome.status === 'fulfilled') {
@@ -337,44 +340,38 @@ export class WorkflowExecutor {
         } else {
           const errorMsg = outcome.reason instanceof Error ? outcome.reason.message : String(outcome.reason);
           errors.push(errorMsg);
-          commandResults.push({
-            type: 'command',
-            name: stepRefs[j]!.ref,
-            // No definition backs this result — the step crashed before its
-            // definition could even be resolved. '1.0.0-synthesized' is deliberately
-            // non-parseable as a real release, so downstream consumers
-            // (SubmissionClient's realVersion) can tell it apart from an actual
-            // 1.0.0 release instead of putting an empty string on the wire.
-            version: '1.0.0-synthesized',
-            definitionHash: '',
-            agentType: 'validator',
-            decision: 'FAIL',
-            // Crashed step — no agent ran, so no score. Null pair, not fabricated 0/100.
-            score: null,
-            maxScore: null,
-            recommendations: [{
-              title: `Step execution failed: ${stepRefs[j]!.ref}`,
-              description: errorMsg,
-              severity: 'critical',
-              failureCode: 'PRA-FRA/C',
-            }],
-            durationMs: 0,
-            // See crashMetrics: billed usage survives the throw; absent cost stays absent.
-            metrics: { ...crashMetrics(outcome.reason), toolCallCount: 0, toolCalls: 0 },
-          } as CommandResult);
+          commandResults.push(this.stepCrashPlaceholder(stepRefs[j]!.ref, outcome.reason));
         }
       }
-      if (errors.length > 0 && commandResults.length === errors.length) {
-        throw new WorkflowError(
-          `All steps in phase "${phase.name}" failed: ${errors.join('; ')}`,
-          { partialResult: commandResults },
-        );
-      }
+
     } else {
+      // FAIL-FAST but not lossy — the same correction made to CommandExecutor's
+      // sequential branch. This loop had no containment while its parallel sibling above
+      // used allSettled + a crash placeholder, so a throw here escaped executePhase,
+      // discarded every step that had already run and billed, and left the phase as
+      // createBlockedPhase's `commands: []` — which then compounded the fabricated-score
+      // defect in that same object. Two branches of one method, one hardened.
       for (const step of stepRefs) {
-        const result = await this.executeStep(step.type, step.ref, input);
-        commandResults.push(result);
+        try {
+          commandResults.push(await this.executeStep(step.type, step.ref, input));
+        } catch (error) {
+          errors.push(error instanceof Error ? error.message : String(error));
+          commandResults.push(this.stepCrashPlaceholder(step.ref, error));
+          break;
+        }
       }
+    }
+
+    // Governs BOTH branches. It previously sat inside the parallel arm, which is part of
+    // why the two diverged: "every step failed" is a property of the phase, not of how the
+    // phase happened to dispatch. A phase where SOME steps succeeded keeps their billed
+    // work and fails through the gate; a phase where none did still throws, so
+    // single-step phases behave exactly as before.
+    if (errors.length > 0 && commandResults.length === errors.length) {
+      throw new WorkflowError(
+        `All steps in phase "${phase.name}" failed: ${errors.join('; ')}`,
+        { partialResult: commandResults },
+      );
     }
 
     const aggregateScore = this.aggregatePhaseScore(
@@ -496,6 +493,17 @@ export class WorkflowExecutor {
   }
 
   private aggregatePhaseScore(results: CommandResult[], method: 'average' | 'min' | 'max'): number | null {
+    // 0 here is DELIBERATE and is not a fabricated zero — reviewed and kept 2026-08-24.
+    // An AUTHORED-empty phase (`commands: []` in the definition) must BLOCK at its gate
+    // rather than pass unexamined, and returning 0 is how that is enforced; two tests pin
+    // it ('phase with empty commands array returns score 0', 'empty commands phase with
+    // gate blocks at threshold').
+    //
+    // Distinguish it from the case C1 fixed: a phase that CRASHED also arrives with no
+    // commands, but its score is set to null at createBlockedPhase, above, so it is
+    // excluded from the workflow average instead of dragging it down. Authored-empty means
+    // "nothing was asked for and that is suspicious"; crashed means "something was asked
+    // for and we do not know the answer". Same shape, opposite correct answers.
     if (results.length === 0) return 0;
     const scoredResults = results.filter(r => r.score != null);
     if (scoredResults.length === 0) return null;
@@ -561,6 +569,39 @@ export class WorkflowExecutor {
     return { decision, decisionCategory, score };
   }
 
+  /**
+   * The placeholder a crashed step becomes. ONE construction, shared by the parallel and
+   * sequential branches of executePhase — see the sequential branch for why they diverged.
+   */
+  private stepCrashPlaceholder(ref: string, reason: unknown): CommandResult {
+    const errorMsg = reason instanceof Error ? reason.message : String(reason);
+    return {
+      type: 'command',
+      name: ref,
+      // No definition backs this result — the step crashed before its
+      // definition could even be resolved. '1.0.0-synthesized' is deliberately
+      // non-parseable as a real release, so downstream consumers
+      // (SubmissionClient's realVersion) can tell it apart from an actual
+      // 1.0.0 release instead of putting an empty string on the wire.
+      version: '1.0.0-synthesized',
+      definitionHash: '',
+      agentType: 'validator',
+      decision: 'FAIL',
+      // Crashed step — no agent ran, so no score. Null pair, not fabricated 0/100.
+      score: null,
+      maxScore: null,
+      recommendations: [{
+        title: `Step execution failed: ${ref}`,
+        description: errorMsg,
+        severity: 'critical',
+        failureCode: 'PRA-FRA/C',
+      }],
+      durationMs: 0,
+      // See crashMetrics: billed usage survives the throw; absent cost stays absent.
+      metrics: { ...crashMetrics(reason), toolCallCount: 0, toolCalls: 0 },
+    } as CommandResult;
+  }
+
   private createBlockedPhase(phase: PhaseDefinition, error?: unknown): PhaseResult {
     return {
       id: phase.id,
@@ -568,7 +609,23 @@ export class WorkflowExecutor {
       decision: 'blocked',
       commands: [],
       gateThreshold: phase.gate?.threshold ?? DEFAULT_GATE_THRESHOLD,
-      score: 0,
+      // NULL, not 0. A phase that THREW produced no score; a fabricated 0 enters the
+      // weighted average and drags the workflow's reported quality down by an amount
+      // proportional to how many phases crashed. Measured: one real phase scoring 90
+      // beside one thrown phase reported 45.
+      //
+      // `aggregate()` filters 'skipped' and 'aborted' but NOT 'blocked' — the crash case
+      // — so this literal was the whole defect. The PipelineExecutor sibling guards the
+      // identical situation and explains why in an eight-line comment
+      // (PipelineExecutor.ts, `successResults`): discriminate on score NULLITY, never on
+      // the decision string, because a legitimately-evaluated {decision:'FAIL', score:0}
+      // is a real worst-case score that must stay in the average.
+      //
+      // Recorded because of where it was found: the release before this one fixed
+      // `commands: []` in this same object literal for the cost roll-up, wrote a
+      // positive-control test for it, and left `score: 0` two lines below untouched. The
+      // citation was fixed; the class was not.
+      score: null,
       durationMs: 0,
       ...(error ? { error: formatErrorMessage(error) } : {}),
     };

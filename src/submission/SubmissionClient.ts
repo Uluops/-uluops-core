@@ -606,6 +606,12 @@ export class SubmissionClient {
       decision: result.decision,
       summary: 'summary' in result ? (result as AgentResult).summary : undefined,
       model: result.metrics.model,
+      // The engine stamps harness: 'uluops-core' on every ExecutionMetrics and the wire
+      // type declares AgentInput.harness — it was simply never forwarded, so every run
+      // this package produced was indistinguishable on the wire from one produced by any
+      // other harness. Asserted at the producer by a test that passed identically whether
+      // this line existed or not.
+      harness: result.metrics.harness,
       tokens: this.extractTokens(result.metrics),
       durationMs: result.metrics.durationMs,
     };
@@ -626,6 +632,7 @@ export class SubmissionClient {
       decision: cmd.decision,
       summary: undefined as string | undefined,
       model: cmd.metrics.model,
+      harness: cmd.metrics.harness,
       tokens: this.extractTokens(cmd.metrics),
       durationMs: cmd.metrics.durationMs,
     };
@@ -649,13 +656,28 @@ export class SubmissionClient {
     return v && v !== 'unknown' && v !== '1.0.0-synthesized' ? v : undefined;
   }
 
-  /** Extract token metrics into the tracker's expected shape. */
+  /**
+   * Extract token metrics into the tracker's expected shape.
+   *
+   * `cachedInputTokens` and `reasoningOutputTokens` were being DROPPED here despite being
+   * populated on `ExecutionMetrics` and declared on the wire type
+   * (`ops-sdk` `TokenUsage`). An OpenAI reasoning run's entire reasoning pool therefore
+   * never reached the tracker, and the cached-input pool the engine prices was invisible
+   * to anything reading a run back.
+   *
+   * The omission also falsified a justification recorded elsewhere — that `costUsd` need
+   * not be sent because it "is derivable from tokens + pricing". It is not derivable from
+   * a token set with the cache-served pool removed. Same shape as the rest of this
+   * release: a value computed correctly and then not carried across a boundary.
+   */
   private extractTokens(metrics: ExecutionMetrics) {
     return {
       inputTokens: metrics.inputTokens,
       outputTokens: metrics.outputTokens,
       cacheCreationTokens: metrics.cacheCreationTokens,
       cacheReadTokens: metrics.cacheReadTokens,
+      cachedInputTokens: metrics.cachedInputTokens,
+      reasoningOutputTokens: metrics.reasoningOutputTokens,
       thinkingTokens: metrics.thinkingTokens,
       totalEffectiveTokens: metrics.totalEffectiveTokens,
     };

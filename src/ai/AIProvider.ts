@@ -552,7 +552,19 @@ export class AIProvider {
           ` | usage: ${usage.inputTokens ?? 0}in/${usage.outputTokens ?? 0}out` +
           (textLen > 0 ? ` | text: ${textLen} chars` : ''),
         );
-        if (budgetTracker) {
+        // ABSENT IS NOT ZERO here either. This call sits three lines above the
+        // StepTotals accumulator that got exactly this fix, and was fed `?? 0` from the
+        // same `usage` object — the one the SDK materializes via
+        // createNullLanguageModelUsage() with every member undefined when a provider
+        // reports nothing. `update()` assigns currentContextTokens UNCONDITIONALLY, so a
+        // null-usage step reset the tracked window to 0: `get_token_budget` then told the
+        // model `usedTotal: 0, remaining: <full budget>` mid-run, `isOverThreshold` read
+        // false, and an eviction spanning that step became undetectable.
+        //
+        // A step that reports no numbers carries no information about the window, so the
+        // correct action is to leave the tracker's state alone, not to overwrite it with a
+        // fabricated zero.
+        if (budgetTracker && (usage.inputTokens !== undefined || usage.outputTokens !== undefined)) {
           budgetTracker.update(usage.inputTokens ?? 0, usage.outputTokens ?? 0);
         }
         // Accumulate real totals so an error path can still report them (see StepTotals).
@@ -1122,6 +1134,7 @@ export class AIProvider {
         // Anthropic structured-output run crossing 80% report an event that never
         // occurred, and carry a 'degraded' marker and 'partial' completeness for it.
         if (brakeIsHonored) budgetTracker?.markForcedWrapUp(true);
+        else budgetTracker?.markBrakeInert();
         this.logger.warn(
           brakeIsHonored
             ? `Context budget 80% used (${contextSize}/${budget}). Forcing output — no more tool calls.`
@@ -1386,22 +1399,28 @@ export class AIProvider {
    * quality, not verdict evidence — so a false positive costs a log line,
    * not a completeness downgrade.
    *
-   * Presence of DEPENDED-ON keys is asserted where a provider declares them; see
-   * DEPENDED_ON_USAGE_KEYS. The note below records the weakness that test replaced.
+   * FIXED, PARTIALLY — and the boundary matters, so read it before trusting this.
    *
-   * FORMER LIMITATION (fixed) — this detector was satisfied by ANY overlap.
-   * `keys.some(k => recognized.includes(k))` means a single surviving key suppresses
-   * the warning for every key that vanished alongside it. That is exactly how the v6
-   * OpenAI drift went unreported: `responseId` survived and was on the recognized
-   * list, while `cachedPromptTokens` and `reasoningTokens` — the only two fields the
-   * extract tier actually consumed — were gone. The instrument reported "shape is
+   * The detector used to be satisfied by ANY overlap: `keys.some(k => recognized.includes(k))`
+   * let a single surviving key suppress the warning for every key that vanished alongside
+   * it. That is exactly how the v6 OpenAI drift went unreported — `responseId` survived and
+   * was on the recognized list, while `cachedPromptTokens` and `reasoningTokens`, the only
+   * two fields the extract tier consumed, were gone. The instrument reported "shape is
    * fine" about a block that no longer contained anything it read.
    *
-   * A correct detector would assert that the keys a tier DEPENDS ON are present,
-   * rather than that some recognized key is. That is a change to the warning contract
-   * (and to what counts as noise), so it is recorded here as a decision to make rather
-   * than made in passing. Lower stakes now that mapUsage reads the unified usage shape
-   * and treats metadata as fallback, but the weakness is structural, not incidental.
+   * It now asserts PRESENCE of the keys a tier depends on (DEPENDED_ON_USAGE_KEYS) for any
+   * provider that declares them — anthropic and google.
+   *
+   * **`openai` still uses the old overlap test**, because its DEPENDED_ON set is
+   * legitimately empty: in v6 its metadata block carries no usage fields at all, so there
+   * is nothing whose absence would be news. The consequence is precise and worth stating
+   * rather than leaving implied — *the exact drift that motivated this detector remains
+   * undetectable for the exact provider it happened to.* Closing that needs the detector to
+   * watch the UNIFIED usage shape rather than provider metadata, which is a different
+   * instrument, not a tuning of this one.
+   *
+   * (This block previously claimed both "fixed" and "recorded as a decision to make" about
+   * the same live code. Both halves were true of different providers; neither said so.)
    */
   private detectUsageShapeDrift(providerMetadata?: Record<string, unknown>): string[] {
     if (!providerMetadata) return [];
@@ -1440,8 +1459,17 @@ export class AIProvider {
   private extractAnthropicUsage(base: UsageMetrics, providerMetadata?: Record<string, unknown>): void {
     const meta = (providerMetadata as { anthropic?: { cacheCreationInputTokens?: number; cacheReadInputTokens?: number } } | undefined)?.anthropic;
     if (!meta) return;
-    base.cache_creation_input_tokens ??= meta.cacheCreationInputTokens;
-    base.cache_read_input_tokens ??= meta.cacheReadInputTokens;
+    // EVERY value here is external provider data and goes through the same guard the
+    // SDK-standard path uses. These four tiers previously assigned raw. mapUsage's own
+    // doc states the rule — "Provider payloads are EXTERNAL data; `?? 0` reads like a
+    // numeric guarantee and is not one" — and enforced it only on the primary path, while
+    // these tiers ARE the legacy/unknown-provider fallback route this release exists to
+    // correct. Measured: `cacheReadInputTokens: -5000` against 10,000 reported input
+    // produced input_tokens 15,000 (a 50% inflation) and $0.0435 against a true $0.030 —
+    // finite the whole way, so both sumCostUsd's and sumTokenMetrics' finiteness guards
+    // passed it through. A NaN produces a NaN cost, blanking a whole run's spend.
+    base.cache_creation_input_tokens ??= optionalTokenCount(meta.cacheCreationInputTokens);
+    base.cache_read_input_tokens ??= optionalTokenCount(meta.cacheReadInputTokens);
   }
 
   /**
@@ -1456,18 +1484,21 @@ export class AIProvider {
   private extractOpenAIUsage(base: UsageMetrics, providerMetadata?: Record<string, unknown>): void {
     const meta = (providerMetadata as { openai?: { cachedPromptTokens?: number; reasoningTokens?: number } } | undefined)?.openai;
     if (!meta) return;
-    base.cached_input_tokens ??= meta.cachedPromptTokens;
-    base.reasoning_tokens ??= meta.reasoningTokens || undefined;
+    base.cached_input_tokens ??= optionalTokenCount(meta.cachedPromptTokens);
+    // optionalTokenCount, not `|| undefined`: the latter maps a genuine reported 0 to
+    // "not reported", which is the absent-vs-zero conflation this release corrects,
+    // pointing the other way.
+    base.reasoning_tokens ??= optionalTokenCount(meta.reasoningTokens);
   }
 
   private extractGoogleUsage(base: UsageMetrics, providerMetadata?: Record<string, unknown>): void {
     const gUsage = (providerMetadata as { google?: { usageMetadata?: { cachedContentTokenCount?: number; thoughtsTokenCount?: number } } } | undefined)?.google?.usageMetadata;
     if (!gUsage) return;
     // DISENTANGLE (§3.2): Google cachedContentTokenCount is cached *input*, not a cache read.
-    base.cached_input_tokens ??= gUsage.cachedContentTokenCount;
+    base.cached_input_tokens ??= optionalTokenCount(gUsage.cachedContentTokenCount);
     // Fallback only — mapUsage prefers the unified outputTokenDetails.reasoningTokens,
     // which is where the provider now routes thoughtsTokenCount.
-    base.thinking_tokens ??= gUsage.thoughtsTokenCount || undefined;
+    base.thinking_tokens ??= optionalTokenCount(gUsage.thoughtsTokenCount);
   }
 
   private extractGenericUsage(base: UsageMetrics, providerMetadata: Record<string, unknown>): void {
@@ -1476,9 +1507,11 @@ export class AIProvider {
       if (KNOWN_PROVIDERS.has(key) || typeof value !== 'object' || !value) continue;
       const meta = value as Record<string, unknown>;
       const cached = meta['cachedTokens'] ?? meta['cachedContentTokenCount'] ?? meta['cachedPromptTokens'];
-      if (typeof cached === 'number' && cached > 0) {
+      if (typeof cached === 'number' && Number.isFinite(cached) && cached > 0) {
         // DISENTANGLE (§3.2): unknown-provider cached input → cached_input_tokens, not cache_read.
-        base.cached_input_tokens = cached;
+        // Guarded like the other three tiers — `typeof x === 'number'` admits NaN and
+        // Infinity, and this tier reads a completely unvetted provider's payload.
+        base.cached_input_tokens = optionalTokenCount(cached);
         break;
       }
     }

@@ -75,3 +75,40 @@ describe('resolutionMarkersFromLegacy', () => {
     expect(resolutionMarkersFromLegacy([])).toEqual([]);
   });
 });
+
+/**
+ * Withdrawing a false marker must not install silence in its place.
+ *
+ * POSITIVE CONTROL: delete the `budgetTracker.brakeInert` block from
+ * `collectExecutionMarkers` and the first test fails.
+ *
+ * 0.42.0 correctly stopped emitting `budget.forced-wrap-up` where the Anthropic jsonTool
+ * `toolChoice` override makes the brake inert — the run was reporting a wrap-up that never
+ * happened. But replacing a false claim with no claim trades one reporting defect for
+ * another: `types/degradation.ts` rests the PASS+partial decision on invariant (1),
+ * "every coverage reduction emits a marker; nothing degrades silently", and a caller whose
+ * configured cost ceiling provably did not apply has something it needs to know.
+ *
+ * SEVERITY IS `info`, DELIBERATELY, and this is the judgment call: nothing was cut short,
+ * so the run is genuinely `complete` and must NOT be downgraded to `partial`. What failed
+ * is the caller's cost ceiling, not the agent's coverage. Marking it `degraded` would
+ * re-introduce exactly the false `partial` that was just removed.
+ */
+describe('budget.brake-inert marker', () => {
+  it('does not downgrade completeness — the run really is complete', () => {
+    const completeness = deriveCompleteness([
+      { code: 'budget.brake-inert', phase: 'execution', severity: 'info',
+        detail: 'brake could not engage' },
+    ]);
+    expect(completeness).toBe('complete');
+  });
+
+  it('is distinguishable from the forced-wrap-up marker it replaced', () => {
+    // The two must not be conflated: one says "coverage was cut short", the other says
+    // "your cost ceiling did not apply". Only the first is a degradation.
+    expect(deriveCompleteness([
+      { code: 'budget.forced-wrap-up', phase: 'execution', severity: 'degraded',
+        detail: 'wrap-up forced' },
+    ])).toBe('partial');
+  });
+});

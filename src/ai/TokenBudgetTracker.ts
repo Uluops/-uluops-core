@@ -50,6 +50,32 @@ export class TokenBudgetTracker {
     this.forcedWrapUpFlag = engaged;
   }
 
+  private brakeInertFlag = false;
+
+  /**
+   * Record that the budget threshold was crossed while the wrap-up brake COULD NOT act.
+   *
+   * Withdrawing the false `budget.forced-wrap-up` marker (0.42.0) was correct — the run
+   * was reporting a wrap-up that never happened — but replacing a false claim with silence
+   * trades one reporting defect for another. `types/degradation.ts` conditions the
+   * PASS+partial decision on invariant (1), "every coverage reduction emits a marker;
+   * nothing degrades silently", and a caller whose configured cost control provably did
+   * not apply has something it needs to know.
+   *
+   * Severity is INFO, deliberately, and this is a judgment call worth naming: nothing was
+   * cut short, so the run is genuinely `complete` and must not be downgraded to `partial`.
+   * What failed is the caller's cost ceiling, not the agent's coverage. Marking it
+   * `degraded` would re-introduce exactly the false `partial` that was just removed.
+   */
+  markBrakeInert(): void {
+    this.brakeInertFlag = true;
+  }
+
+  /** Whether the budget threshold was crossed with the wrap-up brake unable to engage. */
+  get brakeInert(): boolean {
+    return this.brakeInertFlag;
+  }
+
   /** Whether the wrap-up latch was engaged at the end of the run. */
   get forcedWrapUp(): boolean {
     return this.forcedWrapUpFlag;

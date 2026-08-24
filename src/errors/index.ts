@@ -90,6 +90,32 @@ export class ExecutionError extends UluOpsError {
  * handlers still catch it; callers can branch on `instanceof MaxStepsExhaustedError`
  * or `error.code === 'MAX_STEPS_EXHAUSTED'` to surface "raise maxSteps / narrow scope".
  */
+/**
+ * Identity-free check for a MaxStepsExhaustedError carrying billed metrics.
+ *
+ * `instanceof` is the wrong tool at this seam for the reason `isApiErrorLike` documents
+ * above: this package can coexist with a second copy of itself in one dependency tree
+ * (a consumer pinning a different `@uluops/core` alongside a transitive one), and two
+ * copies mean two distinct class identities. `instanceof` then silently returns false and
+ * the caller falls through to the "nothing known" branch — zeroing the ONE error in this
+ * package that carries real money across a crash. The failure is silent, and it is
+ * exactly the identity trap this module already warns about.
+ *
+ * Tests the stable `code` discriminant, which is a literal on the class and survives any
+ * number of copies, plus the presence of the payload itself.
+ */
+export function hasBilledMetrics(
+  error: unknown,
+): error is { code: 'MAX_STEPS_EXHAUSTED'; billedMetrics: ExecutionMetricsLike } {
+  return (
+    typeof error === 'object'
+    && error !== null
+    && (error as { code?: unknown }).code === 'MAX_STEPS_EXHAUSTED'
+    && typeof (error as { billedMetrics?: unknown }).billedMetrics === 'object'
+    && (error as { billedMetrics?: unknown }).billedMetrics !== null
+  );
+}
+
 export class MaxStepsExhaustedError extends ExecutionError {
   override readonly code = 'MAX_STEPS_EXHAUSTED' as const;
 
