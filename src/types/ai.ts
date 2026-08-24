@@ -22,10 +22,15 @@ export interface UsageMetrics {
    * Cached-input tokens: the cheap, cache-served portion of GROSS input that a
    * provider folds into its headline input count.
    *
-   * RECORDED COMPONENT ONLY as of the v6 normalization — it no longer participates
-   * in total_effective or cost arithmetic, because `input_tokens` is already
-   * cache-exclusive. It survives as the fallback source for that normalization when
-   * a provider reports no `inputTokenDetails`, and as a reported metric.
+   * As of the v6 normalization it no longer participates in `total_effective`,
+   * because `input_tokens` is already cache-exclusive.
+   *
+   * It IS still priced. On the legacy-metadata path — a provider that reports no
+   * `inputTokenDetails`, reachable via `ai.additionalProviders` — this field carries
+   * the cache-served pool that `cache_read_input_tokens` would otherwise hold, and
+   * cost prices whichever of the two is present. Omitting it made those tokens free:
+   * normalization removes them from `input_tokens`, so nothing else would charge them.
+   * It is also the fallback source for that normalization.
    * Historically it was subtracted: (input − cached_input) + output + cache_creation
    * (cross-harness-token-normalization-spec §3.2). AI SDK v6 dissolved the provider
    * shape difference that motivated that disentangle — Anthropic cache reads and

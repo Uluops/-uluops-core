@@ -305,6 +305,25 @@ describe('AgentExecutor', () => {
       expect(result.metrics.thinkingTokens).toBe(THINKING_TOKENS);
     });
 
+    it('surfaces provider warnings as an info degradation marker', async () => {
+      // providerWarnings lives on AIGenerateResult (internal). Without this promotion
+      // a runAgent() consumer — the primary surface — could not reach it at all, which
+      // is what made the README example reference a field AgentResult does not have.
+      const ai = mockAIProvider({
+        providerWarnings: ['temperature is not supported when thinking is enabled'],
+      } as never);
+      const executor = new AgentExecutor(baseConfig, ai, noopLogger);
+
+      const result = await executor.execute(makeValidatorDef(), { target: tmpDir });
+
+      const marker = result.degradationMarkers?.find((m) => m.code === 'provider.warnings');
+      expect(marker).toBeDefined();
+      expect(marker!.severity).toBe('info');
+      expect(marker!.detail).toContain('temperature is not supported');
+      // info-severity must NOT downgrade completeness — the run's decision stands.
+      expect(result.completeness).not.toBe('failed');
+    });
+
     it('does NOT subtract cached_input again — input_tokens arrives cache-exclusive', async () => {
       // Same live shape as before (§1.5, gemini-3-flash-preview) but expressed under the
       // v6 contract: mapUsage has already removed the cache-served portion, so

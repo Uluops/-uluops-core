@@ -410,6 +410,19 @@ export class AgentExecutor {
       });
     }
 
+    if (result.providerWarnings && result.providerWarnings.length > 0) {
+      markers.push({
+        code: 'provider.warnings',
+        phase: 'execution',
+        // info, matching usage.provider-metadata-shape-drift above: a warning means a
+        // REQUEST setting was silently dropped (provider option schemas strip unknown
+        // keys rather than rejecting them), which degrades metrics/behaviour fidelity
+        // without invalidating the run's coverage or decision.
+        severity: 'info',
+        detail: `Provider did not honor ${result.providerWarnings.length} request setting(s): ${result.providerWarnings.join('; ')}`,
+      });
+    }
+
     if (result.finishReason === 'tool-calls' && rawText.length > 0) {
       markers.push({
         code: 'steps.near-exhaustion',

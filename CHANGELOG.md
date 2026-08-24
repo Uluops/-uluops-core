@@ -132,10 +132,18 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) 
   **stop** subtracting a cached figure from it; doing so now undercounts. `total_effective` is
   `input + output + cache_creation`, unchanged in meaning and now correct in value.
 
-- **`cached_input_tokens` no longer participates in effective-token or cost arithmetic.** It
-  remains a recorded component and the fallback source for normalization. AI SDK v6 dissolved
-  the provider-shape difference that motivated the §3.2 disentangle: Anthropic cache reads and
-  OpenAI/Google cached input now both arrive as `inputTokenDetails.cacheReadTokens`.
+- **`cached_input_tokens` no longer participates in effective-token arithmetic.** AI SDK v6
+  dissolved the provider-shape difference that motivated the §3.2 disentangle: Anthropic cache
+  reads and OpenAI/Google cached input now both arrive as `inputTokenDetails.cacheReadTokens`.
+
+  **It is still PRICED, however.** On the legacy-metadata path — a provider reporting no
+  `inputTokenDetails`, reachable via `ai.additionalProviders` — this field carries the
+  cache-served pool, and cost prices whichever of it and `cache_read_input_tokens` is present.
+  An intermediate revision of this release dropped it from cost entirely, which made those
+  tokens free (normalization removes them from `input_tokens`, so nothing else charged them);
+  that undercount was caught by the ship gate and corrected before publish. Recorded here
+  because a reader diffing 0.42.0 against itself would otherwise find the two states
+  contradictory.
 
 ### Added
 

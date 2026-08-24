@@ -1474,6 +1474,20 @@ describe('computeCostUsd (spec v0.6.0 Phase 1b — unit criterion 1b.5)', () => 
     expect(usd!).toBeGreaterThan((60_000 * 3 + 10_000 * 15) / 1e6);
   });
 
+  it('falls back to the input rate for cache WRITES when no cacheWrite rate exists', () => {
+    // Symmetric sibling of the cacheRead fallback test above. Mutation-confirmed gap:
+    // changing `cost.cacheWrite ?? cost.input` to `?? 0` priced cache-creation tokens
+    // FREE and passed every other test in this file. Same defect class this release
+    // exists to close — a cache pool silently costing nothing — on the untested side.
+    const usd = compute(
+      { input_tokens: 10_000, output_tokens: 1_000, cache_creation_input_tokens: 20_000 },
+      { input: 3, output: 15 },
+    );
+    expect(usd).toBeCloseTo((10_000 * 3 + 1_000 * 15 + 20_000 * 3) / 1e6, 10);
+    // Must be strictly greater than the value that prices the write pool at zero.
+    expect(usd!).toBeGreaterThan((10_000 * 3 + 1_000 * 15) / 1e6);
+  });
+
   it('does not double-charge when BOTH cache_read and cached_input are present', () => {
     // The v6 details path can populate both (Google sets cache_read from details and
     // cached_input from metadata, to the same number). Exactly one must be priced.

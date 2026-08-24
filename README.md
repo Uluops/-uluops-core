@@ -501,11 +501,16 @@ if (metrics.thinkingTokens) console.log(`Thinking: ${metrics.thinkingTokens}`);
 console.log(`Effective total: ${metrics.totalEffectiveTokens}`);
 
 // Provider warnings — settings the provider could not honor (unsupported parameter,
-// clamped max_tokens, unknown context-management strategy). Present only when non-empty.
-// Worth logging: provider option schemas STRIP unknown keys rather than rejecting them,
-// so a warning is the only runtime evidence that a request setting silently didn't apply.
-if (result.providerWarnings?.length) {
-  console.warn('Provider warnings:', result.providerWarnings);
+// clamped max_tokens, unknown context-management strategy). Provider option schemas
+// STRIP unknown keys rather than rejecting them, so a warning is the only runtime
+// evidence that a request setting silently didn't apply.
+//
+// On an AgentResult these surface as an info-severity degradation marker (the same
+// route usage.provider-metadata-shape-drift takes). The raw string[] lives on
+// AIGenerateResult if you are calling AIProvider.generate() directly.
+const warned = result.degradationMarkers?.filter((m) => m.code === 'provider.warnings');
+if (warned?.length) {
+  console.warn('Provider warnings:', warned.map((m) => m.detail));
 }
 ```
 
