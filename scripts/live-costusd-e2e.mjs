@@ -66,5 +66,19 @@ console.log('[live] costUsd (engine):   $' + (m.costUsd?.toFixed(6) ?? 'undefine
 console.log('[live] costUsd (hand):     $' + expected.toFixed(6));
 
 if (m.costUsd === undefined) { console.error('FAIL: costUsd undefined on a priced model'); process.exit(1); }
+
+// POSITIVE CONTROL — run the comparison against a deliberately wrong value FIRST.
+// Without this, a green run cannot distinguish "the engine agrees" from "the
+// comparison is inert". The header above documents that this script's hand
+// computation is a transcription and therefore weak; this is the part that at least
+// proves the assertion is live. It must trip, or every result below is meaningless.
+const sabotaged = expected * 1.01 + 1e-6;
+const controlTrips = Math.abs(m.costUsd - sabotaged) > 1e-9;
+console.log(`[live] positive control (expected+1%): ${controlTrips ? 'TRIPS as required' : 'DID NOT TRIP'}`);
+if (!controlTrips) {
+  console.error('FAIL: the comparison did not reject a deliberately wrong value — this check is inert, disregard any pass.');
+  process.exit(1);
+}
+
 if (Math.abs(m.costUsd - expected) > 1e-9) { console.error('FAIL: engine/hand mismatch'); process.exit(1); }
-console.log('\nLIVE E2E PASSED: engine costUsd matches hand computation exactly');
+console.log('\nLIVE E2E PASSED: engine costUsd matches hand computation exactly (control verified live)');

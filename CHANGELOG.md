@@ -6,6 +6,16 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) 
 
 ## [Unreleased]
 
+## [0.42.0] - 2026-08-23
+
+> **Cut as a MINOR, not a patch — deliberately.** `UsageMetrics.input_tokens` changed
+> meaning without changing signature, so nothing downstream fails to compile. Under 0.x
+> a caret range treats minor as the breaking boundary, so `@uluops/cli`'s `^0.41.0`
+> will NOT absorb this on a plain `npm install` — it forces an explicit, reviewed pin
+> bump instead. Shipping a value-semantics break as a patch would reproduce exactly the
+> silent-drift failure mode this release exists to correct. (`uluops-registry-api` and
+> `uluops-docs` carry exact pins and are unaffected either way.)
+
 ### Fixed
 
 - **Token accounting reported only the LAST step of a multi-step tool loop.** `AIProvider`

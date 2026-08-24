@@ -499,6 +499,14 @@ if (metrics.thinkingTokens) console.log(`Thinking: ${metrics.thinkingTokens}`);
 // Canonical: inputTokens (cache-exclusive) + outputTokens (gross) + cacheCreationTokens.
 // Summed across every step of the tool loop, not just the last one.
 console.log(`Effective total: ${metrics.totalEffectiveTokens}`);
+
+// Provider warnings — settings the provider could not honor (unsupported parameter,
+// clamped max_tokens, unknown context-management strategy). Present only when non-empty.
+// Worth logging: provider option schemas STRIP unknown keys rather than rejecting them,
+// so a warning is the only runtime evidence that a request setting silently didn't apply.
+if (result.providerWarnings?.length) {
+  console.warn('Provider warnings:', result.providerWarnings);
+}
 ```
 
 ### Integrity Verification

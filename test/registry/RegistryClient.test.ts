@@ -884,6 +884,28 @@ describe('RegistryClient', () => {
       expect(warn.mock.calls[0]![0]).not.toMatch(/Request render access/);
     });
 
+    it('warns for BOTH diagnoses when a client sees 403 then 401 (rotated mid-session)', async () => {
+      // The dedup key must track the 401/403 split, not collapse it. Previously both
+      // shared an 'entitlement' bucket, so the first status seen silenced the second —
+      // and the second is the actionable one in exactly the rotated-key scenario the
+      // split exists to serve.
+      await writeAgentYaml(tmpDir, 'agent-mix1');
+      await writeAgentYaml(tmpDir, 'agent-mix2');
+
+      const warn = vi.fn();
+      const logger: Logger = { debug() {}, info() {}, warn, error() {} };
+      const client = new RegistryClient({ ...baseConfig, localDefinitions: tmpDir }, logger);
+
+      mockRenderPreview.mockRejectedValueOnce(new SdkApiError(403, 'Forbidden', 'FORBIDDEN'));
+      await client.resolve('agent-mix1');
+      mockRenderPreview.mockRejectedValueOnce(new SdkApiError(401, 'Unauthorized', 'UNAUTHORIZED'));
+      await client.resolve('agent-mix2');
+
+      expect(warn).toHaveBeenCalledTimes(2);
+      expect(warn.mock.calls[0]![0]).toMatch(/lacks render access/);
+      expect(warn.mock.calls[1]![0]).toMatch(/rejected the credential/);
+    });
+
     it('distinguishes 403 (valid key, unpermitted) from 401 (rejected credential)', async () => {
       await writeAgentYaml(tmpDir, 'agent-a403');
       mockRenderPreview.mockRejectedValue(new SdkApiError(403, 'Forbidden', 'FORBIDDEN'));

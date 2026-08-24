@@ -9,7 +9,29 @@ import {
   type LanguageModel,
   type ToolSet,
 } from 'ai';
+import type { LanguageModelUsage } from 'ai';
 import type { ProviderOptions } from '@ai-sdk/provider-utils';
+
+/**
+ * What `mapUsage` accepts — DERIVED from the AI SDK's own `LanguageModelUsage`
+ * rather than hand-copying its field names.
+ *
+ * That derivation is the point. The defect this whole module was corrected for was
+ * core reading a v5-shaped `usage` under v6, and a hand-written structural type gives
+ * the compiler nothing to check: if the SDK renames `noCacheTokens` again, a duck type
+ * keeps compiling, `usage.inputTokenDetails?.noCacheTokens` silently reads `undefined`,
+ * the normalization falls back to the pre-fix subtraction, and the cache-inclusive
+ * inflation returns with no signal. Deriving from the real type makes that rename a
+ * BUILD failure instead of a silent numeric regression.
+ *
+ * The two detail objects are widened to optional on purpose: the SDK declares them
+ * required, but this method is also called internally with a minimal
+ * `{ inputTokens, outputTokens }` on error-fallback paths where no usage was reported.
+ * That is a deliberate, narrow widening of a real type — not a re-declaration of it.
+ */
+type MappableUsage =
+  Pick<LanguageModelUsage, 'inputTokens' | 'outputTokens'>
+  & Partial<Pick<LanguageModelUsage, 'inputTokenDetails' | 'outputTokenDetails'>>;
 import { createAnthropic, type AnthropicProvider } from '@ai-sdk/anthropic';
 import { createOpenAI, type OpenAIProvider } from '@ai-sdk/openai';
 import { createGoogleGenerativeAI } from '@ai-sdk/google';
@@ -369,12 +391,17 @@ export class AIProvider {
    * Compute estimated USD cost from usage and the resolved model's registry
    * pricing (USD per MILLION tokens; live-pinned sonnet 3/15 — hence /1e6).
    *
-   * cached_input_tokens rule (cross-harness-token-normalization §3.2): the
-   * cheap cache-served portion of GROSS input that OpenAI/Google report is
-   * priced at cacheRead when that rate exists, else at the full input rate
-   * (documented conservative overstatement). It is subtracted from gross
-   * input first and never double-counted against cache_read_input_tokens,
-   * which holds only genuine Anthropic-style cache reads.
+   * Pricing rule: `usage.input_tokens` arrives CACHE-EXCLUSIVE (mapUsage normalizes
+   * it), so it is priced directly at the full input rate with NO cached subtraction —
+   * subtracting here would undercharge. The cache-served and cache-written portions
+   * are priced separately, each falling back to the full input rate when the model
+   * declares no dedicated cache rate (a documented conservative overstatement, never
+   * an undercount). `cached_input_tokens` does NOT participate — it is a recorded
+   * component only, since v6 routes every provider's cached input through
+   * `cache_read_input_tokens`.
+   *
+   * This docblock previously described the pre-v6 algorithm (subtract cached_input
+   * from gross input) and contradicted the implementation three lines below it.
    */
   private computeCostUsd(usage: UsageMetrics, cost: ResolvedModel['cost']): number | undefined {
     if (!cost) return undefined;
@@ -427,8 +454,14 @@ export class AIProvider {
     // option schemas strip unknown keys silently, so this is the ONLY channel that says a
     // request setting did not take effect. Logged at warn so it is visible without
     // requiring debug, and carried on the result for callers that record telemetry.
+    // Narrow on the discriminant rather than casting. `CallWarning` is a union whose
+    // 'unsupported' and 'compatibility' members carry `feature`/`details` and NO
+    // `message` — casting to `{message?: string}` reads undefined for those and throws
+    // away the only two fields that say what the provider actually refused.
     const providerWarnings = (result.warnings ?? []).map((w) =>
-      typeof w === 'string' ? w : (w as { message?: string }).message ?? JSON.stringify(w),
+      w.type === 'other'
+        ? w.message
+        : `${w.type}: ${w.feature}${w.details ? ` — ${w.details}` : ''}`,
     );
     for (const w of providerWarnings) {
       this.logger.warn(`Provider warning (${resolved.provider}:${resolved.modelId}): ${w}`);
@@ -469,6 +502,36 @@ export class AIProvider {
   /**
    * Handle generate errors — structured output fallback or error mapping.
    */
+  /**
+   * The degraded-but-usable result returned when structured output could not be
+   * produced and the run falls back to text extraction. Shared by both fallback
+   * branches in handleGenerateError, which differ only in text, usage source, and
+   * finishReason — everything else was byte-identical between them.
+   *
+   * costUsd here is a REAL computed value, not undefined: on a priced model a
+   * zero-usage fallback is genuinely $0, whereas undefined means the model carries
+   * no pricing at all. That polarity is load-bearing downstream (sumCostUsd).
+   */
+  private buildFallbackResult(
+    resolved: ResolvedModel,
+    text: string,
+    rawUsage: MappableUsage,
+    finishReason: string,
+  ): AIGenerateResult {
+    const usage = this.mapUsage(rawUsage);
+    return {
+      text,
+      structuredOutput: undefined,
+      usage,
+      toolCallCount: 0,
+      model: `${resolved.provider}:${resolved.modelId}`,
+      provider: resolved.provider,
+      steps: 0,
+      finishReason,
+      costUsd: this.computeCostUsd(usage, resolved.cost),
+    };
+  }
+
   private handleGenerateError(
     error: unknown,
     resolved: ResolvedModel,
@@ -484,40 +547,19 @@ export class AIProvider {
       this.logger.warn(
         'Structured output was requested but the model produced none (non-"stop" finish) — falling back to text extraction.',
       );
-      const usage = this.mapUsage({ inputTokens: 0, outputTokens: 0 });
-      return {
-        text: '',
-        structuredOutput: undefined,
-        usage,
-        toolCallCount: 0,
-        model: `${resolved.provider}:${resolved.modelId}`,
-        provider: resolved.provider,
-        steps: 0,
-        finishReason: 'error',
-        costUsd: this.computeCostUsd(usage, resolved.cost),
-      };
+      return this.buildFallbackResult(resolved, '', { inputTokens: 0, outputTokens: 0 }, 'error');
     }
 
     if (useStructuredOutput && NoObjectGeneratedError.isInstance(error)) {
       this.logger.warn(
-        `Structured output generation failed — falling back to text extraction: ${(error as Error).message}`,
+        `Structured output generation failed — falling back to text extraction: ${error.message}`,
       );
-      const usage = this.mapUsage(
-        (error as NoObjectGeneratedError).usage ?? { inputTokens: 0, outputTokens: 0 },
+      return this.buildFallbackResult(
+        resolved,
+        error.text ?? '',
+        error.usage ?? { inputTokens: 0, outputTokens: 0 },
+        error.finishReason ?? 'error',
       );
-      return {
-        text: (error as NoObjectGeneratedError).text ?? '',
-        structuredOutput: undefined,
-        usage,
-        toolCallCount: 0,
-        model: `${resolved.provider}:${resolved.modelId}`,
-        provider: resolved.provider,
-        steps: 0,
-        finishReason: (error as NoObjectGeneratedError).finishReason ?? 'error',
-        // Priced model + zero-usage fallback => a REAL computed 0, not
-        // undefined; undefined only when the model carries no pricing.
-        costUsd: this.computeCostUsd(usage, resolved.cost),
-      };
     }
     throw this.mapError(error, timeoutMs, resolved);
   }
@@ -956,19 +998,7 @@ export class AIProvider {
    * Convert AI SDK usage to UluOps format
    */
   private mapUsage(
-    usage: {
-      inputTokens: number | undefined;
-      outputTokens: number | undefined;
-      inputTokenDetails?: {
-        noCacheTokens?: number | undefined;
-        cacheReadTokens?: number | undefined;
-        cacheWriteTokens?: number | undefined;
-      };
-      outputTokenDetails?: {
-        textTokens?: number | undefined;
-        reasoningTokens?: number | undefined;
-      };
-    },
+    usage: MappableUsage,
     providerMetadata?: Record<string, unknown>,
     provider?: string,
   ): UsageMetrics {
@@ -1064,8 +1094,7 @@ export class AIProvider {
    * keys we recognize. The resulting marker is info-severity — metrics
    * quality, not verdict evidence — so a false positive costs a log line,
    * not a completeness downgrade.
-   */
-  /**
+   *
    * KNOWN LIMITATION — this detector is satisfied by ANY overlap.
    * `keys.some(k => recognized.includes(k))` means a single surviving key suppresses
    * the warning for every key that vanished alongside it. That is exactly how the v6
@@ -1152,51 +1181,62 @@ export class AIProvider {
    * Map AI SDK errors to sdk-core error types.
    * AI SDK normalizes all provider errors to APICallError with statusCode.
    */
+  /**
+   * Map a provider APICallError to the sdk-core error type its status implies.
+   * Extracted from mapError so that method reads as a dispatch table rather than
+   * four interleaved concerns. Pure extraction — branch order and messages are
+   * unchanged; the caller still attaches `cause`.
+   */
+  private mapAPICallError(error: APICallError, resolved?: ResolvedModel): Error {
+    const status = error.statusCode ?? 0;
+    let mapped: Error;
+
+    if (status === 429) {
+      mapped = new RateLimitError(
+        `Rate limit exceeded (HTTP 429). Back off and retry. Provider message: ${error.message}`,
+      );
+    } else if (status === 401) {
+      mapped = new UnauthorizedError(
+        `Authentication failed (HTTP 401). Check your provider API key. Provider message: ${error.message}`,
+      );
+    } else if (status === 403) {
+      mapped = new ForbiddenError(
+        `Forbidden (HTTP 403). Check API key permissions or billing status. Provider message: ${error.message}`,
+      );
+    } else if (status === 404) {
+      // A provider 404 has two unrelated causes that are indistinguishable
+      // from the status code alone. `resolved.registered` is the only thing
+      // that separates them, which is why ModelCatalog carries it: a model
+      // present in the catalog but 404-ing at the provider means the catalog
+      // is stale (withdrawn upstream, local copy not yet retired); a model
+      // that was never in the catalog is far more likely a wrong name.
+      const modelRef = resolved ? `${resolved.provider}:${resolved.modelId}` : 'the requested model';
+      const diagnosis = resolved === undefined
+        ? 'Model provenance is unknown here — verify the model name against `ulu models list`.'
+        : resolved.registered
+          ? `${modelRef} IS in the model catalog but the provider does not recognize it — the catalog is very likely STALE (the model was retired upstream and the local catalog has not caught up). Re-sync the catalog; do not assume the name is wrong.`
+          : `${modelRef} is NOT in the model catalog, so it was passed through unvalidated. Check the model name for typos, or confirm your account has access to it.`;
+      mapped = new SdkApiError(
+        404,
+        `Provider returned HTTP 404 for ${modelRef}. ${diagnosis} Provider message: ${error.message}`,
+      );
+    } else if (status >= 500) {
+      mapped = new ServiceUnavailableError(
+        `Provider server error (HTTP ${status}). This is typically transient — retry or check the provider's status page. Provider message: ${error.message}`,
+      );
+    } else {
+      mapped = new SdkApiError(status, `Provider returned HTTP ${status}: ${error.message}`);
+    }
+    return mapped;
+  }
+
   private mapError(error: unknown, timeoutMs?: number, resolved?: ResolvedModel): Error {
     this.logger.error(`AI SDK error: ${formatErrorMessage(error)}`);
 
     const cause = error instanceof Error ? error : undefined;
 
     if (isAPICallError(error)) {
-      const status = error.statusCode ?? 0;
-      let mapped: Error;
-
-      if (status === 429) {
-        mapped = new RateLimitError(
-          `Rate limit exceeded (HTTP 429). Back off and retry. Provider message: ${error.message}`,
-        );
-      } else if (status === 401) {
-        mapped = new UnauthorizedError(
-          `Authentication failed (HTTP 401). Check your provider API key. Provider message: ${error.message}`,
-        );
-      } else if (status === 403) {
-        mapped = new ForbiddenError(
-          `Forbidden (HTTP 403). Check API key permissions or billing status. Provider message: ${error.message}`,
-        );
-      } else if (status === 404) {
-        // A provider 404 has two unrelated causes that are indistinguishable
-        // from the status code alone. `resolved.registered` is the only thing
-        // that separates them, which is why ModelCatalog carries it: a model
-        // present in the catalog but 404-ing at the provider means the catalog
-        // is stale (withdrawn upstream, local copy not yet retired); a model
-        // that was never in the catalog is far more likely a wrong name.
-        const modelRef = resolved ? `${resolved.provider}:${resolved.modelId}` : 'the requested model';
-        const diagnosis = resolved === undefined
-          ? 'Model provenance is unknown here — verify the model name against `ulu models list`.'
-          : resolved.registered
-            ? `${modelRef} IS in the model catalog but the provider does not recognize it — the catalog is very likely STALE (the model was retired upstream and the local catalog has not caught up). Re-sync the catalog; do not assume the name is wrong.`
-            : `${modelRef} is NOT in the model catalog, so it was passed through unvalidated. Check the model name for typos, or confirm your account has access to it.`;
-        mapped = new SdkApiError(
-          404,
-          `Provider returned HTTP 404 for ${modelRef}. ${diagnosis} Provider message: ${error.message}`,
-        );
-      } else if (status >= 500) {
-        mapped = new ServiceUnavailableError(
-          `Provider server error (HTTP ${status}). This is typically transient — retry or check the provider's status page. Provider message: ${error.message}`,
-        );
-      } else {
-        mapped = new SdkApiError(status, `Provider returned HTTP ${status}: ${error.message}`);
-      }
+      const mapped = this.mapAPICallError(error, resolved);
       mapped.cause = cause;
       return mapped;
     }
@@ -1254,11 +1294,7 @@ export class AIProvider {
  * `isInstance` is brand-based, which is what makes it correct across the nine copies
  * of `ai` installed in this workspace, where `instanceof` would fail across realms.
  */
-function isAPICallError(error: unknown): error is Error & {
-  statusCode?: number;
-  responseHeaders?: Record<string, string>;
-  isRetryable?: boolean;
-} {
+function isAPICallError(error: unknown): error is APICallError {
   return APICallError.isInstance(error);
 }
 
@@ -1270,10 +1306,6 @@ function isAPICallError(error: unknown): error is Error & {
  * never matched, which meant retry exhaustion never reached its branch and surfaced
  * as SdkApiError(0) instead of the underlying RateLimit/ServiceUnavailable cause.
  */
-function isRetryError(error: unknown): error is Error & {
-  lastError?: unknown;
-  errors?: unknown[];
-  reason?: string;
-} {
+function isRetryError(error: unknown): error is RetryError {
   return RetryError.isInstance(error);
 }

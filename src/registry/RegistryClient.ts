@@ -718,12 +718,19 @@ export class RegistryClient {
           ? `Render API key lacks render access (403) — ${consequence} The key is valid but not permitted to `
             + `render. Request render access for this key.`
           : `Render API unavailable (non-fatal — using raw YAML fallback: ${formatErrorMessage(error)}) — ${consequence}`;
-      const isEntitlementFailure = isRejectedCredential || isForbidden;
       // When no API key is configured (offline/local-only usage) this path is
       // fully expected, so log at debug; otherwise warn once per branch per
       // client instance — a pipeline over several agents would otherwise
       // repeat the identical warning once per definition.
-      const warnKey = isEntitlementFailure ? 'entitlement' : 'unavailable';
+      // Dedup per DIAGNOSIS, not per broad category. Keying 401 and 403 to a shared
+      // 'entitlement' bucket meant whichever fired first silenced the other for the
+      // life of the client — so a session that saw a 403 and then had its key rotated
+      // would never surface the 401's actionable "verify ULUOPS_API_KEY" message.
+      // That is precisely the mid-session rotation case the split was written for, so
+      // the dedup key has to track the split it is deduping.
+      const warnKey = isRejectedCredential ? 'rejected-credential'
+        : isForbidden ? 'forbidden'
+          : 'unavailable';
       if (this.config.apiKey && !this.warnedRenderReasons.has(warnKey)) {
         this.warnedRenderReasons.add(warnKey);
         this.logger.warn(msg);

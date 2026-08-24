@@ -4,7 +4,7 @@ import { TokenBudgetTracker } from '../../src/ai/TokenBudgetTracker.js';
 import type { ModelCatalog, ResolvedModel } from '../../src/ai/ModelCatalog.js';
 import type { ResolvedConfig } from '../../src/types/config.js';
 import type { Logger } from '@uluops/sdk-core';
-import { APICallError, RetryError } from 'ai';
+import { APICallError, RetryError, NoOutputGeneratedError } from 'ai';
 import {
   RateLimitError,
   UnauthorizedError,
@@ -376,10 +376,16 @@ describe('AIProvider', () => {
 
       mockGenerateText.mockResolvedValueOnce({
         text: 'done',
+        // Realistic v6 shape: the SDK emits noCacheTokens alongside the cache fields,
+        // and `inputTokens` is the cache-INCLUSIVE total (125 + 50 + 25 = 200).
+        // This fixture previously omitted noCacheTokens and asserted input_tokens
+        // stayed 200 — certifying the very cache-inclusive double-count the engine
+        // was corrected to stop producing.
         usage: {
           inputTokens: 200,
           outputTokens: 100,
           inputTokenDetails: {
+            noCacheTokens: 125,
             cacheReadTokens: 50,
             cacheWriteTokens: 25,
           },
@@ -396,10 +402,37 @@ describe('AIProvider', () => {
         prompt: 'test',
       });
 
-      expect(result.usage.input_tokens).toBe(200);
+      expect(result.usage.input_tokens).toBe(125);
+      expect(result.usage.input_tokens).not.toBe(200);
       expect(result.usage.output_tokens).toBe(100);
       expect(result.usage.cache_read_input_tokens).toBe(50);
       expect(result.usage.cache_creation_input_tokens).toBe(25);
+    });
+
+    it('does not silently keep a cache-inclusive total when noCacheTokens is absent', async () => {
+      // The narrow shape the normalization fallback exists for: details present but
+      // noCacheTokens missing. The SDK is not expected to emit this, but the type
+      // permits it independently, and if it ever occurred the pre-fix behaviour
+      // (keep the cache-inclusive total) is the failure we must not silently revert to.
+      const { generateText } = await import('ai');
+      vi.mocked(generateText).mockResolvedValueOnce({
+        text: 'done',
+        usage: {
+          inputTokens: 200,
+          outputTokens: 100,
+          inputTokenDetails: { cacheReadTokens: 50, cacheWriteTokens: 25 },
+        },
+        steps: [],
+        finishReason: 'stop',
+        providerMetadata: { someprovider: { cachedTokens: 50 } },
+      } as never);
+
+      const provider = new AIProvider(mockConfig, mockCatalog(), noopLogger);
+      const result = await provider.generate({ model: 'sonnet', system: 's', prompt: 'p' });
+
+      // Falls back to subtracting the provider-reported cached portion: 200 − 50 = 150.
+      expect(result.usage.input_tokens).toBe(150);
+      expect(result.usage.input_tokens).not.toBe(200);
     });
 
     it('maps cache metrics from Anthropic provider metadata as fallback', async () => {
@@ -535,7 +568,7 @@ describe('AIProvider', () => {
       })).rejects.toThrow(ServiceUnavailableError);
     });
 
-    it('maps AbortError to TimeoutError', async () => {
+    it('maps a real AbortSignal.timeout rejection (DOMException named TimeoutError) to TimeoutError', async () => {
       const { generateText } = await import('ai');
       const mockGenerateText = vi.mocked(generateText);
 
@@ -1641,10 +1674,13 @@ describe('error mapping — branches that were dead under v5-shaped guards', () 
   it('unwraps a RetryError to its underlying cause — 429 exhaustion is a RateLimitError', async () => {
     // Previously mapped to SdkApiError(0), so a caller backing off on RateLimitError
     // saw nothing. RetryError carries no statusCode of its own; the cause does.
+    // Codes MUST differ across attempts, or "last" and "first" are indistinguishable
+    // and this assertion cannot detect a selection bug (mutation-confirmed: with
+    // identical codes, swapping errors[length-1] for errors[0] failed nothing).
     const err = new RetryError({
       message: 'Failed after 3 attempts',
       reason: 'maxRetriesExceeded',
-      errors: [makeApiCallError('rate limited', 429), makeApiCallError('rate limited', 429)],
+      errors: [makeApiCallError('server error', 503), makeApiCallError('rate limited', 429)],
     });
     await expect(generateWith(err)).rejects.toThrow(RateLimitError);
   });
@@ -1653,9 +1689,11 @@ describe('error mapping — branches that were dead under v5-shaped guards', () 
     const err = new RetryError({
       message: 'Failed',
       reason: 'maxRetriesExceeded',
-      errors: [makeApiCallError('boom', 503), makeApiCallError('boom', 503)],
+      errors: [makeApiCallError('rate limited', 429), makeApiCallError('boom', 503)],
     });
     await expect(generateWith(err)).rejects.toThrow(/2 attempt\(s\).*maxRetriesExceeded/);
+    // The LAST attempt (503) decides the class, not the first (429).
+    await expect(generateWith(err)).rejects.toThrow(ServiceUnavailableError);
   });
 
   it('maps a real AbortSignal.timeout rejection (name "TimeoutError") to TimeoutError', async () => {
@@ -1781,5 +1819,67 @@ describe('provider warnings — the SDK drift channel core used to discard', () 
     const provider = new AIProvider(mockConfig, mockCatalog(), noopLogger);
     const result = await provider.generate({ model: 'sonnet', system: 's', prompt: 'p' });
     expect(result.providerWarnings).toBeUndefined();
+  });
+});
+
+describe('NoOutputGeneratedError fallback (mutation-identified gap)', () => {
+  beforeEach(() => { vi.clearAllMocks(); });
+
+  // Deleting this branch previously failed ZERO tests: the finishReason read guard
+  // keeps the SDK from ever raising it, so nothing could observe its removal. It is
+  // a second line of defence, and a defence nothing exercises is indistinguishable
+  // from one that is not there. This rejects with the real, symbol-branded class.
+  const structuredCatalog = (cost?: unknown) => mockCatalog({
+    resolve: vi.fn().mockResolvedValue(
+      makeResolvedModel({
+        capabilities: { tools: true, vision: true, streaming: true, extendedThinking: false, structuredOutput: true } as never,
+        ...(cost ? { cost } : {}),
+      } as never),
+    ),
+  } as never);
+
+  it('degrades to text extraction instead of throwing SdkApiError(0)', async () => {
+    const { generateText } = await import('ai');
+    vi.mocked(generateText).mockRejectedValueOnce(new NoOutputGeneratedError());
+
+    const provider = new AIProvider(mockConfig, structuredCatalog({ input: 3, output: 15 }), noopLogger);
+    const result = await provider.generate({
+      model: 'sonnet',
+      system: 's',
+      prompt: 'p',
+      output: { type: 'output-object', schema: {} } as never,
+    });
+
+    expect(result.structuredOutput).toBeUndefined();
+    expect(result.finishReason).toBe('error');
+    expect(result.text).toBe('');
+    // A PRICED model with zero usage must yield a REAL 0, never undefined —
+    // undefined is reserved for "this model carries no pricing at all", and
+    // sumCostUsd depends on that polarity to distinguish free from unknown.
+    expect(result.costUsd).toBe(0);
+  });
+
+  it('keeps costUsd undefined — not 0 — when the model carries no pricing', async () => {
+    const { generateText } = await import('ai');
+    vi.mocked(generateText).mockRejectedValueOnce(new NoOutputGeneratedError());
+
+    const provider = new AIProvider(mockConfig, structuredCatalog(), noopLogger);
+    const result = await provider.generate({
+      model: 'sonnet',
+      system: 's',
+      prompt: 'p',
+      output: { type: 'output-object', schema: {} } as never,
+    });
+    expect(result.costUsd).toBeUndefined();
+  });
+
+  it('does NOT swallow it when structured output was never requested', async () => {
+    // The guard is `useStructuredOutput && isInstance` — without the flag this must
+    // still surface as a thrown error rather than a silent degraded result.
+    const { generateText } = await import('ai');
+    vi.mocked(generateText).mockRejectedValueOnce(new NoOutputGeneratedError());
+
+    const provider = new AIProvider(mockConfig, mockCatalog(), noopLogger);
+    await expect(provider.generate({ model: 'sonnet', system: 's', prompt: 'p' })).rejects.toThrow();
   });
 });
