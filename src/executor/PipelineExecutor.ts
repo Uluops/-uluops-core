@@ -7,13 +7,14 @@ import type { PipelineDefinition, StageDefinition, GateDefinition, PipelineResul
 import { StepsExecutor } from './StepsExecutor.js';
 import { evaluateConditionExpr } from './conditions.js';
 import { buildUpstreamContext } from './upstreamContext.js';
-import type { ExecutionInput, ExecutionOptions, UpstreamStageContext } from '../types/execution.js';
+import type { ExecutionInput, ExecutionMetrics, ExecutionOptions, UpstreamStageContext } from '../types/execution.js';
 import type { AgentResult } from '../types/agent.js';
 import { PipelineError } from '../errors/index.js';
 import { parseRef } from '../utils/parseRef.js';
 import { formatErrorMessage } from '../utils/formatError.js';
 import { sumTokenMetrics } from '../utils/sumTokenMetrics.js';
 import { sumCostUsd } from '../utils/sumCostUsd.js';
+import { crashMetrics } from '../utils/crashMetrics.js';
 import { resolveDecisionCategory } from './classifyDecision.js';
 import { worstExtractionConfidence } from '../utils/worstExtractionConfidence.js';
 import { aggregateScores } from '../utils/aggregateScores.js';
@@ -474,7 +475,8 @@ export class PipelineExecutor {
             severity: 'high',
             failureCode: 'PRA-FRA/H',
           }],
-          metrics: { inputTokens: 0, outputTokens: 0, totalEffectiveTokens: 0, durationMs: 0, model: 'unknown' },
+          // See crashMetrics: billed usage survives the throw; absent cost stays absent.
+          metrics: crashMetrics(outcome.reason),
         } as AgentResult);
       }
     }
@@ -753,21 +755,49 @@ class PipelineHandle implements IPipelineHandle {
       stages: this.state.stageResults,
       recommendations,
       metrics: {
-        ...sumTokenMetrics(
-          this.state.stageResults
-            .map(s => s.result?.metrics)
-            .filter((m): m is NonNullable<typeof m> => m != null),
-        ),
-        costUsd: sumCostUsd(
-          this.state.stageResults
-            .map(s => s.result?.metrics)
-            .filter((m): m is NonNullable<typeof m> => m != null),
-        ),
+        ...sumTokenMetrics(this.rollupTokenChildren()),
+        costUsd: sumCostUsd(this.rollupCostChildren()),
         durationMs,
         model: 'mixed',
         ...this.computeStageMetrics(),
       },
     };
+  }
+
+  /**
+   * Children of the TOKEN roll-up: every stage that actually produced metrics.
+   * Token sums deliberately coalesce absent components to 0 (see sumTokenMetrics) —
+   * an absent token component is a visibility artifact over a real, counted run.
+   */
+  private rollupTokenChildren() {
+    return this.state.stageResults
+      .map(s => s.result?.metrics)
+      .filter((m): m is NonNullable<typeof m> => m != null);
+  }
+
+  /**
+   * Children of the COST roll-up. Its polarity is the opposite of the token roll-up's
+   * and the difference is load-bearing (see sumCostUsd's contract).
+   *
+   * A stage that THREW has no `result` at all — executeStage's catch returns a bare
+   * failed StageResult — so filtering on `result != null` silently DROPPED it. That made
+   * a stage which crashed after its child agents had already billed indistinguishable
+   * from a stage that ran no LLM by construction, and the surviving stages' partial sum
+   * was then presented as the run's total. The polarity sumCostUsd exists to enforce was
+   * implemented correctly at the agent level (crash placeholders omit costUsd) and broken
+   * one level up, here.
+   *
+   * So each failed stage with no metrics contributes an explicitly UNPRICED child, and
+   * the roll-up degrades to undefined — worst-child discipline. `skipped` still
+   * contributes nothing, which is correct: nothing ran, so there is nothing unknown.
+   */
+  private rollupCostChildren(): ReadonlyArray<Pick<ExecutionMetrics, 'costUsd'>> {
+    const children: Array<Pick<ExecutionMetrics, 'costUsd'>> = [];
+    for (const s of this.state.stageResults) {
+      if (s.result?.metrics) children.push(s.result.metrics);
+      else if (s.status === 'failed') children.push({ costUsd: undefined });
+    }
+    return children;
   }
 
   /** Single-pass stage metric computation (replaces five separate filter calls). */

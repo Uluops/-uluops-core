@@ -125,6 +125,114 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) 
   `providerMetadata.google.usageMetadata` still exists — so the two providers had silently
   diverged on the same metric.
 
+- **The fixes above held at their citations and not at their CLASS — a second audit found
+  four more instances, three reproduced by executable probe.** The recurring shape in this
+  release is *a change that is correct on the primary path and silently wrong on a
+  fallback, error, or degraded path.* It recurred inside the fix for its own fourth
+  occurrence. What follows is the sweep, not four more citations:
+
+  - **`sawUsage` tested the usage WRAPPER, not the numbers, so the "no fabricated $0"
+    guard could not fire for the case it names.** `step.usage` is a REQUIRED field
+    (`ai/dist/index.d.ts` `readonly usage: LanguageModelUsage`) which the SDK materializes
+    through `createNullLanguageModelUsage()` — every member `undefined` — whenever a
+    provider response carries no usage block. All three bundled providers do this. So
+    `if (usage)` was a tautology meaning "a step finished", and the fallback's
+    `sawUsage ? computeCostUsd(…) : undefined` returned a **real 0** for a multi-step run
+    that reported nothing. That 0 passes `sumCostUsd`'s finiteness check and sums cleanly
+    into a pipeline total. The one test covering it exercised only the ZERO-step case,
+    where the flag stayed false for an unrelated reason — it passed vacuously. Presence is
+    now read from `inputTokens`/`outputTokens`, and a genuinely reported `0` stays
+    distinguishable from nothing reported.
+
+  - **`stepTotalsToUsage` fabricated `noCacheTokens: 0`, which forced `mapUsage` down its
+    EXACT normalization branch on the fallback.** The accumulator's `?? 0` destroyed the
+    absent-vs-zero distinction that the branch immediately downstream depends on, so the
+    whole input pool was priced at $0 for any provider reporting `inputTokens` without
+    token details — the `ai.additionalProviders` population the LEGACY branch exists to
+    serve. Measured against the success path on identical usage: **$0.045 against a true
+    $0.495, a 91% understatement reported as a defined number.** `StepTotals` now records
+    per-pool presence separately from value and emits `undefined` for anything unreported,
+    mirroring the SDK's own null-usage shape.
+
+  - **`buildFallbackResult` was a SECOND, REDUCED construction path.** It called `mapUsage`
+    with one of the three arguments the success path passes, so on every degraded result:
+    all four provider extract tiers were dead (Google thinking tokens landed in
+    `reasoning_tokens`; an unknown provider whose cache pool arrives only in metadata went
+    unpriced — the same defect again), and **both drift instruments this release added,
+    `providerWarnings` and `usageShapeDrift`, were absent entirely** — dark precisely on
+    the path where drift bites. Steps now carry `providerMetadata` and `warnings` forward,
+    and the fallback builds through the same extraction as the success path. This is the
+    structural fix: the other three were symptoms of there being two paths to keep correct.
+
+  - **`MaxStepsExhaustedError` threw away a fully-billed run's usage.** The throw follows a
+    SUCCESSFUL `generate()` whose tokens and cost are in hand, and the error carried only
+    `steps` and `finishReason`. Three rejection handlers then synthesized
+    `{inputTokens: 0, outputTokens: 0, totalEffectiveTokens: 0, model: 'unknown'}` and
+    continued with it. A step-ceiling run is **by construction the longest run the engine
+    produces** — the maximum-cost class — so the fabricated zero erased the largest single
+    cost core can incur, and `sumTokenMetrics` folded it into the run total. The error now
+    carries optional `billedMetrics`, and the new `crashMetrics` helper reads them.
+
+  - **Stage and phase cost roll-ups DROPPED crashed children instead of propagating
+    unknown.** `sumCostUsd`'s contract reserves `undefined` for "a crash whose usage went
+    unreported", and that polarity was implemented correctly at the agent level (crash
+    placeholders omit `costUsd`) and broken one layer up. A thrown stage has no `result`,
+    so `.filter(m => m != null)` silently dropped it; a blocked phase carries
+    `commands: []`, so flat-mapping over commands dropped it too. Both collapsed
+    *failed-after-billing* into the same shape as *skipped* — and the survivors' partial
+    sum was presented as the run total. Failed stages and blocked phases now contribute an
+    explicitly unpriced child; `skipped` still contributes nothing, because nothing ran.
+
+- **Registry price operands reached the cost multiply unvalidated.** `ModelCost` declares
+  `input`/`output` as required `number`s, but that is a compile-time claim over untrusted
+  network JSON — `@uluops/registry-sdk` validates none of it at runtime. A row with a null
+  or non-numeric rate made `usage.output_tokens * cost.output` NaN, and a NaN cost
+  JSON-serializes to `null`, blanking an entire pipeline's recorded spend. This is the same
+  failure the token-side finiteness guard prevents, **at the other operand of the same
+  expression** — the guard was applied to the tokens and not to the rates. New
+  `sanitizeModelCost` validates at the seam; unusable rates yield `undefined` (unpriced,
+  honest-absent), never zero rates. Unusable *optional* cache rates are dropped
+  individually, falling back to the full input rate as already documented.
+
+- **`sumTokenMetrics` had no finiteness guard while its sibling `sumCostUsd` gained one in
+  the same commit** — and the two share every call site. `inputTokens` and
+  `totalEffectiveTokens` had no guard at all; the rest used `?? 0`, which reads like a
+  numeric guarantee and is not one (it passes NaN and Infinity through). One NaN child
+  turned the run's whole token total into NaN, which serializes to `null`.
+
+- **A throw during result ASSEMBLY escaped `generate()` unmapped.** Narrowing the `try` to
+  the provider call alone (this release, above) was correct — a throw there is not a
+  generation failure and must not be reported as a zero-cost fallback. But leaving assembly
+  bare traded one defect for another: `result.output` is a throwing getter and `mapUsage`
+  runs there too, so callers received a raw `AI_NoOutputGeneratedError` instead of a core
+  error type, and the billed usage was still lost — as a rejection this time rather than as
+  a fabricated zero. Assembly now has its own `try` that maps the error and preserves the
+  accumulated usage.
+
+- **`detectUsageShapeDrift` now asserts PRESENCE of the keys an extract tier depends on**,
+  rather than being satisfied by any overlap with a list that also contains benign envelope
+  keys. Previously one surviving key — `responseId`, `usage` — suppressed the warning for
+  every key that vanished beside it, which is exactly how the v6 OpenAI rename went
+  unreported. A new `DEPENDED_ON_USAGE_KEYS` map names the load-bearing fields per provider;
+  `openai` is deliberately empty (its block carries no usage fields in v6), and providers
+  declaring nothing fall back to the overlap test. The warning now names which fields went
+  missing. *(This was recorded as "not fixed" in the Design Notes below when the section was
+  written; it is fixed. The note is kept for the reasoning that led there.)*
+
+- **`budget.forced-wrap-up` no longer reports a brake that could not engage.** On an
+  Anthropic structured-output run — core's default `structuredOutputMode: 'jsonTool'` —
+  the provider hard-overrides `toolChoice`, so the wrap-up brake is inert; the latch marked
+  it anyway, `collectExecutionMarkers` emitted a `severity: 'degraded'` marker, and
+  `deriveCompleteness` returned `'partial'`. **Every Anthropic structured-output run
+  crossing 80% context was stamped degraded for an event that never occurred, on the
+  dominant provider path.** Repairing the brake itself means changing structured-output
+  strategy and remains a separate decision (Design Notes below); what is withdrawn here is
+  the false claim. The budget crossing is still logged at `warn`, and the message now names
+  the reason the brake could not act. An explicit non-`jsonTool` `structuredOutputMode`
+  restores both the brake and the marker. README documents the limitation in two places —
+  the config reference and the degradation-marker contract — since `providerWarnings`
+  cannot surface a core-internal override.
+
 ### Changed
 
 - **`UsageMetrics.input_tokens` is now CACHE-EXCLUSIVE** — a semantics change with no signature
@@ -160,6 +268,12 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) 
   defect this release is about.
 
 ### Design Notes
+
+> **Amended before release.** Finding 1's *reporting* half and the
+> `detectUsageShapeDrift` weakness below were both fixed in the same version — see Fixed
+> above. What remains genuinely undecided is finding 1's *behaviour* half (the brake
+> itself) and finding 2. The original text is kept because the reasoning that classified
+> these as decisions rather than repairs is the useful part.
 
 - **Two provider-behaviour findings recorded, NOT fixed — both need a decision.**
 
@@ -200,6 +314,22 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) 
   as fallback, but the weakness is structural rather than incidental.
 
 ### Internal
+
+- **39 tests added for the class sweep, each carrying a POSITIVE CONTROL.** The previous
+  round's failure was not that its tests were absent — it was that they passed vacuously
+  (the `sawUsage` test covered only the zero-step case, where the flag stayed false for an
+  unrelated reason). Every new test here was run against the reverted code and confirmed to
+  FAIL first; eight mutations were applied and all eight were caught: reverting `sawUsage`
+  to the wrapper test, fabricating `noCacheTokens: 0`, restoring the reduced fallback path,
+  casting `CallWarning` instead of narrowing, dropping two of the three abort names,
+  reverting each of the two cost roll-ups, and latching the wrap-up unconditionally. The
+  control assertions are recorded in each test's comment.
+
+- **Coverage closed on two branches flagged as untested.** The `CallWarning`
+  `'unsupported'`/`'compatibility'` discriminants — which carry `feature`/`details` and no
+  `message`, so a cast renders them `"undefined"` — and the `'AbortError'` /
+  `'ResponseAborted'` members of the abort-name set, of which only `'TimeoutError'` was
+  exercised (removing the other two would have passed the suite untouched).
 
 - **The `'ai'` test mock is now PARTIAL.** It was a total mock, so the SDK's error
   classes did not exist in the test environment at all. That forced every error-mapping

@@ -1556,3 +1556,71 @@ describe('WorkflowExecutor', () => {
     });
   });
 });
+
+/**
+ * The workflow-side twin of the pipeline roll-up polarity defect.
+ *
+ * `createBlockedPhase` sets `commands: []`, so flat-mapping the roll-up over
+ * `p.commands` dropped a blocked phase entirely — indistinguishable from a SKIPPED phase,
+ * which contributes nothing because nothing ran. But a phase is blocked by a thrown error,
+ * and that error can land AFTER its commands have already billed.
+ *
+ * POSITIVE CONTROL: revert the costUsd roll-up to
+ * `phaseResults.flatMap(p => p.commands.map(c => c.metrics))` and the first test fails
+ * with a defined total. Confirmed against the pre-fix code.
+ */
+describe('WorkflowExecutor — cost roll-up degrades to unknown on a blocked phase', () => {
+  const pricedMetrics = (costUsd: number) => ({
+    inputTokens: 500, outputTokens: 200, totalEffectiveTokens: 750,
+    durationMs: 1000, model: 'claude-sonnet-4-5-20250929', toolCalls: 3, costUsd,
+  });
+
+  // Both phases sit in the SAME topological level deliberately. A single-phase level lets
+  // the phase's WorkflowError propagate to execute()'s own catch and rethrow; only a
+  // multi-phase level routes it through createBlockedPhase(), which is the commands:[]
+  // shape this roll-up defect lives in.
+  const twoPhaseDef = () => makeWorkflowDef({
+    orchestration: {
+      phases: [
+        { id: 'first', name: 'First', commands: ['code-validator'],
+          gate: { threshold: 0, aggregate: 'average', on_fail: 'continue' } },
+        { id: 'second', name: 'Second', commands: ['second-validator'],
+          gate: { threshold: 0, aggregate: 'average', on_fail: 'continue' } },
+      ],
+      on_failure: 'continue',
+    } as never,
+  });
+
+  it('does not present the surviving phase’s cost as the workflow total', async () => {
+    // Dispatch by NAME, not call order — the two phases run in parallel in one level.
+    const cmdExec = {
+      execute: vi.fn().mockImplementation((resolved: ResolvedDefinition) =>
+        resolved.name === 'code-validator'
+          ? Promise.resolve(makeCommandResult({ name: resolved.name, metrics: pricedMetrics(0.25) as never }))
+          : Promise.reject(new Error('phase blew up after its commands billed'))),
+    } as unknown as CommandExecutor;
+
+    const result = await new WorkflowExecutor(cmdExec, makeRegistry())
+      .execute(twoPhaseDef(), { target: '/tmp/test' });
+
+    const blocked = result.phases.find(p => p.decision === 'blocked');
+    expect(blocked).toBeDefined();
+    expect(blocked!.commands).toHaveLength(0);
+    expect(result.metrics.costUsd).toBeUndefined();
+    expect(result.metrics.costUsd).not.toBe(0.25);
+  });
+
+  it('keeps a defined total when every phase priced successfully', async () => {
+    // Control: proves the guard is not blanking every workflow run.
+    const cmdExec = {
+      execute: vi.fn().mockImplementation((resolved: ResolvedDefinition) =>
+        Promise.resolve(makeCommandResult({ name: resolved.name, metrics: pricedMetrics(0.25) as never }))),
+    } as unknown as CommandExecutor;
+
+    const result = await new WorkflowExecutor(cmdExec, makeRegistry())
+      .execute(twoPhaseDef(), { target: '/tmp/test' });
+
+    expect(result.phases.some(p => p.decision === 'blocked')).toBe(false);
+    expect(result.metrics.costUsd).toBeCloseTo(0.5, 10);
+  });
+});

@@ -187,13 +187,19 @@ describe('AIProvider', () => {
       const result = await provider.generate({ model: 'sonnet', system: 's', prompt: 'p' });
 
       expect(result.usageShapeDrift).toEqual(['anthropic']);
-      expect(warn).toHaveBeenCalledWith(expect.stringContaining('unrecognized shape'));
+      // The warning NAMES the depended-on fields that went missing, rather than saying
+      // only that the shape is unrecognized — the detector now asserts presence of the
+      // keys an extract tier actually reads.
+      expect(warn).toHaveBeenCalledWith(
+        expect.stringContaining('none of the fields its extract tier reads are present'),
+      );
+      expect(warn).toHaveBeenCalledWith(expect.stringContaining('cacheCreationInputTokens'));
 
       // Chronic once present — warn fires once per provider per process, but
       // the per-run drift flag keeps flowing.
       const again = await provider.generate({ model: 'sonnet', system: 's', prompt: 'p' });
       expect(again.usageShapeDrift).toEqual(['anthropic']);
-      expect(warn.mock.calls.filter(c => String(c[0]).includes('unrecognized shape'))).toHaveLength(1);
+      expect(warn.mock.calls.filter(c => String(c[0]).includes('may silently read zero'))).toHaveLength(1);
     });
 
     it('does not flag recognized, empty, or absent provider metadata', async () => {
@@ -2032,5 +2038,371 @@ describe('adversarial provider payloads (ship-gate runtime audit)', () => {
     expect(u.input_tokens).toBe(12);
     expect(u.input_tokens).not.toBe(9_916);
     expect(cost(u)).toBeCloseTo((12 * 3 + 9_904 * 0.3) / 1e6, 10);
+  });
+});
+
+/**
+ * ── The class the previous round closed only at its citations ─────────────────────────
+ *
+ * Every fix in the 0.42.0 cycle was verified at the line it was reported at, and the same
+ * defect was then found one path, one file, or one layer away. These tests exist to pin
+ * the INVARIANTS rather than the citations:
+ *
+ *   1. ABSENT IS NOT ZERO — a pool nothing reported must not arrive downstream as 0.
+ *   2. THE FALLBACK IS NOT A SECOND PATH — degraded results are built by the same
+ *      extraction as successful ones.
+ *   3. UNKNOWN COST PROPAGATES AS UNKNOWN — never as a fabricated $0.
+ *
+ * Each carries a positive control: the comment records what fails when the fix is
+ * reverted, and each was confirmed to fail against the pre-fix code before being kept.
+ */
+describe('AIProvider — absent-vs-zero and fallback-path parity', () => {
+  // Reset generateText's implementation, not just its call log. `vi.clearAllMocks()`
+  // alone leaves any UNCONSUMED `mockImplementationOnce`/`mockRejectedValueOnce` queued
+  // from an earlier describe, and a queued once-impl takes priority over this block's
+  // own `mockResolvedValue` — so these tests would silently run someone else's fixture.
+  beforeEach(async () => {
+    vi.clearAllMocks();
+    const { generateText } = await import('ai');
+    vi.mocked(generateText).mockReset();
+  });
+
+  const stepsCatalog = (cost?: unknown) => mockCatalog({
+    resolve: vi.fn().mockResolvedValue(
+      makeResolvedModel({
+        capabilities: { tools: true, vision: true, streaming: true, extendedThinking: false, structuredOutput: true } as never,
+        ...(cost ? { cost } : {}),
+      } as never),
+    ),
+  } as never);
+
+  /** The SDK's own null-usage shape: present object, every member undefined. */
+  const nullUsage = () => ({
+    inputTokens: undefined,
+    outputTokens: undefined,
+    inputTokenDetails: { noCacheTokens: undefined, cacheReadTokens: undefined, cacheWriteTokens: undefined },
+    outputTokenDetails: { textTokens: undefined, reasoningTokens: undefined },
+  });
+
+  /** Drive N steps through onStepFinish, then reject, forcing the fallback path. */
+  const runStepsThenFail = async (
+    steps: unknown[],
+    opts: { cost?: unknown; providerMetadata?: unknown; warnings?: unknown[] } = {},
+  ) => {
+    const { generateText } = await import('ai');
+    vi.mocked(generateText).mockImplementationOnce((async (o: unknown) => {
+      const g = o as { onStepFinish?: (s: unknown) => void };
+      for (const s of steps) g.onStepFinish?.(s);
+      throw new NoObjectGeneratedError({ message: 'no object', text: '', finishReason: 'tool-calls' } as never);
+    }) as never);
+    const provider = new AIProvider(mockConfig, stepsCatalog(opts.cost), noopLogger);
+    return provider.generate({
+      model: 'sonnet', system: 's', prompt: 'p',
+      output: { type: 'output-object', schema: {} } as never,
+    });
+  };
+
+  const step = (usage: unknown, extra: Record<string, unknown> = {}) => ({
+    finishReason: 'tool-calls', text: '', toolCalls: [{ toolName: 'read_file' }], usage, ...extra,
+  });
+
+  // ── Invariant 1: absent is not zero ────────────────────────────────────────────────
+  it('reports UNKNOWN cost when steps ran but no step reported a token NUMBER', async () => {
+    // POSITIVE CONTROL: revert the `sawUsage` assignment to `if (usage)` and this fails
+    // with costUsd === 0. `step.usage` is a REQUIRED field the SDK always materializes via
+    // createNullLanguageModelUsage(), so `if (usage)` is a tautology — it meant "a step
+    // finished", never "a step reported numbers". The pre-fix test covered only the
+    // ZERO-step case, where the flag stayed false for an unrelated reason, so it passed
+    // vacuously while three steps produced a fabricated real $0.
+    const result = await runStepsThenFail(
+      [step(nullUsage()), step(nullUsage()), step(nullUsage())],
+      { cost: { input: 3, output: 15 } },
+    );
+
+    expect(result.steps).toBe(3);
+    expect(result.costUsd).toBeUndefined();
+    expect(result.costUsd).not.toBe(0);
+  });
+
+  it('keeps a real reported zero distinguishable from nothing reported', async () => {
+    // The other side of invariant 1, and the reason the guard reads the NUMBERS rather
+    // than the wrapper: a provider that genuinely reports 0 tokens has reported something.
+    const result = await runStepsThenFail(
+      [step({ ...nullUsage(), inputTokens: 0, outputTokens: 0 })],
+      { cost: { input: 3, output: 15 } },
+    );
+
+    expect(result.costUsd).toBe(0);
+    expect(result.costUsd).not.toBeUndefined();
+  });
+
+  it('does not fabricate noCacheTokens: 0 for a provider that reports no token details', async () => {
+    // POSITIVE CONTROL: make stepTotalsToUsage emit `noCacheTokens: t.noCacheTokens`
+    // unconditionally and this fails with input_tokens === 0 and costUsd === $0.045.
+    //
+    // The accumulator's `?? 0` destroyed absent-vs-zero, so the converted usage always
+    // carried a numeric noCacheTokens — which sent mapUsage down its EXACT normalization
+    // branch and zeroed the whole input pool for exactly the population the LEGACY branch
+    // exists to serve (providers reporting inputTokens with no inputTokenDetails).
+    // Measured against the success path on identical usage: $0.045 vs a true $0.495.
+    const legacyStep = step({
+      inputTokens: 50_000,
+      outputTokens: 1_000,
+      inputTokenDetails: { noCacheTokens: undefined, cacheReadTokens: undefined, cacheWriteTokens: undefined },
+      outputTokenDetails: { textTokens: undefined, reasoningTokens: undefined },
+    });
+    const result = await runStepsThenFail([legacyStep, legacyStep, legacyStep], {
+      cost: { input: 3, output: 15 },
+    });
+
+    expect(result.usage.input_tokens).toBe(150_000);
+    expect(result.usage.input_tokens).not.toBe(0);
+    expect(result.costUsd).toBeCloseTo((150_000 * 3 + 3_000 * 15) / 1e6, 10);
+  });
+
+  // ── Invariant 2: the fallback is not a second construction path ────────────────────
+  it('runs the provider extract tiers on the fallback, routing Google thinking correctly', async () => {
+    // POSITIVE CONTROL: drop the providerMetadata/provider arguments from
+    // buildFallbackResult's mapUsage call and this fails — thinking_tokens undefined,
+    // the count landing in reasoning_tokens instead.
+    //
+    // The fallback used to call mapUsage with one of three arguments, which killed all
+    // four extract tiers on the degraded path: Google thinking misrouted, and an unknown
+    // provider whose cache pool arrives only in metadata went entirely unpriced.
+    const catalogGoogle = mockCatalog({
+      resolve: vi.fn().mockResolvedValue(
+        makeResolvedModel({
+          provider: 'google',
+          capabilities: { tools: true, vision: true, streaming: true, extendedThinking: false, structuredOutput: true } as never,
+        } as never),
+      ),
+    } as never);
+
+    const { generateText } = await import('ai');
+    vi.mocked(generateText).mockImplementationOnce((async (o: unknown) => {
+      const g = o as { onStepFinish?: (s: unknown) => void };
+      g.onStepFinish?.(step(
+        {
+          inputTokens: 1_000, outputTokens: 400,
+          inputTokenDetails: { noCacheTokens: 1_000, cacheReadTokens: undefined, cacheWriteTokens: undefined },
+          outputTokenDetails: { textTokens: undefined, reasoningTokens: 400 },
+        },
+        { providerMetadata: { google: { usageMetadata: { thoughtsTokenCount: 400 } } } },
+      ));
+      throw new NoObjectGeneratedError({ message: 'x', text: '', finishReason: 'tool-calls' } as never);
+    }) as never);
+
+    const googleConfig: ResolvedConfig = {
+      ...mockConfig,
+      ai: {
+        ...mockConfig.ai,
+        providers: { ...mockConfig.ai.providers, google: { apiKey: 'test-google-key' } },
+      },
+    };
+    const provider = new AIProvider(googleConfig, catalogGoogle, noopLogger);
+    const result = await provider.generate({
+      model: 'gemini', system: 's', prompt: 'p',
+      output: { type: 'output-object', schema: {} } as never,
+    });
+
+    expect(result.usage.thinking_tokens).toBe(400);
+    expect(result.usage.reasoning_tokens).toBeUndefined();
+  });
+
+  it('surfaces providerWarnings and usageShapeDrift on a fallback result', async () => {
+    // POSITIVE CONTROL: remove the two spread lines from buildFallbackResult and this
+    // fails with both undefined.
+    //
+    // These are the two instruments this release ADDED to detect silent SDK drift, and
+    // they were absent from every degraded result — dark precisely on the path where
+    // drift bites. Provider option schemas parse in Zod strip mode, so warnings are the
+    // only channel that reports a setting failing to apply.
+    const { generateText } = await import('ai');
+    vi.mocked(generateText).mockImplementationOnce((async (o: unknown) => {
+      const g = o as { onStepFinish?: (s: unknown) => void };
+      g.onStepFinish?.(step(nullUsage(), {
+        warnings: [{ type: 'unsupported', feature: 'thinking', details: 'not on this model' }],
+        providerMetadata: { anthropic: { cache_creation: 5, cache_read: 3 } },
+      }));
+      throw new NoObjectGeneratedError({ message: 'x', text: '', finishReason: 'tool-calls' } as never);
+    }) as never);
+
+    const provider = new AIProvider(mockConfig, stepsCatalog(), noopLogger);
+    const result = await provider.generate({
+      model: 'sonnet', system: 's', prompt: 'p',
+      output: { type: 'output-object', schema: {} } as never,
+    });
+
+    expect(result.providerWarnings).toEqual(['unsupported: thinking — not on this model']);
+    expect(result.usageShapeDrift).toEqual(['anthropic']);
+  });
+});
+
+describe('AIProvider — CallWarning discriminants and abort names', () => {
+  // Reset generateText's implementation, not just its call log. `vi.clearAllMocks()`
+  // alone leaves any UNCONSUMED `mockImplementationOnce`/`mockRejectedValueOnce` queued
+  // from an earlier describe, and a queued once-impl takes priority over this block's
+  // own `mockResolvedValue` — so these tests would silently run someone else's fixture.
+  beforeEach(async () => {
+    vi.clearAllMocks();
+    const { generateText } = await import('ai');
+    vi.mocked(generateText).mockReset();
+  });
+
+  it('formats every CallWarning variant, not only the message-bearing one', async () => {
+    // POSITIVE CONTROL: cast the warning to `{message?: string}` instead of narrowing on
+    // `w.type` and the two feature-bearing variants render as "undefined".
+    //
+    // Only the 'other' fixture was exercised before. 'unsupported' and 'compatibility'
+    // carry feature/details and NO message (verified against @ai-sdk/provider's
+    // SharedV3Warning), so the untested branch was the discriminated-union field-access
+    // class this whole release is about.
+    const { generateText } = await import('ai');
+    vi.mocked(generateText).mockResolvedValue({
+      text: 'ok',
+      usage: { inputTokens: 10, outputTokens: 5 },
+      steps: [],
+      finishReason: 'stop',
+      warnings: [
+        { type: 'other', message: 'plain message' },
+        { type: 'unsupported', feature: 'thinking', details: 'not on this model' },
+        { type: 'compatibility', feature: 'toolChoice' },
+      ],
+    } as never);
+
+    const provider = new AIProvider(mockConfig, mockCatalog(), noopLogger);
+    const result = await provider.generate({ model: 'sonnet', system: 's', prompt: 'p' });
+
+    expect(result.providerWarnings).toEqual([
+      'plain message',
+      'unsupported: thinking — not on this model',
+      'compatibility: toolChoice',
+    ]);
+    // Nothing rendered as the string "undefined" — the failure mode a cast produces.
+    for (const w of result.providerWarnings!) expect(w).not.toContain('undefined');
+  });
+
+  it.each([
+    ['TimeoutError'],
+    ['AbortError'],
+    ['ResponseAborted'],
+  ])('maps a DOMException named %s to TimeoutError', async (name) => {
+    // POSITIVE CONTROL: drop any one alternative from the abort-name set and that row
+    // fails. Previously only 'TimeoutError' was exercised, so removing the other two
+    // would have passed the suite untouched — the guard claimed three names and proved
+    // one.
+    const { generateText } = await import('ai');
+    vi.mocked(generateText).mockRejectedValueOnce(new DOMException('aborted', name));
+
+    const provider = new AIProvider(mockConfig, mockCatalog(), noopLogger);
+    await expect(
+      provider.generate({ model: 'sonnet', system: 's', prompt: 'p', timeoutMs: 10 }),
+    ).rejects.toBeInstanceOf(TimeoutError);
+  });
+});
+
+/**
+ * The wrap-up brake reports only what actually happened.
+ *
+ * `structuredOutputMode: 'jsonTool'` — core's own default for every Anthropic structured-
+ * output call — makes the provider HARD-OVERRIDE toolChoice to select its json tool, so
+ * `prepareStep`'s `toolChoice: 'none'` never applies. The latch nonetheless marked a
+ * forced wrap-up, `collectExecutionMarkers` emitted a `severity: 'degraded'` marker, and
+ * `deriveCompleteness` returned 'partial'. A complete run on the dominant provider path
+ * was stamped degraded for an event that never occurred.
+ *
+ * Repairing the brake itself means changing structured-output strategy — a separate
+ * decision, deliberately not taken here. What is withdrawn is the false CLAIM.
+ *
+ * POSITIVE CONTROL: drop the `brakeIsHonored &&` guards and the first test fails with
+ * forcedWrapUp === true. Confirmed against the pre-fix code.
+ */
+describe('AIProvider — the wrap-up latch does not claim a brake that cannot engage', () => {
+  beforeEach(async () => {
+    vi.clearAllMocks();
+    const { generateText } = await import('ai');
+    vi.mocked(generateText).mockReset();
+  });
+
+  const runWithBudget = async (opts: { structured: boolean }) => {
+    const { generateText } = await import('ai');
+    vi.mocked(generateText).mockResolvedValue({
+      text: 'done',
+      usage: { inputTokens: 50_000, outputTokens: 2_000 },
+      steps: [{ toolCalls: [] }],
+      finishReason: 'stop',
+      providerMetadata: {},
+    } as never);
+
+    const tracker = new TokenBudgetTracker(100_000);
+    const catalog = mockCatalog({
+      resolve: vi.fn().mockResolvedValue(
+        makeResolvedModel({
+          capabilities: { tools: true, vision: true, streaming: true, extendedThinking: false, structuredOutput: true } as never,
+        } as never),
+      ),
+    } as never);
+
+    await new AIProvider(mockConfig, catalog, noopLogger).generate({
+      model: 'sonnet', system: 't', prompt: 't',
+      contextBudget: 100_000,
+      budgetTracker: tracker,
+      ...(opts.structured ? { output: { type: 'output-object', schema: {} } as never } : {}),
+    });
+
+    const call = vi.mocked(generateText).mock.calls[0]?.[0] as any;
+    return { tracker, call };
+  };
+
+  it('does NOT latch on an Anthropic jsonTool structured-output run', async () => {
+    const { tracker, call } = await runWithBudget({ structured: true });
+
+    // The brake is still attempted — the run's behavior is unchanged.
+    expect(call.prepareStep({ steps: [{ usage: { inputTokens: 85_000 } }] }).toolChoice).toBe('none');
+    // But nothing claims a wrap-up happened, because the provider ignores that toolChoice.
+    expect(tracker.forcedWrapUp).toBe(false);
+  });
+
+  it('DOES latch on a non-structured run, where the brake really applies', async () => {
+    // The control that proves the guard is not simply disabling the latch everywhere —
+    // without it, "does not latch" would pass for the wrong reason.
+    const { tracker, call } = await runWithBudget({ structured: false });
+
+    call.prepareStep({ steps: [{ usage: { inputTokens: 85_000 } }] });
+    expect(tracker.forcedWrapUp).toBe(true);
+    call.prepareStep({ steps: [{ usage: { inputTokens: 65_000 } }] });
+    expect(tracker.forcedWrapUp).toBe(false);
+  });
+
+  it('still warns at the budget crossing, so the event stays visible', async () => {
+    // Withdrawing the marker must not make the budget crossing invisible — the operator
+    // still needs to know, and the message says the brake could not engage.
+    const { generateText } = await import('ai');
+    vi.mocked(generateText).mockResolvedValue({
+      text: 'done', usage: { inputTokens: 50_000, outputTokens: 2_000 },
+      steps: [{ toolCalls: [] }], finishReason: 'stop', providerMetadata: {},
+    } as never);
+
+    const warn = vi.fn();
+    const catalog = mockCatalog({
+      resolve: vi.fn().mockResolvedValue(
+        makeResolvedModel({
+          capabilities: { tools: true, vision: true, streaming: true, extendedThinking: false, structuredOutput: true } as never,
+        } as never),
+      ),
+    } as never);
+
+    await new AIProvider(mockConfig, catalog, { debug() {}, info() {}, warn, error() {} }).generate({
+      model: 'sonnet', system: 't', prompt: 't',
+      contextBudget: 100_000,
+      budgetTracker: new TokenBudgetTracker(100_000),
+      output: { type: 'output-object', schema: {} } as never,
+    });
+
+    const call = vi.mocked(generateText).mock.calls[0]?.[0] as any;
+    call.prepareStep({ steps: [{ usage: { inputTokens: 85_000 } }] });
+
+    expect(warn).toHaveBeenCalledWith(expect.stringContaining('Context budget 80% used'));
+    expect(warn).toHaveBeenCalledWith(expect.stringContaining('cannot engage'));
   });
 });

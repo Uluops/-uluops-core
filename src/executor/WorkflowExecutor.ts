@@ -3,7 +3,7 @@ import type { CommandExecutor } from './CommandExecutor.js';
 import type { RegistryClient } from '../registry/RegistryClient.js';
 import type { ResolvedDefinition } from '../types/registry.js';
 import type { WorkflowDefinition, WorkflowResult, PhaseResult, PhaseDefinition, WorkflowDecision } from '../types/workflow.js';
-import type { CommandResult } from '../types/command.js';
+import type { CommandResult, CommandMetrics } from '../types/command.js';
 import type { AgentResult } from '../types/agent.js';
 import type { ExecutionInput, Recommendation } from '../types/execution.js';
 import { WorkflowError, ConfigurationError } from '../errors/index.js';
@@ -12,6 +12,7 @@ import { DEFAULT_GATE_THRESHOLD } from '../constants.js';
 import { aggregateScores } from '../utils/aggregateScores.js';
 import { sumTokenMetrics } from '../utils/sumTokenMetrics.js';
 import { sumCostUsd } from '../utils/sumCostUsd.js';
+import { crashMetrics } from '../utils/crashMetrics.js';
 import { topoGroupLevels } from '../utils/topoSort.js';
 import { parseRef } from '../utils/parseRef.js';
 import { resolveDecisionCategory, type DecisionCategory } from './classifyDecision.js';
@@ -119,7 +120,19 @@ export class WorkflowExecutor {
       durationMs,
       metrics: {
         ...tokenTotals,
-        costUsd: sumCostUsd(phaseResults.flatMap(p => p.commands.map(c => c.metrics))),
+        // A BLOCKED phase carries `commands: []` (createBlockedPhase), so flat-mapping
+        // over commands dropped it from the roll-up entirely — indistinguishable from a
+        // SKIPPED phase, which contributes nothing because nothing ran. But a phase is
+        // blocked by a thrown error, which can land AFTER its commands have already
+        // billed, so the survivors' partial sum was being presented as the total. Give a
+        // command-less blocked phase an explicitly unpriced child and the roll-up degrades
+        // to undefined — the worst-child polarity sumCostUsd's contract mandates. Skipped
+        // phases still contribute nothing.
+        costUsd: sumCostUsd(phaseResults.flatMap((p): Array<Pick<CommandMetrics, 'costUsd'>> =>
+          p.commands.length > 0
+            ? p.commands.map(c => c.metrics)
+            : p.decision === 'blocked' ? [{ costUsd: undefined }] : [],
+        )),
         durationMs,
         model: 'mixed',
         ...phaseResults.reduce((acc, p) => {
@@ -346,7 +359,8 @@ export class WorkflowExecutor {
               failureCode: 'PRA-FRA/C',
             }],
             durationMs: 0,
-            metrics: { inputTokens: 0, outputTokens: 0, totalEffectiveTokens: 0, durationMs: 0, model: 'unknown', toolCallCount: 0, toolCalls: 0 },
+            // See crashMetrics: billed usage survives the throw; absent cost stays absent.
+            metrics: { ...crashMetrics(outcome.reason), toolCallCount: 0, toolCalls: 0 },
           } as CommandResult);
         }
       }

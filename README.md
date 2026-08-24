@@ -229,6 +229,13 @@ if (result.completeness !== 'complete') {
 
 - **`completeness`**: `'complete' | 'partial' | 'failed'`, derived from degradation markers (any `critical` ⇒ `failed`; any `degraded` ⇒ `partial`; else `complete`). Absent ⇒ treat as `complete`. **`PASS` + `partial` is a legitimate, gate-satisfying pass** (decided 2026-07-10, recorded in `types/degradation.ts`): the agent passed the scope it could cover — forced wrap-up and context eviction are normal operation on large repos. Gates never downgrade on completeness; consumers that care about evidence span read `completeness` alongside the decision.
 - **`degradationMarkers`**: typed `{ code, phase, severity, detail? }[]`. `code` is the stable contract (e.g. `budget.forced-wrap-up`, `context.evicted`, `steps.near-exhaustion`, `extraction.low-confidence`, `usage.provider-metadata-shape-drift`, `render.raw-yaml-fallback`); `detail` is human-only — never match on it. `phase` is `'resolution' | 'execution'`.
+
+  > **`budget.forced-wrap-up` is emitted only when the wrap-up brake could actually engage.**
+  > On an Anthropic structured-output run the provider overrides `toolChoice` to select its
+  > json tool, so the brake is inert — see the `contextBudget` caveat under
+  > [Configuration](#configuration). Before 0.42.0 the marker latched anyway, so a complete
+  > run was reported `partial` for a wrap-up that never happened. It no longer does; the
+  > budget crossing is still logged at `warn`, naming the reason the brake could not act.
 - The engine *observes* completeness from how the run actually executed; agents never self-report it. `deriveCompleteness(markers)` is exported if you want to recompute it.
 - **`decisionCategory`**: the vocabulary-resolved category of `decision` (`'positive' | 'negative' | 'conditional' | 'neutral'`), stamped on every result. For custom-vocabulary agents (cognitive lens agents, WDL-remapped workflow decisions) gate on this — or on `resolveDecisionCategory(result)` — instead of the raw decision string. See [Decision Classification](#decision-classification).
 - `degradations: string[]` is the deprecated legacy alias (resolution-phase strings only), retained for compatibility — prefer `degradationMarkers`.
@@ -763,6 +770,7 @@ const client = new UluOpsClient({
   debug: false,                       // Detailed execution logging (or ULUOPS_DEBUG)
   defaultThinkingBudget: 10000,       // Extended thinking budget (Anthropic + Google models)
   contextBudget: 200000,              // Optional cap on the context budget (forces wrap-up at 80%, Anthropic eviction at 50%).
+                                      // ⚠ The 80% wrap-up brake does NOT apply to Anthropic structured-output runs — see below.
                                       // When unset, the engine uses the resolved model's real context window
                                       // (registry `limits.context`) — e.g. 1M for Opus 4.6+, 128k for many GPT/Gemini —
                                       // falling back to 200k only when the window is unknown. When set, it caps the
@@ -789,6 +797,28 @@ const client = new UluOpsClient({
   localDefinitions: './definitions',  // Load YAML definitions from local dir
 });
 ```
+
+> ### ⚠️ `contextBudget`'s 80% wrap-up brake is inert on Anthropic structured output
+>
+> The brake works by returning `toolChoice: 'none'` from the AI SDK's `prepareStep`. When
+> Anthropic runs structured output through `structuredOutputMode: 'jsonTool'` — which is
+> what core sets by default for every Anthropic structured-output call — the provider
+> **hard-overrides `toolChoice`** to select its json tool, so the brake never applies and
+> the model keeps calling tools past 80%.
+>
+> Two consequences worth knowing before you rely on `contextBudget` as a cost control:
+>
+> - **It is not a hard stop on that path.** The eviction half (Anthropic context management
+>   at 50%) still works; only the wrap-up half is overridden. If you need a hard ceiling,
+>   set a lower `contextBudget`, cap `maxSteps`, or run without structured output.
+> - **The run no longer claims otherwise.** Through 0.41.0 the `budget.forced-wrap-up`
+>   marker latched regardless, downgrading a complete run to `partial` completeness for an
+>   event that did not occur. As of 0.42.0 the marker is emitted only where the brake can
+>   act; the budget crossing is still logged at `warn`, and the message names this reason.
+>
+> `providerWarnings` does not surface this — it is a core-internal `toolChoice` override,
+> not something the provider reports. An explicit `providerOptions.anthropic.structuredOutputMode`
+> other than `'jsonTool'` restores both the brake and the marker.
 
 ### Local Definition File Naming
 

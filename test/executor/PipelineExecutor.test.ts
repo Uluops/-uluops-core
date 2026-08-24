@@ -1214,3 +1214,104 @@ describe('PipelineExecutor', () => {
     });
   });
 });
+
+/**
+ * Roll-up polarity — the rule that was implemented at the agent level and broken one
+ * layer up.
+ *
+ * `sumCostUsd`'s contract reserves `undefined` for "LLM work that cannot be priced — an
+ * unpriced model, or A CRASH WHOSE USAGE WENT UNREPORTED". Work that ran no LLM by
+ * construction carries a real $0 and sums cleanly. A stage that THREW has no `result`, so
+ * filtering on `result != null` silently DROPPED it — collapsing failed-after-billing into
+ * the same shape as skipped, and presenting the survivors' partial sum as the total.
+ *
+ * POSITIVE CONTROL: revert rollupCostChildren to the old
+ * `.map(s => s.result?.metrics).filter(m => m != null)` and the first two tests fail with
+ * a defined costUsd. Confirmed against the pre-fix code.
+ */
+describe('PipelineExecutor — cost roll-up degrades to unknown on a crashed stage', () => {
+  const priced = (costUsd: number) => makeCommandResult({ metrics: {
+    inputTokens: 500, outputTokens: 200, totalEffectiveTokens: 750,
+    durationMs: 1000, model: 'claude-sonnet-4-5-20250929', costUsd,
+  } as never });
+
+  /** A command executor that prices the first stage and throws on the second. */
+  const executorWithFailingSecondStage = () => {
+    const cmdExec = makeCommandExecutor();
+    let call = 0;
+    vi.mocked(cmdExec.execute).mockImplementation(() => {
+      call += 1;
+      if (call === 1) return Promise.resolve(priced(0.25));
+      return Promise.reject(new Error('stage blew up after its agents billed'));
+    });
+    return cmdExec;
+  };
+
+  const twoStageDef = () => makePipelineDef({
+    stages: [
+      { id: 'stage-1', name: 'Stage 1', type: 'command', ref: 'cmd-a@1.0.0' },
+      { id: 'stage-2', name: 'Stage 2', type: 'command', ref: 'cmd-b@1.0.0' },
+    ],
+  });
+
+  it('does not present a partial sum as the run total when a stage threw', async () => {
+    const executor = new PipelineExecutor(
+      makeWorkflowExecutor(), executorWithFailingSecondStage(), agentExec, makeRegistry(), noopLogger,
+    );
+
+    const result = await executor.execute(twoStageDef(), { target: '/tmp/test' });
+
+    expect(result.stages[1]!.status).toBe('failed');
+    // The survivor priced at $0.25. Reporting that as the TOTAL is the defect.
+    expect(result.metrics.costUsd).toBeUndefined();
+    expect(result.metrics.costUsd).not.toBe(0.25);
+  });
+
+  it('still reports the surviving stage’s TOKENS — polarity differs from cost', async () => {
+    // Deliberate asymmetry: an absent token component is a visibility artifact over a
+    // real, counted run, so tokens keep summing. Only cost poisons to unknown.
+    const executor = new PipelineExecutor(
+      makeWorkflowExecutor(), executorWithFailingSecondStage(), agentExec, makeRegistry(), noopLogger,
+    );
+
+    const result = await executor.execute(twoStageDef(), { target: '/tmp/test' });
+
+    expect(result.metrics.inputTokens).toBe(500);
+    expect(Number.isFinite(result.metrics.totalEffectiveTokens)).toBe(true);
+  });
+
+  it('keeps a defined total when every stage priced successfully', async () => {
+    // The control that proves the guard is not simply blanking every run: without it,
+    // "returns undefined" would pass for the wrong reason.
+    const cmdExec = makeCommandExecutor([priced(0.25), priced(0.75)]);
+    const executor = new PipelineExecutor(
+      makeWorkflowExecutor(), cmdExec, agentExec, makeRegistry(), noopLogger,
+    );
+
+    const result = await executor.execute(twoStageDef(), { target: '/tmp/test' });
+
+    expect(result.stages.every(s => s.status === 'completed')).toBe(true);
+    expect(result.metrics.costUsd).toBeCloseTo(1.0, 10);
+  });
+
+  it('a SKIPPED stage contributes nothing — nothing ran, so nothing is unknown', async () => {
+    // The distinction the old filter erased. skipped !== failed.
+    const cmdExec = makeCommandExecutor([priced(0.25)]);
+    const executor = new PipelineExecutor(
+      makeWorkflowExecutor(), cmdExec, agentExec, makeRegistry(), noopLogger,
+    );
+
+    const def = makePipelineDef({
+      stages: [
+        { id: 'stage-1', name: 'Stage 1', type: 'command', ref: 'cmd-a@1.0.0' },
+        { id: 'stage-2', name: 'Stage 2', type: 'command', ref: 'cmd-b@1.0.0', condition: 'false' },
+      ],
+    });
+
+    const result = await executor.execute(def, { target: '/tmp/test' });
+
+    expect(result.stages[1]!.status).toBe('skipped');
+    expect(result.metrics.costUsd).toBeCloseTo(0.25, 10);
+    expect(result.metrics.costUsd).not.toBeUndefined();
+  });
+});

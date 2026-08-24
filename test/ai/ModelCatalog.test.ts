@@ -1,5 +1,5 @@
 import { describe, it, expect, vi, beforeEach } from 'vitest';
-import { ModelCatalog } from '../../src/ai/ModelCatalog.js';
+import { ModelCatalog, sanitizeModelCost } from '../../src/ai/ModelCatalog.js';
 import { ModelNotFoundError, CapabilityError } from '../../src/errors/index.js';
 import type { RegistryClient as RegistrySdk } from '@uluops/registry-sdk';
 import type { Model, AliasResolution } from '@uluops/registry-sdk';
@@ -639,5 +639,69 @@ describe('ResolvedModel.cost (Phase 1a)', () => {
     const result = await new ModelCatalog(sdk).resolve('sonnet');
     expect(result.cost).toBeUndefined();
     expect(result.resolvedFrom).toBe('sonnet');
+  });
+});
+
+/**
+ * Pricing at the trust seam.
+ *
+ * POSITIVE CONTROL: revert the three call sites to `model.cost ?? undefined` and the
+ * malformed-rate rows below flow straight through to `usage.output_tokens * cost.output`,
+ * producing NaN — which JSON-serializes to null and blanks a whole pipeline's recorded
+ * spend. Confirmed against the pre-fix code.
+ *
+ * `ModelCost` declares input/output as required numbers, but that is a compile-time claim
+ * over untrusted network JSON: @uluops/registry-sdk validates none of it at runtime. The
+ * token side of the same multiply already had a finiteness guard; the RATE side did not.
+ */
+describe('sanitizeModelCost', () => {
+  it('passes a well-formed cost through unchanged', () => {
+    const c = sanitizeModelCost({ input: 3, output: 15, cacheRead: 0.3, cacheWrite: 3.75 });
+    expect(c).toEqual({ input: 3, output: 15, cacheRead: 0.3, cacheWrite: 3.75 });
+  });
+
+  it('accepts a genuine zero rate — free is a real price', () => {
+    expect(sanitizeModelCost({ input: 0, output: 0 })).toEqual({ input: 0, output: 0 });
+  });
+
+  it.each([
+    ['null input', { input: null, output: 15 }],
+    ['missing output', { input: 3 }],
+    ['NaN input', { input: NaN, output: 15 }],
+    ['Infinity output', { input: 3, output: Infinity }],
+    ['negative rate', { input: -3, output: 15 }],
+    ['string rate', { input: '3', output: 15 }],
+  ])('returns undefined (unpriced) for %s rather than a NaN-producing cost', (_label, wire) => {
+    // Polarity: unusable rates yield UNDEFINED, never zero rates. costUsd then stays
+    // unknown, which is honest; zero rates would assert the model is free.
+    expect(sanitizeModelCost(wire as never)).toBeUndefined();
+  });
+
+  it('drops only the unusable optional cache rate, keeping the model priced', () => {
+    // computeCostUsd falls back to the full input rate when a cache rate is absent — a
+    // documented conservative overstatement, never an undercount.
+    const c = sanitizeModelCost({ input: 3, output: 15, cacheRead: NaN, cacheWrite: 3.75 } as never);
+    expect(c).toBeDefined();
+    expect(c!.cacheRead).toBeUndefined();
+    expect(c!.cacheWrite).toBe(3.75);
+    expect(c!.input).toBe(3);
+  });
+
+  it('treats null and undefined cost as unpriced', () => {
+    expect(sanitizeModelCost(null)).toBeUndefined();
+    expect(sanitizeModelCost(undefined)).toBeUndefined();
+  });
+
+  it('never returns a value that makes a cost multiply non-finite', () => {
+    // The invariant stated directly: whatever survives sanitisation can be multiplied.
+    for (const wire of [
+      { input: 3, output: 15 },
+      { input: 0, output: 0 },
+      { input: 3, output: 15, cacheRead: NaN },
+    ]) {
+      const c = sanitizeModelCost(wire as never);
+      if (!c) continue;
+      expect(Number.isFinite(1000 * c.input + 500 * c.output)).toBe(true);
+    }
   });
 });

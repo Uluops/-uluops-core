@@ -96,6 +96,22 @@ export class MaxStepsExhaustedError extends ExecutionError {
     message: string,
     public readonly steps: number,
     public readonly finishReason: string,
+    /**
+     * Usage and cost that were ALREADY BILLED before the ceiling was hit.
+     *
+     * This error is thrown after a SUCCESSFUL generate() whose usage and costUsd are in
+     * hand, and it used to carry only `steps` and `finishReason` — so the numbers were
+     * discarded at the throw. Downstream rejection handlers then synthesized
+     * `{inputTokens: 0, outputTokens: 0, totalEffectiveTokens: 0}` placeholders and
+     * continued with them. A step-ceiling run is BY CONSTRUCTION the longest run the
+     * engine produces — the maximum-cost class — so the money that vanished was the most
+     * money there was to lose.
+     *
+     * Optional because the field must not force a fabricated value: a caller that does
+     * not hold real metrics omits it, and downstream reads it as unknown rather than as
+     * zero. Same polarity rule as sumCostUsd — absent is an admission, zero is a claim.
+     */
+    public readonly billedMetrics?: ExecutionMetricsLike,
     options?: ErrorOptions,
   ) {
     super(message, undefined, options);
@@ -103,8 +119,34 @@ export class MaxStepsExhaustedError extends ExecutionError {
   }
 
   override toJSON(): Record<string, unknown> {
-    return { ...super.toJSON(), steps: this.steps, finishReason: this.finishReason };
+    return {
+      ...super.toJSON(),
+      steps: this.steps,
+      finishReason: this.finishReason,
+      ...(this.billedMetrics ? { billedMetrics: this.billedMetrics } : {}),
+    };
   }
+}
+
+/**
+ * The execution-metrics shape errors may carry, declared structurally here rather than
+ * imported from `../types/execution.js` so the errors module stays dependency-free at the
+ * bottom of the import graph (types/execution imports from elsewhere; a cycle would be a
+ * runtime hazard for a module every other one throws from).
+ */
+export interface ExecutionMetricsLike {
+  inputTokens: number;
+  outputTokens: number;
+  totalEffectiveTokens: number;
+  durationMs: number;
+  model: string;
+  cacheCreationTokens?: number;
+  cacheReadTokens?: number;
+  cachedInputTokens?: number;
+  reasoningOutputTokens?: number;
+  thinkingTokens?: number;
+  toolCallCount?: number;
+  costUsd?: number;
 }
 
 /** Thrown when a preflight check fails (e.g. missing env var, unavailable tool). */

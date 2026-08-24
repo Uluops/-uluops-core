@@ -50,3 +50,54 @@ describe('sumTokenMetrics', () => {
     expect(result.outputTokens).toBe(100);
   });
 });
+
+/**
+ * Finiteness at the token roll-up — the guard sumCostUsd got and this did not.
+ *
+ * POSITIVE CONTROL: revert the `finite()` calls to `m.inputTokens` / `?? 0` and each of
+ * these fails with NaN. Confirmed against the pre-fix code. The `?? 0` reads like a
+ * numeric guarantee and is not one — it passes NaN and Infinity straight through — and
+ * `inputTokens`/`totalEffectiveTokens` had no guard at all because their TYPES declare
+ * them required, which is a compile-time claim over values that originate in provider
+ * payloads.
+ */
+describe('sumTokenMetrics — non-finite children', () => {
+  const child = (over: Record<string, unknown> = {}) => ({
+    inputTokens: 100, outputTokens: 50, totalEffectiveTokens: 150, ...over,
+  } as never);
+
+  it('does not let one NaN child NaN the entire run total', () => {
+    // A NaN total JSON-serializes to null, which downstream reads as "no data" for a run
+    // that demonstrably counted tokens.
+    const total = sumTokenMetrics([child(), child({ inputTokens: NaN }), child()]);
+    expect(Number.isFinite(total.inputTokens)).toBe(true);
+    expect(total.inputTokens).toBe(200);
+    expect(Number.isNaN(total.inputTokens)).toBe(false);
+  });
+
+  it('neutralises Infinity and negatives the same way', () => {
+    const total = sumTokenMetrics([
+      child({ outputTokens: Infinity }),
+      child({ totalEffectiveTokens: -5_000 }),
+    ]);
+    expect(Number.isFinite(total.outputTokens)).toBe(true);
+    expect(total.outputTokens).toBe(50);
+    expect(total.totalEffectiveTokens).toBe(150);
+    expect(total.totalEffectiveTokens).toBeGreaterThanOrEqual(0);
+  });
+
+  it('treats an undefined required field as zero rather than NaN', () => {
+    // The types say these are always present; the wire disagrees.
+    const total = sumTokenMetrics([child(), child({ inputTokens: undefined, totalEffectiveTokens: undefined })]);
+    expect(total.inputTokens).toBe(100);
+    expect(Number.isFinite(total.totalEffectiveTokens)).toBe(true);
+  });
+
+  it('keeps summing the OTHER components when one is unusable', () => {
+    // Token polarity is deliberately opposite to cost: a bad component is dropped, the
+    // run total survives. (An absent COST poisons its sum to undefined instead.)
+    const total = sumTokenMetrics([child({ inputTokens: NaN, outputTokens: 50 })]);
+    expect(total.inputTokens).toBe(0);
+    expect(total.outputTokens).toBe(50);
+  });
+});

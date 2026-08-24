@@ -11,6 +11,40 @@ import { ModelNotFoundError, CapabilityError } from '../errors/index.js';
 import type { Logger } from '@uluops/sdk-core';
 
 /**
+ * Validate registry pricing at the trust seam before it can reach arithmetic.
+ *
+ * `ModelCost` declares `input`/`output` as required `number`s, but that is a
+ * COMPILE-TIME claim over data that arrives as untrusted network JSON —
+ * `@uluops/registry-sdk` performs no runtime validation of it (types only). A row with a
+ * null, missing, or non-numeric rate makes `usage.output_tokens * cost.output` evaluate to
+ * NaN, and a NaN cost JSON-serializes to `null`, which is indistinguishable from an
+ * unpriced model and blanks an entire pipeline's recorded spend.
+ *
+ * This is the same failure the token-side finiteness guard prevents, at the OTHER operand
+ * of the same multiply — the guard was applied to the tokens and not to the rates.
+ *
+ * Polarity follows the documented rule for pricing: unusable rates yield `undefined`
+ * (honest-absent, costUsd stays unknown), never zero rates, because a $0 cost is a claim
+ * and an absent cost is an admission. The optional cache rates are dropped individually
+ * when unusable — computeCostUsd then falls back to the full input rate, a conservative
+ * overstatement that is already its documented behavior for a model with no cache rate.
+ */
+export function sanitizeModelCost(cost: ModelCost | null | undefined): ModelCost | undefined {
+  if (!cost) return undefined;
+  const usable = (n: unknown): n is number =>
+    typeof n === 'number' && Number.isFinite(n) && n >= 0;
+  if (!usable(cost.input) || !usable(cost.output)) return undefined;
+  return {
+    input: cost.input,
+    output: cost.output,
+    ...(usable(cost.cacheRead) ? { cacheRead: cost.cacheRead } : {}),
+    ...(usable(cost.cacheWrite) ? { cacheWrite: cost.cacheWrite } : {}),
+    ...(cost.sourceUpdatedAt !== undefined ? { sourceUpdatedAt: cost.sourceUpdatedAt } : {}),
+  };
+}
+
+
+/**
  * Resolved model with provider routing information
  */
 export interface ResolvedModel {
@@ -282,7 +316,7 @@ export class ModelCatalog {
       tier: model.tier,
       capabilities: model.capabilities,
       contextWindow: model.limits?.context || undefined,
-      cost: model.cost ?? undefined,
+      cost: sanitizeModelCost(model.cost),
       registered: true,
       resolvedFrom: providerModelId,
     };
@@ -326,7 +360,7 @@ export class ModelCatalog {
       tier: model.tier,
       capabilities: model.capabilities,
       contextWindow: model.limits?.context || undefined,
-      cost: model.cost ?? undefined,
+      cost: sanitizeModelCost(model.cost),
       registered: true,
       resolvedFrom: tier,
     };
@@ -407,7 +441,7 @@ export class ModelCatalog {
       tier: model?.tier ?? 'standard',
       capabilities: model?.capabilities ?? DEFAULT_CAPABILITIES,
       contextWindow: model?.limits?.context || undefined,
-      cost: model?.cost ?? undefined,
+      cost: sanitizeModelCost(model?.cost),
       // The alias resolved, but the response may carry no model object; only
       // the object's presence proves a catalog row exists.
       registered: model !== undefined,

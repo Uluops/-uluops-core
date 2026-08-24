@@ -11,6 +11,7 @@ import type { Logger } from '@uluops/sdk-core';
 import { parseRef } from '../utils/parseRef.js';
 import { sumTokenMetrics } from '../utils/sumTokenMetrics.js';
 import { sumCostUsd } from '../utils/sumCostUsd.js';
+import { crashMetrics } from '../utils/crashMetrics.js';
 import { DEFAULT_PASS_THRESHOLD, DEFAULT_WARN_THRESHOLD } from '../constants.js';
 import { mapCategory } from './mapCategory.js';
 import { resolveDecisionCategory, type DecisionCategory } from './classifyDecision.js';
@@ -183,7 +184,10 @@ export class CommandExecutor {
             severity: 'critical',
             failureCode: 'PRA-FRA/C',
           }],
-          metrics: { inputTokens: 0, outputTokens: 0, totalEffectiveTokens: 0, durationMs: 0, model: 'unknown' },
+          // Reads real usage off the error when it carries any (MaxStepsExhaustedError
+          // is thrown after a successful, already-billed call); otherwise zero tokens with
+          // costUsd ABSENT, never a fabricated $0. See crashMetrics.
+          metrics: crashMetrics(outcome.reason),
         } as AgentResult);
       }
     }

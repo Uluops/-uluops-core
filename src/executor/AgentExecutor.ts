@@ -144,11 +144,16 @@ export class AgentExecutor {
     // Surface it as a distinct, typed error so callers can raise maxSteps or
     // narrow the target instead of silently recording a bogus failure.
     if (rawText.length === 0 && result.finishReason === 'tool-calls') {
+      // Carry the usage that was ALREADY BILLED. This throw follows a successful
+      // generate() whose tokens and cost are in hand; discarding them here is how the
+      // most expensive run class core produces came to be recorded as zero tokens by the
+      // rejection handlers downstream. The error is the only channel those handlers have.
       throw new MaxStepsExhaustedError(
         `Agent '${resolved.name}' exhausted the ${context.maxSteps}-step tool loop while still calling tools and produced no output. ` +
           `Raise maxSteps, narrow the target, or lower the context budget so wrap-up triggers earlier.`,
         result.steps,
         result.finishReason,
+        this.buildMetrics(result, Date.now() - startTime),
       );
     }
 

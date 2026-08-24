@@ -8,6 +8,7 @@ import {
   stepCountIs,
   type LanguageModel,
   type ToolSet,
+  type CallWarning,
 } from 'ai';
 import type { LanguageModelUsage } from 'ai';
 import type { ProviderOptions } from '@ai-sdk/provider-utils';
@@ -75,7 +76,45 @@ interface StepTotals {
   cacheReadTokens: number;
   cacheWriteTokens: number;
   reasoningTokens: number;
+  /**
+   * True only when a step reported an actual token NUMBER.
+   *
+   * It previously tested `if (step.usage)`, which is a tautology: `usage` is a REQUIRED
+   * field on StepResult (ai/dist/index.d.ts `readonly usage: LanguageModelUsage`) and the
+   * SDK materializes it via `createNullLanguageModelUsage()` — an object whose every
+   * member is `undefined` — whenever a provider response carries no usage block. All
+   * three bundled providers do this. So the flag meant "a step finished", and the
+   * "nothing reported -> undefined, not a fabricated $0" contract at buildFallbackResult
+   * held only in the ZERO-STEP case, which was the only case its test covered. Measured:
+   * three steps with the SDK's null-usage shape reported a real `costUsd: 0`, which then
+   * passes sumCostUsd's finiteness check and sums cleanly into a pipeline total.
+   */
   sawUsage: boolean;
+  /**
+   * Per-pool presence. ABSENT IS NOT ZERO, and the accumulator's `?? 0` destroys the
+   * distinction — so the fact of a report has to be carried separately from its value.
+   *
+   * This is what made stepTotalsToUsage emit `noCacheTokens: 0` unconditionally, which
+   * sent mapUsage down its EXACT normalization branch on a fabricated zero and priced the
+   * whole input pool at $0 for any provider reporting `inputTokens` without details — the
+   * `ai.additionalProviders` population the legacy branch exists for. Measured: $0.045
+   * against a true $0.495 on usage the success path gets right.
+   */
+  sawNoCache: boolean;
+  sawCacheRead: boolean;
+  sawCacheWrite: boolean;
+  sawReasoning: boolean;
+  /**
+   * Last step's provider metadata and accumulated warnings, so the error path can build
+   * its result through the SAME extraction the success path uses. Without these,
+   * buildFallbackResult called mapUsage with one of three arguments: all four provider
+   * extract tiers were dead, Google thinking tokens landed in `reasoning_tokens`, an
+   * unknown provider's cache pool went unpriced, and both drift instruments this release
+   * added (providerWarnings, usageShapeDrift) were absent from every degraded result —
+   * dark precisely where drift bites.
+   */
+  providerMetadata?: Record<string, unknown>;
+  warnings: CallWarning[];
 }
 
 /**
@@ -94,25 +133,61 @@ function optionalTokenCount(n: number | undefined): number | undefined {
   return safeTokenCount(n);
 }
 
+/**
+ * Render the SDK's own report of settings it could not honor into flat strings.
+ *
+ * Narrows on the discriminant rather than casting. `CallWarning` is a union whose
+ * 'unsupported' and 'compatibility' members carry `feature`/`details` and NO `message`
+ * (verified against @ai-sdk/provider's SharedV3Warning) — casting to `{message?: string}`
+ * reads undefined for those and throws away the only two fields that say what the
+ * provider actually refused.
+ *
+ * Shared by the success and fallback paths deliberately. Provider option schemas parse in
+ * Zod STRIP mode, so warnings are the only channel that reports a setting not taking
+ * effect; a formatter that existed on one path only meant degraded runs reported none.
+ */
+function formatCallWarnings(warnings: readonly CallWarning[] | undefined): string[] {
+  return (warnings ?? []).map((w) =>
+    w.type === 'other'
+      ? w.message
+      : `${w.type}: ${w.feature}${w.details ? ` — ${w.details}` : ''}`,
+  );
+}
+
 function emptyStepTotals(): StepTotals {
   return {
     steps: 0, toolCalls: 0, inputTokens: 0, outputTokens: 0,
     noCacheTokens: 0, cacheReadTokens: 0, cacheWriteTokens: 0,
     reasoningTokens: 0, sawUsage: false,
+    sawNoCache: false, sawCacheRead: false, sawCacheWrite: false, sawReasoning: false,
+    warnings: [],
   };
 }
 
-/** StepTotals -> the shape mapUsage consumes. Only meaningful when sawUsage is true. */
+/**
+ * StepTotals -> the shape mapUsage consumes. Only meaningful when sawUsage is true.
+ *
+ * Every pool is emitted as `undefined` unless a step actually reported it. That is not
+ * cosmetic: mapUsage branches on `noCacheTokens !== undefined` to choose between its
+ * EXACT normalization (trust the SDK's uncached figure) and its LEGACY one (subtract the
+ * cache pools from a cache-inclusive total). Emitting a fabricated 0 forced the exact
+ * branch and zeroed the input pool. The all-undefined members mirror the SDK's own
+ * `createNullLanguageModelUsage()` shape, so mapUsage sees exactly what it would have
+ * seen from a provider that reported nothing.
+ */
 function stepTotalsToUsage(t: StepTotals): MappableUsage {
   return {
-    inputTokens: t.inputTokens,
-    outputTokens: t.outputTokens,
+    inputTokens: t.sawUsage ? t.inputTokens : undefined,
+    outputTokens: t.sawUsage ? t.outputTokens : undefined,
     inputTokenDetails: {
-      noCacheTokens: t.noCacheTokens,
-      cacheReadTokens: t.cacheReadTokens,
-      cacheWriteTokens: t.cacheWriteTokens,
+      noCacheTokens: t.sawNoCache ? t.noCacheTokens : undefined,
+      cacheReadTokens: t.sawCacheRead ? t.cacheReadTokens : undefined,
+      cacheWriteTokens: t.sawCacheWrite ? t.cacheWriteTokens : undefined,
     },
-    outputTokenDetails: { textTokens: undefined, reasoningTokens: t.reasoningTokens },
+    outputTokenDetails: {
+      textTokens: undefined,
+      reasoningTokens: t.sawReasoning ? t.reasoningTokens : undefined,
+    },
   };
 }
 
@@ -375,7 +450,24 @@ export class AIProvider {
     } catch (error) {
       return this.handleGenerateError(error, resolved, useStructuredOutput, options.timeoutMs, stepTotals);
     }
-    return this.buildGenerateResult(result, resolved, useStructuredOutput);
+    // Result ASSEMBLY gets its own try, separate from the provider call above.
+    //
+    // Narrowing the first try was correct — a throw here is not a generation failure and
+    // must not be reported as a zero-cost fallback, discarding usage that was genuinely
+    // billed. But leaving assembly bare traded one defect for another: `result.output` is
+    // a throwing getter and mapUsage runs here too, so a throw escaped generate() WITHOUT
+    // reaching mapError. Callers got a raw AI_NoOutputGeneratedError instead of a core
+    // error type, and the billed usage was still lost — as a rejection this time rather
+    // than as a fabricated zero. Both properties are needed: map the error, AND keep the
+    // usage, which stepTotals still holds.
+    try {
+      return this.buildGenerateResult(result, resolved, useStructuredOutput);
+    } catch (error) {
+      this.logger.warn(
+        `Result assembly failed after a successful provider call — reporting the usage that was already billed: ${formatErrorMessage(error)}`,
+      );
+      return this.handleGenerateError(error, resolved, useStructuredOutput, options.timeoutMs, stepTotals);
+    }
   }
 
   /**
@@ -416,8 +508,21 @@ export class AIProvider {
   ) {
     let stepCount = 0;
     const budgetTracker = options.budgetTracker;
+    // Does `toolChoice: 'none'` actually reach the provider on this run?
+    //
+    // It does not when Anthropic runs structured output through `structuredOutputMode:
+    // 'jsonTool'` — core's own default for every Anthropic structured-output call — because
+    // the provider HARD-OVERRIDES toolChoice to select its json tool. The brake is a no-op
+    // there, on the dominant path.
+    //
+    // Fixing the brake itself means changing structured-output strategy and is a separate
+    // decision. What is fixed here is the REPORT: the latch no longer marks a forced
+    // wrap-up that never happened, so a complete run stops being stamped `degraded` and
+    // downgraded to 'partial' completeness for a non-event. The log line still fires, so
+    // the budget crossing remains visible; only the false claim is withdrawn.
+    const brakeIsHonored = !(useStructuredOutput && this.isAnthropicJsonToolMode(providerOptions));
     const prepareStep = options.contextBudget
-      ? this.buildBudgetPrepareStep(options.contextBudget, budgetTracker)
+      ? this.buildBudgetPrepareStep(options.contextBudget, budgetTracker, brakeIsHonored)
       : undefined;
     const maxSteps = options.maxSteps ?? DEFAULT_MAX_STEPS;
 
@@ -453,14 +558,41 @@ export class AIProvider {
         // Accumulate real totals so an error path can still report them (see StepTotals).
         stepTotals.steps += 1;
         stepTotals.toolCalls += step.toolCalls?.length ?? 0;
-        if (usage) {
+
+        // Carry the provider's own metadata and warnings forward so the error path can
+        // run the SAME extraction the success path runs (see StepTotals.providerMetadata).
+        // Last step wins for metadata — it mirrors what the success path reads from
+        // `result.providerMetadata`; warnings accumulate because each step may raise its own.
+        if (step.providerMetadata) {
+          stepTotals.providerMetadata = step.providerMetadata as Record<string, unknown>;
+        }
+        if (step.warnings?.length) stepTotals.warnings.push(...step.warnings);
+
+        // ABSENT IS NOT ZERO. Each pool records whether it was REPORTED separately from
+        // its value, because `?? 0` below cannot tell "the provider said zero" from "the
+        // provider said nothing" — and stepTotalsToUsage's consumer branches on exactly
+        // that distinction. `usage` itself is never falsy (it is a required field the SDK
+        // always materializes), so presence is read from the NUMBERS, not the wrapper.
+        if (usage.inputTokens !== undefined || usage.outputTokens !== undefined) {
           stepTotals.sawUsage = true;
-          stepTotals.inputTokens += usage.inputTokens ?? 0;
-          stepTotals.outputTokens += usage.outputTokens ?? 0;
-          stepTotals.noCacheTokens += usage.inputTokenDetails?.noCacheTokens ?? 0;
-          stepTotals.cacheReadTokens += usage.inputTokenDetails?.cacheReadTokens ?? 0;
-          stepTotals.cacheWriteTokens += usage.inputTokenDetails?.cacheWriteTokens ?? 0;
-          stepTotals.reasoningTokens += usage.outputTokenDetails?.reasoningTokens ?? 0;
+        }
+        stepTotals.inputTokens += usage.inputTokens ?? 0;
+        stepTotals.outputTokens += usage.outputTokens ?? 0;
+        if (usage.inputTokenDetails?.noCacheTokens !== undefined) {
+          stepTotals.sawNoCache = true;
+          stepTotals.noCacheTokens += usage.inputTokenDetails.noCacheTokens;
+        }
+        if (usage.inputTokenDetails?.cacheReadTokens !== undefined) {
+          stepTotals.sawCacheRead = true;
+          stepTotals.cacheReadTokens += usage.inputTokenDetails.cacheReadTokens;
+        }
+        if (usage.inputTokenDetails?.cacheWriteTokens !== undefined) {
+          stepTotals.sawCacheWrite = true;
+          stepTotals.cacheWriteTokens += usage.inputTokenDetails.cacheWriteTokens;
+        }
+        if (usage.outputTokenDetails?.reasoningTokens !== undefined) {
+          stepTotals.sawReasoning = true;
+          stepTotals.reasoningTokens += usage.outputTokenDetails.reasoningTokens;
         }
       },
     });
@@ -531,15 +663,9 @@ export class AIProvider {
     // option schemas strip unknown keys silently, so this is the ONLY channel that says a
     // request setting did not take effect. Logged at warn so it is visible without
     // requiring debug, and carried on the result for callers that record telemetry.
-    // Narrow on the discriminant rather than casting. `CallWarning` is a union whose
-    // 'unsupported' and 'compatibility' members carry `feature`/`details` and NO
-    // `message` — casting to `{message?: string}` reads undefined for those and throws
-    // away the only two fields that say what the provider actually refused.
-    const providerWarnings = (result.warnings ?? []).map((w) =>
-      w.type === 'other'
-        ? w.message
-        : `${w.type}: ${w.feature}${w.details ? ` — ${w.details}` : ''}`,
-    );
+    // Formatting lives in formatCallWarnings so the fallback path renders warnings
+    // identically — see that helper for why the discriminant is narrowed, not cast.
+    const providerWarnings = formatCallWarnings(result.warnings);
     for (const w of providerWarnings) {
       this.logger.warn(`Provider warning (${resolved.provider}:${resolved.modelId}): ${w}`);
     }
@@ -600,7 +726,21 @@ export class AIProvider {
     // ever reported usage there is nothing honest to price, so costUsd is left
     // undefined (absent) rather than asserted as a real 0 — sumCostUsd propagates
     // undefined as worst-child, which is the correct polarity for "unknown".
-    const usage = this.mapUsage(stepTotalsToUsage(stepTotals));
+    //
+    // All THREE arguments are passed, exactly as the success path passes them. This
+    // method used to call `mapUsage(usage)` with the other two omitted, which made the
+    // fallback a SECOND, REDUCED construction path — and a second place to be wrong. Every
+    // provider extract tier was dead here, so Google thinking tokens landed in
+    // `reasoning_tokens`, an unknown provider's cache pool went entirely unpriced, and
+    // neither drift instrument appeared on a degraded result. The fix is not a patch at
+    // each symptom; it is removing the divergence, so there is one path to keep correct.
+    const usage = this.mapUsage(
+      stepTotalsToUsage(stepTotals),
+      stepTotals.providerMetadata,
+      resolved.provider,
+    );
+    const providerWarnings = formatCallWarnings(stepTotals.warnings);
+    const usageShapeDrift = this.detectUsageShapeDrift(stepTotals.providerMetadata);
     return {
       text,
       structuredOutput: undefined,
@@ -611,6 +751,8 @@ export class AIProvider {
       steps: stepTotals.steps,
       finishReason,
       costUsd: stepTotals.sawUsage ? this.computeCostUsd(usage, resolved.cost) : undefined,
+      ...(usageShapeDrift.length > 0 ? { usageShapeDrift } : {}),
+      ...(providerWarnings.length > 0 ? { providerWarnings } : {}),
     };
   }
 
@@ -927,7 +1069,21 @@ export class AIProvider {
    * conversation including cached tokens). The last step's value represents the
    * current context window size. We check that against the budget.
    */
-  private buildBudgetPrepareStep(budget: number, budgetTracker?: TokenBudgetTracker) {
+  /**
+   * True when this run's provider options put Anthropic into `structuredOutputMode:
+   * 'jsonTool'` — the mode in which the provider hard-overrides `toolChoice` to select its
+   * json tool, making a `toolChoice: 'none'` wrap-up brake inert.
+   *
+   * Reads the options object that will actually be SENT, not the config that was intended,
+   * so an explicit caller override of structuredOutputMode is respected: a caller who
+   * selects a different mode gets a working brake and an honest marker.
+   */
+  private isAnthropicJsonToolMode(providerOptions?: ProviderOptions): boolean {
+    const anthropic = providerOptions?.anthropic as Record<string, unknown> | undefined;
+    return anthropic?.['structuredOutputMode'] === 'jsonTool';
+  }
+
+  private buildBudgetPrepareStep(budget: number, budgetTracker?: TokenBudgetTracker, brakeIsHonored = true) {
     // Hysteresis band: latch wrap-up on at 80% of budget, release it only once
     // context falls back below 70%. The lower release threshold prevents the
     // latch from flapping on/off around a single boundary, while still allowing
@@ -949,7 +1105,7 @@ export class AIProvider {
         // Release the latch if context has recovered below the lower band.
         if (contextSize < lowerThreshold) {
           wrapUpInjected = false;
-          budgetTracker?.markForcedWrapUp(false);
+          if (brakeIsHonored) budgetTracker?.markForcedWrapUp(false);
           this.logger.info(
             `Context budget recovered (${contextSize}/${budget}, <70%). Releasing wrap-up — tool calls re-enabled.`,
           );
@@ -961,9 +1117,17 @@ export class AIProvider {
 
       if (contextSize >= upperThreshold) {
         wrapUpInjected = true;
-        budgetTracker?.markForcedWrapUp(true);
+        // Only claim a forced wrap-up when the brake can actually engage — see
+        // brakeIsHonored at the call site. Latching regardless is what made every
+        // Anthropic structured-output run crossing 80% report an event that never
+        // occurred, and carry a 'degraded' marker and 'partial' completeness for it.
+        if (brakeIsHonored) budgetTracker?.markForcedWrapUp(true);
         this.logger.warn(
-          `Context budget 80% used (${contextSize}/${budget}). Forcing output — no more tool calls.`,
+          brakeIsHonored
+            ? `Context budget 80% used (${contextSize}/${budget}). Forcing output — no more tool calls.`
+            : `Context budget 80% used (${contextSize}/${budget}). NOTE: the wrap-up brake cannot engage on this run — ` +
+              `Anthropic's jsonTool structured-output mode overrides toolChoice — so tool calls continue. ` +
+              `Lower contextBudget or disable structured output if you need a hard stop.`,
         );
         return { toolChoice: 'none' as const };
       }
@@ -1186,6 +1350,30 @@ export class AIProvider {
     google: ['usageMetadata'],
   };
 
+  /**
+   * The subset of keys an extract tier actually READS — the only keys whose loss changes
+   * a number. Empty means the tier depends on nothing in this provider's metadata block.
+   *
+   * This exists because the recognized-key check above is satisfied by ANY overlap, and
+   * that is structurally the wrong test. `keys.some(k => recognized.includes(k))` means one
+   * surviving key — including a benign envelope key like `usage` or `responseId` that no
+   * tier reads — suppresses the warning for every key that vanished beside it. The
+   * detector could not report the loss of the fields a tier depends on, which is the only
+   * loss that matters, and that is exactly how the v6 OpenAI rename went unreported.
+   *
+   * openai is deliberately EMPTY: verified against @ai-sdk/openai 3.0.33, its block
+   * carries no usage fields at all in v6 (cached input and reasoning both moved to the
+   * unified usage shape). Its tier is a legacy fallback that must never be the sole
+   * source, so there is nothing here whose absence is news. For a provider with an empty
+   * set the detector falls back to the recognized-overlap test, which is all that can be
+   * asserted about a block nothing depends on.
+   */
+  private static readonly DEPENDED_ON_USAGE_KEYS: Record<string, readonly string[]> = {
+    anthropic: ['cacheCreationInputTokens', 'cacheReadInputTokens'],
+    openai: [],
+    google: ['usageMetadata'],
+  };
+
   /** Providers already warned about this process — drift is chronic once present; one warn is signal, per-run warns are noise. */
   private readonly driftWarned = new Set<string>();
 
@@ -1198,7 +1386,10 @@ export class AIProvider {
    * quality, not verdict evidence — so a false positive costs a log line,
    * not a completeness downgrade.
    *
-   * KNOWN LIMITATION — this detector is satisfied by ANY overlap.
+   * Presence of DEPENDED-ON keys is asserted where a provider declares them; see
+   * DEPENDED_ON_USAGE_KEYS. The note below records the weakness that test replaced.
+   *
+   * FORMER LIMITATION (fixed) — this detector was satisfied by ANY overlap.
    * `keys.some(k => recognized.includes(k))` means a single surviving key suppresses
    * the warning for every key that vanished alongside it. That is exactly how the v6
    * OpenAI drift went unreported: `responseId` survived and was on the recognized
@@ -1219,12 +1410,25 @@ export class AIProvider {
       const meta = providerMetadata[provider];
       if (!meta || typeof meta !== 'object') continue;
       const keys = Object.keys(meta);
-      if (keys.length === 0 || keys.some(k => recognized.includes(k))) continue;
+      if (keys.length === 0) continue;
+
+      // Assert PRESENCE of the keys a tier depends on, rather than mere overlap with a
+      // list that also contains envelope keys. A provider that declares dependencies is
+      // drifted when NONE of them survive — a surviving benign key no longer masks it.
+      // Providers depending on nothing fall back to the overlap test.
+      const dependedOn = AIProvider.DEPENDED_ON_USAGE_KEYS[provider] ?? [];
+      const missingDependedOn = dependedOn.length > 0 && !dependedOn.some(k => keys.includes(k));
+      const noOverlap = dependedOn.length === 0 && !keys.some(k => recognized.includes(k));
+      if (!missingDependedOn && !noOverlap) continue;
+
       drifted.push(provider);
       if (!this.driftWarned.has(provider)) {
         this.driftWarned.add(provider);
+        const detail = missingDependedOn
+          ? `none of the fields its extract tier reads are present (expected one of: ${dependedOn.join(', ')})`
+          : 'its shape is unrecognized';
         this.logger.warn(
-          `Provider metadata for "${provider}" has an unrecognized shape (keys: ${keys.slice(0, 8).join(', ')}) — ` +
+          `Provider metadata for "${provider}" — ${detail} (keys: ${keys.slice(0, 8).join(', ')}) — ` +
           `token/cache/thinking metrics for this provider may silently read zero. ` +
           `The ${provider} provider SDK likely renamed its usage fields; update the extract tier in AIProvider.mapUsage.`,
         );

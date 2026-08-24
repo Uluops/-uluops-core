@@ -185,6 +185,11 @@ export {
   type UluOpsErrorCode,
   ExecutionError,
   MaxStepsExhaustedError,
+  // Shape of MaxStepsExhaustedError.billedMetrics — exported because a consumer reading
+  // that field needs to name its type. Declared structurally in ./errors rather than
+  // imported from ./types/execution so the errors module, which every other module throws
+  // from, stays at the bottom of the import graph.
+  type ExecutionMetricsLike,
   PreflightError,
   ConfigurationError,
   ModelNotFoundError,
