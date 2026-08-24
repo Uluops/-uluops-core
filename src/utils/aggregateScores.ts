@@ -35,6 +35,24 @@ export function aggregateScores(
   if (items.length === 0) return 0;
 
   const scorable = items.filter((i): i is ScoredItem & { score: number } => i.score != null);
+  // ⚠ DIVERGENCE — UNRESOLVED, NEEDS A DECISION. Do not "simplify" either side away.
+  //
+  // This returns 0 for BOTH "nothing was asked for" (items empty) and "things ran but none
+  // produce scores" (scorable empty). WorkflowExecutor.aggregatePhaseScore distinguishes
+  // them — 0 for the first, null for the second — and under evaluateGate that difference is
+  // load-bearing: **0 BLOCKS and null PASSES**. So an all-generator set fails its gate in a
+  // pipeline or command, and passes it in a workflow, for identical input.
+  //
+  // Evidence pulls both ways, which is why it is flagged rather than silently corrected:
+  //   FOR null — `PhaseResult.score` and `CommandResult.score` are both `number | null`,
+  //              documented "null for scoreless (generator/executor) commands", and the
+  //              score-nullability spec says do not coerce to 0.
+  //   FOR 0    — a test pins `returns 0 when all items have null scores`, and changing it
+  //              alters GATE SEMANTICS for every pipeline and command, not just a value.
+  //
+  // Changing this is a behavioural decision about what a scoreless panel means at a gate,
+  // not a mechanical repair. Recorded here and at aggregatePhaseScore so the next reader
+  // finds the disagreement instead of re-deriving it.
   if (scorable.length === 0) return 0;
 
   const scores = scorable.map(i => i.score);

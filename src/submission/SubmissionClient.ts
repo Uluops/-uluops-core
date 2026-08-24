@@ -200,6 +200,8 @@ export class SubmissionClient {
       this._ops = new OpsClient({
         apiKey: this.config.apiKey,
         baseUrl: this.config.submissionUrl,
+        // EXTERNAL-OK: an HTTP/SDK timeout handed straight to a client that validates its own options; it reaches
+    // no arithmetic and no threshold in this package.
         timeout: this.config.timeout,
         onSecurityEvent: this.config.onSecurityEvent,
       });

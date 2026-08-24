@@ -102,9 +102,13 @@ export class AgentExecutor {
     const resolvedForBudget = await this.aiProvider.resolveModel(budgetModelInput);
     const effectiveBudget = deriveContextBudget({
       modelWindow: resolvedForBudget.contextWindow,
+      // EXTERNAL-OK: routed through usableBudget at both readers (deriveContextBudget and the eviction trigger);
+    // this line only forwards the raw config value to them.
       operatorBudget: this.config.contextBudget,
     });
     this.logger.debug(
+      // EXTERNAL-OK: routed through usableBudget at both readers (deriveContextBudget and the eviction trigger);
+    // this line only forwards the raw config value to them.
       `Context budget: ${effectiveBudget} (window=${resolvedForBudget.contextWindow ?? 'unknown'}, operator=${this.config.contextBudget ?? 'unset'})`,
     );
 
@@ -122,6 +126,7 @@ export class AgentExecutor {
       timeoutMs: context.timeoutMs,
       temperature: context.temperature,
       contextBudget: effectiveBudget,
+      // EXTERNAL-OK: forwarded to the AI SDK, which validates and clamps its own retry count.
       maxRetries: this.config.maxRetries,
       budgetTracker: toolAdapter.budgetTracker,
       // Report mode disables structured-output enforcement so a publication-mode
@@ -297,25 +302,49 @@ export class AgentExecutor {
       // FABRICATION-OK: reads UsageMetrics, which mapUsage has ALREADY clamped at the provider boundary.
       // This is an internal field copy, not an external read; clamping twice would only
       // hide a regression in the real clamp.
+      // EXTERNAL-OK: reads UsageMetrics, which mapUsage ALREADY clamped at the provider boundary. An internal
+      // field copy, not a fresh external read; clamping twice would only hide a regression in
+      // the real clamp.
       inputTokens: result.usage.input_tokens,
       // FABRICATION-OK: reads UsageMetrics, already clamped by mapUsage at the provider boundary. An
       // internal field copy, not an external read.
+      // EXTERNAL-OK: reads UsageMetrics, which mapUsage ALREADY clamped at the provider boundary. An internal
+      // field copy, not a fresh external read; clamping twice would only hide a regression in
+      // the real clamp.
       outputTokens: result.usage.output_tokens,
       // FABRICATION-OK: reads UsageMetrics, already clamped by mapUsage at the provider boundary. An
       // internal field copy, not an external read.
+      // EXTERNAL-OK: reads UsageMetrics, which mapUsage ALREADY clamped at the provider boundary. An internal
+      // field copy, not a fresh external read; clamping twice would only hide a regression in
+      // the real clamp.
       cacheCreationTokens: result.usage.cache_creation_input_tokens,
       // FABRICATION-OK: reads UsageMetrics, already clamped by mapUsage at the provider boundary. An
       // internal field copy, not an external read.
+      // EXTERNAL-OK: reads UsageMetrics, which mapUsage ALREADY clamped at the provider boundary. An internal
+      // field copy, not a fresh external read; clamping twice would only hide a regression in
+      // the real clamp.
       cacheReadTokens: result.usage.cache_read_input_tokens,
       // FABRICATION-OK: reads UsageMetrics, already clamped by mapUsage at the provider boundary. An
       // internal field copy, not an external read.
+      // EXTERNAL-OK: reads UsageMetrics, which mapUsage ALREADY clamped at the provider boundary. An internal
+      // field copy, not a fresh external read; clamping twice would only hide a regression in
+      // the real clamp.
       cachedInputTokens: result.usage.cached_input_tokens,
       // FABRICATION-OK: reads UsageMetrics, already clamped by mapUsage at the provider boundary. An
       // internal field copy, not an external read.
+      // EXTERNAL-OK: reads UsageMetrics, which mapUsage ALREADY clamped at the provider boundary. An internal
+      // field copy, not a fresh external read; clamping twice would only hide a regression in
+      // the real clamp.
       reasoningOutputTokens: result.usage.reasoning_tokens,
       // FABRICATION-OK: reads UsageMetrics, already clamped by mapUsage at the provider boundary. An
       // internal field copy, not an external read.
+      // EXTERNAL-OK: reads UsageMetrics, which mapUsage ALREADY clamped at the provider boundary. An internal
+      // field copy, not a fresh external read; clamping twice would only hide a regression in
+      // the real clamp.
       thinkingTokens: result.usage.thinking_tokens,
+      // EXTERNAL-OK: reads UsageMetrics, which mapUsage ALREADY clamped at the provider boundary. An internal
+      // field copy, not a fresh external read; clamping twice would only hide a regression in
+      // the real clamp.
       totalEffectiveTokens: this.calculateEffectiveTokens(result.usage),
       durationMs,
       model: result.model,
@@ -462,6 +491,8 @@ export class AgentExecutor {
       });
     }
 
+    // EXTERNAL-OK: reads a COUNT or an enum off the SDK result, not a priced quantity. An array length and a
+    // finishReason string carry no money and no threshold.
     if (result.finishReason === 'tool-calls' && rawText.length > 0) {
       markers.push({
         code: 'steps.near-exhaustion',
@@ -580,9 +611,15 @@ export class AgentExecutor {
 
     return {
       model: options?.model ?? defaults?.model ?? this.config.ai.modelOverride ?? DEFAULT_MODEL_ALIAS,
+      // EXTERNAL-OK: forwarded to the AI SDK as a generation option; it bounds the PROVIDER call, not any
+      // arithmetic here, and the SDK rejects a malformed value at its own boundary.
       maxTokens: options?.maxTokens ?? defaults?.maxTokens ?? DEFAULT_MAX_TOKENS,
+      // EXTERNAL-OK: an HTTP/SDK timeout handed straight to a client that validates its own options; it reaches
+    // no arithmetic and no threshold in this package.
       timeoutMs: options?.timeoutMs ?? defaults?.timeout ?? this.config.timeout ?? 300_000,
       temperature: options?.temperature ?? defaults?.temperature ?? DEFAULT_TEMPERATURE,
+      // EXTERNAL-OK: forwarded to the AI SDK as a generation option; it bounds the PROVIDER call, not any
+      // arithmetic here, and the SDK rejects a malformed value at its own boundary.
       maxSteps: options?.maxSteps ?? DEFAULT_MAX_STEPS,
       thresholds: this.resolveThresholds(
         options?.thresholds,

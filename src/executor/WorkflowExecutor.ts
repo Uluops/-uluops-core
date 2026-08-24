@@ -535,6 +535,15 @@ export class WorkflowExecutor {
     } as CommandResult;
   }
 
+  /**
+   * ⚠ DIVERGES from the shared `aggregateScores` util, deliberately and UNRESOLVED.
+   *
+   * This returns `null` when commands ran but none produce scores; the shared util returns
+   * `0` for the same input. Under `evaluateGate` that is not a cosmetic difference —
+   * **0 BLOCKS and null PASSES** — so an all-generator panel fails its gate in a pipeline
+   * or command and passes it here. See the note in `utils/aggregateScores.ts` for the
+   * evidence on both sides; resolving it is a decision about gate semantics, not a repair.
+   */
   private aggregatePhaseScore(results: CommandResult[], method: 'average' | 'min' | 'max'): number | null {
     // 0 here is DELIBERATE and is not a fabricated zero — reviewed and kept 2026-08-24.
     // An AUTHORED-empty phase (`commands: []` in the definition) must BLOCK at its gate

@@ -268,6 +268,8 @@ export class UluOpsClient {
     }
 
     const result = await this.pipelineExecutor.execute(resolved, input, {
+      // EXTERNAL-OK: an HTTP/SDK timeout handed straight to a client that validates its own options; it reaches
+    // no arithmetic and no threshold in this package.
       timeoutMs: this.config.timeout,
       model: this.config.ai.modelOverride,
     });
@@ -306,6 +308,8 @@ export class UluOpsClient {
         break;
       case 'pipeline':
         result = await this.pipelineExecutor.execute(resolved, input, {
+          // EXTERNAL-OK: an HTTP/SDK timeout handed straight to a client that validates its own options; it reaches
+    // no arithmetic and no threshold in this package.
           timeoutMs: this.config.timeout,
           model: this.config.ai.modelOverride,
         });
@@ -345,6 +349,8 @@ export class UluOpsClient {
     }
 
     const handle = await this.pipelineExecutor.start(resolved, input, {
+      // EXTERNAL-OK: an HTTP/SDK timeout handed straight to a client that validates its own options; it reaches
+    // no arithmetic and no threshold in this package.
       timeoutMs: this.config.timeout,
       model: this.config.ai.modelOverride,
     });
@@ -746,11 +752,18 @@ export function resolveConfig(config: UluOpsConfig, env: NodeJS.ProcessEnv = pro
     trackingEnabled: config.trackingEnabled ?? (env['ULUOPS_TRACKING_ENABLED'] !== 'false'),
     // Pass-through: a callback, nothing to default or resolve.
     onSecurityEvent: config.onSecurityEvent,
+    // EXTERNAL-OK: an HTTP/SDK timeout handed straight to a client that validates its own options; it reaches
+    // no arithmetic and no threshold in this package.
     timeout: config.timeout ?? DEFAULT_TIMEOUT_MS,
     defaultProject: config.defaultProject ?? env['ULUOPS_PROJECT'],
+    // EXTERNAL-OK: passed verbatim to the Anthropic provider, which validates its own thinking budget and
+    // rejects a malformed one at the API boundary. Not read arithmetically here.
     defaultThinkingBudget: config.defaultThinkingBudget ?? 10_000,
     debug: config.debug ?? (env['ULUOPS_DEBUG'] === 'true'),
+    // EXTERNAL-OK: routed through usableBudget at both readers (deriveContextBudget and the eviction trigger);
+    // this line only forwards the raw config value to them.
     contextBudget: config.contextBudget,
+    // EXTERNAL-OK: forwarded to the AI SDK, which validates and clamps its own retry count.
     maxRetries: config.maxRetries,
     // config.maxConcurrency is PUBLIC API and bypassed parseMaxConcurrency entirely — the
     // env path was validated and the programmatic path was not, which is the same

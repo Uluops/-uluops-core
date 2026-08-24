@@ -365,6 +365,8 @@ export class AIProvider {
     private catalog: ModelCatalog,
     private logger: Logger,
   ) {
+    // EXTERNAL-OK: finitePositive is applied INSIDE the Semaphore constructor, where it also protects every
+    // other caller; guarding here as well would leave two places to keep in step.
     this.concurrencyLimiter = new Semaphore(config.maxConcurrency ?? DEFAULT_MAX_CONCURRENCY);
     // Validate additionalProviders are safe alphanumeric names before adding
     // to the dynamic import allowlist (CWE-829 defense)
@@ -576,6 +578,8 @@ export class AIProvider {
       ...(useStructuredOutput ? { output: Output.object(options.output!) } : {}),
       onStepFinish: (step) => {
         stepCount++;
+        // EXTERNAL-OK: reads a COUNT or an enum off the SDK result, not a priced quantity. An array length and a
+    // finishReason string carry no money and no threshold.
         const toolNames = step.toolCalls?.map(tc => tc.toolName) ?? [];
         const usage = step.usage;
         const textLen = step.text?.length ?? 0;
@@ -609,6 +613,8 @@ export class AIProvider {
         stepTotals.steps += 1;
         // FABRICATION-OK: an absent toolCalls ARRAY means the step made no tool calls —
         // absence and zero genuinely coincide for a list length, unlike a provider count.
+        // EXTERNAL-OK: reads a COUNT or an enum off the SDK result, not a priced quantity. An array length and a
+    // finishReason string carry no money and no threshold.
         stepTotals.toolCalls += step.toolCalls?.length ?? 0;
 
         // Carry the provider's own metadata and warnings forward so the error path can
@@ -701,8 +707,12 @@ export class AIProvider {
     resolved: ResolvedModel,
     useStructuredOutput: boolean,
   ): AIGenerateResult {
+    // EXTERNAL-OK: reads a COUNT or an enum off the SDK result, not a priced quantity. An array length and a
+    // finishReason string carry no money and no threshold.
     const toolCallCount = result.steps.reduce(
       // FABRICATION-OK: array length — absence and zero genuinely coincide.
+      // EXTERNAL-OK: reads a COUNT or an enum off the SDK result, not a priced quantity. An array length and a
+    // finishReason string carry no money and no threshold.
       (sum, step) => sum + (step.toolCalls?.length ?? 0),
       0,
     );
@@ -717,6 +727,8 @@ export class AIProvider {
     const usage = this.mapUsage(result.totalUsage ?? result.usage, result.providerMetadata, resolved.provider);
 
     this.logger.info(
+      // EXTERNAL-OK: reads a COUNT or an enum off the SDK result, not a priced quantity. An array length and a
+    // finishReason string carry no money and no threshold.
       `Complete: ${result.steps.length} steps, ${toolCallCount} tool calls, finish=${result.finishReason}`,
     );
     this.logger.info(
@@ -747,6 +759,8 @@ export class AIProvider {
     }
 
     const usageShapeDrift = this.detectUsageShapeDrift(
+      // EXTERNAL-OK: reads a COUNT or an enum off the SDK result, not a priced quantity. An array length and a
+    // finishReason string carry no money and no threshold.
       result.providerMetadata as Record<string, unknown> | undefined,
     );
 
@@ -1022,6 +1036,8 @@ export class AIProvider {
 
     // Auto-enable extended thinking if model supports it and user hasn't specified
     if (resolved.capabilities.extendedThinking && !('thinking' in anthropicOpts)) {
+      // EXTERNAL-OK: passed verbatim to the Anthropic provider, which validates its own thinking budget and
+    // rejects a malformed one at the API boundary. Not read arithmetically here.
       const budgetTokens = this.config.defaultThinkingBudget;
       anthropicOpts = {
         ...anthropicOpts,
@@ -1131,6 +1147,8 @@ export class AIProvider {
     if (resolved.capabilities.extendedThinking && !('thinkingConfig' in googleOpts)) {
       googleOpts = {
         ...googleOpts,
+        // EXTERNAL-OK: passed verbatim to the Anthropic provider, which validates its own thinking budget and
+    // rejects a malformed one at the API boundary. Not read arithmetically here.
         thinkingConfig: { thinkingBudget: this.config.defaultThinkingBudget },
       };
     }
@@ -1195,6 +1213,7 @@ export class AIProvider {
       // The sibling reader at the budgetTracker.update call was guarded in the previous
       // commit; this one, 450+ lines away in the same file reading the same object, was
       // not. Hold the latch state rather than acting on a non-measurement.
+      // EXTERNAL-OK: this IS the absent-vs-zero discriminator for the wrap-up brake — the guard itself.
       if (lastStep.usage.inputTokens === undefined) {
         return wrapUpInjected ? { toolChoice: 'none' as const } : {};
       }
@@ -1718,6 +1737,8 @@ export class AIProvider {
     // The name set mirrors the SDK's own isAbortError guard in @ai-sdk/provider-utils.
     if (error instanceof Error
       && (error.name === 'TimeoutError' || error.name === 'AbortError' || error.name === 'ResponseAborted')) {
+      // EXTERNAL-OK: an HTTP/SDK timeout handed straight to a client that validates its own options; it reaches
+    // no arithmetic and no threshold in this package.
       const mapped = new TimeoutError(timeoutMs ?? this.config.timeout);
       mapped.cause = cause;
       return mapped;

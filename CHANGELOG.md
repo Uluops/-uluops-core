@@ -561,6 +561,81 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) 
 
   Current state: **75 entry points across 7 channels, 11 in numeric contexts, none unguarded.**
 
+- **Seventh sweep — the instrument was broken by demonstration, not by argument.** Audit
+  pass 7 (64/100, AF-006) planted a new, fully unguarded model-tool-args entry point while
+  folding an existing one behind a helper, and the gate reported *"surface unchanged; none
+  unguarded", exit 0.* Reproduced here before acting. Two structural causes:
+
+  - **The census compared per-channel scalar COUNTS**, so a removal and an addition in one
+    channel net to zero. It detected net cardinality, not new entry points — and a refactor,
+    which is precisely when new entry points appear, is exactly when sites move.
+  - **`--control` returned before the census code was ever reached.** The only half claiming
+    to find unknown-unknowns had NO positive control — this repo's own "a check that cannot
+    fail proves nothing" doctrine violated inside the tool written to enforce it.
+
+  Both fixed: the baseline now stores **per-site fingerprints** (file + channel + normalized
+  text, deliberately excluding line numbers so a comment insertion is not surface change),
+  and the control plants a net-zero refactor and fails if it does not register as +1/-1.
+
+  **Two more channels were missing, and one was named in this package's own seam module.**
+  `externalValue.ts`'s provenance header lists *"public API arguments"* as channel 6; the
+  instrument had seven channels and that was not among them — the seam and the guard,
+  written in one sitting, disagreed about what the surface is. Both of this pass's new
+  criticals live in the channel that was dropped. The other miss was **AI-SDK provider
+  responses**, which arrive SDK-typed with no parse call: `src/ai/AIProvider.ts` — 1,757
+  lines, the ORIGIN of this entire defect class — contributed **1 of 75** census entries.
+
+  Adding them took the measured surface from **75 to 132 entry points**; `AIProvider` went
+  from 1 to 33.
+
+  Also fixed: channel attribution was order-dependent (`break` after the first match meant
+  `Number(process.env['X'])` counted as `string-to-number` and silently decremented
+  `process-env`, so a cosmetic rewrite could fabricate or mask drift), and the control probe
+  is now removed in a `finally` so a throw cannot leave a file in `src/` that breaks `tsc`.
+
+- **`Semaphore(NaN)` deadlocked the engine permanently, and the constructor comment named
+  that exact failure.** *"a zero/negative limit would deadlock"* — it guarded 0 and negative
+  and not the third value. `Math.max(1, Math.floor(NaN))` is NaN, `acquire()`'s `NaN > 0` is
+  false, so every caller queues forever. Measured: `availablePermits: NaN`, `run()` never
+  settles. **Not a rejection — a hang**, with no error, no timeout and no diagnostic.
+  Reachable from outside, since `AIProvider` and `ResolvedConfig` are both exported.
+
+- **`read_file` reported a line range that never existed — and the reproduction was cited as
+  FIXED in the comment above it.** `externalLineNumber` rejects NaN, negatives and fractions,
+  but two valid positive integers can still name a range the file does not have. Measured on
+  a 5-line file, both with `is_error: undefined`: `start=100,end=200` returned
+  `"[Lines 100-5 of 5]"` over an empty body, and `start=3,end=2` returned `"[Lines 3-2 of 5]"`.
+  The value was validated; the RELATIONSHIP between two values was not.
+
+- **`TokenBudgetTracker.update()` was the constructor's defect one method over.** A public
+  method on a root-exported class taking raw numbers. `update(NaN, 10)` made
+  usedTotal/remaining/percentUsed all NaN — serializing to `null` — and `isOverThreshold`
+  permanently false, so the brake was unreachable and `markBrakeInert()` never fired: the
+  constructor's own documented failure mode, verbatim, on the adjacent entry point. And not
+  merely telemetry — `ToolAdapter` returns `getStatus()` to the MODEL as `get_token_budget`.
+
+- **Two waiver reasons corrected.** Both `TokenBudgetTracker` guards justified themselves
+  with *"deriveContextBudget rejects such budgets upstream"* — false of a class whose
+  constructor deliberately PRESERVES `budget: 0` as a tested contract. The guards were right;
+  their stated reason cited a rejection this class goes out of its way not to perform. The
+  real consequence the old reason obscured is now recorded: with budget 0 the brake never
+  engages and `markBrakeInert()` is never called.
+
+### Design Notes
+
+- **UNRESOLVED, flagged rather than decided: two score aggregators disagree.**
+  `aggregateScores` returns `0` when items ran but none produce scores; `aggregatePhaseScore`
+  returns `null` for the same input. Under `evaluateGate` that is not cosmetic — **0 BLOCKS
+  and null PASSES** — so an all-generator panel fails its gate in a pipeline or command and
+  passes it in a workflow.
+
+  Evidence pulls both ways, which is why it is recorded at both sites rather than corrected:
+  `PhaseResult.score` and `CommandResult.score` are both `number | null` documented *"null
+  for scoreless (generator/executor) commands"*, and the score-nullability spec says do not
+  coerce to 0 — but a test pins `returns 0 when all items have null scores`, and changing it
+  alters gate semantics for every pipeline and command rather than a single value. That is a
+  behavioural decision about what a scoreless panel means at a gate, not a mechanical repair.
+
 ### Changed
 
 - **`UsageMetrics.input_tokens` is now CACHE-EXCLUSIVE** — a semantics change with no signature
@@ -666,7 +741,7 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) 
 
 ### Internal
 
-- **125 tests added for the class sweep, each carrying a POSITIVE CONTROL.** The previous
+- **139 tests added for the class sweep, each carrying a POSITIVE CONTROL.** The previous
   round's failure was not that its tests were absent — it was that they passed vacuously
   (the `sawUsage` test covered only the zero-step case, where the flag stayed false for an
   unrelated reason). Every new test here was run against the reverted code and confirmed to

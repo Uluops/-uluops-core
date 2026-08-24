@@ -116,6 +116,8 @@ export function buildUpstreamContext(
       continue;
     }
 
+    // EXTERNAL-OK: reads a COUNT or an enum off the SDK result, not a priced quantity. An array length and a
+    // finishReason string carry no money and no threshold.
     if (result.steps && result.steps.length > 0 && result.result?.score == null && !result.result?.recommendations?.length) {
       // Steps-only stage — nothing forwardable; condition expressions are the channel.
       continue;

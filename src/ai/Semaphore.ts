@@ -1,3 +1,5 @@
+import { finitePositive } from '../utils/externalValue.js';
+import { DEFAULT_MAX_CONCURRENCY } from '../constants.js';
 /**
  * Minimal async counting semaphore — no external dependency.
  *
@@ -18,7 +20,17 @@ export class Semaphore {
 
   constructor(permits: number) {
     // Always allow at least one in-flight call; a zero/negative limit would deadlock.
-    this.available = Math.max(1, Math.floor(permits));
+    //
+    // NaN was the third value, and it produced EXACTLY the deadlock this comment names.
+    // `Math.max(1, Math.floor(NaN))` is NaN, `acquire()`'s `NaN > 0` is false, so every
+    // caller queues forever. Measured: availablePermits NaN, run() never settles, pending 1.
+    // Not a rejection — a HANG: no error, no timeout, no diagnostic, the process never
+    // exits. Reachable from outside, since AIProvider and ResolvedConfig are both exported
+    // and `new Semaphore(config.maxConcurrency)` reads a public field.
+    //
+    // The guard covered the two values someone thought of and missed the one that had the
+    // worst failure mode, which is this release's whole subject.
+    this.available = Math.max(1, Math.floor(finitePositive(permits) ?? DEFAULT_MAX_CONCURRENCY));
   }
 
   /** Number of permits not currently held. Primarily for tests/diagnostics. */

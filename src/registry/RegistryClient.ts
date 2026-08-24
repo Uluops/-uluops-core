@@ -57,6 +57,8 @@ export class RegistryClient {
     this.sdk = new RegistrySdk({
       apiKey: config.apiKey,
       baseUrl: config.registryUrl,
+      // EXTERNAL-OK: an HTTP/SDK timeout handed straight to a client that validates its own options; it reaches
+    // no arithmetic and no threshold in this package.
       timeout: config.timeout,
       onSecurityEvent: config.onSecurityEvent,
     });

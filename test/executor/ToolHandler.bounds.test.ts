@@ -130,3 +130,54 @@ describe('ToolHandler — model-supplied bounds are clamped on both sides', () =
     }
   });
 });
+
+/**
+ * A line range that cannot exist is an ERROR, not an empty read.
+ *
+ * POSITIVE CONTROL: remove the `start > totalLines || start > end` guard and both tests
+ * fail — the read returns a coherent-looking header over an empty body with
+ * `is_error: undefined`.
+ *
+ * `externalLineNumber` rejects NaN, negatives and fractions, but two perfectly valid
+ * positive integers can still name a range the file does not have. Measured on a 5-line
+ * file, both silently:
+ *
+ *   start=100, end=200  ->  "[Lines 100-5 of 5]"   empty body
+ *   start=3,   end=2    ->  "[Lines 3-2 of 5]"     descending range
+ *
+ * The value was validated; the RELATIONSHIP between two values was not. This reproduction
+ * was cited as fixed in the comment on the dispatch site, which made it this release's own
+ * pattern occurring inside the fix that names that pattern.
+ */
+describe('ToolHandler — an impossible line range is reported, not silently emptied', () => {
+  const fiveLineFile = async () => {
+    const dir = await mkdtemp(join(tmpdir(), 'range-'));
+    await writeFile(join(dir, 'five.txt'), 'a\nb\nc\nd\ne');
+    return new ToolHandler(dir);
+  };
+
+  it.each([[100, 200], [3, 2], [9, 9]])(
+    'errors on start=%s end=%s instead of returning an empty read', async (s, e) => {
+      const handler = await fiveLineFile();
+      const res = await handler.fulfill({
+        id: 'r1', name: 'read_file', input: { path: 'five.txt', start_line: s, end_line: e },
+      } as never);
+
+      expect(res.is_error).toBe(true);
+      expect(String(res.content)).toMatch(/outside/);
+      // The specific lie: a header describing lines that were never read.
+      expect(String(res.content)).not.toMatch(/\[Lines/);
+    });
+
+  it('a VALID range still reads normally — the negative control', async () => {
+    // Without this, "rejects impossible ranges" would pass for a read_file that rejected
+    // every range, removing the feature.
+    const handler = await fiveLineFile();
+    const res = await handler.fulfill({
+      id: 'r2', name: 'read_file', input: { path: 'five.txt', start_line: 2, end_line: 4 },
+    } as never);
+
+    expect(res.is_error).toBeFalsy();
+    expect(String(res.content)).toContain('[Lines 2-4 of 5]');
+  });
+});

@@ -93,6 +93,24 @@ const CHANNELS = [
     re: /\bthis\.ops\.\w+\.\w+\s*\(|\bthis\.registry\.\w+\s*\(|\bthis\.sdk\.\w+\.\w+\s*\(/,
   },
   {
+    id: 'ai-sdk-response',
+    what: 'an AI-SDK provider response — SDK-typed, arrives with NO parse call',
+    // The blindness that mattered most: AIProvider.ts is 1,757 lines and the ORIGIN of this
+    // entire defect class, and it contributed 1 of 75 census entries because none of its
+    // provider reads matched any rule. `generateText()`, `step.usage`, `result.totalUsage`
+    // and `result.providerMetadata` all cross the boundary with nothing to parse.
+    re: /\bgenerateText\s*\(|\bresult\s*\.\s*(totalUsage|usage|providerMetadata|warnings|steps|finishReason)\b|\bstep\s*\.\s*(usage|providerMetadata|warnings|toolCalls)\b|\blastStep\s*\.\s*usage\b/,
+  },
+  {
+    id: 'public-api-arg',
+    what: 'an argument from a library CONSUMER (public constructor or exported entry point)',
+    // This channel is listed in src/utils/externalValue.ts's own provenance header as #6 and
+    // was absent from this instrument — the seam and the guard, written in one sitting,
+    // disagreed about what the surface is. Both of pass 7's new criticals (Semaphore(NaN),
+    // TokenBudgetTracker.update(NaN)) live in the channel that was dropped.
+    re: /\bconstructor\s*\([^)]*\b(?:permits|budget|maxConcurrency|timeout|limit|max[A-Z]\w*)\b|\bconfig\s*\.\s*(?:maxConcurrency|timeout|maxRetries|contextBudget|defaultThinkingBudget)\b|\boptions\s*\?\.\s*(?:maxTokens|timeoutMs|temperature|maxSteps|maxRetries)\b/,
+  },
+  {
     id: 'dynamic-import',
     what: 'a module named by consumer config and then executed',
     re: /\bawait\s+import\s*\(/,
@@ -151,6 +169,10 @@ function scan(files) {
       const t = line.trimStart();
       if (t.startsWith('//') || t.startsWith('*') || t.startsWith('/*')) continue;
 
+      // Record EVERY matching channel. Breaking after the first made attribution
+      // order-dependent: `Number(process.env['X'])` counted as string-to-number and silently
+      // decremented process-env, so a cosmetic rewrite could move counts between channels and
+      // either mask or fabricate drift.
       for (const ch of CHANNELS) {
         if (!ch.re.test(line)) continue;
         hits.push({
@@ -159,11 +181,15 @@ function scan(files) {
           channel: ch.id,
           what: ch.what,
           text: line.trim(),
+          // A per-SITE fingerprint, not a count. Line numbers are excluded deliberately so
+          // that inserting a comment does not look like surface change, and whitespace is
+          // normalized for the same reason. What identifies a site is WHERE it is and WHAT
+          // it does, not where it sits in the file.
+          fingerprint: `${relative(ROOT, file)}|${ch.id}|${line.trim().replace(/\s+/g, ' ')}`,
           numeric: NUMERIC_CONTEXT.test(line),
           guarded: SEAMS.test(line),
           waived: waived(lines, i),
         });
-        break;
       }
     }
   }
@@ -183,10 +209,20 @@ if (process.argv.includes('--control')) {
     "export const h = async (n: string) => await import(`@ai-sdk/${n}`);",
     // A numeric-context probe per the inventory half: this MUST be reported, not merely counted.
     "export const i = (input: Record<string, number>) => input['max_depth'] ?? 0;",
+    // ai-sdk-response: SDK-typed, no parse call anywhere on the line.
+    "export const j = (result: any) => result.totalUsage;",
+    // public-api-arg: a library consumer's value crossing into the package.
+    "export class K { constructor(permits: number) { this.n = permits; } n = 0; }",
   ];
-  writeFileSync(probe, planted.join('\n'));
-  const hits = scan([probe]).filter(h => h.file.includes('__external_control__'));
-  unlinkSync(probe);
+  let hits;
+  try {
+    writeFileSync(probe, planted.join('\n'));
+    hits = scan([probe]).filter(h => h.file.includes('__external_control__'));
+  } finally {
+    // finally, not a bare call: a throw in scan() used to leave src/__external_control__.ts
+    // behind, which breaks tsc for everyone until someone notices.
+    if (existsSync(probe)) unlinkSync(probe);
+  }
 
   const fired = new Set(hits.map(h => h.channel));
   const missing = CHANNELS.map(c => c.id).filter(id => !fired.has(id));
@@ -208,19 +244,53 @@ if (process.argv.includes('--control')) {
     console.error('The census would still count it, but the half that demands action would be inert.');
     process.exit(1);
   }
+  // ── DRIFT CONTROL — the half that claims to find unknown-unknowns ────────────────────
+  //
+  // This did not exist. The control block returned BEFORE the census code was ever reached,
+  // so the only half claiming discovery had no positive control at all — this repo's own
+  // "a check that cannot fail proves nothing" doctrine, violated inside the tool written to
+  // enforce it. The net-zero case is planted specifically because it is the one that
+  // defeated the previous count-based implementation.
+  if (existsSync(CENSUS)) {
+    const base = JSON.parse(readFileSync(CENSUS, 'utf8'));
+    const real = new Set(base.fingerprints ?? []);
+    if (real.size === 0) {
+      console.error('CONTROL FAILED — baseline carries no fingerprints; drift cannot fire.');
+      process.exit(1);
+    }
+    // Simulate a REFACTOR: remove one real site, add one new one. Counts net to zero.
+    const simulated = new Set(real);
+    const dropped = [...real][0];
+    simulated.delete(dropped);
+    simulated.add('src/__probe__.ts|model-tool-args|const v = input[\'pad\'];');
+
+    const added = [...simulated].filter(f => !real.has(f));
+    const removed = [...real].filter(f => !simulated.has(f));
+    if (added.length !== 1 || removed.length !== 1) {
+      console.error('CONTROL FAILED — a net-zero refactor did not register as drift.');
+      console.error('That is the exact case a per-channel COUNT baseline could not see.');
+      process.exit(1);
+    }
+    console.log('CONTROL: net-zero refactor (1 site moved) correctly registered as +1/-1 drift.');
+  } else {
+    console.error('CONTROL FAILED — no baseline, so the drift half could not be exercised.');
+    process.exit(1);
+  }
+
   console.log(`CONTROL PASSED — all ${planted.length} planted lines caught; every channel fires; `
-    + `inventory reported ${numericHits.length} numeric-context site(s).`);
+    + `inventory reported ${numericHits.length} numeric-context site(s); drift half exercised.`);
   process.exit(0);
 }
 
 const hits = scan(walk(SRC));
 const counts = {};
 for (const h of hits) counts[h.channel] = (counts[h.channel] ?? 0) + 1;
+const fingerprints = [...new Set(hits.map(h => h.fingerprint))].sort();
 
 // ── (2) CENSUS DRIFT — the half that can discover ────────────────────────────────────────
 if (process.argv.includes('--update')) {
-  writeFileSync(CENSUS, `${JSON.stringify({ counts, updated: 'run --update to refresh' }, null, 2)}\n`);
-  console.log('Census baseline written:');
+  writeFileSync(CENSUS, `${JSON.stringify({ counts, fingerprints }, null, 2)}\n`);
+  console.log(`Census baseline written: ${fingerprints.length} sites across ${Object.keys(counts).length} channels`);
   for (const [k, v] of Object.entries(counts)) console.log(`  ${k.padEnd(20)} ${v}`);
   process.exit(0);
 }
@@ -237,20 +307,32 @@ if (!existsSync(CENSUS)) {
   failed = true;
 } else {
   censusChecked = true;
-  const baseline = JSON.parse(readFileSync(CENSUS, 'utf8')).counts ?? {};
-  const channels = new Set([...Object.keys(baseline), ...Object.keys(counts)]);
-  const drift = [...channels]
-    .map(c => ({ c, was: baseline[c] ?? 0, now: counts[c] ?? 0 }))
-    .filter(d => d.was !== d.now);
+  const baseline = JSON.parse(readFileSync(CENSUS, 'utf8'));
+  const was = new Set(baseline.fingerprints ?? []);
+  const now = new Set(fingerprints);
 
-  if (drift.length) {
+  // PER-SITE, not per-channel counts. A scalar count cannot see a MOVE, and a refactor —
+  // exactly when new entry points appear — is when sites move. Demonstrated: folding one
+  // existing `input['...']` behind a helper while adding a new unguarded one netted to zero
+  // and the gate reported "surface unchanged; none unguarded", exit 0, with a fresh
+  // unguarded entry point in the tree.
+  const added = [...now].filter(f => !was.has(f));
+  const removed = [...was].filter(f => !now.has(f));
+
+  if (added.length || removed.length) {
     failed = true;
     console.log('EXTERNAL-INPUT SURFACE CHANGED\n');
-    for (const d of drift) {
-      console.log(`  ${d.c.padEnd(20)} ${d.was} -> ${d.now}   ${d.now > d.was ? '(NEW entry points)' : '(entry points removed)'}`);
+    for (const f of added) {
+      const [file, channel, text] = f.split('|');
+      console.log(`  + ${file}  [${channel}]`);
+      console.log(`      ${text.length > 100 ? `${text.slice(0, 100)}…` : text}`);
     }
-    console.log('\nThe surface moving is how every one of the six audit passes began. Decide:');
-    console.log('  - route the new site(s) through a seam in src/utils/externalValue.ts, or');
+    for (const f of removed) {
+      const [file, channel] = f.split('|');
+      console.log(`  - ${file}  [${channel}]  (removed)`);
+    }
+    console.log('\nThe surface moving is how every one of the seven audit passes began. Decide:');
+    console.log('  - route new site(s) through a seam in src/utils/externalValue.ts, or');
     console.log('  - waive with `// EXTERNAL-OK: <reason>`, then');
     console.log('  - run with --update to accept the new baseline.\n');
   }

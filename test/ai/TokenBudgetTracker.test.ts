@@ -189,3 +189,49 @@ describe('TokenBudgetTracker — a malformed budget cannot silently disable the 
     expect(tracker.getStatus().usedTotal).toBe(50_000);
   });
 });
+
+/**
+ * `update()` is a PUBLIC method on a root-exported class, and it was the constructor's
+ * defect one method over.
+ *
+ * POSITIVE CONTROL: remove the `finiteNonNegative` guards from `update()` and these fail.
+ *
+ * Measured before the fix: `update(NaN, 10)` made usedTotal / remaining / percentUsed all
+ * NaN — serializing to `null` — and `isOverThreshold` permanently false, so the brake was
+ * unreachable and `markBrakeInert()` was never called, meaning NO marker. That is the
+ * constructor's own documented failure mode, verbatim, on the adjacent entry point.
+ *
+ * It is not merely telemetry: `ToolAdapter` returns `getStatus()` to the MODEL as
+ * `get_token_budget`, so the model would read `usedTotal: null` as a measurement.
+ */
+describe('TokenBudgetTracker.update — a malformed step cannot blind the guards', () => {
+  it.each([[NaN], [Infinity], [-500]])('ignores a step reporting %s input tokens', (bad) => {
+    const t = new TokenBudgetTracker(100_000);
+    t.update(50_000, 1_000);          // a real measurement
+    t.update(bad as number, 10);      // a malformed one
+
+    // The last REAL measurement must stand — a step reporting nothing usable says nothing
+    // about the window, and overwriting it with a fabricated value is the defect.
+    expect(t.getStatus().usedTotal).toBe(50_000);
+    expect(Number.isFinite(t.getStatus().percentUsed)).toBe(true);
+    expect(Number.isNaN(t.getStatus().remaining)).toBe(false);
+    // And what the MODEL is handed stays a measurement, not null.
+    expect(JSON.stringify(t.getStatus())).not.toContain('null');
+  });
+
+  it('the threshold guard still fires after a malformed step', () => {
+    // The consequence that mattered: NaN made isOverThreshold permanently false, so the
+    // brake could never engage and markBrakeInert() was never reached — silent inertness.
+    const t = new TokenBudgetTracker(100_000);
+    t.update(90_000, 1_000);
+    t.update(NaN, 1_000);
+    expect(t.isOverThreshold(0.8)).toBe(true);
+  });
+
+  it('a genuine ZERO input step is still recorded — the negative control', () => {
+    const t = new TokenBudgetTracker(100_000);
+    t.update(50_000, 1_000);
+    t.update(0, 10);
+    expect(t.getStatus().usedTotal).toBe(0);
+  });
+});

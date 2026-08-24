@@ -55,6 +55,7 @@ export class TokenBudgetTracker {
    * telemetry object, and failing a whole run because a cost ceiling was malformed trades a
    * reporting fault for an execution fault. The warning is how it stops being silent.
    */
+  // EXTERNAL-OK: the constructor IS the seam for this channel — finiteNonNegative runs on the next line.
   constructor(budget: number, logger?: Logger) {
     // finiteNonNegative, NOT usableBudget — the distinction is load-bearing and tested.
     //
@@ -146,6 +147,25 @@ export class TokenBudgetTracker {
    * @param outputTokens - Output tokens for this step; **accumulated** across steps.
    */
   update(inputTokens: number, outputTokens: number): void {
+    // Validated HERE, not only in the constructor. This is a PUBLIC method on a
+    // root-exported class taking raw numbers, and it is the constructor's defect one method
+    // over: measured, `update(NaN, 10)` made usedTotal/remaining/percentUsed all NaN
+    // (serializing to null) and `isOverThreshold` permanently false — so the brake became
+    // unreachable and `markBrakeInert()` was never called, meaning NO marker. That is the
+    // constructor's own documented failure mode, verbatim, on the adjacent entry point.
+    //
+    // It is also not merely telemetry: ToolAdapter returns `getStatus()` to the MODEL as
+    // `get_token_budget`, so the model would read `usedTotal: null` as a measurement.
+    //
+    // Unusable values are DROPPED rather than coerced: a step that reports no usable count
+    // says nothing about the window, and overwriting the last real measurement with a
+    // fabricated one is the defect, not the fix.
+    const usableInput = finiteNonNegative(inputTokens);
+    const usableOutput = finiteNonNegative(outputTokens);
+    if (usableInput === undefined) return;
+    inputTokens = usableInput;
+    outputTokens = usableOutput ?? 0;
+
     // A conversation only grows; a real step-over-step shrink means content was
     // removed from the window (provider-side context eviction). Detect it here
     // rather than in the provider because inputTokens is the only signal the AI
@@ -183,8 +203,13 @@ export class TokenBudgetTracker {
   } {
     const usedTotal = this.currentContextTokens;
     const remaining = Math.max(0, this.budget - usedTotal);
-    // FABRICATION-OK: division guard. A zero budget cannot yield a percentage; 0 is the only
-    // non-NaN answer and deriveContextBudget now rejects a zero budget upstream anyway.
+    // FABRICATION-OK: division guard. A zero budget cannot yield a percentage and 0 is the
+    // only non-NaN answer.
+    //
+    // The previous reason added "and deriveContextBudget rejects a zero budget upstream",
+    // which is FALSE of this class: the constructor deliberately PRESERVES a budget of 0 as
+    // a tested contract meaning "no budget". The guard was right and its justification cited
+    // a rejection this class goes out of its way not to perform.
     const percentUsed = this.budget > 0 ? Math.round((usedTotal / this.budget) * 100) : 0;
 
     return {
@@ -201,8 +226,15 @@ export class TokenBudgetTracker {
    * Check if context window usage has exceeded a threshold percentage.
    */
   isOverThreshold(threshold: number): boolean {
-    // FABRICATION-OK: a non-positive budget has no threshold to be over; returning false is the
-    // safe answer and deriveContextBudget rejects such budgets upstream.
+    // FABRICATION-OK: a non-positive budget has no threshold to be over, so false is the
+    // only meaningful answer.
+    //
+    // NOT because "deriveContextBudget rejects such budgets upstream" — that was the old
+    // reason and it is false of a class that deliberately supports budget 0. Note the real
+    // consequence, which the old reason obscured: with budget 0 this returns false forever,
+    // so the brake never engages and `markBrakeInert()` is never called. A caller who
+    // passes 0 gets a silently inert budget with no marker. That is a genuine gap in the
+    // "nothing degrades silently" invariant and is recorded here rather than papered over.
     return this.budget > 0 && this.currentContextTokens >= this.budget * threshold;
   }
 }

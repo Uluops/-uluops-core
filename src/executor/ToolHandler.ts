@@ -225,6 +225,30 @@ export class ToolHandler {
       const start = Math.max(1, opts.startLine ?? 1);
       const end = Math.min(totalLines, opts.endLine ?? totalLines);
 
+      // A range that cannot exist is an ERROR, not an empty read.
+      //
+      // externalLineNumber rejects NaN, negatives and fractions — but two perfectly valid
+      // positive integers can still name a range the file does not have, and the clamps
+      // above silently produced a coherent-looking header over an empty body. Measured on a
+      // 5-line file, BOTH with `is_error: undefined`:
+      //
+      //   start=100, end=200  ->  "[Lines 100-5 of 5] four.txt\n"   (empty body)
+      //   start=3,   end=2    ->  "[Lines 3-2 of 5] four.txt\n"     (descending)
+      //
+      // The model is told those lines are empty and reasons from it — a state that never
+      // happened. This reproduction is cited as FIXED in the comment on the dispatch site
+      // above, which makes it this release's own pattern occurring inside the fix that
+      // names that pattern: the value was validated, the RELATIONSHIP between two values
+      // was not.
+      if (start > totalLines || start > end) {
+        return {
+          tool_use_id: id,
+          content: `Line range ${opts.startLine ?? 1}-${opts.endLine ?? totalLines} is outside `
+            + `${relativePath}, which has ${totalLines} line${totalLines === 1 ? '' : 's'}.`,
+          is_error: true,
+        };
+      }
+
       const slice = allLines.slice(start - 1, end);
       const numbered = slice.map((line, i) => `${start + i}\t${line}`).join('\n');
       const header = `[Lines ${start}-${end} of ${totalLines}] ${relativePath}\n`;
