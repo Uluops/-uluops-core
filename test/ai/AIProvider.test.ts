@@ -1459,6 +1459,36 @@ describe('computeCostUsd (spec v0.6.0 Phase 1b — unit criterion 1b.5)', () => 
     expect(usd!).toBeLessThan(preFix);
   });
 
+  it('prices cached_input_tokens when the provider reported no inputTokenDetails', () => {
+    // The legacy-metadata fallback path (unknown provider via ai.additionalProviders):
+    // mapUsage removes the cached portion from input_tokens but records it as
+    // cached_input_tokens, NOT cache_read_input_tokens. Pricing only cache_read made
+    // those tokens free — subtracted from input, charged nowhere. Reproduced live at
+    // $0.330 vs the correct $0.342 on a 100k/40k split.
+    const usd = compute(
+      { input_tokens: 60_000, output_tokens: 10_000, cached_input_tokens: 40_000 },
+      sonnet,
+    );
+    expect(usd).toBeCloseTo((60_000 * 3 + 40_000 * 0.3 + 10_000 * 15) / 1e6, 10);
+    // Must be strictly greater than the buggy value that ignored the cached pool.
+    expect(usd!).toBeGreaterThan((60_000 * 3 + 10_000 * 15) / 1e6);
+  });
+
+  it('does not double-charge when BOTH cache_read and cached_input are present', () => {
+    // The v6 details path can populate both (Google sets cache_read from details and
+    // cached_input from metadata, to the same number). Exactly one must be priced.
+    const usd = compute(
+      {
+        input_tokens: 60_000,
+        output_tokens: 10_000,
+        cache_read_input_tokens: 40_000,
+        cached_input_tokens: 40_000,
+      },
+      sonnet,
+    );
+    expect(usd).toBeCloseTo((60_000 * 3 + 40_000 * 0.3 + 10_000 * 15) / 1e6, 10);
+  });
+
   it('returns undefined — never 0 — when the model carries no pricing', () => {
     expect(compute({ input_tokens: 1_000_000, output_tokens: 100_000 }, undefined)).toBeUndefined();
     expect(compute({ input_tokens: 1_000_000, output_tokens: 100_000 }, null)).toBeUndefined();

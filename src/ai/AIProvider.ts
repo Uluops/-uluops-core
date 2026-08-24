@@ -12,26 +12,6 @@ import {
 import type { LanguageModelUsage } from 'ai';
 import type { ProviderOptions } from '@ai-sdk/provider-utils';
 
-/**
- * What `mapUsage` accepts — DERIVED from the AI SDK's own `LanguageModelUsage`
- * rather than hand-copying its field names.
- *
- * That derivation is the point. The defect this whole module was corrected for was
- * core reading a v5-shaped `usage` under v6, and a hand-written structural type gives
- * the compiler nothing to check: if the SDK renames `noCacheTokens` again, a duck type
- * keeps compiling, `usage.inputTokenDetails?.noCacheTokens` silently reads `undefined`,
- * the normalization falls back to the pre-fix subtraction, and the cache-inclusive
- * inflation returns with no signal. Deriving from the real type makes that rename a
- * BUILD failure instead of a silent numeric regression.
- *
- * The two detail objects are widened to optional on purpose: the SDK declares them
- * required, but this method is also called internally with a minimal
- * `{ inputTokens, outputTokens }` on error-fallback paths where no usage was reported.
- * That is a deliberate, narrow widening of a real type — not a re-declaration of it.
- */
-type MappableUsage =
-  Pick<LanguageModelUsage, 'inputTokens' | 'outputTokens'>
-  & Partial<Pick<LanguageModelUsage, 'inputTokenDetails' | 'outputTokenDetails'>>;
 import { createAnthropic, type AnthropicProvider } from '@ai-sdk/anthropic';
 import { createOpenAI, type OpenAIProvider } from '@ai-sdk/openai';
 import { createGoogleGenerativeAI } from '@ai-sdk/google';
@@ -54,6 +34,27 @@ import {
 } from '../errors/index.js';
 import type { ModelCapabilities } from '@uluops/registry-sdk';
 import type { Logger } from '@uluops/sdk-core';
+
+/**
+ * What `mapUsage` accepts — DERIVED from the AI SDK's own `LanguageModelUsage`
+ * rather than hand-copying its field names.
+ *
+ * That derivation is the point. The defect this whole module was corrected for was
+ * core reading a v5-shaped `usage` under v6, and a hand-written structural type gives
+ * the compiler nothing to check: if the SDK renames `noCacheTokens` again, a duck type
+ * keeps compiling, `usage.inputTokenDetails?.noCacheTokens` silently reads `undefined`,
+ * the normalization falls back to the pre-fix subtraction, and the cache-inclusive
+ * inflation returns with no signal. Deriving from the real type makes that rename a
+ * BUILD failure instead of a silent numeric regression.
+ *
+ * The two detail objects are widened to optional on purpose: the SDK declares them
+ * required, but this method is also called internally with a minimal
+ * `{ inputTokens, outputTokens }` on error-fallback paths where no usage was reported.
+ * That is a deliberate, narrow widening of a real type — not a re-declaration of it.
+ */
+type MappableUsage =
+  Pick<LanguageModelUsage, 'inputTokens' | 'outputTokens'>
+  & Partial<Pick<LanguageModelUsage, 'inputTokenDetails' | 'outputTokenDetails'>>;
 
 /**
  * Result from AI provider generation
@@ -391,27 +392,25 @@ export class AIProvider {
    * Compute estimated USD cost from usage and the resolved model's registry
    * pricing (USD per MILLION tokens; live-pinned sonnet 3/15 — hence /1e6).
    *
-   * Pricing rule: `usage.input_tokens` arrives CACHE-EXCLUSIVE (mapUsage normalizes
-   * it), so it is priced directly at the full input rate with NO cached subtraction —
-   * subtracting here would undercharge. The cache-served and cache-written portions
-   * are priced separately, each falling back to the full input rate when the model
-   * declares no dedicated cache rate (a documented conservative overstatement, never
-   * an undercount). `cached_input_tokens` does NOT participate — it is a recorded
-   * component only, since v6 routes every provider's cached input through
-   * `cache_read_input_tokens`.
-   *
-   * This docblock previously described the pre-v6 algorithm (subtract cached_input
-   * from gross input) and contradicted the implementation three lines below it.
+   * Pricing contract: `usage.input_tokens` arrives CACHE-EXCLUSIVE (mapUsage
+   * normalizes it), each cache pool is priced exactly once at its own rate, and a
+   * model with no dedicated cache rate falls back to the full input rate — a
+   * conservative overstatement, never an undercount. Implementation notes inline.
    */
   private computeCostUsd(usage: UsageMetrics, cost: ResolvedModel['cost']): number | undefined {
     if (!cost) return undefined;
-    // input_tokens is cache-exclusive (see mapUsage), so it is priced directly at the
-    // full input rate with NO cached subtraction — subtracting here would undercharge.
-    // The cache-served and cache-written portions are priced separately below, each
-    // falling back to the full input rate when the model has no dedicated cache rate
-    // (a documented conservative overstatement, never an undercount).
     let usd = usage.input_tokens * cost.input + usage.output_tokens * cost.output;
-    usd += (usage.cache_read_input_tokens ?? 0) * (cost.cacheRead ?? cost.input);
+
+    // The cache-SERVED portion reaches us under one of two names, never both meaning
+    // different things: `cache_read_input_tokens` on the v6 details path, or
+    // `cached_input_tokens` on the legacy-metadata fallback that runs when a provider
+    // reports no inputTokenDetails (unknown providers via `ai.additionalProviders`).
+    // Pricing only the former made the latter FREE — mapUsage removes those tokens from
+    // input_tokens, so if nothing charges them here, nothing charges them at all.
+    // Prefer cache_read (0 is a real value, not a miss) and fall back to cached_input,
+    // so exactly one of the two is priced and neither is double-counted.
+    const cacheServed = usage.cache_read_input_tokens ?? usage.cached_input_tokens ?? 0;
+    usd += cacheServed * (cost.cacheRead ?? cost.input);
     usd += (usage.cache_creation_input_tokens ?? 0) * (cost.cacheWrite ?? cost.input);
     return usd / 1e6;
   }
@@ -1257,6 +1256,10 @@ export class AIProvider {
       if (last !== undefined && last !== error) {
         const mapped = this.mapError(last, timeoutMs, resolved);
         mapped.message = `${detail}: ${mapped.message}`;
+        // `cause` is the RetryError wrapper, NOT the unwrapped attempt — deliberate.
+        // The message already carries the underlying failure; the wrapper is what
+        // retains the attempt list and reason, which is the more useful context to
+        // keep reachable from the thrown error.
         mapped.cause = cause;
         return mapped;
       }
