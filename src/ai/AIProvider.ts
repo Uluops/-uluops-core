@@ -57,6 +57,66 @@ type MappableUsage =
   & Partial<Pick<LanguageModelUsage, 'inputTokenDetails' | 'outputTokenDetails'>>;
 
 /**
+ * Per-step totals accumulated during the tool loop.
+ *
+ * Exists because the ERROR paths cannot reach `result.totalUsage`: when the SDK throws
+ * NoObjectGeneratedError, the result object never materializes, and the error carries
+ * only `lastStep.usage`. Reporting that as the run total understated a real 7-step run
+ * by 96% ($0.00987 against $0.2556) and zeroed steps/toolCalls. The SDK computes
+ * `totalUsage` by summing per-step usage, so summing the same values here reproduces it
+ * on the path where the result is gone.
+ */
+interface StepTotals {
+  steps: number;
+  toolCalls: number;
+  inputTokens: number;
+  outputTokens: number;
+  noCacheTokens: number;
+  cacheReadTokens: number;
+  cacheWriteTokens: number;
+  reasoningTokens: number;
+  sawUsage: boolean;
+}
+
+/**
+ * Coerce a provider-reported token count to a finite, non-negative number.
+ * Absent, NaN, Infinity and negative values all collapse to 0 — a wrong-but-bounded
+ * figure that cannot poison arithmetic downstream, in preference to propagating a
+ * value that silently nulls an entire pipeline's cost.
+ */
+function safeTokenCount(n: number | undefined): number {
+  return typeof n === 'number' && Number.isFinite(n) && n > 0 ? n : 0;
+}
+
+/** As safeTokenCount, but preserves "the provider did not report this" as undefined. */
+function optionalTokenCount(n: number | undefined): number | undefined {
+  if (n === undefined) return undefined;
+  return safeTokenCount(n);
+}
+
+function emptyStepTotals(): StepTotals {
+  return {
+    steps: 0, toolCalls: 0, inputTokens: 0, outputTokens: 0,
+    noCacheTokens: 0, cacheReadTokens: 0, cacheWriteTokens: 0,
+    reasoningTokens: 0, sawUsage: false,
+  };
+}
+
+/** StepTotals -> the shape mapUsage consumes. Only meaningful when sawUsage is true. */
+function stepTotalsToUsage(t: StepTotals): MappableUsage {
+  return {
+    inputTokens: t.inputTokens,
+    outputTokens: t.outputTokens,
+    inputTokenDetails: {
+      noCacheTokens: t.noCacheTokens,
+      cacheReadTokens: t.cacheReadTokens,
+      cacheWriteTokens: t.cacheWriteTokens,
+    },
+    outputTokenDetails: { textTokens: undefined, reasoningTokens: t.reasoningTokens },
+  };
+}
+
+/**
  * Result from AI provider generation
  */
 export interface AIGenerateResult<TOutput = unknown> {
@@ -305,12 +365,17 @@ export class AIProvider {
     this.logPreGeneration(options, resolved, modelInput, useStructuredOutput);
 
     // 2. Execute LLM with tool loop
+    // The try covers ONLY the provider call. It previously spanned buildGenerateResult
+    // too, so any throw during result assembly was mistaken for a generation failure and
+    // returned as a zero-cost fallback — discarding usage that had genuinely been billed.
+    const stepTotals = emptyStepTotals();
+    let result;
     try {
-      const result = await this.executeGeneration(options, languageModel, system, providerOptions, useStructuredOutput, isReasoning);
-      return this.buildGenerateResult(result, resolved, useStructuredOutput);
+      result = await this.executeGeneration(options, languageModel, system, providerOptions, useStructuredOutput, isReasoning, stepTotals);
     } catch (error) {
-      return this.handleGenerateError(error, resolved, useStructuredOutput, options.timeoutMs);
+      return this.handleGenerateError(error, resolved, useStructuredOutput, options.timeoutMs, stepTotals);
     }
+    return this.buildGenerateResult(result, resolved, useStructuredOutput);
   }
 
   /**
@@ -347,6 +412,7 @@ export class AIProvider {
     providerOptions: ReturnType<typeof this.buildProviderOptions>,
     useStructuredOutput: boolean,
     isReasoning = false,
+    stepTotals: StepTotals = emptyStepTotals(),
   ) {
     let stepCount = 0;
     const budgetTracker = options.budgetTracker;
@@ -383,6 +449,18 @@ export class AIProvider {
         );
         if (budgetTracker) {
           budgetTracker.update(usage.inputTokens ?? 0, usage.outputTokens ?? 0);
+        }
+        // Accumulate real totals so an error path can still report them (see StepTotals).
+        stepTotals.steps += 1;
+        stepTotals.toolCalls += step.toolCalls?.length ?? 0;
+        if (usage) {
+          stepTotals.sawUsage = true;
+          stepTotals.inputTokens += usage.inputTokens ?? 0;
+          stepTotals.outputTokens += usage.outputTokens ?? 0;
+          stepTotals.noCacheTokens += usage.inputTokenDetails?.noCacheTokens ?? 0;
+          stepTotals.cacheReadTokens += usage.inputTokenDetails?.cacheReadTokens ?? 0;
+          stepTotals.cacheWriteTokens += usage.inputTokenDetails?.cacheWriteTokens ?? 0;
+          stepTotals.reasoningTokens += usage.outputTokenDetails?.reasoningTokens ?? 0;
         }
       },
     });
@@ -514,20 +592,25 @@ export class AIProvider {
   private buildFallbackResult(
     resolved: ResolvedModel,
     text: string,
-    rawUsage: MappableUsage,
+    stepTotals: StepTotals,
     finishReason: string,
   ): AIGenerateResult {
-    const usage = this.mapUsage(rawUsage);
+    // Usage comes from the accumulated per-step totals, NOT from the error's
+    // last-step snapshot, and steps/toolCalls report what actually ran. When no step
+    // ever reported usage there is nothing honest to price, so costUsd is left
+    // undefined (absent) rather than asserted as a real 0 — sumCostUsd propagates
+    // undefined as worst-child, which is the correct polarity for "unknown".
+    const usage = this.mapUsage(stepTotalsToUsage(stepTotals));
     return {
       text,
       structuredOutput: undefined,
       usage,
-      toolCallCount: 0,
+      toolCallCount: stepTotals.toolCalls,
       model: `${resolved.provider}:${resolved.modelId}`,
       provider: resolved.provider,
-      steps: 0,
+      steps: stepTotals.steps,
       finishReason,
-      costUsd: this.computeCostUsd(usage, resolved.cost),
+      costUsd: stepTotals.sawUsage ? this.computeCostUsd(usage, resolved.cost) : undefined,
     };
   }
 
@@ -536,6 +619,7 @@ export class AIProvider {
     resolved: ResolvedModel,
     useStructuredOutput: boolean,
     timeoutMs?: number,
+    stepTotals: StepTotals = emptyStepTotals(),
   ): AIGenerateResult {
     // NoOutputGeneratedError is a DISTINCT class from NoObjectGeneratedError — its own
     // symbol marker, so NoObjectGeneratedError.isInstance() returns false for it
@@ -546,17 +630,19 @@ export class AIProvider {
       this.logger.warn(
         'Structured output was requested but the model produced none (non-"stop" finish) — falling back to text extraction.',
       );
-      return this.buildFallbackResult(resolved, '', { inputTokens: 0, outputTokens: 0 }, 'error');
+      return this.buildFallbackResult(resolved, '', stepTotals, 'error');
     }
 
     if (useStructuredOutput && NoObjectGeneratedError.isInstance(error)) {
       this.logger.warn(
         `Structured output generation failed — falling back to text extraction: ${error.message}`,
       );
+      // NOTE: error.usage is deliberately NOT used — it is lastStep.usage, not the run
+      // total (ai/dist/index.js builds the error context from `{ usage: lastStep.usage }`).
       return this.buildFallbackResult(
         resolved,
         error.text ?? '',
-        error.usage ?? { inputTokens: 0, outputTokens: 0 },
+        stepTotals,
         error.finishReason ?? 'error',
       );
     }
@@ -1012,15 +1098,21 @@ export class AIProvider {
     //   google     total = promptTokenCount                  ; noCache = prompt − cached
     // Held as the raw flat total during extraction and normalized at the end of this
     // method, once the provider tiers have had a chance to report a cached portion.
+    // Provider payloads are EXTERNAL data. `?? 0` reads like a numeric guarantee and is
+    // not one: it passes NaN and Infinity straight through, and negative values arise
+    // naturally because OpenAI/Google compute noCache as `prompt − cached` with
+    // independently-defaulted operands. A NaN here becomes a NaN cost, which JSON
+    // serializes to null and which sumCostUsd's `=== undefined` guard does not stop —
+    // one malformed agent would blank an entire pipeline's recorded spend.
     const base: UsageMetrics = {
-      input_tokens: usage.inputTokens ?? 0,
-      output_tokens: usage.outputTokens ?? 0,
+      input_tokens: safeTokenCount(usage.inputTokens),
+      output_tokens: safeTokenCount(usage.outputTokens),
     };
 
     // 1. AI SDK standard path (works for both providers)
     if (usage.inputTokenDetails) {
-      base.cache_read_input_tokens = usage.inputTokenDetails.cacheReadTokens ?? undefined;
-      base.cache_creation_input_tokens = usage.inputTokenDetails.cacheWriteTokens ?? undefined;
+      base.cache_read_input_tokens = optionalTokenCount(usage.inputTokenDetails.cacheReadTokens);
+      base.cache_creation_input_tokens = optionalTokenCount(usage.inputTokenDetails.cacheWriteTokens);
     }
 
     // 1b. Internal reasoning tokens, from the UNIFIED v6 field. Both providers that
@@ -1056,8 +1148,20 @@ export class AIProvider {
     // Preferred source is the SDK's own `noCacheTokens`, which is exact and uniform.
     // Otherwise fall back to subtracting the cached portion a provider tier reported,
     // which is what an unknown provider with no token details still gives us.
-    base.input_tokens = usage.inputTokenDetails?.noCacheTokens
-      ?? Math.max(0, base.input_tokens - (base.cached_input_tokens ?? 0));
+    // Both branches clamp. The legacy branch subtracts EVERY cache pool, not just
+    // cached_input: anthropic-shaped metadata without inputTokenDetails populates
+    // cache_read/cache_creation instead, and subtracting only cached_input left
+    // input_tokens cache-INCLUSIVE — the pool was then charged again at its own rate
+    // (measured $0.0334692 against a true $0.0037572).
+    base.input_tokens = usage.inputTokenDetails?.noCacheTokens !== undefined
+      ? safeTokenCount(usage.inputTokenDetails.noCacheTokens)
+      : Math.max(0, base.input_tokens
+        // cache_read and cached_input are two NAMES for the one cache-served pool, so
+        // exactly one is subtracted — the same `??` rule computeCostUsd prices by.
+        // Summing them would double-subtract when both are populated from different
+        // sources, which is as wrong in the other direction.
+        - (base.cache_read_input_tokens ?? base.cached_input_tokens ?? 0)
+        - (base.cache_creation_input_tokens ?? 0));
 
     return base;
   }

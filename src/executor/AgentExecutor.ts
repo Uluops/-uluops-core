@@ -802,8 +802,11 @@ export class AgentExecutor {
     //   already folded INTO output_tokens by the AI SDK — adding either double-counts
     //   (verified live, gemini-3-flash-preview: outputTokens includes thoughtsTokenCount).
     //   Both stay recorded components on ExecutionMetrics; neither is re-added here.
-    return usage.input_tokens
-      + usage.output_tokens
-      + (usage.cache_creation_input_tokens ?? 0);
+    // Clamped. mapUsage guards its inputs, but this is the last arithmetic before the
+    // number is persisted, and a negative effective total would SUBTRACT from a
+    // pipeline roll-up rather than merely misreport one agent.
+    return Math.max(0, usage.input_tokens)
+      + Math.max(0, usage.output_tokens)
+      + Math.max(0, usage.cache_creation_input_tokens ?? 0);
   }
 }

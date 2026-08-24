@@ -25,7 +25,11 @@ export function sumCostUsd(
 ): number | undefined {
   let total = 0;
   for (const m of items) {
-    if (m.costUsd === undefined) return undefined;
+    // Non-finite is as unknowable as absent. A NaN child passed the old
+    // `=== undefined` check and turned the whole sum into NaN, which JSON-serializes
+    // to null — indistinguishable downstream from a legitimately unpriced model, and
+    // the exact polarity this function exists to preserve.
+    if (m.costUsd === undefined || !Number.isFinite(m.costUsd)) return undefined;
     total += m.costUsd;
   }
   return items.length > 0 ? total : undefined;

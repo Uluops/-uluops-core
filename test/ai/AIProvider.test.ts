@@ -4,7 +4,7 @@ import { TokenBudgetTracker } from '../../src/ai/TokenBudgetTracker.js';
 import type { ModelCatalog, ResolvedModel } from '../../src/ai/ModelCatalog.js';
 import type { ResolvedConfig } from '../../src/types/config.js';
 import type { Logger } from '@uluops/sdk-core';
-import { APICallError, RetryError, NoOutputGeneratedError } from 'ai';
+import { APICallError, RetryError, NoOutputGeneratedError, NoObjectGeneratedError } from 'ai';
 import {
   RateLimitError,
   UnauthorizedError,
@@ -430,8 +430,10 @@ describe('AIProvider', () => {
       const provider = new AIProvider(mockConfig, mockCatalog(), noopLogger);
       const result = await provider.generate({ model: 'sonnet', system: 's', prompt: 'p' });
 
-      // Falls back to subtracting the provider-reported cached portion: 200 − 50 = 150.
-      expect(result.usage.input_tokens).toBe(150);
+      // Falls back to removing every cache pool, counting the cache-served pool once
+      // under whichever name it arrived: 200 − 50 (cache_read, preferred over the
+      // identical cached_input) − 25 (cache_write) = 125.
+      expect(result.usage.input_tokens).toBe(125);
       expect(result.usage.input_tokens).not.toBe(200);
     });
 
@@ -1897,10 +1899,58 @@ describe('NoOutputGeneratedError fallback (mutation-identified gap)', () => {
     expect(result.structuredOutput).toBeUndefined();
     expect(result.finishReason).toBe('error');
     expect(result.text).toBe('');
-    // A PRICED model with zero usage must yield a REAL 0, never undefined —
-    // undefined is reserved for "this model carries no pricing at all", and
-    // sumCostUsd depends on that polarity to distinguish free from unknown.
-    expect(result.costUsd).toBe(0);
+    // No step ever reported usage, so the run cost is UNKNOWN, not free. Asserting a
+    // real 0 here would fabricate a total; undefined propagates through sumCostUsd as
+    // worst-child, which is the honest signal.
+    expect(result.costUsd).toBeUndefined();
+    expect(result.steps).toBe(0);
+  });
+
+  it('reports ACCUMULATED run totals on the fallback, not the last step', async () => {
+    // The C1 regression: NoObjectGeneratedError carries lastStep.usage only. A run that
+    // executed several steps must report what it actually spent, or a structured-output
+    // failure silently understates real cost (measured 96% low on a 7-step run) and
+    // zeroes step/tool telemetry.
+    const { generateText } = await import('ai');
+    vi.mocked(generateText).mockImplementationOnce((async (opts: unknown) => {
+      const o = opts as { onStepFinish?: (s: unknown) => void };
+      for (let i = 0; i < 3; i++) {
+        o.onStepFinish?.({
+          finishReason: 'tool-calls',
+          text: '',
+          toolCalls: [{ toolName: 'read_file' }],
+          usage: {
+            inputTokens: 1_000,
+            outputTokens: 100,
+            inputTokenDetails: { noCacheTokens: 200, cacheReadTokens: 800, cacheWriteTokens: 0 },
+            outputTokenDetails: { textTokens: 100, reasoningTokens: 0 },
+          },
+        });
+      }
+      const err = new NoObjectGeneratedError({
+        message: 'No object generated: response did not match schema.',
+        text: 'partial text',
+        finishReason: 'stop',
+      } as never);
+      throw err;
+    }) as never);
+
+    const provider = new AIProvider(mockConfig, structuredCatalog({ input: 3, output: 15, cacheRead: 0.3 }), noopLogger);
+    const result = await provider.generate({
+      model: 'sonnet',
+      system: 's',
+      prompt: 'p',
+      output: { type: 'output-object', schema: {} } as never,
+    });
+
+    expect(result.text).toBe('partial text');
+    expect(result.steps).toBe(3);
+    expect(result.toolCallCount).toBe(3);
+    // Accumulated: noCache 3*200=600, cacheRead 3*800=2400, output 3*100=300.
+    expect(result.usage.input_tokens).toBe(600);
+    expect(result.usage.output_tokens).toBe(300);
+    expect(result.usage.cache_read_input_tokens).toBe(2_400);
+    expect(result.costUsd).toBeCloseTo((600 * 3 + 300 * 15 + 2_400 * 0.3) / 1e6, 10);
   });
 
   it('keeps costUsd undefined — not 0 — when the model carries no pricing', async () => {
@@ -1925,5 +1975,62 @@ describe('NoOutputGeneratedError fallback (mutation-identified gap)', () => {
 
     const provider = new AIProvider(mockConfig, mockCatalog(), noopLogger);
     await expect(provider.generate({ model: 'sonnet', system: 's', prompt: 'p' })).rejects.toThrow();
+  });
+});
+
+describe('adversarial provider payloads (ship-gate runtime audit)', () => {
+  const map = (usage: unknown, pm?: Record<string, unknown>, provider?: string): Record<string, number | undefined> => {
+    const p = new AIProvider(mockConfig, mockCatalog(), noopLogger);
+    return (p as unknown as {
+      mapUsage: (u: unknown, m?: Record<string, unknown>, pr?: string) => Record<string, number | undefined>;
+    }).mapUsage(usage, pm, provider);
+  };
+  const cost = (usage: Record<string, number | undefined>): number | undefined => {
+    const p = new AIProvider(mockConfig, mockCatalog(), noopLogger);
+    return (p as unknown as {
+      computeCostUsd: (u: unknown, c: unknown) => number | undefined;
+    }).computeCostUsd(usage, { input: 3, output: 15, cacheRead: 0.3, cacheWrite: 3.75 });
+  };
+
+  it('clamps a negative noCacheTokens rather than propagating it into cost', () => {
+    // OpenAI/Google compute noCache as `prompt − cached` with independently-defaulted
+    // operands, so an endpoint omitting prompt_tokens while reporting cached_tokens
+    // yields a negative. A negative cost SUBTRACTS from a pipeline roll-up.
+    const u = map({
+      inputTokens: 1_000,
+      outputTokens: 100,
+      inputTokenDetails: { noCacheTokens: -500, cacheReadTokens: 1_500, cacheWriteTokens: 0 },
+    });
+    expect(u.input_tokens).toBe(0);
+    expect(u.input_tokens).not.toBeLessThan(0);
+    expect(cost(u)!).toBeGreaterThanOrEqual(0);
+  });
+
+  it('neutralises NaN before it can reach cost (?? does not catch NaN)', () => {
+    const u = map({ inputTokens: NaN, outputTokens: 100 });
+    expect(Number.isFinite(u.input_tokens!)).toBe(true);
+    expect(u.input_tokens).toBe(0);
+    const c = cost(u);
+    expect(Number.isFinite(c!)).toBe(true);
+    // The failure this prevents: NaN JSON-serializes to null, blanking a whole run.
+    expect(JSON.parse(JSON.stringify({ costUsd: c })).costUsd).not.toBeNull();
+  });
+
+  it('neutralises Infinity the same way', () => {
+    const u = map({ inputTokens: Infinity, outputTokens: 100 });
+    expect(u.input_tokens).toBe(0);
+    expect(Number.isFinite(cost(u)!)).toBe(true);
+  });
+
+  it('removes the cache pools on the legacy path so they are not charged twice', () => {
+    // Anthropic-shaped metadata with NO inputTokenDetails — the shape that left
+    // input_tokens cache-inclusive and then billed the pool again at its own rate
+    // (measured $0.0334692 against a true $0.0037572).
+    const u = map({ inputTokens: 9_916, outputTokens: 0 }, {
+      anthropic: { cacheReadInputTokens: 9_904, cacheCreationInputTokens: 0 },
+    });
+    expect(u.input_tokens).toBe(12);
+    expect(u.input_tokens).not.toBe(9_916);
+    expect(cost(u)).toBeCloseTo((12 * 3 + 9_904 * 0.3) / 1e6, 10);
   });
 });
