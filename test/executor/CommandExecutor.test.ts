@@ -712,7 +712,7 @@ describe('CommandExecutor', () => {
           thresholds: { pass: 75, warn: 50 },
           sequential: false,
         },
-      }), { target: '/tmp/test' })).rejects.toThrow('All parallel agents failed');
+      }), { target: '/tmp/test' })).rejects.toThrow('All agents failed');
     });
   });
 });
@@ -796,5 +796,50 @@ describe('CommandExecutor — sequential crash keeps survivors', () => {
       .execute(seqDef(), { target: '/tmp/test' });
 
     expect(result.metrics.inputTokens).toBeGreaterThanOrEqual(120_000);
+  });
+});
+
+/**
+ * The all-crashed throw governs BOTH dispatch modes.
+ *
+ * POSITIVE CONTROL: move `assertNotAllCrashed` back inside `executeParallel` and the
+ * sequential test below fails — it returns a FAILED result instead of throwing.
+ *
+ * The check lived in the parallel arm only, so one underlying failure had two observable
+ * outcomes selected purely by dispatch mode — and therefore two different tracking
+ * outcomes at the client. Same asymmetry as WorkflowExecutor.executePhase's all-failed
+ * throw, one class over.
+ */
+describe('CommandExecutor — all-crashed throws regardless of dispatch mode', () => {
+  const def = (sequential: boolean) => makeCommandDef({
+    agents: ['agent-a@1.0.0', 'agent-b@1.0.0'],
+    execution: { model: { default: 'sonnet' }, timeout: 30000, thresholds: { pass: 75, warn: 50 }, sequential },
+  });
+
+  it.each([[true, 'sequential'], [false, 'parallel']])(
+    'throws when every agent crashes (%s = %s)', async (sequential) => {
+      const agentExec = {
+        execute: vi.fn().mockRejectedValue(new Error('boom')),
+      } as unknown as AgentExecutor;
+
+      await expect(new CommandExecutor(agentExec, makeRegistry())
+        .execute(def(sequential as boolean), { target: '/tmp/test' }))
+        .rejects.toThrow('All agents failed');
+    });
+
+  it('does NOT throw on a PARTIAL crash — survivors keep their billed work', async () => {
+    // The negative control. Without it, "throws when all crash" would pass for a guard
+    // that threw on any crash at all, discarding exactly the work this release protects.
+    const agentExec = {
+      execute: vi.fn()
+        .mockResolvedValueOnce(makeValidatorResult({ name: 'agent-a', score: 90 }))
+        .mockRejectedValueOnce(new Error('boom')),
+    } as unknown as AgentExecutor;
+
+    const result = await new CommandExecutor(agentExec, makeRegistry())
+      .execute(def(false), { target: '/tmp/test' });
+
+    expect(result.decision).toBe('FAIL');
+    expect(result.score).toBe(90);
   });
 });

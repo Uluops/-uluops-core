@@ -34,7 +34,9 @@
     "test:watch": "vitest watch",
     "test:coverage": "vitest run --coverage",
     "lint": "eslint src/ scripts/ examples/",
-    "prepublishOnly": "npm run lint && npm run typecheck && npm test && npm audit --audit-level=high --omit=dev && npm run build"
+    "prepublishOnly": "npm run lint && npm run typecheck && npm test && npm audit --audit-level=high --omit=dev && npm run build",
+    "check:fabrication": "node scripts/audit-fabricated-values.mjs",
+    "check:fabrication:control": "node scripts/audit-fabricated-values.mjs --control"
   },
   "keywords": [
     "uluops",

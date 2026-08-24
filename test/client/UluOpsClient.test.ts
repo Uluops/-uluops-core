@@ -82,6 +82,7 @@ import { UluOpsClient, resolveConfig, resolveAIConfig } from '../../src/client/U
 import { ConfigurationError } from '../../src/errors/index.js';
 import { RegistryClient } from '../../src/registry/RegistryClient.js';
 import { SubmissionClient } from '../../src/submission/SubmissionClient.js';
+import { MaxStepsExhaustedError } from '../../src/errors/index.js';
 import { ModelCatalog } from '../../src/ai/ModelCatalog.js';
 import { AIProvider } from '../../src/ai/AIProvider.js';
 import { AgentExecutor } from '../../src/executor/AgentExecutor.js';
@@ -1352,5 +1353,71 @@ describe('UluOpsClient', () => {
       ).rejects.toThrow(/Integrity check failed/);
       expect(mockCommandExecutorExecute).not.toHaveBeenCalled();
     });
+  });
+});
+
+/**
+ * A run that THROWS with billed usage is still tracked.
+ *
+ * POSITIVE CONTROL: remove the `trackThrownRun` call from `runAgent`'s catch and the first
+ * test fails — `submit` is never called. Confirmed by mutation; before this test existed,
+ * that removal left the entire suite green.
+ *
+ * `trackIfEnabled` sat after the await, so any throw skipped it. `MaxStepsExhaustedError`
+ * is BY CONSTRUCTION the maximum-cost run class the engine produces, and this release
+ * taught it to carry `billedMetrics` and wired three aggregation sites to read them — while
+ * the outermost boundary, where a user calls `runAgent()` directly, had no consumer at all.
+ * The most expensive runs were recorded nowhere.
+ */
+describe('UluOpsClient — a thrown run with billed usage still reaches the tracker', () => {
+  // Without this, the negative-control test inherits the prior test's submit call and
+  // passes for the wrong reason — the exact vacuity this whole release is about.
+  beforeEach(() => { vi.clearAllMocks(); });
+
+  const billed = {
+    inputTokens: 120_000, outputTokens: 8_000, totalEffectiveTokens: 128_000,
+    durationMs: 412_000, model: 'anthropic:claude-sonnet-4-5', costUsd: 0.48,
+  };
+
+  it('submits the billed usage and rethrows the original error', async () => {
+    const client = new UluOpsClient({ apiKey: 'ulr_test-key-012345678901', trackingEnabled: true });
+    mockRegistryResolve.mockResolvedValue(makeResolvedDef('agent', 'code-validator'));
+    mockAgentExecutorExecute.mockRejectedValue(
+      new MaxStepsExhaustedError('exhausted', 50, 'tool-calls', billed),
+    );
+    mockSubmissionSubmit.mockResolvedValue({ runId: 'r', runNumber: 1 });
+
+    await expect(client.runAgent('code-validator', '/tmp/test'))
+      .rejects.toBeInstanceOf(MaxStepsExhaustedError);
+
+    expect(mockSubmissionSubmit).toHaveBeenCalled();
+    const submitted = mockSubmissionSubmit.mock.calls[0]![0] as Record<string, any>;
+    const agent = (submitted['results'] ?? [submitted['result']])[0] ?? submitted['result'];
+    expect(JSON.stringify(submitted)).toContain('128000');
+    expect(agent).toBeDefined();
+  });
+
+  it('does NOT submit for an ordinary error carrying no billed usage', async () => {
+    // The negative control: tracking a crash that billed nothing would fabricate a run
+    // record out of an error, which is the same class of invention in the other direction.
+    const client = new UluOpsClient({ apiKey: 'ulr_test-key-012345678901', trackingEnabled: true });
+    mockRegistryResolve.mockResolvedValue(makeResolvedDef('agent', 'code-validator'));
+    mockAgentExecutorExecute.mockRejectedValue(new Error('registry timeout'));
+
+    await expect(client.runAgent('code-validator', '/tmp/test')).rejects.toThrow('registry timeout');
+    expect(mockSubmissionSubmit).not.toHaveBeenCalled();
+  });
+
+  it('rethrows the ORIGINAL error even when tracking itself fails', async () => {
+    // A tracking failure must never replace the error the caller actually needs to see.
+    const client = new UluOpsClient({ apiKey: 'ulr_test-key-012345678901', trackingEnabled: true });
+    mockRegistryResolve.mockResolvedValue(makeResolvedDef('agent', 'code-validator'));
+    mockAgentExecutorExecute.mockRejectedValue(
+      new MaxStepsExhaustedError('exhausted', 50, 'tool-calls', billed),
+    );
+    mockSubmissionSubmit.mockRejectedValue(new Error('tracker unreachable'));
+
+    await expect(client.runAgent('code-validator', '/tmp/test'))
+      .rejects.toBeInstanceOf(MaxStepsExhaustedError);
   });
 });

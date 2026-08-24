@@ -323,6 +323,86 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) 
   a deliberate, twice-tested contract — an authored-empty phase must block at its gate. The
   rationale is now recorded at the line so the next reader does not re-open it.
 
+- **Fourth sweep — and the approach changed, because finding instances one at a time was
+  not converging.** A fourth code-auditor pass found the class again, in the same method as
+  the fix shipped the round before:
+
+  - **A null-usage step silently released the wrap-up brake and reported a recovery that
+    never happened.** `buildBudgetPrepareStep` read `lastStep.usage.inputTokens ?? 0` — the
+    *third* reader of this same object to need the absent-is-not-zero correction, and 450+
+    lines from the sibling reader that got it in the previous commit. Measured: after
+    latching at 85,000/100,000, one null-usage step drove `contextSize` to 0, released the
+    latch, **withdrew the `budget.forced-wrap-up` marker** (so `deriveCompleteness`
+    reported `'complete'` for a run whose coverage really was cut), disengaged the brake so
+    the caller's cost ceiling lapsed above 80%, and logged *"Context budget recovered
+    (0/100000)"*. The sibling guard was also tightened: it gated on "either field present",
+    but `inputTokens` **is** the window measurement, so a step reporting only output tokens
+    would still have zeroed it.
+
+  - **The PRIMARY reasoning source was unguarded while all four of its FALLBACKS had just
+    been guarded.** `base.thinking_tokens = unifiedReasoning` took a raw external number,
+    and the truthiness test `if (unifiedReasoning)` read a **measured zero** as "not
+    reported", letting the `??=` legacy tier win. Measured: unified `reasoningTokens: 0`
+    alongside `providerMetadata.openai.reasoningTokens: 777` reported **777** — a number
+    nobody measured, on a run that explicitly reported none. That also falsified the
+    documented invariant that `??=` "can never override the unified value". The wire path
+    for this field was opened in the same release, so it now reaches the tracker.
+
+  - **A blocked phase discarded the billed work the thrown error was carrying.**
+    `executePhase` throws `WorkflowError(…, { partialResult })` holding crash placeholders
+    with real `billedMetrics`; `createBlockedPhase` replaced them with `commands: []`,
+    severing that channel one layer above every site that populates it. Measured: an
+    all-crashed workflow reported `totalEffectiveTokens: 0` while the caught error held
+    49,000. `buildPartialResult` likewise carried no `metrics` and no `score`, so a workflow
+    that threw lost every completed phase's spend — the more work a run had finished, the
+    more it lost.
+
+  - **`CommandExecutor`'s all-crashed throw still lived only in the parallel arm**, so one
+    underlying failure had two observable outcomes — and two different tracking outcomes —
+    selected purely by dispatch mode. Hoisted to the dispatch site, as the workflow twin
+    already was. *(The error message changed from `All parallel agents failed:` to
+    `All agents failed:`, since it no longer describes only parallel dispatch.)*
+
+  - **`runAgent()` never tracked a run that threw.** `trackIfEnabled` sat after the await.
+    `MaxStepsExhaustedError` is by construction the maximum-cost run class, and this release
+    taught it to carry `billedMetrics` and wired three aggregation sites to read them —
+    while the outermost boundary, where a user calls `runAgent()` directly, had no consumer
+    at all. The original error is always rethrown; a tracking failure never replaces it.
+
+  - Smaller, same shape: a skipped phase reported `score: 0` (it never ran — now `null`,
+    and externally visible on `result.phases[]`); `stepCrashPlaceholder` wrote
+    `toolCallCount: 0` **over** the spread, overwriting a measured count on the run class
+    that by construction made the most tool calls (now a default under it); and the
+    assembly-failure log asserted *"reporting the usage that was already billed"*
+    unconditionally, which is false on the non-structured-output path where the error is
+    mapped and rethrown — a false state in a log line, on the path that `try` exists to
+    protect.
+
+- **`scripts/audit-fabricated-values.mjs` — the class is now enumerated mechanically rather
+  than discovered one instance per review.**
+
+  Four audit passes each found this class again, each one ring further out. The most
+  expensive instance sat two lines below a line that had just been fixed; another was 450+
+  lines away in the same method reading the same object. Review — human or agent — kept
+  finding *instances* and never enumerated the *set*, which is what an instrument aimed at
+  where you already believe the answer is can do.
+
+  The script enumerates four mechanically-detectable shapes: `?? 0` on a measured value;
+  a truthy test on a measured value (a reported `0` read as "not reported"); a numeric
+  literal `0` for a measured field in a synthesized object; and an external value assigned
+  without passing a clamp. Every site must be fixed or carry `// FABRICATION-OK: <reason>`;
+  a waiver without a reason is rejected, because the reason is the point.
+
+  **It ships with a `--control` mode that plants known-bad input and fails if any rule does
+  not fire** — and that control earned its place immediately: on first run it reported that
+  rule C never fired, because the probe put the field inline while the rule targets a field
+  on its own line. A check that has never failed is indistinguishable from one that cannot.
+
+  Wired as `npm run check:fabrication` (and `check:fabrication:control`). Current state:
+  **0 unwaived sites**, 21 waived with written reasons — accumulator seeds, log formatting,
+  array lengths where absence and zero genuinely coincide, event counts that carry no price,
+  and the documented "nothing is known" branch in `crashMetrics`.
+
 ### Changed
 
 - **`UsageMetrics.input_tokens` is now CACHE-EXCLUSIVE** — a semantics change with no signature
@@ -428,7 +508,7 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) 
 
 ### Internal
 
-- **61 tests added for the class sweep, each carrying a POSITIVE CONTROL.** The previous
+- **73 tests added for the class sweep, each carrying a POSITIVE CONTROL.** The previous
   round's failure was not that its tests were absent — it was that they passed vacuously
   (the `sawUsage` test covered only the zero-step case, where the flag stayed false for an
   unrelated reason). Every new test here was run against the reverted code and confirmed to

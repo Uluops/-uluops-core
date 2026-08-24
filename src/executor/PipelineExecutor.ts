@@ -332,6 +332,7 @@ export class PipelineExecutor {
           costUsd: sumCostUsd(agentResults.map(r => r.metrics)),
           durationMs: stageDurationMs,
           model: 'mixed',
+      // FABRICATION-OK: summing a count of events; see CommandExecutor.
           toolCalls: agentResults.reduce((sum, r) => sum + (r.metrics.toolCallCount ?? 0), 0),
         },
       },
@@ -577,6 +578,8 @@ export class PipelineExecutor {
       type: stage.type === 'workflow' ? 'workflow' : 'command',
       status: 'skipped',
       skipReason: reason,
+      // FABRICATION-OK: nothing ran, so no time elapsed — 0 is the MEASURED duration of a
+      // non-event, not an unknown standing in for one.
       durationMs: 0,
     };
   }

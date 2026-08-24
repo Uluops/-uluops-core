@@ -32,6 +32,20 @@ import type { Logger } from '@uluops/sdk-core';
  * - continue: proceed past failure; dependent phases still check deps
  * - warn:  proceed with warning annotation; no blocking
  */
+/**
+ * Recover the completed-and-billed command results a thrown WorkflowError is carrying.
+ *
+ * Identity-free (`code` discriminant, not `instanceof`) for the reason errors/index.ts
+ * documents: two copies of this package in one dependency tree are two class identities,
+ * and the failure would be a silent false negative at a seam that carries real money.
+ */
+function extractPartialCommands(error: unknown): CommandResult[] {
+  if (typeof error !== 'object' || error === null) return [];
+  const ctx = (error as { context?: { partialResult?: unknown } }).context;
+  const partial = ctx?.partialResult;
+  return Array.isArray(partial) ? (partial as CommandResult[]) : [];
+}
+
 export class WorkflowExecutor {
   private logger: Logger;
 
@@ -95,9 +109,23 @@ export class WorkflowExecutor {
         if (behavior === 'abort') aborted = true;
       }
     } catch (error) {
+      // A phase that threw was never appended to phaseResults — the single-phase level
+      // deliberately does not contain its error (an all-failed workflow must throw). But
+      // the error IS carrying that phase's crash placeholders with their billedMetrics, so
+      // recover them here rather than losing them. Without this, the more work a run had
+      // completed before failing, the more it lost: prior phases reported no tokens and no
+      // cost at all.
+      const carried = extractPartialCommands(error);
+      const recovered = carried.length > 0
+        ? [...phaseResults, {
+            id: 'failed', name: 'Failed phase', decision: 'blocked' as const,
+            commands: carried, gateThreshold: DEFAULT_GATE_THRESHOLD,
+            score: null, durationMs: 0, error: formatErrorMessage(error),
+          } as PhaseResult]
+        : phaseResults;
       throw new WorkflowError(
         `Workflow failed: ${formatErrorMessage(error)}`,
-        { partialResult: this.buildPartialResult(def, phaseResults, allRecommendations, startTime, resolved.hash) },
+        { partialResult: this.buildPartialResult(def, recovered, allRecommendations, startTime, resolved.hash) },
       );
     }
 
@@ -259,7 +287,15 @@ export class WorkflowExecutor {
     maxParallel?: number,
   ): Promise<PhaseResult[]> {
     if (phases.length === 1) {
-      // Single phase — no need for concurrency machinery
+      // Single phase — no need for concurrency machinery, and DELIBERATELY no containment.
+      //
+      // Reviewed 2026-08-24 and left throwing. A one-phase level that fails has no
+      // survivor, so the workflow genuinely failed and must not report a decision as
+      // though it ran; three tests pin that contract. The asymmetry a review flagged here
+      // — one-phase level throws, two-phase level returns — is real but is NOT this line:
+      // it was that the resulting throw discarded every PRIOR level's completed work,
+      // because buildPartialResult carried no metrics and no score. That is fixed there,
+      // which keeps the contract and stops the loss.
       return [await this.executePhase(phases[0]!, input)];
     }
 
@@ -488,6 +524,7 @@ export class WorkflowExecutor {
       extractionConfidence: agent.extractionConfidence,
       recommendations: agent.recommendations,
       durationMs: agent.metrics.durationMs,
+      // FABRICATION-OK: summing a count of events; see CommandExecutor.
       metrics: { ...agent.metrics, toolCalls: agent.metrics.toolCallCount ?? 0 },
     } as CommandResult;
   }
@@ -596,18 +633,34 @@ export class WorkflowExecutor {
         severity: 'critical',
         failureCode: 'PRA-FRA/C',
       }],
+      // FABRICATION-OK: nothing ran, so no time elapsed — 0 is the MEASURED duration of a
+      // non-event, not an unknown standing in for one.
       durationMs: 0,
       // See crashMetrics: billed usage survives the throw; absent cost stays absent.
-      metrics: { ...crashMetrics(reason), toolCallCount: 0, toolCalls: 0 },
+      // The zeros are DEFAULTS, applied under the spread rather than over it, so a
+      // MaxStepsExhaustedError's measured toolCallCount survives — writing them after the
+      // spread overwrote the real count on the run class that by construction made the
+      // most tool calls.
+      metrics: { toolCallCount: 0, toolCalls: 0, ...crashMetrics(reason) },
     } as CommandResult;
   }
 
   private createBlockedPhase(phase: PhaseDefinition, error?: unknown): PhaseResult {
+    // Recover the step results the thrown error is carrying. executePhase throws
+    // `WorkflowError(…, { partialResult: commandResults })` where those placeholders hold
+    // real `billedMetrics` from crashMetrics — and this catch was replacing them with
+    // `commands: []`, so the billedMetrics channel this release added was severed one
+    // layer above every site that populates it. Measured: an all-crashed workflow reported
+    // totalEffectiveTokens 0 while the caught error held 49,000 effective tokens.
+    //
+    // costUsd already degraded honestly to undefined; it was the TOKEN total that was a
+    // fabricated zero, because the two roll-ups have deliberately opposite polarities.
+    const carried = extractPartialCommands(error);
     return {
       id: phase.id,
       name: phase.name,
       decision: 'blocked',
-      commands: [],
+      commands: carried,
       gateThreshold: phase.gate?.threshold ?? DEFAULT_GATE_THRESHOLD,
       // NULL, not 0. A phase that THREW produced no score; a fabricated 0 enters the
       // weighted average and drags the workflow's reported quality down by an amount
@@ -626,6 +679,8 @@ export class WorkflowExecutor {
       // positive-control test for it, and left `score: 0` two lines below untouched. The
       // citation was fixed; the class was not.
       score: null,
+      // FABRICATION-OK: nothing ran, so no time elapsed — 0 is the MEASURED duration of a
+      // non-event, not an unknown standing in for one.
       durationMs: 0,
       ...(error ? { error: formatErrorMessage(error) } : {}),
     };
@@ -638,7 +693,13 @@ export class WorkflowExecutor {
       decision: 'skipped',
       commands: [],
       gateThreshold: phase.gate?.threshold ?? DEFAULT_GATE_THRESHOLD,
-      score: 0,
+      // NULL — a phase that never ran produced no score. It is filtered from the
+      // aggregate either way, but it is externally visible on `result.phases[]`, where a
+      // 0 reads as a measured failure. The sibling literal 11 lines up was corrected in
+      // the previous commit and this one was left; same object shape, same file.
+      score: null,
+      // FABRICATION-OK: nothing ran, so no time elapsed — 0 is the MEASURED duration of a
+      // non-event, not an unknown standing in for one.
       durationMs: 0,
     };
   }
@@ -711,13 +772,30 @@ export class WorkflowExecutor {
     startTime: number,
     hash: string,
   ): Partial<WorkflowResult> {
+    const durationMs = Date.now() - startTime;
+    // Carry what the completed phases actually billed. This previously returned phases
+    // and recommendations only, so a workflow that threw reported NO metrics and NO score
+    // — every prior level's tokens and cost vanished with the throw, and the more work a
+    // run had completed before failing, the more it lost. The billedMetrics channel this
+    // release added terminated here.
+    //
+    // Same roll-up shape as the success path, including its deliberate polarity split:
+    // tokens coalesce, cost degrades to undefined if any child is unpriced.
+    const commandMetrics = phases.flatMap(p => p.commands.map(c => c.metrics));
     return {
       type: 'workflow',
       name: def.workflow.interface.name,
       definitionHash: hash,
       phases,
       recommendations,
-      durationMs: Date.now() - startTime,
+      durationMs,
+      score: aggregateScores(phases.map(p => ({ key: p.id, score: p.score }))),
+      metrics: {
+        ...sumTokenMetrics(commandMetrics),
+        costUsd: sumCostUsd(commandMetrics),
+        durationMs,
+        model: 'mixed',
+      } as WorkflowResult['metrics'],
     };
   }
 }

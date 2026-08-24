@@ -170,6 +170,8 @@ export class OutputExtractor {
         score: null,
       },
       method: 'structured_text',
+    // FABRICATION-OK: a failed extraction genuinely has zero confidence — this is a
+    // MEASURED floor, not an unknown standing in for a number.
       confidence: 0,
       warnings: ['Could not extract structured output from response'],
     };

@@ -124,6 +124,9 @@ export class CommandExecutor {
       agentResults = await this.executeSequentially(agentRefs, executeAgent);
     }
 
+    // Governs BOTH dispatch modes — see assertNotAllCrashed.
+    this.assertNotAllCrashed(agentResults);
+
     return this.aggregateResults(
       agentResults,
       def,
@@ -224,11 +227,31 @@ export class CommandExecutor {
       }
     }
 
-    if (agentErrors.length === refs.length) {
-      throw new ExecutionError(`All parallel agents failed: ${agentErrors.join('; ')}`);
-    }
-
     return results;
+  }
+
+  /**
+   * Throw when EVERY dispatched agent crashed — a property of the command, not of how it
+   * dispatched.
+   *
+   * This check previously lived inside the parallel arm only, so an all-failed command had
+   * two different observable outcomes selected by dispatch mode: parallel threw
+   * `ExecutionError`, sequential returned a `FAILED` CommandResult. Two outcomes, two
+   * different tracking results at the client, one underlying failure. Hoisted here for the
+   * same reason the workflow twin was: it is the same asymmetry, in the same shape, one
+   * class over.
+   *
+   * A partial crash is NOT a throw — survivors keep their billed work and the
+   * scoreless-negative guard fails the command through the gate.
+   */
+  private assertNotAllCrashed(results: AgentResult[]): void {
+    const crashed = results.filter(r => r.score === null && r.decisionCategory === 'negative');
+    if (results.length > 0 && crashed.length === results.length) {
+      const detail = crashed
+        .flatMap(r => r.recommendations?.map(rec => rec.title) ?? [])
+        .join('; ');
+      throw new ExecutionError(`All agents failed: ${detail}`);
+    }
   }
 
   /**
@@ -266,6 +289,9 @@ export class CommandExecutor {
     const metrics: CommandMetrics = {
       ...agentResult.metrics,
       durationMs,
+      // FABRICATION-OK: toolCalls is a required number on the wire while toolCallCount is
+      // optional. 0 is the honest floor for "no count reported" on a COUNT OF EVENTS, and
+      // unlike tokens it carries no price.
       toolCalls: agentResult.metrics.toolCallCount ?? 0,
     };
 
@@ -371,6 +397,7 @@ export class CommandExecutor {
     }
 
     // Aggregate metrics
+    // FABRICATION-OK: summing a count of events; see the wrapAgentResult waiver.
     const totalToolCalls = results.reduce((sum, r) => sum + (r.metrics.toolCallCount ?? 0), 0);
     const metrics: CommandMetrics = {
       ...sumTokenMetrics(results.map(r => r.metrics)),

@@ -32,8 +32,13 @@ export function crashMetrics(error: unknown, extra?: Partial<ExecutionMetrics>):
     return { ...error.billedMetrics, ...extra };
   }
   return {
+    // FABRICATION-OK: the documented "nothing is known" branch. Tokens report a bounded 0
+    // because their types admit no absence; costUsd is OMITTED, which is the field that
+    // carries the unknown. See this function's doc comment.
     inputTokens: 0,
     outputTokens: 0,
+    // FABRICATION-OK: see inputTokens above — the documented "nothing known" branch,
+    // where costUsd is the field that carries the unknown.
     totalEffectiveTokens: 0,
     durationMs: 0,
     model: 'unknown',

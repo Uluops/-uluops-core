@@ -139,6 +139,8 @@ export class StepsExecutor {
           command: step.command,
           status: 'skipped',
           output: '',
+          // FABRICATION-OK: nothing ran, so no time elapsed — 0 is the MEASURED duration of a
+          // non-event, not an unknown standing in for one.
           durationMs: 0,
         });
         continue;

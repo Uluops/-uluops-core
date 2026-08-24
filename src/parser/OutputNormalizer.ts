@@ -261,6 +261,8 @@ export class OutputNormalizer {
     // Note: validationSummary (from findWrapperWithScoreOrDecision) is already in the sources loop above.
     // Check scores object with named sub-scores (gpt-4.1-nano shape: { scores: { "Code Quality": 23, ... } })
     const scores = this.asRecord(obj['scores']);
+    // FABRICATION-OK: `scores` is an OBJECT (a category-score map), not a number.
+    // Testing it for presence is correct; the rule matched the name, not the type.
     if (scores) {
       if (typeof scores['Total'] === 'number') return scores['Total'];
       if (typeof scores['total'] === 'number') return scores['total'];
@@ -317,6 +319,8 @@ export class OutputNormalizer {
     // typeof === 'number'); `maxScore: 100` is that score's legitimate scale, not a
     // fabrication, so both are kept (mirrors PipelineExecutor success aggregate).
     const scores = this.asRecord(obj['scores']) ?? this.asRecord(report?.['scores']);
+    // FABRICATION-OK: `scores` is an OBJECT (a category-score map), not a number.
+    // Testing it for presence is correct; the rule matched the name, not the type.
     if (scores) {
       const cats: ParsedCategory[] = [];
       for (const [name, value] of Object.entries(scores)) {

@@ -1605,7 +1605,15 @@ describe('WorkflowExecutor — cost roll-up degrades to unknown on a blocked pha
 
     const blocked = result.phases.find(p => p.decision === 'blocked');
     expect(blocked).toBeDefined();
-    expect(blocked!.commands).toHaveLength(0);
+    // A blocked phase now CARRIES the crash placeholders the thrown error held, rather
+    // than reporting `commands: []`. That was severing the billedMetrics channel one layer
+    // above every site that populates it — measured at 49,000 effective tokens reported as
+    // 0 on an all-crashed workflow.
+    expect(blocked!.commands).toHaveLength(1);
+    expect(blocked!.commands[0]!.score).toBeNull();
+    // The point of this test is unchanged and still holds: the carried placeholder omits
+    // costUsd, so the roll-up degrades to unknown instead of presenting the survivor's
+    // $0.25 as the workflow total.
     expect(result.metrics.costUsd).toBeUndefined();
     expect(result.metrics.costUsd).not.toBe(0.25);
   });
@@ -1836,5 +1844,102 @@ describe('WorkflowExecutor — sequential branch contains crashes like its paral
 
     // The second command must never have been dispatched.
     expect(vi.mocked(cmdExec.execute)).toHaveBeenCalledTimes(1);
+  });
+});
+
+/**
+ * A blocked phase carries the billed work the thrown error holds, and a thrown workflow
+ * still reports what completed phases spent.
+ *
+ * POSITIVE CONTROL: restore `commands: []` in createBlockedPhase, or drop `metrics`/`score`
+ * from buildPartialResult, and the matching test below fails. Confirmed by mutation.
+ *
+ * executePhase throws `WorkflowError(…, { partialResult: commandResults })` where those
+ * placeholders hold real `billedMetrics`; the catch was replacing them with an empty array,
+ * severing the channel this release added one layer above every site that populates it.
+ */
+describe('WorkflowExecutor — billed work survives a blocked phase and a thrown workflow', () => {
+  const billed = {
+    inputTokens: 49_000, outputTokens: 1_000, totalEffectiveTokens: 50_000,
+    durationMs: 9_000, model: 'anthropic:claude-sonnet-4-5', costUsd: 4.25,
+  };
+
+  it('carries the crash placeholders into the blocked phase', async () => {
+    const cmdExec = {
+      execute: vi.fn().mockImplementation((resolved: ResolvedDefinition) =>
+        resolved.name === 'code-validator'
+          ? Promise.resolve(makeCommandResult({ name: resolved.name, score: 90 }))
+          : Promise.reject(new MaxStepsExhaustedError('exhausted', 50, 'tool-calls', billed))),
+    } as unknown as CommandExecutor;
+
+    const def = makeWorkflowDef({
+      orchestration: {
+        phases: [
+          { id: 'good', name: 'Good', commands: ['code-validator'],
+            gate: { threshold: 0, aggregate: 'average', on_fail: 'continue' } },
+          { id: 'crash', name: 'Crash', commands: ['second-validator'],
+            gate: { threshold: 0, aggregate: 'average', on_fail: 'continue' } },
+        ],
+        on_failure: 'continue',
+      } as never,
+    });
+
+    const result = await new WorkflowExecutor(cmdExec, makeRegistry())
+      .execute(def, { target: '/tmp/test' });
+
+    const blocked = result.phases.find(p => p.decision === 'blocked')!;
+    expect(blocked.commands).toHaveLength(1);
+    // The measured defect: 49,000 effective tokens reported as 0.
+    expect(blocked.commands[0]!.metrics.inputTokens).toBe(49_000);
+    expect(result.metrics.totalEffectiveTokens).toBeGreaterThanOrEqual(50_000);
+  });
+
+  it('reports prior phases’ metrics and score on a THROWN workflow', async () => {
+    // buildPartialResult carried phases and recommendations only, so every completed
+    // phase's tokens and cost vanished with the throw — the more work a run had finished,
+    // the more it lost.
+    const cmdExec = {
+      execute: vi.fn().mockRejectedValue(new MaxStepsExhaustedError('exhausted', 50, 'tool-calls', billed)),
+    } as unknown as CommandExecutor;
+
+    const def = makeWorkflowDef({
+      orchestration: {
+        phases: [{ id: 'only', name: 'Only', commands: ['code-validator'],
+          gate: { threshold: 0, aggregate: 'average', on_fail: 'continue' } }],
+        on_failure: 'continue',
+      } as never,
+    });
+
+    const error = await new WorkflowExecutor(cmdExec, makeRegistry())
+      .execute(def, { target: '/tmp/test' })
+      .then(() => null, (e: unknown) => e as WorkflowError);
+
+    expect(error).toBeInstanceOf(WorkflowError);
+    const partial = (error as WorkflowError).context?.partialResult as Record<string, any>;
+    expect(partial).toBeDefined();
+    expect(partial['metrics']).toBeDefined();
+    expect(partial['metrics'].totalEffectiveTokens).toBeGreaterThan(0);
+  });
+
+  it('a SKIPPED phase reports no score — it never ran', async () => {
+    const def = makeWorkflowDef({
+      orchestration: {
+        phases: [
+          { id: 'a', name: 'A', commands: ['code-validator'],
+            gate: { threshold: 200, aggregate: 'average', on_fail: 'stop' } },
+          { id: 'b', name: 'B', commands: ['second-validator'], depends_on: ['a'],
+            gate: { threshold: 0, aggregate: 'average', on_fail: 'continue' } },
+        ],
+        on_failure: 'stop',
+      } as never,
+    });
+
+    const result = await new WorkflowExecutor(makeCommandExecutor(), makeRegistry())
+      .execute(def, { target: '/tmp/test' });
+
+    const skipped = result.phases.find(p => p.decision === 'skipped');
+    expect(skipped).toBeDefined();
+    // Externally visible on result.phases[], where a 0 reads as a measured failure.
+    expect(skipped!.score).toBeNull();
   });
 });

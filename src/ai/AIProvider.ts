@@ -157,7 +157,11 @@ function formatCallWarnings(warnings: readonly CallWarning[] | undefined): strin
 function emptyStepTotals(): StepTotals {
   return {
     steps: 0, toolCalls: 0, inputTokens: 0, outputTokens: 0,
+    // FABRICATION-OK: accumulator SEEDS, not reported values. Presence is carried
+    // separately by the sawNoCache/sawCacheRead/sawCacheWrite flags, and
+    // stepTotalsToUsage emits undefined for any pool whose flag is false.
     noCacheTokens: 0, cacheReadTokens: 0, cacheWriteTokens: 0,
+    // FABRICATION-OK: accumulator seed, gated by sawReasoning (see above).
     reasoningTokens: 0, sawUsage: false,
     sawNoCache: false, sawCacheRead: false, sawCacheWrite: false, sawReasoning: false,
     warnings: [],
@@ -463,8 +467,18 @@ export class AIProvider {
     try {
       return this.buildGenerateResult(result, resolved, useStructuredOutput);
     } catch (error) {
+      // The log states what handleGenerateError will ACTUALLY do, which depends on the
+      // run. Only the structured-output branches return a fallback result carrying
+      // stepTotals; everything else falls through to mapError and RETHROWS, discarding the
+      // accumulated usage. Claiming "reporting the usage that was already billed"
+      // unconditionally was a false state written on the very path this try exists to
+      // protect — the release's own defect, in a log line.
+      const willReportUsage = useStructuredOutput;
       this.logger.warn(
-        `Result assembly failed after a successful provider call — reporting the usage that was already billed: ${formatErrorMessage(error)}`,
+        `Result assembly failed after a successful provider call: ${formatErrorMessage(error)}`
+        + (willReportUsage
+          ? ' — degrading to text extraction and reporting the usage already billed.'
+          : ' — the error is being mapped and rethrown; usage accumulated during this run is NOT reported.'),
       );
       return this.handleGenerateError(error, resolved, useStructuredOutput, options.timeoutMs, stepTotals);
     }
@@ -549,6 +563,8 @@ export class AIProvider {
         this.logger.info(
           `Step ${stepCount}: ${step.finishReason}` +
           (toolNames.length > 0 ? ` | tools: [${toolNames.join(', ')}]` : '') +
+          // FABRICATION-OK: log formatting only — this value reaches no metric, no cost,
+          // and no consumer. Rendering "0in/0out" in a debug line is not a claim about spend.
           ` | usage: ${usage.inputTokens ?? 0}in/${usage.outputTokens ?? 0}out` +
           (textLen > 0 ? ` | text: ${textLen} chars` : ''),
         );
@@ -564,11 +580,16 @@ export class AIProvider {
         // A step that reports no numbers carries no information about the window, so the
         // correct action is to leave the tracker's state alone, not to overwrite it with a
         // fabricated zero.
-        if (budgetTracker && (usage.inputTokens !== undefined || usage.outputTokens !== undefined)) {
-          budgetTracker.update(usage.inputTokens ?? 0, usage.outputTokens ?? 0);
+        // Gate on inputTokens specifically: it IS the context-window measurement that
+        // update() assigns unconditionally. Gating on "either field present" was still
+        // wrong — a step reporting only outputTokens would have reset the window to 0.
+        if (budgetTracker && usage.inputTokens !== undefined) {
+          budgetTracker.update(safeTokenCount(usage.inputTokens), safeTokenCount(usage.outputTokens));
         }
         // Accumulate real totals so an error path can still report them (see StepTotals).
         stepTotals.steps += 1;
+        // FABRICATION-OK: an absent toolCalls ARRAY means the step made no tool calls —
+        // absence and zero genuinely coincide for a list length, unlike a provider count.
         stepTotals.toolCalls += step.toolCalls?.length ?? 0;
 
         // Carry the provider's own metadata and warnings forward so the error path can
@@ -588,23 +609,27 @@ export class AIProvider {
         if (usage.inputTokens !== undefined || usage.outputTokens !== undefined) {
           stepTotals.sawUsage = true;
         }
+          // FABRICATION-OK: inside the sawUsage presence guard. Adding 0 for a field this
+          // step did not report is correct — there is nothing to add — and the flag, not the
+          // sum, is what tells the consumer whether anything was measured at all.
         stepTotals.inputTokens += usage.inputTokens ?? 0;
+          // FABRICATION-OK: see inputTokens above.
         stepTotals.outputTokens += usage.outputTokens ?? 0;
         if (usage.inputTokenDetails?.noCacheTokens !== undefined) {
           stepTotals.sawNoCache = true;
-          stepTotals.noCacheTokens += usage.inputTokenDetails.noCacheTokens;
+          stepTotals.noCacheTokens += safeTokenCount(usage.inputTokenDetails.noCacheTokens);
         }
         if (usage.inputTokenDetails?.cacheReadTokens !== undefined) {
           stepTotals.sawCacheRead = true;
-          stepTotals.cacheReadTokens += usage.inputTokenDetails.cacheReadTokens;
+          stepTotals.cacheReadTokens += safeTokenCount(usage.inputTokenDetails.cacheReadTokens);
         }
         if (usage.inputTokenDetails?.cacheWriteTokens !== undefined) {
           stepTotals.sawCacheWrite = true;
-          stepTotals.cacheWriteTokens += usage.inputTokenDetails.cacheWriteTokens;
+          stepTotals.cacheWriteTokens += safeTokenCount(usage.inputTokenDetails.cacheWriteTokens);
         }
         if (usage.outputTokenDetails?.reasoningTokens !== undefined) {
           stepTotals.sawReasoning = true;
-          stepTotals.reasoningTokens += usage.outputTokenDetails.reasoningTokens;
+          stepTotals.reasoningTokens += safeTokenCount(usage.outputTokenDetails.reasoningTokens);
         }
       },
     });
@@ -646,6 +671,7 @@ export class AIProvider {
     useStructuredOutput: boolean,
   ): AIGenerateResult {
     const toolCallCount = result.steps.reduce(
+      // FABRICATION-OK: array length — absence and zero genuinely coincide.
       (sum, step) => sum + (step.toolCalls?.length ?? 0),
       0,
     );
@@ -1111,7 +1137,23 @@ export class AIProvider {
 
       // Last step's inputTokens = current context window size
       const lastStep = steps[steps.length - 1]!;
-      const contextSize = lastStep.usage.inputTokens ?? 0;
+      // ABSENT IS NOT ZERO — the third reader of this same object to need saying so.
+      //
+      // A step that reports no numbers says NOTHING about the context window, and `?? 0`
+      // turned that silence into "the window is empty". Measured: after latching at
+      // 85,000/100,000, one null-usage step drove contextSize to 0, released the latch,
+      // withdrew the `budget.forced-wrap-up` marker (so deriveCompleteness reported
+      // 'complete' for a run whose coverage really was cut), disengaged the brake so the
+      // caller's cost ceiling lapsed above 80%, and logged "Context budget recovered
+      // (0/100000)" — a recovery that never happened.
+      //
+      // The sibling reader at the budgetTracker.update call was guarded in the previous
+      // commit; this one, 450+ lines away in the same file reading the same object, was
+      // not. Hold the latch state rather than acting on a non-measurement.
+      if (lastStep.usage.inputTokens === undefined) {
+        return wrapUpInjected ? { toolChoice: 'none' as const } : {};
+      }
+      const contextSize = safeTokenCount(lastStep.usage.inputTokens);
 
       if (wrapUpInjected) {
         // Release the latch if context has recovered below the lower band.
@@ -1287,6 +1329,8 @@ export class AIProvider {
     };
 
     // 1. AI SDK standard path (works for both providers)
+    // FABRICATION-OK: tests the DETAILS OBJECT for presence, not a number. The SDK either
+    // sends the object or does not; its members are read with optionalTokenCount below.
     if (usage.inputTokenDetails) {
       base.cache_read_input_tokens = optionalTokenCount(usage.inputTokenDetails.cacheReadTokens);
       base.cache_creation_input_tokens = optionalTokenCount(usage.inputTokenDetails.cacheWriteTokens);
@@ -1299,8 +1343,17 @@ export class AIProvider {
     // Core keeps two separate reporting fields, so route by provider. Both remain
     // SUBSETS of output_tokens and are never added to the effective total.
     // Set before the metadata tiers so those act as fallbacks for older SDK shapes.
-    const unifiedReasoning = usage.outputTokenDetails?.reasoningTokens;
-    if (unifiedReasoning) {
+    // `!== undefined`, not truthiness, and clamped — the same two corrections applied to
+    // the four metadata tiers below, which are this value's FALLBACKS. The guard went on
+    // the fallbacks and not on the primary source.
+    //
+    // Truthiness was the sharper of the two bugs: a measured `reasoningTokens: 0` is
+    // falsy, so the field stayed undefined and the `??=` legacy tier then won. Measured:
+    // unified 0 alongside `providerMetadata.openai.reasoningTokens: 777` reported 777 — a
+    // number nobody measured, on a run that explicitly reported zero. That also falsifies
+    // the documented invariant that `??=` "can never override the unified value".
+    const unifiedReasoning = optionalTokenCount(usage.outputTokenDetails?.reasoningTokens);
+    if (unifiedReasoning !== undefined) {
       if (provider === 'google') base.thinking_tokens = unifiedReasoning;
       else base.reasoning_tokens = unifiedReasoning;
     }

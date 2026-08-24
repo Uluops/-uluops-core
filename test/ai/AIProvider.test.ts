@@ -2659,3 +2659,122 @@ describe('AIProvider — a null-usage step does not reset the tracked context wi
     expect(tracker.getStatus().usedTotal).toBe(0);
   });
 });
+
+/**
+ * The wrap-up brake reads the window, and a non-measurement is not a window of zero.
+ *
+ * POSITIVE CONTROL: restore `const contextSize = lastStep.usage.inputTokens ?? 0` and the
+ * first two tests fail. Confirmed by mutation.
+ *
+ * This was the FOURTH consecutive gate abort and the third reader of this same object to
+ * need the same correction. Measured before the fix: after latching at 85,000/100,000, one
+ * null-usage step drove contextSize to 0, released the latch, WITHDREW the
+ * `budget.forced-wrap-up` marker (so deriveCompleteness reported 'complete' for a run
+ * whose coverage really was cut), disengaged the brake so the cost ceiling lapsed above
+ * 80%, and logged "Context budget recovered (0/100000)" — a recovery that never happened.
+ */
+describe('AIProvider — a null-usage step does not release the wrap-up brake', () => {
+  beforeEach(async () => {
+    vi.clearAllMocks();
+    const { generateText } = await import('ai');
+    vi.mocked(generateText).mockReset();
+  });
+
+  const armedBrake = async () => {
+    const { generateText } = await import('ai');
+    vi.mocked(generateText).mockResolvedValue({
+      text: 'done', usage: { inputTokens: 1, outputTokens: 1 },
+      totalUsage: { inputTokens: 1, outputTokens: 1 },
+      steps: [], finishReason: 'stop', warnings: [], providerMetadata: {},
+    } as never);
+
+    const tracker = new TokenBudgetTracker(100_000);
+    await new AIProvider(mockConfig, mockCatalog(), noopLogger).generate({
+      model: 'sonnet', system: 't', prompt: 't', contextBudget: 100_000, budgetTracker: tracker,
+    });
+    const call = vi.mocked(generateText).mock.calls[0]?.[0] as any;
+    // Latch it: 85% of budget.
+    call.prepareStep({ steps: [{ usage: { inputTokens: 85_000 } }] });
+    return { tracker, call };
+  };
+
+  it('holds the latch when a step reports no numbers', async () => {
+    const { tracker, call } = await armedBrake();
+    expect(tracker.forcedWrapUp).toBe(true);
+
+    const next = call.prepareStep({ steps: [{ usage: { inputTokens: undefined } }] });
+
+    // The brake stays engaged and the marker is not withdrawn.
+    expect(next.toolChoice).toBe('none');
+    expect(tracker.forcedWrapUp).toBe(true);
+  });
+
+  it('does not report a recovery that never happened', async () => {
+    const { tracker, call } = await armedBrake();
+    call.prepareStep({ steps: [{ usage: {} }] });
+    // markForcedWrapUp(false) here would silently turn a coverage-reduced run into
+    // completeness 'complete' — the invariant types/degradation.ts rests on.
+    expect(tracker.forcedWrapUp).toBe(true);
+  });
+
+  it('STILL releases on a genuine measured recovery — the negative control', async () => {
+    // Without this, "holds the latch" would pass for a brake that could never release,
+    // which would force premature wrap-up for the rest of every run.
+    const { tracker, call } = await armedBrake();
+    const next = call.prepareStep({ steps: [{ usage: { inputTokens: 65_000 } }] });
+
+    expect(next.toolChoice).toBeUndefined();
+    expect(tracker.forcedWrapUp).toBe(false);
+  });
+});
+
+/**
+ * The PRIMARY reasoning source gets the same guard as its four fallbacks.
+ *
+ * POSITIVE CONTROL: restore `if (unifiedReasoning)` truthiness and the second test fails
+ * with 777 — a number nobody measured, on a run that explicitly reported zero.
+ */
+describe('AIProvider — unified reasoning is clamped and zero-preserving', () => {
+  beforeEach(async () => {
+    vi.clearAllMocks();
+    const { generateText } = await import('ai');
+    vi.mocked(generateText).mockReset();
+  });
+
+  const run = async (outputTokenDetails: unknown, providerMetadata: unknown = {}) => {
+    const { generateText } = await import('ai');
+    vi.mocked(generateText).mockResolvedValueOnce({
+      text: 'ok',
+      usage: { inputTokens: 1_000, outputTokens: 500, outputTokenDetails },
+      totalUsage: { inputTokens: 1_000, outputTokens: 500, outputTokenDetails },
+      steps: [], finishReason: 'stop', warnings: [], providerMetadata,
+    } as never);
+    return new AIProvider(mockConfig, mockCatalog(), noopLogger)
+      .generate({ model: 'sonnet', system: 's', prompt: 'p' });
+  };
+
+  it('clamps a negative reasoning count instead of putting it on the result', async () => {
+    // 68ec686 opened the wire path for this field, so an unclamped negative now reaches
+    // the tracker and SUBTRACTS from a roll-up.
+    const result = await run({ textTokens: 500, reasoningTokens: -5_000 });
+    expect(result.usage.reasoning_tokens).toBe(0);
+    expect(result.usage.reasoning_tokens).not.toBe(-5_000);
+  });
+
+  it('keeps a MEASURED zero rather than letting legacy metadata override it', async () => {
+    // `if (unifiedReasoning)` is falsy for 0, so the field stayed undefined and the `??=`
+    // legacy tier won — contradicting the documented invariant that `??=` "can never
+    // override the unified value".
+    const result = await run(
+      { textTokens: 500, reasoningTokens: 0 },
+      { openai: { reasoningTokens: 777 } },
+    );
+    expect(result.usage.reasoning_tokens).toBe(0);
+    expect(result.usage.reasoning_tokens).not.toBe(777);
+  });
+
+  it('still reads a genuine reasoning count — the negative control', async () => {
+    const result = await run({ textTokens: 100, reasoningTokens: 400 });
+    expect(result.usage.reasoning_tokens).toBe(400);
+  });
+});

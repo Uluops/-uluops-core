@@ -9,7 +9,9 @@ import { WorkflowExecutor } from '../executor/WorkflowExecutor.js';
 import { PipelineExecutor } from '../executor/PipelineExecutor.js';
 import { createLogger } from '@uluops/sdk-core';
 import { MIN_API_KEY_LENGTH } from '@uluops/sdk-core/config';
-import { ConfigurationError } from '../errors/index.js';
+import { ConfigurationError, hasBilledMetrics } from '../errors/index.js';
+import { crashMetrics } from '../utils/crashMetrics.js';
+import { formatErrorMessage } from '../utils/formatError.js';
 import type { UluOpsConfig, AIConfig, ResolvedConfig, ResolvedAIConfig } from '../types/config.js';
 import type { ExecutionInput, ExecutionResult, ExecutionOptions } from '../types/execution.js';
 import type { AgentResult } from '../types/agent.js';
@@ -120,9 +122,61 @@ export class UluOpsClient {
       throw new ConfigurationError(`${name} is not an agent (type: ${resolved.type}). Use runCommand() instead.`);
     }
 
-    const result = await this.agentExecutor.execute(resolved, input, options);
+    // A THROWN run must still be tracked when it carries billed metrics.
+    //
+    // trackIfEnabled sat after the await, so any throw skipped it entirely — and
+    // MaxStepsExhaustedError is by construction the maximum-cost run class core produces.
+    // This release taught that error to carry `billedMetrics` and wired three aggregation
+    // sites to read them; the outermost boundary, where a user calls runAgent() directly,
+    // had no consumer at all, so the most expensive runs were recorded nowhere.
+    //
+    // The error is always rethrown — tracking is a side effect, never a swallow — and a
+    // tracking failure must not mask the original error, hence the inner catch.
+    let result: AgentResult;
+    try {
+      result = await this.agentExecutor.execute(resolved, input, options);
+    } catch (error) {
+      await this.trackThrownRun(error, resolved, options, input.target);
+      throw error;
+    }
     await this.trackIfEnabled(result, resolved, resolved.name, options, input.target);
     return result;
+  }
+
+  /**
+   * Record a run that ended in a throw, when the error carries usage that was already
+   * billed. Best-effort: a tracking failure here must never replace the original error,
+   * which is what the caller actually needs to see.
+   */
+  private async trackThrownRun(
+    error: unknown,
+    resolved: ResolvedDefinition,
+    options?: { trackResults?: boolean; project?: string },
+    target?: string,
+  ): Promise<void> {
+    if (!hasBilledMetrics(error)) return;
+    try {
+      const synthesized = {
+        name: resolved.name,
+        version: resolved.version,
+        definitionHash: resolved.hash,
+        agentType: 'validator',
+        decision: 'FAIL',
+        decisionCategory: 'negative',
+        score: null,
+        maxScore: null,
+        recommendations: [{
+          title: `Agent ${resolved.name} did not complete: ${formatErrorMessage(error)}`,
+          priority: 'critical',
+          severity: 'critical',
+          failureCode: 'PRA-FRA/C',
+        }],
+        metrics: crashMetrics(error),
+      } as unknown as AgentResult;
+      await this.trackIfEnabled(synthesized, resolved, resolved.name, options, target);
+    } catch (trackingError) {
+      this.logger.debug(`Tracking a thrown run failed (original error is being rethrown): ${formatErrorMessage(trackingError)}`);
+    }
   }
 
   /**
