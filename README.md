@@ -228,7 +228,7 @@ if (result.completeness !== 'complete') {
 ```
 
 - **`completeness`**: `'complete' | 'partial' | 'failed'`, derived from degradation markers (any `critical` ⇒ `failed`; any `degraded` ⇒ `partial`; else `complete`). Absent ⇒ treat as `complete`. **`PASS` + `partial` is a legitimate, gate-satisfying pass** (decided 2026-07-10, recorded in `types/degradation.ts`): the agent passed the scope it could cover — forced wrap-up and context eviction are normal operation on large repos. Gates never downgrade on completeness; consumers that care about evidence span read `completeness` alongside the decision.
-- **`degradationMarkers`**: typed `{ code, phase, severity, detail? }[]`. `code` is the stable contract (e.g. `budget.forced-wrap-up`, `context.evicted`, `steps.near-exhaustion`, `extraction.low-confidence`, `usage.provider-metadata-shape-drift`, `render.raw-yaml-fallback`); `detail` is human-only — never match on it. `phase` is `'resolution' | 'execution'`.
+- **`degradationMarkers`**: typed `{ code, phase, severity, detail? }[]`. `code` is the stable contract (e.g. `budget.forced-wrap-up`, `context.evicted`, `steps.near-exhaustion`, `extraction.low-confidence`, `usage.provider-metadata-shape-drift`, `provider.warnings`, `render.raw-yaml-fallback`); `detail` is human-only — never match on it. `phase` is `'resolution' | 'execution'`.
 
   > **`budget.forced-wrap-up` is emitted only when the wrap-up brake could actually engage.**
   > On an Anthropic structured-output run the provider overrides `toolChoice` to select its
@@ -642,6 +642,7 @@ import {
   DEFAULT_GATE_THRESHOLD,  // 70    — default workflow phase gate
   DEFAULT_MAX_STEPS,       // 50    — default tool-loop step ceiling
   DEFAULT_MAX_TOKENS,      // 16384 — default output tokens per generation call
+  DEFAULT_TEMPERATURE,     // 0     — default sampling temperature (omitted for reasoning models)
   STARTER_DEFINITIONS_DIR, // bundled starter definitions directory (offline quick start)
 } from '@uluops/core';
 ```
@@ -909,6 +910,7 @@ import {
   type DegradationSeverity,     // 'info' | 'degraded' | 'critical'
   // Usage metrics
   type ExecutionMetrics,        // type of result.metrics on every result type (camelCase)
+  type ExecutionMetricsLike,    // alias of ExecutionMetrics; names MaxStepsExhaustedError.billedMetrics
   type UsageMetrics,            // raw AI-provider usage on AIGenerateResult.usage (advanced; snake_case)
   type AIGenerateResult,        // return type of AIProvider.generate() (advanced)
   type AIGenerateOptions,       // parameter type of AIProvider.generate() (advanced)
@@ -951,7 +953,7 @@ The SDK provides a structured error hierarchy:
 | `CapabilityError` | `ModelCatalog.resolve()` | Resolved model lacks a required capability (e.g. tools, vision, extendedThinking) |
 | `PreflightError` | `CommandExecutor` (preflight phase) | Preflight check failed — missing env var, file not found, command unavailable |
 | `ExecutionError` | `AgentExecutor.execute()`, `CommandExecutor.execute()` | Agent execution failure or definition type mismatch. `error.partialResult` is typed `unknown` — no producer in this package populates it; do not rely on it |
-| `MaxStepsExhaustedError` | `AgentExecutor.execute()` | The tool loop hit the `maxSteps` ceiling while the model was still calling tools, leaving empty output. Subclass of `ExecutionError` (code `MAX_STEPS_EXHAUSTED`); carries `error.steps` and `error.finishReason`. Raise `maxSteps`, narrow the target, or lower the context budget so wrap-up triggers earlier |
+| `MaxStepsExhaustedError` | `AgentExecutor.execute()` | The tool loop hit the `maxSteps` ceiling while the model was still calling tools, leaving empty output. Subclass of `ExecutionError` (code `MAX_STEPS_EXHAUSTED`); carries `error.steps`, `error.finishReason`, and `error.billedMetrics?` (typed `ExecutionMetricsLike`) — the tokens and cost ALREADY BILLED before the ceiling was hit. A step-ceiling run is by construction the longest run the engine produces, so read `billedMetrics` rather than recording the run as free; it is **absent**, never zero, when nothing is known (absent is an admission, zero is a claim). Raise `maxSteps`, narrow the target, or lower the context budget so wrap-up triggers earlier |
 | `ParseError` | `OutputExtractor.extractWithMetadata()` | LLM output could not be parsed as structured JSON. Check `error.contentPreview` for raw output |
 | `SubmissionError` | `SubmissionClient` methods | Validation service rejected a submission. Use `SubmissionErrorCodes` to narrow by code |
 | `WorkflowError` | `WorkflowExecutor.execute()` | Phase gate failure. `error.context.partialResult` is `Partial<WorkflowResult> \| CommandResult[] \| undefined` — a partial aggregate object, a raw array of completed command results, or absent, depending which internal path threw |
@@ -974,6 +976,11 @@ try {
   } else if (error instanceof MaxStepsExhaustedError) {
     // Check this BEFORE ExecutionError — it is a subclass.
     console.error(`Hit the step ceiling (${error.steps} steps) — raise maxSteps or narrow the target.`);
+    // The run was fully billed before it threw. Record what it actually spent.
+    if (error.billedMetrics) {
+      console.error(`  spent: ${error.billedMetrics.totalEffectiveTokens} tokens`
+        + (error.billedMetrics.costUsd !== undefined ? ` / $${error.billedMetrics.costUsd}` : ' / cost unknown'));
+    }
   } else if (error instanceof ExecutionError) {
     console.error('Execution failed:', error.message);
     // error.partialResult is `unknown` and unpopulated by any producer here — don't read it.

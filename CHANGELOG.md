@@ -267,6 +267,29 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) 
   did not take effect, which makes this the missing instrument for the entire class of
   defect this release is about.
 
+- **`ExecutionMetricsLike`** — exported from the package root to name the shape of
+  `MaxStepsExhaustedError.billedMetrics`, so a consumer reading that field can type it. It
+  is an **alias** of `ExecutionMetrics`, not a second declaration.
+
+  > It shipped in review as a hand-written structural copy, justified by keeping the errors
+  > module dependency-free at the bottom of the import graph. **That justification was
+  > false** — `types/execution.ts` imports nothing from `errors/`, and `errors/index.ts`
+  > already type-only-imports four sibling result types. There was no cycle to avoid. The
+  > copy had *already* drifted before it shipped, omitting `harness?: string`, which is the
+  > entire argument against hand-maintained duplicates: the copy quietly stops describing
+  > the thing it copies and nothing fails. Caught by a reviewer who tested the stated
+  > justification instead of accepting it — recorded because the failure was the
+  > *reasoning*, not the code.
+
+- **README accuracy pass on the export surface.** `MaxStepsExhaustedError.billedMetrics`
+  now appears in the error table and the error-handling example; `ExecutionMetricsLike` in
+  the Advanced Exports block; `provider.warnings` in the degradation-marker vocabulary; and
+  `DEFAULT_TEMPERATURE` in the Exported Constants block — the last of these shipped in
+  0.41.0 and was simply never listed, so it is a docs fix rather than a new export.
+  *(A review pass initially reported `DEFAULT_TEMPERATURE`, `isApiErrorLike` and
+  `ApiErrorLike` as new root exports in this release; checked against `main`, all three were
+  already exported in 0.41.0. Only `ExecutionMetricsLike` is new.)*
+
 ### Design Notes
 
 > **Amended before release.** Finding 1's *reporting* half and the

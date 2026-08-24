@@ -1,4 +1,5 @@
 import { UluOpsError, type UluOpsErrorCode } from './UluOpsError.js';
+import type { ExecutionMetrics } from '../types/execution.js';
 import type { AgentResult } from '../types/agent.js';
 import type { CommandResult } from '../types/command.js';
 import type { WorkflowResult } from '../types/workflow.js';
@@ -129,25 +130,21 @@ export class MaxStepsExhaustedError extends ExecutionError {
 }
 
 /**
- * The execution-metrics shape errors may carry, declared structurally here rather than
- * imported from `../types/execution.js` so the errors module stays dependency-free at the
- * bottom of the import graph (types/execution imports from elsewhere; a cycle would be a
- * runtime hazard for a module every other one throws from).
+ * The execution-metrics shape errors may carry — DERIVED from `ExecutionMetrics`, not
+ * re-declared.
+ *
+ * It was originally written out structurally, justified as keeping this module
+ * dependency-free at the bottom of the import graph. **That justification was wrong**, in
+ * a way worth recording: `types/execution.ts` imports nothing from here, and this file
+ * already type-only-imports four sibling result types (see the imports above). There was
+ * never a cycle to avoid, and type-only imports are erased at emit regardless.
+ *
+ * The duplicate had ALREADY drifted before it shipped — it omitted `harness?: string`,
+ * which `ExecutionMetrics` declares. That is the whole argument against hand-maintained
+ * structural copies: the copy silently stops describing the thing it copies, and nothing
+ * fails. Deriving makes drift impossible rather than merely unlikely.
  */
-export interface ExecutionMetricsLike {
-  inputTokens: number;
-  outputTokens: number;
-  totalEffectiveTokens: number;
-  durationMs: number;
-  model: string;
-  cacheCreationTokens?: number;
-  cacheReadTokens?: number;
-  cachedInputTokens?: number;
-  reasoningOutputTokens?: number;
-  thinkingTokens?: number;
-  toolCallCount?: number;
-  costUsd?: number;
-}
+export type ExecutionMetricsLike = ExecutionMetrics;
 
 /** Thrown when a preflight check fails (e.g. missing env var, unavailable tool). */
 export class PreflightError extends UluOpsError {

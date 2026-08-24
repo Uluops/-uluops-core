@@ -6,7 +6,7 @@ import type { WorkflowDefinition, WorkflowResult } from '../../src/types/workflo
 import type { CommandDefinition } from '../../src/types/command.js';
 import type { AgentDefinition } from '../../src/types/agent.js';
 import type { RegistryClient } from '../../src/registry/RegistryClient.js';
-import { WorkflowError, ConfigurationError } from '../../src/errors/index.js';
+import { WorkflowError, ConfigurationError, MaxStepsExhaustedError } from '../../src/errors/index.js';
 import { makeCommandResult, makeCommandExecutor, makeNamedCommandExecutor, makeRegistry, makeAgentExecutor, makeValidatorResult } from './fixtures.js';
 
 function makeWorkflowDef(overrides?: Partial<WorkflowDefinition['workflow']>): ResolvedDefinition {
@@ -1622,5 +1622,68 @@ describe('WorkflowExecutor — cost roll-up degrades to unknown on a blocked pha
 
     expect(result.phases.some(p => p.decision === 'blocked')).toBe(false);
     expect(result.metrics.costUsd).toBeCloseTo(0.5, 10);
+  });
+});
+
+/**
+ * The crash placeholder must CONSUME what the error carries — workflow step crash.
+ *
+ * POSITIVE CONTROL: replace `crashMetrics(outcome.reason)` in the step-rejection handler
+ * with the literal zero-token object it used to inline, and the first test fails. Before
+ * it existed, that revert left the entire suite green — the third of three `crashMetrics`
+ * consumer sites with no coverage that could tell wired from unwired.
+ */
+describe('WorkflowExecutor — crashed step reads billed metrics off the error', () => {
+  const billed = {
+    inputTokens: 120_000, outputTokens: 8_000, totalEffectiveTokens: 128_000,
+    durationMs: 412_000, model: 'anthropic:claude-sonnet-4-5', costUsd: 0.48,
+  };
+
+  // Two commands in ONE phase: a survivor plus a crash, so the phase completes with a
+  // synthesized placeholder rather than throwing the all-steps-failed error.
+  const onePhaseTwoCommands = () => makeWorkflowDef({
+    orchestration: {
+      phases: [{
+        id: 'validate', name: 'Validation',
+        commands: ['code-validator', 'second-validator'],
+        parallel: true,
+        gate: { threshold: 0, aggregate: 'average', on_fail: 'continue' },
+      }],
+      on_failure: 'continue',
+    } as never,
+  });
+
+  it('reports a crashed step’s ALREADY-BILLED usage, not fabricated zeros', async () => {
+    const cmdExec = {
+      execute: vi.fn().mockImplementation((resolved: ResolvedDefinition) =>
+        resolved.name === 'code-validator'
+          ? Promise.resolve(makeCommandResult({ name: resolved.name }))
+          : Promise.reject(new MaxStepsExhaustedError('exhausted', 50, 'tool-calls', billed))),
+    } as unknown as CommandExecutor;
+
+    const result = await new WorkflowExecutor(cmdExec, makeRegistry())
+      .execute(onePhaseTwoCommands(), { target: '/tmp/test' });
+
+    const crashed = result.phases[0]!.commands.find(c => c.decision === 'FAIL');
+    expect(crashed).toBeDefined();
+    expect(crashed!.metrics.inputTokens).toBe(120_000);
+    expect(crashed!.metrics.costUsd).toBe(0.48);
+    expect(crashed!.metrics.inputTokens).not.toBe(0);
+  });
+
+  it('leaves a crashed step’s cost ABSENT when the error carries nothing', async () => {
+    const cmdExec = {
+      execute: vi.fn().mockImplementation((resolved: ResolvedDefinition) =>
+        resolved.name === 'code-validator'
+          ? Promise.resolve(makeCommandResult({ name: resolved.name }))
+          : Promise.reject(new Error('registry timeout'))),
+    } as unknown as CommandExecutor;
+
+    const result = await new WorkflowExecutor(cmdExec, makeRegistry())
+      .execute(onePhaseTwoCommands(), { target: '/tmp/test' });
+
+    const crashed = result.phases[0]!.commands.find(c => c.decision === 'FAIL');
+    expect(crashed!.metrics.costUsd).toBeUndefined();
+    expect(crashed!.metrics.costUsd).not.toBe(0);
   });
 });

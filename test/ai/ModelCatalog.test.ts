@@ -640,6 +640,84 @@ describe('ResolvedModel.cost (Phase 1a)', () => {
     expect(result.cost).toBeUndefined();
     expect(result.resolvedFrom).toBe('sonnet');
   });
+
+  // ── The sanitizer must be WIRED, not merely written ────────────────────────────────
+  //
+  // POSITIVE CONTROL: revert all three `sanitizeModelCost(...)` call sites in
+  // ModelCatalog.ts to `model.cost ?? undefined` and every test in this block fails.
+  // Confirmed by mutation — and before these existed, that same revert left the ENTIRE
+  // 1,168-test suite green.
+  //
+  // The sanitizer had eight unit tests and three production call sites with no coverage
+  // that could tell wired from unwired. The one resolve()-level cost test using a bad
+  // value passed `cost: null`, and `null ?? undefined` is identical to
+  // `sanitizeModelCost(null)` — invariant under the mutation, so it could not discriminate.
+  //
+  // This is the THIRD instance of one shape in this release: a well-tested helper whose
+  // wiring is exercised only through inputs that happen to survive the mutation. The other
+  // two were `crashMetrics` at the exhaustion throw and the assembly try/catch. A helper
+  // that is proven correct and not proven connected is not proven.
+  const malformed = { input: NaN, output: 15 } as never;
+
+  it('resolveExplicit path strips a malformed wire cost', async () => {
+    const sdk = mockSdk({ getModel: vi.fn().mockResolvedValue(makeModel({ cost: malformed })) });
+    const result = await new ModelCatalog(sdk).resolve('anthropic:claude-sonnet-4-5-20250929');
+
+    expect(result.cost).toBeUndefined();
+    // The failure this prevents: NaN reaching `output_tokens * cost.output`, whose product
+    // JSON-serializes to null and is then indistinguishable from an unpriced model.
+    expect(Number.isNaN(result.cost?.input as number)).toBe(false);
+  });
+
+  it('tier-resolution path strips a malformed wire cost', async () => {
+    const sdk = mockSdk({
+      resolveAlias: vi.fn().mockRejectedValue(makeNotFoundError()),
+      listModels: vi.fn().mockResolvedValue({ models: [makeModel({ tier: 'budget', cost: malformed })] }),
+    });
+    const result = await new ModelCatalog(sdk).resolve('budget');
+    expect(result.cost).toBeUndefined();
+  });
+
+  it('alias path strips a malformed wire cost', async () => {
+    const sdk = mockSdk({
+      resolveAlias: vi.fn().mockResolvedValue(
+        makeAliasResolution({ model: makeModel({ cost: malformed }), target: 'anthropic:claude-haiku-4-5' }),
+      ),
+    });
+    const result = await new ModelCatalog(sdk).resolve('haiku');
+    expect(result.cost).toBeUndefined();
+  });
+
+  it('strips a negative rate through resolve(), not just in isolation', async () => {
+    // A negative cost SUBTRACTS from a pipeline roll-up rather than merely misreporting
+    // one agent — worse than a NaN, which at least blanks visibly.
+    const sdk = mockSdk({
+      getModel: vi.fn().mockResolvedValue(makeModel({ cost: { input: -3, output: 15 } as never })),
+    });
+    const result = await new ModelCatalog(sdk).resolve('anthropic:claude-sonnet-4-5-20250929');
+    expect(result.cost).toBeUndefined();
+  });
+
+  it('still carries a WELL-FORMED cost through resolve() — the negative control', async () => {
+    // Proves the guard strips malformed rows rather than every row. Without this, the
+    // assertions above would pass for a sanitizer that returned undefined unconditionally.
+    const sdk = mockSdk({ getModel: vi.fn().mockResolvedValue(makeModel({ cost })) });
+    const result = await new ModelCatalog(sdk).resolve('anthropic:claude-sonnet-4-5-20250929');
+    expect(result.cost).toEqual(cost);
+  });
+
+  it('drops only the unusable cache rate through resolve(), keeping the model priced', async () => {
+    const sdk = mockSdk({
+      getModel: vi.fn().mockResolvedValue(
+        makeModel({ cost: { input: 3, output: 15, cacheRead: NaN, cacheWrite: 3.75 } as never }),
+      ),
+    });
+    const result = await new ModelCatalog(sdk).resolve('anthropic:claude-sonnet-4-5-20250929');
+
+    expect(result.cost).toBeDefined();
+    expect(result.cost!.cacheRead).toBeUndefined();
+    expect(result.cost!.cacheWrite).toBe(3.75);
+  });
 });
 
 /**

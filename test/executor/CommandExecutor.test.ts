@@ -1,5 +1,6 @@
 import { describe, it, expect, vi } from 'vitest';
 import { CommandExecutor } from '../../src/executor/CommandExecutor.js';
+import { MaxStepsExhaustedError } from '../../src/errors/index.js';
 import type { AgentExecutor } from '../../src/executor/AgentExecutor.js';
 import type { ResolvedDefinition } from '../../src/types/registry.js';
 import type { AgentResult } from '../../src/types/agent.js';
@@ -643,6 +644,58 @@ describe('CommandExecutor', () => {
       // The crash is visible as a critical recommendation.
       const crashRec = result.recommendations.find(r => r.title.includes('agent-b@1.0.0 failed'));
       expect(crashRec).toMatchObject({ severity: 'critical', priority: 'critical' });
+    });
+
+    // ── The crash placeholder must CONSUME what the error carries ──────────────────
+    //
+    // POSITIVE CONTROL: replace `crashMetrics(outcome.reason)` at this site with the
+    // literal `{inputTokens: 0, outputTokens: 0, totalEffectiveTokens: 0, durationMs: 0,
+    // model: 'unknown'}` it used to inline, and both tests below fail. Before they
+    // existed, that revert left the ENTIRE 1,174-test suite green.
+    //
+    // Found by a systematic sweep of every call site this release introduced, after two
+    // earlier reviews each surfaced one more instance of the same shape: a helper proven
+    // correct in isolation and never proven CONNECTED. crashMetrics had six unit tests and
+    // three consumer sites, none of which could tell wired from unwired.
+    it('reports a crashed agent’s ALREADY-BILLED usage rather than fabricating zeros', async () => {
+      const billed = {
+        inputTokens: 120_000, outputTokens: 8_000, totalEffectiveTokens: 128_000,
+        durationMs: 412_000, model: 'anthropic:claude-sonnet-4-5', costUsd: 0.48,
+      };
+      const agentExec = {
+        execute: vi.fn()
+          .mockResolvedValueOnce(makeValidatorResult({ name: 'agent-a', score: 90 }))
+          .mockRejectedValueOnce(new MaxStepsExhaustedError('exhausted', 50, 'tool-calls', billed)),
+      } as unknown as AgentExecutor;
+
+      const result = await new CommandExecutor(agentExec, makeRegistry()).execute(makeCommandDef({
+        agents: ['agent-a@1.0.0', 'agent-b@1.0.0'],
+        execution: { model: { default: 'sonnet' }, timeout: 30000, thresholds: { pass: 75, warn: 50 }, sequential: false },
+      }), { target: '/tmp/test' });
+
+      // A step-ceiling run is the most expensive run class the engine produces; recording
+      // it as zero tokens is how that cost silently vanished from the roll-up.
+      expect(result.metrics.inputTokens).toBeGreaterThanOrEqual(120_000);
+      expect(result.metrics.totalEffectiveTokens).toBeGreaterThanOrEqual(128_000);
+    });
+
+    it('leaves the command cost UNKNOWN when a crashed agent carries no metrics', async () => {
+      // The other half: an ordinary crash reports zero tokens (bounded) but must NOT
+      // assert a $0 cost, so the roll-up degrades to undefined instead of presenting a
+      // partial sum as a total.
+      const agentExec = {
+        execute: vi.fn()
+          .mockResolvedValueOnce(makeValidatorResult({ name: 'agent-a', score: 90 }))
+          .mockRejectedValueOnce(new Error('registry timeout')),
+      } as unknown as AgentExecutor;
+
+      const result = await new CommandExecutor(agentExec, makeRegistry()).execute(makeCommandDef({
+        agents: ['agent-a@1.0.0', 'agent-b@1.0.0'],
+        execution: { model: { default: 'sonnet' }, timeout: 30000, thresholds: { pass: 75, warn: 50 }, sequential: false },
+      }), { target: '/tmp/test' });
+
+      expect(result.metrics.costUsd).toBeUndefined();
+      expect(result.metrics.costUsd).not.toBe(0);
     });
 
     it('throws when ALL parallel agents crash', async () => {

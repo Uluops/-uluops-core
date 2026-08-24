@@ -3,7 +3,7 @@ import { PipelineExecutor } from '../../src/executor/PipelineExecutor.js';
 import type { ResolvedDefinition } from '../../src/types/registry.js';
 import type { PipelineDefinition } from '../../src/types/pipeline.js';
 import type { CommandResult } from '../../src/types/command.js';
-import { PipelineError } from '../../src/errors/index.js';
+import { PipelineError, MaxStepsExhaustedError } from '../../src/errors/index.js';
 import type { AgentExecutor } from '../../src/executor/AgentExecutor.js';
 import type { CommandExecutor } from '../../src/executor/CommandExecutor.js';
 import type { RegistryClient } from '../../src/registry/RegistryClient.js';
@@ -1313,5 +1313,63 @@ describe('PipelineExecutor — cost roll-up degrades to unknown on a crashed sta
     expect(result.stages[1]!.status).toBe('skipped');
     expect(result.metrics.costUsd).toBeCloseTo(0.25, 10);
     expect(result.metrics.costUsd).not.toBeUndefined();
+  });
+});
+
+/**
+ * The crash placeholder must CONSUME what the error carries — inline-agents stage.
+ *
+ * POSITIVE CONTROL: replace `crashMetrics(outcome.reason)` in `executeAgentsStage`'s
+ * rejection handler with the literal zero-token object it used to inline, and both tests
+ * below fail. Before they existed, that revert left the entire suite green.
+ *
+ * Found by sweeping EVERY call site this release introduced, after two separate reviews
+ * each surfaced one more instance of the same shape. `crashMetrics` had six unit tests and
+ * three consumer sites, and not one of the three could tell wired from unwired. A helper
+ * proven correct and not proven CONNECTED is not proven.
+ */
+describe('PipelineExecutor — inline-agent crash reads billed metrics off the error', () => {
+  const billed = {
+    inputTokens: 120_000, outputTokens: 8_000, totalEffectiveTokens: 128_000,
+    durationMs: 412_000, model: 'anthropic:claude-sonnet-4-5', costUsd: 0.48,
+  };
+
+  const agentsStageDef = () => makePipelineDef({
+    stages: [{
+      id: 'panel', name: 'Panel', type: 'agents' as const,
+      agents: [{ ref: 'a@1' }, { ref: 'b@1' }],
+      gate: { threshold: 0, aggregate: 'min' as const, on_failure: 'warn' as const },
+    }],
+  });
+
+  it('reports a crashed inline agent’s ALREADY-BILLED usage, not fabricated zeros', async () => {
+    const agentExecutor = {
+      execute: vi.fn()
+        .mockResolvedValueOnce(makeValidatorResult({ name: 'a', score: 90 }))
+        .mockRejectedValueOnce(new MaxStepsExhaustedError('exhausted', 50, 'tool-calls', billed)),
+    } as unknown as AgentExecutor;
+
+    const result = await new PipelineExecutor(
+      makeWorkflowExecutor(), makeCommandExecutor(), agentExecutor, makeRegistry(), noopLogger,
+    ).execute(agentsStageDef(), { target: '/tmp' });
+
+    // The step-ceiling run is the most expensive class the engine produces. Recording it
+    // as zero tokens is precisely how that cost vanished from the roll-up.
+    expect(result.metrics.inputTokens).toBeGreaterThanOrEqual(120_000);
+  });
+
+  it('leaves cost UNKNOWN when the crashed inline agent carries no metrics', async () => {
+    const agentExecutor = {
+      execute: vi.fn()
+        .mockResolvedValueOnce(makeValidatorResult({ name: 'a', score: 90 }))
+        .mockRejectedValueOnce(new Error('registry timeout')),
+    } as unknown as AgentExecutor;
+
+    const result = await new PipelineExecutor(
+      makeWorkflowExecutor(), makeCommandExecutor(), agentExecutor, makeRegistry(), noopLogger,
+    ).execute(agentsStageDef(), { target: '/tmp' });
+
+    expect(result.metrics.costUsd).toBeUndefined();
+    expect(result.metrics.costUsd).not.toBe(0);
   });
 });
