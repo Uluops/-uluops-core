@@ -222,6 +222,97 @@ describe('AIProvider', () => {
       expect((await provider.generate({ model: 'sonnet', system: 's', prompt: 'p' })).usageShapeDrift).toBeUndefined();
     });
 
+    /**
+     * The detector iterated `RECOGNIZED_USAGE_KEYS` — three hardcoded names — so a provider
+     * added through `ai.additionalProviders` was never looked at. An instrument enumerating
+     * by NAME over a closed list, aimed at a population that is open by construction: the
+     * operator supplies the names, and the table cannot grow to meet them. The check could
+     * only ever confirm the three it already knew.
+     *
+     * The consequence is not cosmetic. mapUsage dispatches to three extract tiers by name,
+     * so an unlisted provider's cache and reasoning counts are dropped, the metrics read
+     * zero, and computeCostUsd undercounts by exactly the cache-served pool it never saw —
+     * silently, with no marker.
+     *
+     * POSITIVE CONTROL: restore the `Object.entries(AIProvider.RECOGNIZED_USAGE_KEYS)` loop
+     * and the first three fail — the drift array comes back undefined. The last is the
+     * negative control and passes either way.
+     */
+    it('flags a provider present in the payload that no extract tier reads', async () => {
+      const { generateText } = await import('ai');
+      vi.mocked(generateText).mockResolvedValue({
+        text: 'ok',
+        usage: { inputTokens: 100, outputTokens: 50 },
+        steps: [],
+        finishReason: 'stop',
+        // A provider added via ai.additionalProviders, reporting real cache tokens that
+        // nothing in core will ever read.
+        providerMetadata: { mistral: { cachedTokens: 4_000, reasoningTokens: 200 } },
+      } as never);
+
+      const warn = vi.fn();
+      const provider = new AIProvider(mockConfig, mockCatalog(), { debug() {}, info() {}, warn, error() {} });
+      const result = await provider.generate({ model: 'sonnet', system: 's', prompt: 'p' });
+
+      expect(result.usageShapeDrift).toEqual(['mistral']);
+      // The message must NOT say "unrecognized shape" — that sends the reader looking for
+      // a rename that never happened. Nothing was renamed; nothing was ever read.
+      expect(warn).toHaveBeenCalledWith(expect.stringContaining('NO extract tier reads it'));
+      expect(warn).toHaveBeenCalledWith(expect.stringContaining('additionalProviders'));
+      expect(warn).not.toHaveBeenCalledWith(expect.stringContaining('its shape is unrecognized'));
+    });
+
+    it('reports an unread provider ALONGSIDE a drifted known one, not instead of it', async () => {
+      const { generateText } = await import('ai');
+      vi.mocked(generateText).mockResolvedValue({
+        text: 'ok',
+        usage: { inputTokens: 10, outputTokens: 5 },
+        steps: [],
+        finishReason: 'stop',
+        providerMetadata: {
+          anthropic: { cache_creation: 5 },        // renamed — drifted
+          groq: { somethingUseful: 1 },            // unlisted — unread
+        },
+      } as never);
+
+      const provider = new AIProvider(mockConfig, mockCatalog(), noopLogger);
+      const result = await provider.generate({ model: 'sonnet', system: 's', prompt: 'p' });
+
+      expect(result.usageShapeDrift).toEqual(expect.arrayContaining(['anthropic', 'groq']));
+      expect(result.usageShapeDrift).toHaveLength(2);
+    });
+
+    it('warns once per unlisted provider per process, like drift', async () => {
+      const { generateText } = await import('ai');
+      vi.mocked(generateText).mockResolvedValue({
+        text: 'ok', usage: { inputTokens: 1, outputTokens: 1 }, steps: [], finishReason: 'stop',
+        providerMetadata: { cohere: { tokens: 1 } },
+      } as never);
+
+      const warn = vi.fn();
+      const provider = new AIProvider(mockConfig, mockCatalog(), { debug() {}, info() {}, warn, error() {} });
+      await provider.generate({ model: 'sonnet', system: 's', prompt: 'p' });
+      const second = await provider.generate({ model: 'sonnet', system: 's', prompt: 'p' });
+
+      // The per-run flag keeps flowing; the log does not repeat.
+      expect(second.usageShapeDrift).toEqual(['cohere']);
+      expect(warn.mock.calls.filter(c => String(c[0]).includes('NO extract tier reads it'))).toHaveLength(1);
+    });
+
+    it('an EMPTY unlisted provider block is not flagged — the negative control', async () => {
+      // Without this, "unlisted providers are flagged" would also pass for an
+      // implementation that flagged every payload key unconditionally, including the
+      // legitimately-omitted case the detector was explicitly built to stay quiet about.
+      const { generateText } = await import('ai');
+      vi.mocked(generateText).mockResolvedValueOnce({
+        text: 'ok', usage: { inputTokens: 1, outputTokens: 1 }, steps: [], finishReason: 'stop',
+        providerMetadata: { mistral: {} },
+      } as never);
+
+      const provider = new AIProvider(mockConfig, mockCatalog(), noopLogger);
+      expect((await provider.generate({ model: 'sonnet', system: 's', prompt: 'p' })).usageShapeDrift).toBeUndefined();
+    });
+
     // ── Structured-output-with-tools capability gating (Option C) ──────────
     // useStructuredOutput is true only when the model supports structured output
     // AND it is not the case that tools are present on a model whose

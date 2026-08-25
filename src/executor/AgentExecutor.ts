@@ -479,7 +479,11 @@ export class AgentExecutor {
         // numbers may read zero for these providers, but the run's coverage
         // and decision are untouched (issue adaaa4b9).
         severity: 'info',
-        detail: `Unrecognized usage-metadata shape from: ${result.usageShapeDrift.join(', ')}. Token/cache/thinking metrics may silently read zero.`,
+        // Covers two causes with one consequence: a KNOWN provider whose fields were
+        // renamed (drift), and a provider with no extract tier at all (typically added
+        // via ai.additionalProviders). The per-provider logger.warn in
+        // detectUsageShapeDrift names which; this marker states the effect they share.
+        detail: `Usage metadata from ${result.usageShapeDrift.join(', ')} was not read (renamed fields, or no extract tier for that provider). Token/cache/thinking metrics may silently read zero and cache-served tokens may be unpriced.`,
       });
     }
 

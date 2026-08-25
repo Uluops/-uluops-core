@@ -1548,15 +1548,53 @@ export class AIProvider {
    *
    * (This block previously claimed both "fixed" and "recorded as a decision to make" about
    * the same live code. Both halves were true of different providers; neither said so.)
+   *
+   * SCOPE WIDENED 2026-08-24. It also now reports providers that are present in the
+   * payload but have NO entry in the table at all — the `ai.additionalProviders`
+   * population. Those were previously invisible to it, because it iterated the table
+   * rather than the payload, so the check could only ever confirm the three names it
+   * already knew. They are reported as UNREAD rather than drifted; see the branch below.
    */
   private detectUsageShapeDrift(providerMetadata?: Record<string, unknown>): string[] {
     if (!providerMetadata) return [];
     const drifted: string[] = [];
-    for (const [provider, recognized] of Object.entries(AIProvider.RECOGNIZED_USAGE_KEYS)) {
+    // Iterate what the PAYLOAD contains, not what the table lists.
+    //
+    // This walked `Object.entries(RECOGNIZED_USAGE_KEYS)` — three hardcoded names — so a
+    // provider added through `ai.additionalProviders` was never looked at. That is an
+    // instrument enumerating by NAME over a closed list while the population it must cover
+    // is open by construction: the operator adds the names, and the table cannot grow to
+    // meet them. Walking the payload's own keys is the closed enumeration — a metadata
+    // block is either there or it is not.
+    for (const provider of Object.keys(providerMetadata)) {
+      const recognized = AIProvider.RECOGNIZED_USAGE_KEYS[provider];
       const meta = providerMetadata[provider];
       if (!meta || typeof meta !== 'object') continue;
       const keys = Object.keys(meta);
       if (keys.length === 0) continue;
+
+      // A provider with no entry in the table has no extract tier either — mapUsage
+      // dispatches to three by name (extractAnthropicUsage / OpenAI / Google). So this
+      // block is not DRIFTED, it is UNREAD: whatever cache or reasoning counts it carries
+      // are dropped, the metrics read zero, and computeCostUsd undercounts by exactly the
+      // cache-served pool it never saw. Different diagnosis, same consequence and same
+      // remedy channel as drift, so it rides the same marker — with its own message,
+      // because "unrecognized shape" would send the reader to look for a rename that
+      // never happened.
+      if (!recognized) {
+        drifted.push(provider);
+        if (!this.driftWarned.has(provider)) {
+          this.driftWarned.add(provider);
+          this.logger.warn(
+            `Provider metadata for "${provider}" is present but NO extract tier reads it ` +
+            `(keys: ${keys.slice(0, 8).join(', ')}) — cache and thinking metrics for this ` +
+            `provider read zero, and any cache-served tokens it reports are not priced. ` +
+            `This is expected for a provider added via ai.additionalProviders; add an ` +
+            `extract tier in AIProvider.mapUsage to account for it.`,
+          );
+        }
+        continue;
+      }
 
       // Assert PRESENCE of the keys a tier depends on, rather than mere overlap with a
       // list that also contains envelope keys. A provider that declares dependencies is

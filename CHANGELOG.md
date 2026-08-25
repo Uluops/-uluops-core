@@ -643,6 +643,21 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) 
   **stop** subtracting a cached figure from it; doing so now undercounts. `total_effective` is
   `input + output + cache_creation`, unchanged in meaning and now correct in value.
 
+- **The usage-shape drift detector could not see the providers it was most needed for.** It
+  iterated its own hardcoded table of three provider names, so a provider added through
+  `ai.additionalProviders` was never examined — an instrument enumerating by NAME over a
+  closed list, aimed at a population that is open by construction. It now iterates the
+  metadata payload's own keys.
+
+  The gap was not cosmetic: `mapUsage` dispatches to three extract tiers by name, so an
+  unlisted provider's cache and reasoning counts were dropped, its metrics read zero, and
+  `computeCostUsd` undercounted by exactly the cache-served pool it never saw — with no
+  marker of any kind. Such providers are now reported as UNREAD (distinct wording from
+  drift: nothing was renamed, nothing was ever read) and ride the same
+  `usage.provider-metadata-shape-drift` marker, whose `detail` text now covers both causes.
+  An empty block from an unlisted provider is still not flagged, matching the detector's
+  existing rule that legitimately-omitted fields are not drift.
+
 - **`PipelineHandle.cancel()` stopped nothing that cost money.** It set a status flag that
   `executeAsync` read only BETWEEN stages, so the agent currently talking to the model ran
   to completion and was billed in full — cancelling stopped the *next* stage from starting
