@@ -1436,6 +1436,50 @@ describe('UluOpsClient — a thrown run with billed usage still reaches the trac
     expect(result.score).toBeNull();
   });
 
+  it('records the crashed agent\'s REAL type, not a hardcoded validator', async () => {
+    // `agentType` was the literal `'validator'`. Type-valid for every agent kind and
+    // false for all but one: a crashed GENERATOR was filed as a validator, so the crash
+    // record misreported the one thing about the run that was never in doubt — which
+    // definition it was. Same fabricated-provenance class as the rest of this release.
+    //
+    // POSITIVE CONTROL: restore `agentType: 'validator'` in trackThrownRun and this fails.
+    const client = new UluOpsClient({ apiKey: 'ulr_test-key-012345678901', trackingEnabled: true });
+    const generatorDef = {
+      ...makeResolvedDef('agent', 'popper-generator'),
+      agentType: 'generator',
+    } as ResolvedDefinition;
+    mockRegistryResolve.mockResolvedValue(generatorDef);
+    mockAgentExecutorExecute.mockRejectedValue(
+      new MaxStepsExhaustedError('exhausted', 50, 'tool-calls', billed),
+    );
+    mockSubmissionSubmit.mockResolvedValue({ runId: 'r', runNumber: 1 });
+
+    await expect(client.runAgent('popper-generator', '/tmp/test'))
+      .rejects.toBeInstanceOf(MaxStepsExhaustedError);
+
+    const result = (mockSubmissionSubmit.mock.calls[0]![0] as Record<string, any>)['result'];
+    expect(result.agentType).toBe('generator');
+    expect(result.agentType).not.toBe('validator');
+  });
+
+  it('falls back to validator only when the registry declares no agentType', async () => {
+    // The negative control for the line above: the fallback must still exist, because
+    // `ResolvedDefinition.agentType` is optional and an absent type cannot be invented.
+    const client = new UluOpsClient({ apiKey: 'ulr_test-key-012345678901', trackingEnabled: true });
+    const untyped = { ...makeResolvedDef('agent', 'mystery'), agentType: undefined } as ResolvedDefinition;
+    mockRegistryResolve.mockResolvedValue(untyped);
+    mockAgentExecutorExecute.mockRejectedValue(
+      new MaxStepsExhaustedError('exhausted', 50, 'tool-calls', billed),
+    );
+    mockSubmissionSubmit.mockResolvedValue({ runId: 'r', runNumber: 1 });
+
+    await expect(client.runAgent('mystery', '/tmp/test'))
+      .rejects.toBeInstanceOf(MaxStepsExhaustedError);
+
+    const result = (mockSubmissionSubmit.mock.calls[0]![0] as Record<string, any>)['result'];
+    expect(result.agentType).toBe('validator');
+  });
+
   it('does NOT submit for an ordinary error carrying no billed usage', async () => {
     // The negative control: tracking a crash that billed nothing would fabricate a run
     // record out of an error, which is the same class of invention in the other direction.

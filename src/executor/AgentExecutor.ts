@@ -77,6 +77,7 @@ export class AgentExecutor {
    * @throws {ModelNotFoundError} When the model alias cannot be resolved via the model catalog
    * @throws {CapabilityError} When the resolved model lacks required capabilities
    * @throws {ParseError} When the LLM output cannot be extracted as structured JSON
+   * @throws {CancelledError} When `options.abortSignal` fires while the request is in flight
    */
   async execute(
     resolved: ResolvedDefinition,

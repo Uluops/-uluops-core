@@ -62,10 +62,12 @@ export class CommandExecutor {
    *
    * @param resolved - Registry-resolved command definition (must have `type: 'command'`).
    * @param input - Execution input; `target` is the absolute project path.
-   * @param overrides - Optional runtime overrides; `model` wins over the definition's default model.
+   * @param overrides - Optional runtime overrides; `model` wins over the definition's default
+   *                    model, and `abortSignal` is forwarded to every agent this command dispatches.
    * @returns The aggregated {@link CommandResult} with per-agent scores, decision, and recommendations.
    * @throws {ExecutionError} If the resolved definition is not a command.
    * @throws {PreflightError} If a preflight check fails before agents run.
+   * @throws {CancelledError} If `overrides.abortSignal` fires while an agent is in flight.
    */
   async execute(
     resolved: ResolvedDefinition,

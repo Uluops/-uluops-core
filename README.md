@@ -654,6 +654,24 @@ import {
 } from '@uluops/core';
 ```
 
+Upstream stage-forwarding bounds (see [Stage context forwarding](#pipelines)) are exported
+from the same entry point:
+
+```typescript
+import {
+  UPSTREAM_STAGE_SLICE_CAP,      // per-stage cap for the default recommendation slice
+  UPSTREAM_STAGE_FULL_CAP,       // 24000 — per-stage cap when the producer declared `forward: full`
+  UPSTREAM_FULL_HEAD_CHARS,      // 16000 — head retained from a `forward: full` rawOutput
+  UPSTREAM_FULL_TAIL_CHARS,      //  8000 — tail retained; the middle is the safest loss
+  UPSTREAM_TOTAL_CAP,            // 32000 — cap on the whole `## Upstream Analysis` section
+  UPSTREAM_MAX_RECOMMENDATIONS,  // 5     — recommendations forwarded per upstream agent result
+  UPSTREAM_KILL_SWITCH_ENV,      // env var name that disables forwarding fleet-wide
+} from '@uluops/core';
+
+// Prefer the constant over the literal string, so the name stays in one place:
+process.env[UPSTREAM_KILL_SWITCH_ENV] = '1';
+```
+
 ### Direct Executor Usage
 
 ```typescript
@@ -1024,6 +1042,30 @@ try {
   }
 }
 ```
+
+Every error also carries a stable `code`, which is what to switch on when you want
+exhaustive narrowing rather than a chain of `instanceof` checks — or when the error crossed
+a serialization boundary (`toJSON()` preserves `code`, but not the prototype, so `instanceof`
+does not survive the trip):
+
+```typescript
+import { UluOpsErrorCodes, type UluOpsErrorCode } from '@uluops/core';
+
+function describe(code: UluOpsErrorCode): string {
+  switch (code) {
+    case UluOpsErrorCodes.CANCELLED:          return 'You stopped this run.';
+    case UluOpsErrorCodes.MAX_STEPS_EXHAUSTED: return 'Hit the step ceiling — raise maxSteps.';
+    case UluOpsErrorCodes.CONFIGURATION_ERROR: return 'Check your config.';
+    default:                                   return 'Unhandled UluOps error.';
+  }
+}
+```
+
+Note the `default` is what makes the above safe, not exhaustive — it absorbs any code you
+did not name, including ones added in a later release. If you would rather a new code be a
+compile error than a silent fallthrough, drop the `default` and assign the scrutinee to
+`never` in its place; `UluOpsErrorCode` is a closed union, so TypeScript will then name the
+members you have not handled.
 
 ### Re-exported from @uluops/sdk-core
 

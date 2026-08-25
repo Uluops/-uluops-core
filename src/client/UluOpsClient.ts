@@ -177,7 +177,12 @@ export class UluOpsClient {
         name: resolved.name,
         version: resolved.version,
         definitionHash: resolved.hash,
-        agentType: 'validator',
+        // Derived, not hardcoded. This was a literal `'validator'`, which is type-valid
+        // (every AgentType is) and semantically false for any other kind: a crashed
+        // GENERATOR was filed as a validator, so the crash record misreported the one
+        // thing about the run that was never in doubt. Falls back to 'validator' only
+        // when the registry itself did not declare a type.
+        agentType: resolved.agentType ?? 'validator',
         decision: 'FAIL',
         decisionCategory: 'negative',
         score: null,

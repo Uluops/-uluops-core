@@ -16,6 +16,201 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) 
 > silent-drift failure mode this release exists to correct. (`uluops-registry-api` and
 > `uluops-docs` carry exact pins and are unaffected either way.)
 
+### Added
+
+- **`CancelledError`** (`code: 'CANCELLED'`, extends `ExecutionError`) — exported from the
+  package root alongside the other twelve error classes. Raised when a run
+  stops because the caller asked it to. Distinguishes a cancel from `TimeoutError`; see the
+  Fixed entry above for why they were conflated. `UluOpsErrorCodes` gains `CANCELLED`.
+
+- **`ExecutionOptions.abortSignal`** and **`AIGenerateOptions.abortSignal`** — a
+  caller-supplied cancellation signal, threaded to the provider call. It is **combined**
+  with the `timeoutMs` signal via `AbortSignal.any` rather than replacing it: a cancellable
+  run still times out, and a run with a timeout is still cancellable. `PipelineExecutor.start`
+  likewise merges any caller signal with the handle's own controller, so passing your own
+  signal does not disable `handle.cancel()`.
+
+- **`CommandExecutor.execute`** takes `abortSignal` on its `overrides` argument, and
+  **`WorkflowExecutor.execute`** takes a new optional third argument `{ abortSignal }`.
+  Both are optional and trailing — existing callers compile and behave unchanged, and simply
+  remain uncancellable, which is what they are today. The signal is a parameter rather than
+  executor state because one executor instance serves concurrent runs; a per-run field would
+  let one caller's cancel abort another caller's work.
+
+- **`AIGenerateResult.providerWarnings`** — the AI SDK reports settings it could not
+  honor (`temperature is not supported when thinking is enabled`, clamped `max_tokens`,
+  unknown context-management strategy, cache-breakpoint limits) on `result.warnings`.
+  Core discarded that array entirely. It now surfaces on the result and logs at `warn`.
+
+  This matters more than it looks: provider option schemas parse with a plain Zod object
+  in **strip** mode — no `.strict()`, no `.passthrough()` — so an unknown or renamed
+  option key is silently dropped before the request is built. It does not error and it
+  does not warn. A provider warning is therefore the ONLY runtime evidence that a setting
+  did not take effect, which makes this the missing instrument for the entire class of
+  defect this release is about.
+
+- **`ExecutionMetricsLike`** — exported from the package root to name the shape of
+  `MaxStepsExhaustedError.billedMetrics`, so a consumer reading that field can type it. It
+  is an **alias** of `ExecutionMetrics`, not a second declaration.
+
+  > It shipped in review as a hand-written structural copy, justified by keeping the errors
+  > module dependency-free at the bottom of the import graph. **That justification was
+  > false** — `types/execution.ts` imports nothing from `errors/`, and `errors/index.ts`
+  > already type-only-imports four sibling result types. There was no cycle to avoid. The
+  > copy had *already* drifted before it shipped, omitting `harness?: string`, which is the
+  > entire argument against hand-maintained duplicates: the copy quietly stops describing
+  > the thing it copies and nothing fails. Caught by a reviewer who tested the stated
+  > justification instead of accepting it — recorded because the failure was the
+  > *reasoning*, not the code.
+
+- **README accuracy pass on the export surface.** `MaxStepsExhaustedError.billedMetrics`
+  now appears in the error table and the error-handling example; `ExecutionMetricsLike` in
+  the Advanced Exports block; `provider.warnings` in the degradation-marker vocabulary; and
+  `DEFAULT_TEMPERATURE` in the Exported Constants block — the last of these shipped in
+  0.41.0 and was simply never listed, so it is a docs fix rather than a new export.
+  *(A review pass initially reported `DEFAULT_TEMPERATURE`, `isApiErrorLike` and
+  `ApiErrorLike` as new root exports in this release; checked against `main`, all three were
+  already exported in 0.41.0. Only `ExecutionMetricsLike` is new.)*
+
+### Changed
+
+- **`UsageMetrics.input_tokens` is now CACHE-EXCLUSIVE** — a semantics change with no signature
+  change, so nothing downstream fails to compile. Consumers computing their own totals must
+  **stop** subtracting a cached figure from it; doing so now undercounts. `total_effective` is
+  `input + output + cache_creation`, unchanged in meaning and now correct in value.
+
+- **A crashed agent was recorded as a validator whatever it actually was.**
+  `trackThrownRun` hardcoded `agentType: 'validator'` — type-valid for every agent kind and
+  semantically false for all but one, so a crashed generator, explorer or forecaster was
+  filed under the wrong type. It now derives from `resolved.agentType`, falling back to
+  `'validator'` only when the registry declared none (the field is optional and an absent
+  type cannot be invented).
+
+- **Crash telemetry submitted a record that was not a valid `AgentResult`.**
+  `UluOpsClient.trackThrownRun` built its synthesized record with
+  `} as unknown as AgentResult` over a literal missing two REQUIRED fields, `type` and
+  `durationMs`. The double assertion silenced the compiler about an object that was
+  genuinely incomplete, and the omission was READ downstream, not merely tolerated:
+  `SubmissionClient` stamps `definitionType: result.type` (undefined) and gates analysis
+  extraction on `isAgentResult`, which tests `result.type === 'agent'` and returned false.
+  So the crash record — for `MaxStepsExhaustedError`, by construction the most expensive run
+  class the engine produces — was submitted with no definition type and with its analysis
+  summary and records dropped. The failure was inside the telemetry written to preserve a
+  failure. Now built as a real `AgentResult` with no cast, so omitting a required field is a
+  compile error.
+
+- **The OpenAI shell adapter collapsed every non-timeout termination with a ternary.**
+  `executeShellAsOpenAIResult` special-cased `'timeout'` and let everything else fall into
+  `{ type: 'exit', exitCode }`, so `'spawn-failure'` — added in this same release — joined
+  `'signal'` and `'output-limit'` there with no compile error and no test. The collapse
+  itself is forced (the SDK outcome union has only two members) and is unchanged; it is now
+  an exhaustive `switch` with a `never` guard, so a future termination fails to compile
+  until someone decides where it belongs, and each collapsed case is pinned by a test
+  asserting `stderr` carries what the exit code cannot.
+
+- **The usage-shape drift detector could not see the providers it was most needed for.** It
+  iterated its own hardcoded table of three provider names, so a provider added through
+  `ai.additionalProviders` was never examined — an instrument enumerating by NAME over a
+  closed list, aimed at a population that is open by construction. It now iterates the
+  metadata payload's own keys.
+
+  The gap was not cosmetic: `mapUsage` dispatches to three extract tiers by name, so an
+  unlisted provider's cache and reasoning counts were dropped, its metrics read zero, and
+  `computeCostUsd` undercounted by exactly the cache-served pool it never saw — with no
+  marker of any kind. Such providers are now reported as UNREAD (distinct wording from
+  drift: nothing was renamed, nothing was ever read) and ride the same
+  `usage.provider-metadata-shape-drift` marker, whose `detail` text now covers both causes.
+  An empty block from an unlisted provider is still not flagged, matching the detector's
+  existing rule that legitimately-omitted fields are not drift.
+
+- **`PipelineHandle.cancel()` stopped nothing that cost money.** It set a status flag that
+  `executeAsync` read only BETWEEN stages, so the agent currently talking to the model ran
+  to completion and was billed in full — cancelling stopped the *next* stage from starting
+  and nothing else. On a long analyst run that is the entire expense of the stage the user
+  was trying to stop. `cancel()` now aborts an `AbortController` whose signal is threaded
+  through every executor to the provider call, ending the HTTP request itself.
+
+- **A cancel was reported as a timeout.** Both arrive at the AI SDK boundary as a
+  `DOMException`, and the classifier could not tell them apart, so every abort mapped to
+  `TimeoutError(timeoutMs)` — a duration nobody measured, for an event that did not occur.
+  An operator reading that raises the timeout, which cannot help; a timeout-keyed retry
+  policy retries work the user asked to stop. Attribution now comes from the caller's
+  signal (kept as its own object, never merged into what the classifier inspects), and
+  survives being wrapped in a `RetryError`.
+
+- **A cancel that landed while a stage was running could still be reported as a FAILURE.**
+  The gate branch's unconditional `state.status = 'failed'` overwrote `cancelled` when the
+  in-flight stage completed and failed its gate, and `wait()` then threw a `PipelineError`
+  at a user who had asked to stop. The sibling case — the stage *throwing* after `cancel()`
+  — was fixed earlier in this release; this is the other half of the same defect, and only
+  one half had been closed.
+
+- **The bash tool told the model a failed command had succeeded.** `executeShellAsString`
+  (the Anthropic bash-tool adapter) returned `stdout || stderr || '(no output)'` for every
+  command that ran, byte-identical for exit 0 and exit 1 — it returns a bare string and had
+  nowhere to put the exit status, so it dropped it. `npm test` failing came back as the test
+  report with no indication the suite had failed, and a silent failing command
+  (`grep -q pattern file`, exit 1) came back as a literal `(no output)`, which reads as
+  success. A non-zero exit now returns `Command failed with exit code N` ahead of the output,
+  so truncation cannot remove it. Success output is unchanged and carries no banner. The
+  OpenAI adapter was never affected — its structured `outcome` has carried the exit code
+  since it was written.
+
+- **A command that never STARTED was reported as a command that ran and failed.** A spawn
+  failure — `cwd` missing (`ENOENT`), unreadable (`EACCES`), not a directory (`ENOTDIR`), fds
+  exhausted (`EMFILE`) — arrives with a STRING `code`, fell through to the residual branch,
+  and was classified `termination: 'exited'` with a fabricated `exitCode: 1`. The model was
+  then told its command had failed and would go on to debug the command rather than the
+  environment that could not run it. New `termination: 'spawn-failure'`, discriminated by
+  PROVENANCE rather than by an errno list: a numeric `code` is the child's exit status, a
+  string `code` is Node's own error identifier and means the child never ran. That
+  distinction is closed and countable; the set of possible errno strings is not, and grows
+  with libuv. `ShellResult.termination` gains a member — widening a union that consumers
+  read, not one they construct.
+
+- **A scoreless panel now reports NO score instead of a fabricated `0`, and therefore PASSES
+  its gate instead of failing it.** `aggregateScores` returns `number | null`; it returns
+  `null` when nothing scorable was supplied — an empty item list, or one where every item
+  scored `null` (a panel of generators/executors, which do not score by design). It
+  previously returned `0`.
+
+  This is a **gate-semantics change**, not just a value change. Both consuming gates —
+  `WorkflowExecutor.evaluateGate` and `PipelineExecutor.gateFailed` — are fail-open on a
+  null score and gate on any number, so a stage or phase whose agents all came back
+  scoreless used to fail at `0 < threshold` and now passes. That is what both gates already
+  documented in prose ("scoreless stages are fail-open for the threshold check"); the
+  fabricated `0` was defeating the contract those comments describe. The case that changes
+  in practice is an **inline-agents stage of generators under a `gate.threshold`** — command
+  stages already fail-opened, because `CommandExecutor` guards the call.
+
+  What did NOT change: `WorkflowExecutor.aggregatePhaseScore` still scores an
+  **authored-empty phase** (`commands: []`) `0`, and `aggregate` still scores an
+  **authored-empty workflow** (`phases: []`) `0`, so a definition that asks for nothing
+  cannot pass a gate unexamined. Those two layers hold the definition and can tell
+  "nothing was asked for" from "nothing scored"; the shared util cannot — callers shape the
+  array before it arrives — so it declines to guess. The util and
+  `aggregatePhaseScore` now agree on every case except that one, which had been flagged
+  UNRESOLVED in comments at both sites since 2026-08-24.
+
+  Consumers reading `score` off a `WorkflowResult`, `PipelineResult` or `CommandResult` see
+  no signature change — all four result types already declared `number | null` — but a value
+  that was `0` may now be `null`, and stored run data can now distinguish "every agent
+  scored zero" from "no agent scored". Anything computing arithmetic on the field without a
+  null check was already unsound and will now surface it.
+
+- **`cached_input_tokens` no longer participates in effective-token arithmetic.** AI SDK v6
+  dissolved the provider-shape difference that motivated the §3.2 disentangle: Anthropic cache
+  reads and OpenAI/Google cached input now both arrive as `inputTokenDetails.cacheReadTokens`.
+
+  **It is still PRICED, however.** On the legacy-metadata path — a provider reporting no
+  `inputTokenDetails`, reachable via `ai.additionalProviders` — this field carries the
+  cache-served pool, and cost prices whichever of it and `cache_read_input_tokens` is present.
+  An intermediate revision of this release dropped it from cost entirely, which made those
+  tokens free (normalization removes them from `input_tokens`, so nothing else charged them);
+  that undercount was caught by the ship gate and corrected before publish. Recorded here
+  because a reader diffing 0.42.0 against itself would otherwise find the two states
+  contradictory.
+
 ### Fixed
 
 - **Token accounting reported only the LAST step of a multi-step tool loop.** `AIProvider`
@@ -636,195 +831,6 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) 
   alters gate semantics for every pipeline and command rather than a single value. That is a
   behavioural decision about what a scoreless panel means at a gate, not a mechanical repair.
 
-### Changed
-
-- **`UsageMetrics.input_tokens` is now CACHE-EXCLUSIVE** — a semantics change with no signature
-  change, so nothing downstream fails to compile. Consumers computing their own totals must
-  **stop** subtracting a cached figure from it; doing so now undercounts. `total_effective` is
-  `input + output + cache_creation`, unchanged in meaning and now correct in value.
-
-- **Crash telemetry submitted a record that was not a valid `AgentResult`.**
-  `UluOpsClient.trackThrownRun` built its synthesized record with
-  `} as unknown as AgentResult` over a literal missing two REQUIRED fields, `type` and
-  `durationMs`. The double assertion silenced the compiler about an object that was
-  genuinely incomplete, and the omission was READ downstream, not merely tolerated:
-  `SubmissionClient` stamps `definitionType: result.type` (undefined) and gates analysis
-  extraction on `isAgentResult`, which tests `result.type === 'agent'` and returned false.
-  So the crash record — for `MaxStepsExhaustedError`, by construction the most expensive run
-  class the engine produces — was submitted with no definition type and with its analysis
-  summary and records dropped. The failure was inside the telemetry written to preserve a
-  failure. Now built as a real `AgentResult` with no cast, so omitting a required field is a
-  compile error.
-
-- **The OpenAI shell adapter collapsed every non-timeout termination with a ternary.**
-  `executeShellAsOpenAIResult` special-cased `'timeout'` and let everything else fall into
-  `{ type: 'exit', exitCode }`, so `'spawn-failure'` — added in this same release — joined
-  `'signal'` and `'output-limit'` there with no compile error and no test. The collapse
-  itself is forced (the SDK outcome union has only two members) and is unchanged; it is now
-  an exhaustive `switch` with a `never` guard, so a future termination fails to compile
-  until someone decides where it belongs, and each collapsed case is pinned by a test
-  asserting `stderr` carries what the exit code cannot.
-
-- **The usage-shape drift detector could not see the providers it was most needed for.** It
-  iterated its own hardcoded table of three provider names, so a provider added through
-  `ai.additionalProviders` was never examined — an instrument enumerating by NAME over a
-  closed list, aimed at a population that is open by construction. It now iterates the
-  metadata payload's own keys.
-
-  The gap was not cosmetic: `mapUsage` dispatches to three extract tiers by name, so an
-  unlisted provider's cache and reasoning counts were dropped, its metrics read zero, and
-  `computeCostUsd` undercounted by exactly the cache-served pool it never saw — with no
-  marker of any kind. Such providers are now reported as UNREAD (distinct wording from
-  drift: nothing was renamed, nothing was ever read) and ride the same
-  `usage.provider-metadata-shape-drift` marker, whose `detail` text now covers both causes.
-  An empty block from an unlisted provider is still not flagged, matching the detector's
-  existing rule that legitimately-omitted fields are not drift.
-
-- **`PipelineHandle.cancel()` stopped nothing that cost money.** It set a status flag that
-  `executeAsync` read only BETWEEN stages, so the agent currently talking to the model ran
-  to completion and was billed in full — cancelling stopped the *next* stage from starting
-  and nothing else. On a long analyst run that is the entire expense of the stage the user
-  was trying to stop. `cancel()` now aborts an `AbortController` whose signal is threaded
-  through every executor to the provider call, ending the HTTP request itself.
-
-- **A cancel was reported as a timeout.** Both arrive at the AI SDK boundary as a
-  `DOMException`, and the classifier could not tell them apart, so every abort mapped to
-  `TimeoutError(timeoutMs)` — a duration nobody measured, for an event that did not occur.
-  An operator reading that raises the timeout, which cannot help; a timeout-keyed retry
-  policy retries work the user asked to stop. Attribution now comes from the caller's
-  signal (kept as its own object, never merged into what the classifier inspects), and
-  survives being wrapped in a `RetryError`.
-
-- **A cancel that landed while a stage was running could still be reported as a FAILURE.**
-  The gate branch's unconditional `state.status = 'failed'` overwrote `cancelled` when the
-  in-flight stage completed and failed its gate, and `wait()` then threw a `PipelineError`
-  at a user who had asked to stop. The sibling case — the stage *throwing* after `cancel()`
-  — was fixed earlier in this release; this is the other half of the same defect, and only
-  one half had been closed.
-
-- **The bash tool told the model a failed command had succeeded.** `executeShellAsString`
-  (the Anthropic bash-tool adapter) returned `stdout || stderr || '(no output)'` for every
-  command that ran, byte-identical for exit 0 and exit 1 — it returns a bare string and had
-  nowhere to put the exit status, so it dropped it. `npm test` failing came back as the test
-  report with no indication the suite had failed, and a silent failing command
-  (`grep -q pattern file`, exit 1) came back as a literal `(no output)`, which reads as
-  success. A non-zero exit now returns `Command failed with exit code N` ahead of the output,
-  so truncation cannot remove it. Success output is unchanged and carries no banner. The
-  OpenAI adapter was never affected — its structured `outcome` has carried the exit code
-  since it was written.
-
-- **A command that never STARTED was reported as a command that ran and failed.** A spawn
-  failure — `cwd` missing (`ENOENT`), unreadable (`EACCES`), not a directory (`ENOTDIR`), fds
-  exhausted (`EMFILE`) — arrives with a STRING `code`, fell through to the residual branch,
-  and was classified `termination: 'exited'` with a fabricated `exitCode: 1`. The model was
-  then told its command had failed and would go on to debug the command rather than the
-  environment that could not run it. New `termination: 'spawn-failure'`, discriminated by
-  PROVENANCE rather than by an errno list: a numeric `code` is the child's exit status, a
-  string `code` is Node's own error identifier and means the child never ran. That
-  distinction is closed and countable; the set of possible errno strings is not, and grows
-  with libuv. `ShellResult.termination` gains a member — widening a union that consumers
-  read, not one they construct.
-
-- **A scoreless panel now reports NO score instead of a fabricated `0`, and therefore PASSES
-  its gate instead of failing it.** `aggregateScores` returns `number | null`; it returns
-  `null` when nothing scorable was supplied — an empty item list, or one where every item
-  scored `null` (a panel of generators/executors, which do not score by design). It
-  previously returned `0`.
-
-  This is a **gate-semantics change**, not just a value change. Both consuming gates —
-  `WorkflowExecutor.evaluateGate` and `PipelineExecutor.gateFailed` — are fail-open on a
-  null score and gate on any number, so a stage or phase whose agents all came back
-  scoreless used to fail at `0 < threshold` and now passes. That is what both gates already
-  documented in prose ("scoreless stages are fail-open for the threshold check"); the
-  fabricated `0` was defeating the contract those comments describe. The case that changes
-  in practice is an **inline-agents stage of generators under a `gate.threshold`** — command
-  stages already fail-opened, because `CommandExecutor` guards the call.
-
-  What did NOT change: `WorkflowExecutor.aggregatePhaseScore` still scores an
-  **authored-empty phase** (`commands: []`) `0`, and `aggregate` still scores an
-  **authored-empty workflow** (`phases: []`) `0`, so a definition that asks for nothing
-  cannot pass a gate unexamined. Those two layers hold the definition and can tell
-  "nothing was asked for" from "nothing scored"; the shared util cannot — callers shape the
-  array before it arrives — so it declines to guess. The util and
-  `aggregatePhaseScore` now agree on every case except that one, which had been flagged
-  UNRESOLVED in comments at both sites since 2026-08-24.
-
-  Consumers reading `score` off a `WorkflowResult`, `PipelineResult` or `CommandResult` see
-  no signature change — all four result types already declared `number | null` — but a value
-  that was `0` may now be `null`, and stored run data can now distinguish "every agent
-  scored zero" from "no agent scored". Anything computing arithmetic on the field without a
-  null check was already unsound and will now surface it.
-
-- **`cached_input_tokens` no longer participates in effective-token arithmetic.** AI SDK v6
-  dissolved the provider-shape difference that motivated the §3.2 disentangle: Anthropic cache
-  reads and OpenAI/Google cached input now both arrive as `inputTokenDetails.cacheReadTokens`.
-
-  **It is still PRICED, however.** On the legacy-metadata path — a provider reporting no
-  `inputTokenDetails`, reachable via `ai.additionalProviders` — this field carries the
-  cache-served pool, and cost prices whichever of it and `cache_read_input_tokens` is present.
-  An intermediate revision of this release dropped it from cost entirely, which made those
-  tokens free (normalization removes them from `input_tokens`, so nothing else charged them);
-  that undercount was caught by the ship gate and corrected before publish. Recorded here
-  because a reader diffing 0.42.0 against itself would otherwise find the two states
-  contradictory.
-
-### Added
-
-- **`CancelledError`** (`code: 'CANCELLED'`, extends `ExecutionError`) — exported from the
-  package root alongside the other twelve error classes. Raised when a run
-  stops because the caller asked it to. Distinguishes a cancel from `TimeoutError`; see the
-  Fixed entry above for why they were conflated. `UluOpsErrorCodes` gains `CANCELLED`.
-
-- **`ExecutionOptions.abortSignal`** and **`AIGenerateOptions.abortSignal`** — a
-  caller-supplied cancellation signal, threaded to the provider call. It is **combined**
-  with the `timeoutMs` signal via `AbortSignal.any` rather than replacing it: a cancellable
-  run still times out, and a run with a timeout is still cancellable. `PipelineExecutor.start`
-  likewise merges any caller signal with the handle's own controller, so passing your own
-  signal does not disable `handle.cancel()`.
-
-- **`CommandExecutor.execute`** takes `abortSignal` on its `overrides` argument, and
-  **`WorkflowExecutor.execute`** takes a new optional third argument `{ abortSignal }`.
-  Both are optional and trailing — existing callers compile and behave unchanged, and simply
-  remain uncancellable, which is what they are today. The signal is a parameter rather than
-  executor state because one executor instance serves concurrent runs; a per-run field would
-  let one caller's cancel abort another caller's work.
-
-- **`AIGenerateResult.providerWarnings`** — the AI SDK reports settings it could not
-  honor (`temperature is not supported when thinking is enabled`, clamped `max_tokens`,
-  unknown context-management strategy, cache-breakpoint limits) on `result.warnings`.
-  Core discarded that array entirely. It now surfaces on the result and logs at `warn`.
-
-  This matters more than it looks: provider option schemas parse with a plain Zod object
-  in **strip** mode — no `.strict()`, no `.passthrough()` — so an unknown or renamed
-  option key is silently dropped before the request is built. It does not error and it
-  does not warn. A provider warning is therefore the ONLY runtime evidence that a setting
-  did not take effect, which makes this the missing instrument for the entire class of
-  defect this release is about.
-
-- **`ExecutionMetricsLike`** — exported from the package root to name the shape of
-  `MaxStepsExhaustedError.billedMetrics`, so a consumer reading that field can type it. It
-  is an **alias** of `ExecutionMetrics`, not a second declaration.
-
-  > It shipped in review as a hand-written structural copy, justified by keeping the errors
-  > module dependency-free at the bottom of the import graph. **That justification was
-  > false** — `types/execution.ts` imports nothing from `errors/`, and `errors/index.ts`
-  > already type-only-imports four sibling result types. There was no cycle to avoid. The
-  > copy had *already* drifted before it shipped, omitting `harness?: string`, which is the
-  > entire argument against hand-maintained duplicates: the copy quietly stops describing
-  > the thing it copies and nothing fails. Caught by a reviewer who tested the stated
-  > justification instead of accepting it — recorded because the failure was the
-  > *reasoning*, not the code.
-
-- **README accuracy pass on the export surface.** `MaxStepsExhaustedError.billedMetrics`
-  now appears in the error table and the error-handling example; `ExecutionMetricsLike` in
-  the Advanced Exports block; `provider.warnings` in the degradation-marker vocabulary; and
-  `DEFAULT_TEMPERATURE` in the Exported Constants block — the last of these shipped in
-  0.41.0 and was simply never listed, so it is a docs fix rather than a new export.
-  *(A review pass initially reported `DEFAULT_TEMPERATURE`, `isApiErrorLike` and
-  `ApiErrorLike` as new root exports in this release; checked against `main`, all three were
-  already exported in 0.41.0. Only `ExecutionMetricsLike` is new.)*
-
-### Design Notes
 
 > **Amended before release.** Finding 1's *reporting* half and the
 > `detectUsageShapeDrift` weakness below were both fixed in the same version — see Fixed
