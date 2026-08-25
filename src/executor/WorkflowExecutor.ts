@@ -77,7 +77,12 @@ export class WorkflowExecutor {
    * @param resolved - Registry-resolved workflow definition (must have `type: 'workflow'`).
    * @param input - Execution input; `target` is the absolute project path.
    * @returns The {@link WorkflowResult} with per-phase results, aggregate score, decision, and metrics.
+   * @param control - Optional run controls. `abortSignal` is threaded to every provider call
+   *                   this workflow makes, so aborting it ends the in-flight request rather
+   *                   than only stopping the next phase from starting. Optional and
+   *                   trailing — existing two-argument callers are unaffected.
    * @throws {WorkflowError} on internal workflow failures (phase crashes, gate violations)
+   * @throws {CancelledError} if `control.abortSignal` fires while a phase is in flight
    * @throws {ConfigurationError} if the definition is not a valid workflow
    */
   async execute(

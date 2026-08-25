@@ -1397,6 +1397,45 @@ describe('UluOpsClient — a thrown run with billed usage still reaches the trac
     expect(agent).toBeDefined();
   });
 
+  it('submits a WELL-FORMED AgentResult, not a shape that only looks like one', async () => {
+    // The record was built with `as unknown as AgentResult` over a literal missing two
+    // REQUIRED fields. `type` is read at SubmissionClient's `definitionType: result.type`
+    // and by `isAgentResult` (`result.type === 'agent'`), which gates analysis extraction
+    // — so the crash telemetry was submitted with no definition type and with its analysis
+    // summary and records silently dropped. The defect was INSIDE the code that exists to
+    // preserve a failure.
+    //
+    // The sibling test above passed throughout, because `expect(agent).toBeDefined()` and
+    // a stringified token count cannot see a missing discriminator. Assert the fields that
+    // are actually read.
+    //
+    // POSITIVE CONTROL: restore `} as unknown as AgentResult` and drop `type`/`durationMs`
+    // from the literal in `trackThrownRun`, and this fails on the first expect.
+    const client = new UluOpsClient({ apiKey: 'ulr_test-key-012345678901', trackingEnabled: true });
+    mockRegistryResolve.mockResolvedValue(makeResolvedDef('agent', 'code-validator'));
+    mockAgentExecutorExecute.mockRejectedValue(
+      new MaxStepsExhaustedError('exhausted', 50, 'tool-calls', billed),
+    );
+    mockSubmissionSubmit.mockResolvedValue({ runId: 'r', runNumber: 1 });
+
+    await expect(client.runAgent('code-validator', '/tmp/test'))
+      .rejects.toBeInstanceOf(MaxStepsExhaustedError);
+
+    const submitted = mockSubmissionSubmit.mock.calls[0]![0] as Record<string, any>;
+    const result = submitted['result'];
+
+    // The discriminator SubmissionClient.isAgentResult() tests, and the value it stamps
+    // as definitionType.
+    expect(result.type).toBe('agent');
+    // Required by AgentResult and previously absent entirely.
+    expect(typeof result.durationMs).toBe('number');
+    // And it carries the wall-clock the crash actually billed, not a floor.
+    expect(result.durationMs).toBe(billed.durationMs);
+    // The fields the earlier test did check must still hold — this replaces nothing.
+    expect(result.metrics.totalEffectiveTokens).toBe(128_000);
+    expect(result.score).toBeNull();
+  });
+
   it('does NOT submit for an ordinary error carrying no billed usage', async () => {
     // The negative control: tracking a crash that billed nothing would fabricate a run
     // record out of an error, which is the same class of invention in the other direction.

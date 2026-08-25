@@ -157,7 +157,23 @@ export class UluOpsClient {
   ): Promise<void> {
     if (!hasBilledMetrics(error)) return;
     try {
-      const synthesized = {
+      // Built as a REAL AgentResult, not force-cast into one.
+      //
+      // This was `} as unknown as AgentResult`, over a literal that was genuinely missing
+      // two REQUIRED fields — `type` and `durationMs`. The double assertion silenced the
+      // compiler about an object that was actually incomplete, and the omission was read
+      // downstream, not merely tolerated: SubmissionClient stamps `definitionType:
+      // result.type` (undefined) and gates analysis extraction on `isAgentResult`, which
+      // tests `result.type === 'agent'` and returned FALSE. So the crash record this
+      // method exists to capture was submitted with no definition type and with its
+      // analysis summary and records dropped — the failure mode was inside the telemetry
+      // written to preserve a failure.
+      //
+      // The annotation is the guard. With `: AgentResult` and no cast, omitting a required
+      // field is a compile error, which is what should have happened the first time.
+      const metrics = crashMetrics(error);
+      const synthesized: AgentResult = {
+        type: 'agent',
         name: resolved.name,
         version: resolved.version,
         definitionHash: resolved.hash,
@@ -172,8 +188,12 @@ export class UluOpsClient {
           severity: 'critical',
           failureCode: 'PRA-FRA/C',
         }],
-        metrics: crashMetrics(error),
-      } as unknown as AgentResult;
+        // The same wall-clock the metrics carry — a crash that billed real tokens billed
+        // real time with them. crashMetrics floors it to 0 only when nothing is known,
+        // which is the documented "nothing known" branch, not a fabrication here.
+        durationMs: metrics.durationMs,
+        metrics,
+      };
       await this.trackIfEnabled(synthesized, resolved, resolved.name, options, target);
     } catch (trackingError) {
       this.logger.debug(`Tracking a thrown run failed (original error is being rethrown): ${formatErrorMessage(trackingError)}`);

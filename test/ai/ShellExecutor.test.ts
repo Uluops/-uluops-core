@@ -291,3 +291,58 @@ describe('runShellCommand — a command that never STARTED is not a command that
     expect(result.termination).toBe('output-limit');
   });
 });
+
+/**
+ * The OpenAI adapter's `outcome` mapping, which no test reached.
+ *
+ * The new terminations were covered only through `runShellCommand`; nothing exercised
+ * `executeShellAsOpenAIResult`, whose mapping was a ternary on `'timeout'` alone. Every
+ * other member — including `spawn-failure`, added the same session — fell into the `exit`
+ * branch without a compile error or an assertion. The collapse itself is forced (the SDK
+ * union has only `timeout` and `exit`), so what these tests pin is that the collapse is
+ * DELIBERATE and that stderr carries the story the exit code cannot.
+ *
+ * POSITIVE CONTROL: revert `toOpenAIOutcome` to `termination === 'timeout' ? ... : ...`
+ * and nothing here fails — which is the point: these tests pin the mapping's OUTPUT so the
+ * exhaustive switch has something to protect. The compile-time guard is the `never` case,
+ * verified separately by adding a union member and watching tsc reject it.
+ */
+describe('executeShellAsOpenAIResult — every termination maps deliberately', () => {
+  beforeEach(() => { vi.clearAllMocks(); });
+
+  it('reports a real timeout as timeout', async () => {
+    setupExec(Object.assign(new Error('timed out'), { killed: true, signal: 'SIGTERM' }));
+    const res = await executeShellAsOpenAIResult({ commands: ['sleep 99'] }, '/tmp', 5000);
+    expect(res.output[0]!.outcome).toEqual({ type: 'timeout' });
+  });
+
+  it('reports a real exit with its measured code', async () => {
+    setupExec(Object.assign(new Error('exit 3'), { code: 3, killed: false, signal: null }));
+    const res = await executeShellAsOpenAIResult({ commands: ['failing'] }, '/tmp', 5000);
+    expect(res.output[0]!.outcome).toEqual({ type: 'exit', exitCode: 3 });
+  });
+
+  it.each([
+    ['signal', Object.assign(new Error('killed'), { killed: false, signal: 'SIGKILL' }), 'signal SIGKILL'],
+    ['output-limit', Object.assign(new Error('maxBuffer'), { code: 'ERR_CHILD_PROCESS_STDIO_MAXBUFFER', killed: false, signal: null }), 'exit status was not observed'],
+    ['spawn-failure', Object.assign(new Error('spawn ENOENT'), { code: 'ENOENT', syscall: 'spawn /bin/sh', killed: false, signal: null }), 'never ran'],
+  ])('collapses %s to exit, but says what happened in stderr', async (_label, err, expectedStderr) => {
+    setupExec(err);
+    const res = await executeShellAsOpenAIResult({ commands: ['cmd'] }, '/tmp', 5000);
+
+    // The SDK union has nowhere else for these to go — but the model must not be left
+    // with only a placeholder exit code standing in for a story that is false.
+    expect(res.output[0]!.outcome).toMatchObject({ type: 'exit' });
+    expect(res.output[0]!.outcome).not.toMatchObject({ type: 'timeout' });
+    expect(res.output[0]!.stderr).toContain(expectedStderr);
+  });
+
+  it('does NOT report a non-timeout as a timeout — the negative control', async () => {
+    // A SIGKILL reported as `{type:'timeout'}` tells the model to ask for a longer
+    // timeout, which cannot help. This is the conflation the termination field exists
+    // to prevent, asserted at the adapter rather than at runShellCommand.
+    setupExec(Object.assign(new Error('killed'), { killed: false, signal: 'SIGKILL' }));
+    const res = await executeShellAsOpenAIResult({ commands: ['cmd'] }, '/tmp', 5000);
+    expect(res.output[0]!.outcome).not.toEqual({ type: 'timeout' });
+  });
+});

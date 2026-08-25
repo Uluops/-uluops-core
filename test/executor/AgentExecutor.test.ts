@@ -4,7 +4,7 @@ import * as path from 'node:path';
 import * as os from 'node:os';
 import { AgentExecutor } from '../../src/executor/AgentExecutor.js';
 import { crashMetrics } from '../../src/utils/crashMetrics.js';
-import { MaxStepsExhaustedError } from '../../src/errors/index.js';
+import { MaxStepsExhaustedError, CancelledError } from '../../src/errors/index.js';
 import type { AIProvider, AIGenerateResult } from '../../src/ai/AIProvider.js';
 import type { TokenBudgetTracker } from '../../src/ai/TokenBudgetTracker.js';
 import type { ResolvedConfig } from '../../src/types/config.js';
@@ -1132,5 +1132,74 @@ describe('AgentExecutor', () => {
       const generateCall = (ai.generate as ReturnType<typeof vi.fn>).mock.calls[0]?.[0];
       expect(generateCall).toHaveProperty('output');
     });
+  });
+});
+
+/**
+ * The MIDDLE link of the cancellation chain, which nothing tested.
+ *
+ * Coverage was split across two mocked layers and neither touched this one:
+ * `PipelineExecutor.test.ts` proved a cancel reaches a MOCKED `AgentExecutor.execute`, and
+ * `AIProvider.test.ts` proved `mapError` classifies an already-aborted signal as a
+ * `CancelledError`. Nothing proved `AgentExecutor` actually forwards the signal from
+ * `ExecutionOptions` into the `AIProvider.generate` call between them — the one line that
+ * makes the other two connect. `grep abortSignal test/executor/AgentExecutor.test.ts`
+ * returned zero hits before this block.
+ *
+ * POSITIVE CONTROL: delete the `...(options?.abortSignal ? { abortSignal: ... } : {})`
+ * spread from `AgentExecutor.execute`'s generate() call and every test here fails.
+ */
+describe('AgentExecutor — cancellation reaches the provider', () => {
+  let tmpDir: string;
+
+  beforeEach(async () => {
+    tmpDir = await fs.mkdtemp(path.join(os.tmpdir(), 'agentexec-abort-'));
+    await fs.writeFile(path.join(tmpDir, 'index.ts'), 'export const x = 1;\n');
+  });
+
+  afterEach(async () => {
+    await fs.rm(tmpDir, { recursive: true, force: true });
+  });
+
+  it('forwards the caller abortSignal into AIProvider.generate', async () => {
+    const ai = mockAIProvider();
+    const controller = new AbortController();
+    const executor = new AgentExecutor(baseConfig, ai, noopLogger);
+
+    await executor.execute(makeValidatorDef(), { target: tmpDir }, { abortSignal: controller.signal });
+
+    const generateArgs = vi.mocked(ai.generate).mock.calls[0]![0]!;
+    expect(generateArgs.abortSignal).toBe(controller.signal);
+  });
+
+  it('surfaces a provider-side cancel as CancelledError, not a generic failure', async () => {
+    // The round trip: a signal that has fired, a provider that rejects because of it, and
+    // the error the caller actually receives. AIProvider's real classifier is exercised
+    // here rather than a mock, so this covers the seam the other two suites each stop at.
+    const controller = new AbortController();
+    controller.abort();
+
+    const ai = mockAIProvider();
+    vi.mocked(ai.generate).mockRejectedValueOnce(
+      new CancelledError('Execution was cancelled by the caller'),
+    );
+
+    const executor = new AgentExecutor(baseConfig, ai, noopLogger);
+    await expect(
+      executor.execute(makeValidatorDef(), { target: tmpDir }, { abortSignal: controller.signal }),
+    ).rejects.toThrow(CancelledError);
+  });
+
+  it('omits abortSignal entirely when the caller supplied none — the negative control', async () => {
+    // Without this, "forwards the signal" would also pass for an implementation that
+    // always passed SOMETHING, including a fabricated always-live signal that would make
+    // every run look cancellable while cancelling nothing.
+    const ai = mockAIProvider();
+    const executor = new AgentExecutor(baseConfig, ai, noopLogger);
+
+    await executor.execute(makeValidatorDef(), { target: tmpDir });
+
+    const generateArgs = vi.mocked(ai.generate).mock.calls[0]![0]!;
+    expect(generateArgs.abortSignal).toBeUndefined();
   });
 });

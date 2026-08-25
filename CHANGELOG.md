@@ -643,6 +643,28 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) 
   **stop** subtracting a cached figure from it; doing so now undercounts. `total_effective` is
   `input + output + cache_creation`, unchanged in meaning and now correct in value.
 
+- **Crash telemetry submitted a record that was not a valid `AgentResult`.**
+  `UluOpsClient.trackThrownRun` built its synthesized record with
+  `} as unknown as AgentResult` over a literal missing two REQUIRED fields, `type` and
+  `durationMs`. The double assertion silenced the compiler about an object that was
+  genuinely incomplete, and the omission was READ downstream, not merely tolerated:
+  `SubmissionClient` stamps `definitionType: result.type` (undefined) and gates analysis
+  extraction on `isAgentResult`, which tests `result.type === 'agent'` and returned false.
+  So the crash record — for `MaxStepsExhaustedError`, by construction the most expensive run
+  class the engine produces — was submitted with no definition type and with its analysis
+  summary and records dropped. The failure was inside the telemetry written to preserve a
+  failure. Now built as a real `AgentResult` with no cast, so omitting a required field is a
+  compile error.
+
+- **The OpenAI shell adapter collapsed every non-timeout termination with a ternary.**
+  `executeShellAsOpenAIResult` special-cased `'timeout'` and let everything else fall into
+  `{ type: 'exit', exitCode }`, so `'spawn-failure'` — added in this same release — joined
+  `'signal'` and `'output-limit'` there with no compile error and no test. The collapse
+  itself is forced (the SDK outcome union has only two members) and is unchanged; it is now
+  an exhaustive `switch` with a `never` guard, so a future termination fails to compile
+  until someone decides where it belongs, and each collapsed case is pinned by a test
+  asserting `stderr` carries what the exit code cannot.
+
 - **The usage-shape drift detector could not see the providers it was most needed for.** It
   iterated its own hardcoded table of three provider names, so a provider added through
   `ai.additionalProviders` was never examined — an instrument enumerating by NAME over a
@@ -748,7 +770,8 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) 
 
 ### Added
 
-- **`CancelledError`** (`code: 'CANCELLED'`, extends `ExecutionError`) — raised when a run
+- **`CancelledError`** (`code: 'CANCELLED'`, extends `ExecutionError`) — exported from the
+  package root alongside the other twelve error classes. Raised when a run
   stops because the caller asked it to. Distinguishes a cancel from `TimeoutError`; see the
   Fixed entry above for why they were conflated. `UluOpsErrorCodes` gains `CANCELLED`.
 

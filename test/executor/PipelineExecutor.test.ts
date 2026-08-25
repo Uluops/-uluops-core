@@ -451,8 +451,18 @@ describe('PipelineExecutor', () => {
      * These assert on the SIGNAL the executors actually received, because that is the only
      * thing that reaches the HTTP request. A status flag proves nothing about billing.
      *
-     * POSITIVE CONTROL: remove `this.controller.abort()` from `cancel()` and all three
-     * fail — the signal is handed down but never fires.
+     * POSITIVE CONTROL: remove `this.controller.abort()` from `cancel()` and the first two
+     * fail, plus `cancel() still works when the caller supplied their own signal` below.
+     *
+     * This comment used to claim "all three fail" and that was FALSE — verified by
+     * performing the reversion. The third test ("MERGES...") never called `cancel()`, so
+     * it passed with the abort removed and, worse, passed with the MERGE broken: mutating
+     * `AbortSignal.any([controller.signal, options.abortSignal])` down to
+     * `options.abortSignal` — which silently disables cancel() the moment a consumer
+     * supplies a signal — left all 73 tests in this file green. A positive-control comment
+     * that overstates its coverage is worse than none: it certifies a check that does not
+     * exist. The claim is now true because the missing test was added, not because the
+     * wording was softened.
      */
     it('cancel() aborts the signal handed to an inline-agents stage', async () => {
       let seen: AbortSignal | undefined;
@@ -544,6 +554,48 @@ describe('PipelineExecutor', () => {
       // And the pipeline still reports a normal outcome, not a cancel — nobody called
       // cancel(); the caller's signal ended the provider work, which is a different event.
       expect((await handle.status()).status).not.toBe('cancelled');
+    });
+
+    it('cancel() still works when the caller supplied their own signal', async () => {
+      // The OTHER half of the merge, and the one that was missing. The sibling above fires
+      // the caller's signal; this fires cancel(). Only together do they test
+      // `AbortSignal.any` — with just the sibling, mutating the merge down to
+      // `options.abortSignal` (which drops the pipeline's own controller and silently
+      // disables cancel() for every consumer that passes a signal) left all 73 tests in
+      // this file green. Demonstrated by mutation, not assumed.
+      //
+      // POSITIVE CONTROL: replace the `AbortSignal.any([...])` in PipelineExecutor.start
+      // with `options.abortSignal` and this fails; the sibling above still passes.
+      let seen: AbortSignal | undefined;
+      let resolveCmd: ((v: CommandResult) => void) | undefined;
+      const cmdExec = {
+        execute: vi.fn((_r: unknown, _i: unknown, o?: { abortSignal?: AbortSignal }) => {
+          seen = o?.abortSignal;
+          return new Promise<CommandResult>(r => { resolveCmd = r; });
+        }),
+      } as unknown as CommandExecutor;
+
+      const caller = new AbortController();  // supplied, and deliberately never fired
+      const executor = new PipelineExecutor(
+        makeWorkflowExecutor(), cmdExec, agentExec, makeRegistry(), noopLogger,
+      );
+      const handle = await executor.start(
+        makePipelineDef({ stages: [{ id: 's1', name: 'S1', type: 'command', ref: 'a@1' }] }),
+        { target: '/tmp' },
+        { abortSignal: caller.signal },
+      );
+
+      await new Promise(r => setTimeout(r, 0));
+      expect(seen!.aborted).toBe(false);
+
+      await handle.cancel();
+      expect(seen!.aborted).toBe(true);
+      // The caller's own signal was never fired — the abort came from the pipeline side.
+      expect(caller.signal.aborted).toBe(false);
+
+      resolveCmd!(makeCommandResult());
+      await new Promise(r => setTimeout(r, 0));
+      expect((await handle.status()).status).toBe('cancelled');
     });
 
     it('handle.cancel() throws on already-complete pipeline', async () => {

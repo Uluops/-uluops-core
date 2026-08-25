@@ -184,6 +184,7 @@ export {
   UluOpsErrorCodes,
   type UluOpsErrorCode,
   ExecutionError,
+  CancelledError,
   MaxStepsExhaustedError,
   // Shape of MaxStepsExhaustedError.billedMetrics — exported because a consumer reading
   // that field needs to name its type. An ALIAS of ExecutionMetrics, not a structural

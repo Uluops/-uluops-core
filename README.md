@@ -671,7 +671,24 @@ const result = await executor.execute(resolvedDefinition, {
   model: 'opus',
   maxTokens: 16384,
   timeoutMs: 60_000,
+  abortSignal: controller.signal,   // optional — ends the provider request, not just the loop
 });
+```
+
+`abortSignal` is accepted the same way by the other executors, so a single signal can end a
+whole composition:
+
+```typescript
+const controller = new AbortController();
+
+// Command: on the overrides argument
+await commandExecutor.execute(resolved, input, { abortSignal: controller.signal });
+
+// Workflow: an optional third argument
+await workflowExecutor.execute(resolved, input, { abortSignal: controller.signal });
+
+// Aborting raises CancelledError from whichever agent was in flight.
+controller.abort();
 ```
 
 ### Model Resolution
@@ -961,6 +978,7 @@ The SDK provides a structured error hierarchy:
 | `CapabilityError` | `ModelCatalog.resolve()` | Resolved model lacks a required capability (e.g. tools, vision, extendedThinking) |
 | `PreflightError` | `CommandExecutor` (preflight phase) | Preflight check failed — missing env var, file not found, command unavailable |
 | `ExecutionError` | `AgentExecutor.execute()`, `CommandExecutor.execute()` | Agent execution failure or definition type mismatch. `error.partialResult` is typed `unknown` — no producer in this package populates it; do not rely on it |
+| `CancelledError` | `AIProvider.generate()` (reached via any executor) | The run stopped because the CALLER asked it to — `PipelineHandle.cancel()`, or an `abortSignal` you supplied on `ExecutionOptions`. Subclass of `ExecutionError` (code `CANCELLED`). Check it BEFORE `ExecutionError`, and note it is deliberately **not** a `TimeoutError`: a cancel names no elapsed duration, so treating the two alike sends you to raise a timeout that was never the cause, and makes timeout-keyed retry logic retry work you asked to stop |
 | `MaxStepsExhaustedError` | `AgentExecutor.execute()` | The tool loop hit the `maxSteps` ceiling while the model was still calling tools, leaving empty output. Subclass of `ExecutionError` (code `MAX_STEPS_EXHAUSTED`); carries `error.steps`, `error.finishReason`, and `error.billedMetrics?` (typed `ExecutionMetricsLike`) — the tokens and cost ALREADY BILLED before the ceiling was hit. A step-ceiling run is by construction the longest run the engine produces, so read `billedMetrics` rather than recording the run as free; it is **absent**, never zero, when nothing is known (absent is an admission, zero is a claim). Raise `maxSteps`, narrow the target, or lower the context budget so wrap-up triggers earlier |
 | `ParseError` | `OutputExtractor.extractWithMetadata()` | LLM output could not be parsed as structured JSON. Check `error.contentPreview` for raw output |
 | `SubmissionError` | `SubmissionClient` methods | Validation service rejected a submission. Use `SubmissionErrorCodes` to narrow by code |
@@ -970,7 +988,7 @@ The SDK provides a structured error hierarchy:
 | `IntegrityError` | `RegistryClient.resolve()` (caller-pinned) | A pinned `expectedHash`/`expectedPromptHash` did not match the resolved content, or a prompt pin was supplied for a definition with no rendered prompt. Check `error.kind` (`'yaml'`/`'prompt'`/`'unavailable'`), `error.expected`, `error.actual`, and `error.definitionName`/`error.definitionVersion` (which definition failed). Fail-closed — execution is refused |
 
 ```typescript
-import { ConfigurationError, ModelNotFoundError, CapabilityError, ExecutionError, MaxStepsExhaustedError, WorkflowError, SubscriptionRequiredError } from '@uluops/core';
+import { ConfigurationError, ModelNotFoundError, CapabilityError, ExecutionError, CancelledError, MaxStepsExhaustedError, WorkflowError, SubscriptionRequiredError } from '@uluops/core';
 
 try {
   const result = await client.runAgent('code-validator', './src');
@@ -981,6 +999,10 @@ try {
     console.error('Unknown model alias:', error.message);
   } else if (error instanceof CapabilityError) {
     console.error('Model lacks a required capability:', error.message);
+  } else if (error instanceof CancelledError) {
+    // Check this BEFORE ExecutionError — it is a subclass.
+    // You asked for this: handle.cancel(), or your own abortSignal fired.
+    console.error('Run cancelled.');
   } else if (error instanceof MaxStepsExhaustedError) {
     // Check this BEFORE ExecutionError — it is a subclass.
     console.error(`Hit the step ceiling (${error.steps} steps) — raise maxSteps or narrow the target.`);

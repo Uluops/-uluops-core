@@ -149,6 +149,41 @@ export async function runShellCommand(
 }
 
 /**
+ * Map a termination to the OpenAI shell tool's `outcome` union, exhaustively.
+ *
+ * The SDK union has exactly two members — `timeout` and `exit` — so the four terminations
+ * where no exit status was ever observed have nowhere of their own to go and must report
+ * an exit. That collapse is unavoidable; what was avoidable was doing it with a ternary on
+ * one member, which silently absorbed every future addition. `'spawn-failure'` was added
+ * this session and slid into the `exit` branch without a compile error or a test, and the
+ * next member would have done the same.
+ *
+ * The `switch` with the `never` check is the guard: a new termination fails to compile here
+ * until someone decides where it belongs. For the collapsed cases the placeholder
+ * `exitCode` is meaningless — `stderr`, set at the classification site in
+ * `runShellCommand`, is what carries the real story to the model.
+ */
+function toOpenAIOutcome(result: ShellResult): OpenAIShellOutput['output'][number]['outcome'] {
+  switch (result.termination) {
+    case 'timeout':
+      return { type: 'timeout' as const };
+    case 'exited':
+      // The only branch where `exitCode` is a measurement rather than a placeholder.
+      return { type: 'exit' as const, exitCode: result.exitCode };
+    case 'signal':
+    case 'output-limit':
+    case 'spawn-failure':
+      return { type: 'exit' as const, exitCode: result.exitCode };
+    default: {
+      // Exhaustiveness guard — widening `termination` without visiting this function is a
+      // compile error, not a silent default.
+      const unreachable: never = result.termination;
+      return unreachable;
+    }
+  }
+}
+
+/**
  * Truncate to a bound, saying so when it happens.
  *
  * `executeShellAsString` has appended a `[truncated — N chars total]` marker since it was
@@ -224,13 +259,7 @@ export async function executeShellAsOpenAIResult(
       // model concludes. Two adapters over one shell, one of them honest.
       stdout: markTruncation(result.stdout, maxLen),
       stderr: markTruncation(result.stderr, maxLen),
-      // Only a genuine timeout reports `timeout`. The SDK's outcome union has no member
-      // for "killed by an external signal" or "output limit exceeded", so those report an
-      // exit — but their stderr (set at the classification site) says what actually
-      // happened, rather than the exit code silently standing in for a story that is false.
-      outcome: result.termination === 'timeout'
-        ? { type: 'timeout' as const }
-        : { type: 'exit' as const, exitCode: result.exitCode },
+      outcome: toOpenAIOutcome(result),
     });
   }
 
