@@ -88,6 +88,22 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) 
   `--control`, because a census baseline only stays true if something regenerates and checks
   it, and a gate nothing runs cannot fail.
 
+- **The shell's own output swallowed the explanation of what happened to it.** Every
+  non-`exited` branch of `runShellCommand` built its stderr as `err.stderr || '<explanation>'`,
+  so the explanation was discarded whenever the shell wrote anything — and the shell usually
+  does. A signalled kill on Linux reached the model as `Killed` with no statement that the
+  process was signalled; `output-limit` lost the "output was discarded" notice for any
+  command that had written to stderr before overflowing; `cancelled` lost the cancellation
+  notice for any command that had produced output before being stopped. In each case the
+  shell's own word is the least informative part of what happened. The explanation is now
+  prepended to it rather than replaced by it, so both survive and truncation cannot remove
+  the explanation.
+
+  Found by CI, on the first run that had ever evaluated this branch. The test that caught it
+  asserted on the explanation text and therefore passed on macOS — silent shell, fallback
+  fires — and failed on all three CI Node versions, where `kill -9` makes the shell write
+  `Killed`. A one-machine suite could not see it, which is the argument for the push.
+
 - **A cancel now reaches the child process, not just the provider request.** `cancel()`
   aborted the LLM call and the run reported `CANCELLED` — while the `sh -c` child kept
   running against the target directory for up to `SHELL_COMMAND_TIMEOUT_MS`. An agent

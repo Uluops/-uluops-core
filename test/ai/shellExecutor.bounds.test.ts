@@ -97,6 +97,13 @@ describe('shellExecutor — termination modes are not conflated', () => {
     );
     // The measured defect: outcome {type:'timeout'} for a process nothing timed out.
     expect(res.output[0]!.outcome).not.toEqual({ type: 'timeout' });
+    // This assertion was PLATFORM-COUPLED until 2026-08-25 and nobody could see it locally.
+    // It reads the explanation that `err.stderr || '<explanation>'` produced — which fires
+    // only when the shell is silent. macOS is silent on `kill -9`; Linux writes `Killed\n`,
+    // so on Linux the explanation was discarded and stderr read just "Killed". Green on one
+    // developer machine, red on all three CI Node versions, and the first thing CI ever
+    // caught on this branch. The fix made the explanation additive rather than a fallback
+    // (see `explain` in shellExecutor.ts), so this now holds on both.
     expect(String(res.output[0]!.stderr)).toMatch(/signal/i);
   }, 20_000);
 

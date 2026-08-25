@@ -117,7 +117,7 @@ export async function runShellCommand(
     if (err.code === 'ERR_CHILD_PROCESS_STDIO_MAXBUFFER') {
       return {
         stdout: err.stdout || '',
-        stderr: err.stderr || 'Output exceeded the 1MB buffer limit; the command\'s exit status was not observed.',
+        stderr: explain('Output exceeded the 1MB buffer limit; the command\'s exit status was not observed.', err.stderr),
         timedOut: false, exitCode: 1, termination: 'output-limit',
       };
     }
@@ -134,8 +134,10 @@ export async function runShellCommand(
       const syscall = (error as { syscall?: string }).syscall;
       return {
         stdout: err.stdout || '',
-        stderr: err.stderr ||
+        stderr: explain(
           `Command could not be started (${err.code}${syscall ? `, ${syscall}` : ''}); it never ran, so no exit status exists. Check that the working directory exists and is readable.`,
+          err.stderr,
+        ),
         timedOut: false, exitCode: 1, termination: 'spawn-failure',
       };
     }
@@ -146,7 +148,7 @@ export async function runShellCommand(
     if (signal?.aborted) {
       return {
         stdout: err.stdout || '',
-        stderr: err.stderr || 'Command was cancelled before it completed.',
+        stderr: explain('Command was cancelled before it completed.', err.stderr),
         timedOut: false, exitCode: 1, termination: 'cancelled',
       };
     }
@@ -154,7 +156,7 @@ export async function runShellCommand(
     if (err.signal) {
       return {
         stdout: err.stdout || '',
-        stderr: err.stderr || `Process terminated by signal ${err.signal}.`,
+        stderr: explain(`Process terminated by signal ${err.signal}.`, err.stderr),
         timedOut: false, exitCode: 1, termination: 'signal',
       };
     }
@@ -203,6 +205,29 @@ function toOpenAIOutcome(result: ShellResult): OpenAIShellOutput['output'][numbe
       return unreachable;
     }
   }
+}
+
+/**
+ * Put the explanation of WHAT HAPPENED in front of whatever the shell itself wrote.
+ *
+ * Every one of these branches used `err.stderr || '<explanation>'`, which discards the
+ * explanation whenever the shell said anything at all — and the shell usually does. Caught
+ * by CI on Linux, where `kill -9` makes the shell write `Killed\n`: the model received
+ * "Killed" with no statement that the process was signalled, while macOS (silent shell) got
+ * the full sentence. The same test passed locally and failed on all three CI Node versions,
+ * which is the entire reason this branch was pushed before publishing.
+ *
+ * It is a class, not one site: `output-limit` lost the "output was discarded" notice for any
+ * command that wrote to stderr before overflowing, and `cancelled` lost the cancellation
+ * notice for any command that wrote anything before being stopped — both cases where the
+ * shell's own text is the LEAST informative part of what happened.
+ *
+ * Explanation first, so truncation cannot remove it, matching executeShellAsString's
+ * exit-code prefix.
+ */
+function explain(explanation: string, shellStderr?: string): string {
+  const own = (shellStderr ?? '').trim();
+  return own ? `${explanation}\n\n${own}` : explanation;
 }
 
 /**

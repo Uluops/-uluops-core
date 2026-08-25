@@ -409,3 +409,61 @@ describe('runShellCommand — a cancel reaches the child process', () => {
     expect(opts.signal).toBeUndefined();
   });
 });
+
+
+/**
+ * The explanation of what happened survives the shell having its own opinion.
+ *
+ * Each branch used `err.stderr || '<explanation>'`, so the explanation was discarded
+ * whenever the shell wrote anything — and the shell usually does. This passed on macOS and
+ * failed on all three CI Node versions, because `kill -9` makes a Linux shell write
+ * `Killed\n` while macOS stays silent. The local suite could not see it: one machine, one
+ * shell. It is the reason the branch was pushed before publishing rather than after.
+ *
+ * POSITIVE CONTROL: restore `err.stderr || <explanation>` on any branch and its case here
+ * fails, because the explanation vanishes behind the shell's own text.
+ */
+describe('runShellCommand — the shell\'s own output does not swallow the explanation', () => {
+  beforeEach(() => { vi.clearAllMocks(); });
+
+  it.each([
+    ['signal (the Linux `Killed` case that broke CI)',
+      { killed: false, signal: 'SIGKILL', stderr: 'Killed\n' }, 'signal SIGKILL', 'Killed'],
+    ['output-limit',
+      { code: 'ERR_CHILD_PROCESS_STDIO_MAXBUFFER', killed: false, signal: null, stderr: 'warning: noisy\n' },
+      'exit status was not observed', 'warning: noisy'],
+    ['spawn-failure',
+      { code: 'ENOENT', syscall: 'spawn /bin/sh', killed: false, signal: null, stderr: 'sh: cannot open\n' },
+      'never ran', 'sh: cannot open'],
+  ])('keeps BOTH the explanation and the shell text for %s', async (_label, errShape, wantExplanation, wantShellText) => {
+    setupExec(Object.assign(new Error('x'), errShape));
+    const result = await runShellCommand('cmd', '/tmp', 5000);
+
+    // The explanation — what a model needs and cannot infer from the shell's word.
+    expect(result.stderr).toContain(wantExplanation);
+    // And the shell's own text, which is real evidence and must not be thrown away either.
+    expect(result.stderr).toContain(wantShellText);
+    // Explanation first, so truncation cannot remove it.
+    expect(result.stderr.indexOf(wantExplanation)).toBeLessThan(result.stderr.indexOf(wantShellText));
+  });
+
+  it('keeps both for a cancellation too', async () => {
+    const controller = new AbortController();
+    controller.abort();
+    setupExec(Object.assign(new Error('aborted'), { killed: false, signal: 'SIGTERM', stderr: 'partial work\n' }));
+
+    const result = await runShellCommand('cmd', '/tmp', 5000, undefined, controller.signal);
+    expect(result.stderr).toContain('cancelled');
+    expect(result.stderr).toContain('partial work');
+  });
+
+  it('does not pad a SILENT shell with blank lines — the negative control', async () => {
+    // Without this, "always prepend" would also pass for an implementation that emitted a
+    // ragged explanation-plus-empty-string on every silent failure, which is most of them.
+    setupExec(Object.assign(new Error('killed'), { killed: false, signal: 'SIGKILL' }));
+    const result = await runShellCommand('cmd', '/tmp', 5000);
+
+    expect(result.stderr).toBe('Process terminated by signal SIGKILL.');
+    expect(result.stderr.endsWith('\n')).toBe(false);
+  });
+});
