@@ -346,3 +346,66 @@ describe('executeShellAsOpenAIResult — every termination maps deliberately', (
     expect(res.output[0]!.outcome).not.toEqual({ type: 'timeout' });
   });
 });
+
+/**
+ * A cancel must reach the CHILD PROCESS, not just the provider request.
+ *
+ * `cancel()` aborted the LLM call and the run reported CANCELLED — while the `sh -c` child
+ * kept running against the target directory for up to SHELL_COMMAND_TIMEOUT_MS. An agent
+ * mid-`npm run build` went on writing after the user stopped it. The signal existed at the
+ * tool boundary the whole time: the AI SDK passes per-call options as the SECOND argument
+ * to a tool's `execute`, and every callback in AIProvider destructured only the first.
+ *
+ * POSITIVE CONTROL: drop the `signal` parameter from runShellCommand (or stop forwarding
+ * `opts?.abortSignal` in AIProvider's tool callbacks) and the first two fail.
+ */
+describe('runShellCommand — a cancel reaches the child process', () => {
+  beforeEach(() => { vi.clearAllMocks(); });
+
+  it('passes the caller signal through to exec', async () => {
+    const controller = new AbortController();
+    setupExec({ stdout: 'ok', stderr: '' });
+
+    await runShellCommand('sleep 30', '/tmp', 5000, undefined, controller.signal);
+
+    // The options object exec actually received.
+    const opts = mockExecFn.mock.calls[0]![1] as { signal?: AbortSignal };
+    expect(opts.signal).toBe(controller.signal);
+  });
+
+  it('reports an aborted command as CANCELLED, not as an unexplained signal death', async () => {
+    // Node kills the child with SIGTERM on abort, which is indistinguishable from an
+    // external kill by shape alone. Reporting "terminated by signal SIGTERM" would tell the
+    // model something unexplained happened to its command; it was stopped on purpose.
+    const controller = new AbortController();
+    controller.abort();
+    setupExec(Object.assign(new Error('aborted'), { killed: false, signal: 'SIGTERM' }));
+
+    const result = await runShellCommand('sleep 30', '/tmp', 5000, undefined, controller.signal);
+
+    expect(result.termination).toBe('cancelled');
+    expect(result.termination).not.toBe('signal');
+    expect(result.stderr).toContain('cancelled');
+  });
+
+  it('still reports a genuine external kill as a signal — the negative control', async () => {
+    // Without this, "aborts are cancellations" would also pass for an implementation that
+    // labelled every signalled death a cancel, which is the conflation the termination
+    // field exists to prevent.
+    const live = new AbortController();   // supplied, never fired
+    setupExec(Object.assign(new Error('killed'), { killed: false, signal: 'SIGKILL' }));
+
+    const result = await runShellCommand('cmd', '/tmp', 5000, undefined, live.signal);
+
+    expect(result.termination).toBe('signal');
+    expect(result.stderr).toContain('SIGKILL');
+  });
+
+  it('omits the signal option entirely when the caller supplies none', async () => {
+    setupExec({ stdout: 'ok', stderr: '' });
+    await runShellCommand('echo ok', '/tmp', 5000);
+
+    const opts = mockExecFn.mock.calls[0]![1] as { signal?: AbortSignal };
+    expect(opts.signal).toBeUndefined();
+  });
+});

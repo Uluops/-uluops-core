@@ -128,7 +128,7 @@ export class RegistryClient {
 
     // Try local resolution if configured (local takes priority over remote)
     if (this.config.localDefinitions) {
-      const local = await this.resolveLocal(name, type, this.config.localDefinitions);
+      const local = await this.resolveLocal(name, type, this.config.localDefinitions, version);
       if (local) {
         this.cache.set(cacheKey, local);
         this.verifyPins(local, opts);
@@ -250,6 +250,20 @@ export class RegistryClient {
     name: string,
     type?: DefinitionType,
     baseDir?: string,
+    /**
+     * The version the CALLER pinned, if any.
+     *
+     * This parameter did not exist: `resolveLocal` was called with three arguments and the
+     * requested version was dropped on the floor. It returned whatever `<name>.<type>.yaml`
+     * was on disk, stamped with THAT file's own version, and `resolve()` then cached the
+     * result under `type:name@<requested version>`. So with `ULUOPS_LOCAL_DEFINITIONS` set,
+     * a pipeline stage pinned `code-validator@2.4.2` executed an arbitrary local file and
+     * recorded it as the 2.4.2 resolution, with no warning anywhere.
+     *
+     * A hash pin (`expectedHash`) already caught this — `verifyPins` is fail-closed on every
+     * path — but a version pin alone did not, and a version pin is the common case.
+     */
+    version?: string,
   ): Promise<ResolvedDefinition | null> {
     if (!baseDir) return null;
 
@@ -297,10 +311,25 @@ export class RegistryClient {
       // is one of the two points where it enters the type system; downstream
       // narrowing (`resolved.type === 'command'` ⇒ CommandDefinition) is only
       // as trustworthy as this parse.
+      const localVersion = this.extractVersion(definition, candidate.type);
+
+      // A version pin is HONOURED, not silently ignored. Falling through to the remote
+      // registry is the fail-closed answer: the caller asked for a specific version, this
+      // file is a different one, and executing it anyway while recording it under the
+      // requested version is how a pinned stage runs arbitrary local code. `latest` is not
+      // a pin and is deliberately exempt.
+      if (version && version !== 'latest' && version !== localVersion) {
+        this.logger.warn(
+          `Local definition "${candidate.path}" is version ${localVersion}, but ${name}@${version} was requested — `
+          + `falling through to the registry. Set the local file's version to ${version} to use it.`,
+        );
+        continue;
+      }
+
       return {
         type: candidate.type,
         name,
-        version: this.extractVersion(definition, candidate.type),
+        version: localVersion,
         // Shared normalized hash (matches the registry's scheme) so a caller can
         // pin a local definition's YAML hash and have it verify consistently.
         hash: computeHash(yamlContent),

@@ -87,6 +87,26 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) 
   `--control`, because a census baseline only stays true if something regenerates and checks
   it, and a gate nothing runs cannot fail.
 
+- **A cancel now reaches the child process, not just the provider request.** `cancel()`
+  aborted the LLM call and the run reported `CANCELLED` — while the `sh -c` child kept
+  running against the target directory for up to `SHELL_COMMAND_TIMEOUT_MS`. An agent
+  mid-`npm run build` went on writing after the user stopped it. The signal was at the tool
+  boundary the whole time: the AI SDK passes per-call options as the SECOND argument to a
+  tool's `execute`, and every callback in `AIProvider` destructured only the first.
+  `runShellCommand` takes an `AbortSignal`, both adapters forward it, and a new
+  `termination: 'cancelled'` reports the abort as a cancellation rather than as an
+  unexplained SIGTERM — a genuine external kill is still reported as `signal`.
+
+- **The local-definitions path honours a pinned version instead of ignoring it.**
+  `resolveLocal` was called without the requested `version` at all: it returned whatever
+  `<name>.<type>.yaml` was on disk, stamped with THAT file's version, and `resolve()` cached
+  it under the requested one. So with `ULUOPS_LOCAL_DEFINITIONS` set, a stage pinned
+  `code-validator@2.4.2` executed an arbitrary local file and recorded it as the 2.4.2
+  resolution, silently. A hash pin already caught this (`verifyPins` is fail-closed on every
+  path); a version pin alone did not, and a version pin is the common case. A mismatch now
+  warns and falls through to the registry — fail-closed, since the caller asked for a
+  specific version and this is a different one. `latest` is not a pin and stays exempt.
+
 - **The controls for both census fixes tested the wrong object.** Found by a gate pass
   re-reading this same commit. The `fullyGuarded` repair below had NO positive control: all
   ten planted lines in `--control` were seamless, so every one fired identically under the

@@ -939,7 +939,12 @@ export class AIProvider {
       }
       return {
         bash: bashTool({
-          execute: async ({ command }) => executeShellAsString(command, targetDir, timeoutMs, this.logger),
+          // The SECOND argument is the AI SDK's per-call options, carrying the abortSignal
+          // for this tool invocation. Every tool callback in this file discarded it, so a
+          // cancel killed the provider request and left the `sh -c` child running against
+          // the target directory — the run reported CANCELLED while work continued.
+          execute: async ({ command }, opts) =>
+            executeShellAsString(command, targetDir, timeoutMs, this.logger, opts?.abortSignal),
         }),
       };
     }
@@ -950,7 +955,9 @@ export class AIProvider {
       // Tool<any, any> due to schema symbol variance. Safe at runtime.
       return {
         shell: this.openaiInstance.tools.shell({
-          execute: async ({ action }) => executeShellAsOpenAIResult(action, targetDir, timeoutMs, this.logger),
+          // See the Anthropic twin above — same discarded per-call signal, same consequence.
+          execute: async ({ action }, opts) =>
+            executeShellAsOpenAIResult(action, targetDir, timeoutMs, this.logger, opts?.abortSignal),
         }),
       } as unknown as ToolSet;
     }

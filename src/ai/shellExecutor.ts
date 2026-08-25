@@ -39,7 +39,7 @@ interface ShellResult {
    * occur. A model reading that will rationally ask for a longer timeout, which cannot
    * help. Node distinguishes these; the code was discarding the distinction.
    */
-  termination: 'exited' | 'timeout' | 'signal' | 'output-limit' | 'spawn-failure';
+  termination: 'exited' | 'timeout' | 'signal' | 'output-limit' | 'spawn-failure' | 'cancelled';
 }
 
 interface OpenAIShellAction {
@@ -73,6 +73,15 @@ export async function runShellCommand(
   cwd: string,
   timeoutMs: number,
   logger: Logger = noopLogger,
+  /**
+   * Cancellation from the caller — `PipelineHandle.cancel()`, or a consumer's own signal.
+   *
+   * Without it, cancelling a run killed the provider request and left the `sh -c` child
+   * running: an agent mid-`npm run build` kept writing to the target directory after the
+   * run reported CANCELLED, for up to `SHELL_COMMAND_TIMEOUT_MS`. Bounded, but the whole
+   * point of the cancel is that the user asked the work to stop.
+   */
+  signal?: AbortSignal,
 ): Promise<ShellResult> {
   logger.info(`[shell] exec: ${command.length > 200 ? command.substring(0, 200) + '…' : command} (cwd=${cwd}, timeout=${timeoutMs}ms)`);
   try {
@@ -80,6 +89,7 @@ export async function runShellCommand(
       cwd,
       timeout: timeoutMs,
       maxBuffer: 1024 * 1024, // 1MB
+      ...(signal ? { signal } : {}),
     });
     return { stdout: stdout || '', stderr: stderr || '', timedOut: false, exitCode: 0, termination: 'exited' };
   } catch (error) {
@@ -130,6 +140,17 @@ export async function runShellCommand(
       };
     }
 
+    // A caller abort arrives here as a signalled death (Node kills the child with SIGTERM).
+    // Reporting it as "terminated by signal SIGTERM" would tell the model its command was
+    // killed by something unexplained; it was stopped on purpose.
+    if (signal?.aborted) {
+      return {
+        stdout: err.stdout || '',
+        stderr: err.stderr || 'Command was cancelled before it completed.',
+        timedOut: false, exitCode: 1, termination: 'cancelled',
+      };
+    }
+
     if (err.signal) {
       return {
         stdout: err.stdout || '',
@@ -173,6 +194,7 @@ function toOpenAIOutcome(result: ShellResult): OpenAIShellOutput['output'][numbe
     case 'signal':
     case 'output-limit':
     case 'spawn-failure':
+    case 'cancelled':
       return { type: 'exit' as const, exitCode: result.exitCode };
     default: {
       // Exhaustiveness guard — widening `termination` without visiting this function is a
@@ -206,14 +228,16 @@ export async function executeShellAsString(
   cwd: string,
   timeoutMs: number,
   logger?: Logger,
+  signal?: AbortSignal,
 ): Promise<string> {
-  const result = await runShellCommand(command, cwd, timeoutMs, logger);
+  const result = await runShellCommand(command, cwd, timeoutMs, logger, signal);
   // Each termination reports what actually happened. Returning "timed out" for a SIGKILL
   // or a buffer overflow hands the model a false premise it will then act on.
   if (result.termination === 'timeout') return `Command timed out after ${timeoutMs}ms`;
   if (result.termination === 'signal') return result.stderr;
   if (result.termination === 'output-limit') return result.stderr;
   if (result.termination === 'spawn-failure') return result.stderr;
+  if (result.termination === 'cancelled') return result.stderr;
 
   const output = markTruncation(result.stdout || result.stderr || '(no output)', MAX_SHELL_OUTPUT);
 
@@ -242,6 +266,7 @@ export async function executeShellAsOpenAIResult(
   cwd: string,
   defaultTimeoutMs: number,
   logger?: Logger,
+  signal?: AbortSignal,
 ): Promise<OpenAIShellOutput> {
   // Bounded on BOTH sides — see clampModelBound. The model can lower these below the
   // operator default and cannot raise them, including by sending 0, a negative, or NaN.
@@ -251,7 +276,7 @@ export async function executeShellAsOpenAIResult(
   const maxLen = clampModelBound(action.maxOutputLength, MAX_SHELL_OUTPUT);
 
   for (const command of action.commands) {
-    const result = await runShellCommand(command, cwd, timeoutMs, logger);
+    const result = await runShellCommand(command, cwd, timeoutMs, logger, signal);
     results.push({
       // Truncation is MARKED, matching the Anthropic twin above. This path substringed
       // silently, so a model could not tell "the command produced no output" from "the
