@@ -79,6 +79,44 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) 
   **stop** subtracting a cached figure from it; doing so now undercounts. `total_effective` is
   `input + output + cache_creation`, unchanged in meaning and now correct in value.
 
+- **A gate over work that never ran passed when no `threshold` was declared.** The
+  same-day fix above closed the SCORE channel; the DECISION channel stayed open one seam
+  over. `gate.threshold` is optional, and without it `gateFailed` consults only the
+  decision — but a workflow whose every phase was skipped honestly reports `SHIP` (no phase
+  failed) and an agents stage that dispatched nothing honestly reports `PASS` (nothing came
+  back negative). Both are true statements meaning nothing was verified, so a threshold-less
+  `on_failure: abort` gate passed them. `gateFailed` now fails a gate over a stage that
+  demonstrably executed nothing, determined positively — an empty `agentResults`, or
+  `phasesExecuted === 0` as counted by WorkflowExecutor — never inferred from a score, so a
+  stage that ran and legitimately scored 0 is untouched. Sibling of the existing G5 check
+  ("hard gates must not silently pass unexecuted"), reached at runtime rather than authoring
+  time.
+
+- **A `TimeoutError` reported a duration nobody measured, and advice that would lower the
+  bound.** A regression created by the timeout fix above and reachable only because of it:
+  `mapError` built `new TimeoutError(timeoutMs ?? this.config.timeout)` from the RAW option,
+  and `??` does not skip `0`. Once every request began carrying a bound, a caller passing
+  `timeoutMs: 0` got a five-minute request failing with *"Request timed out after 0ms.
+  Consider increasing timeout with `{ timeout: 60000 }`"* — sdk-core's `TimeoutError`
+  multiplies the value into that remediation string, which is why the `EXTERNAL-OK` waiver
+  claiming it "reaches no arithmetic" was false here, exactly as it was at the executor's
+  resolution site. Both the signal and the error now derive from one
+  `resolveRequestTimeoutMs` seam, so what is reported is what was installed.
+
+- **One operator `config.timeout` produced two different bounds.** `timeout: 0` resolved to
+  300 s through `AgentExecutor` and 600 s through a direct `AIProvider.generate()` — the same
+  configuration meaning different things depending on the entry point, and neither the
+  documented default. Both now derive from `DEFAULT_REQUEST_TIMEOUT_MS`.
+
+- **A cancel was recorded as a cascade of failed phases, and the workflow kept walking.**
+  `WorkflowExecutor`'s level loop checked only `stopped || aborted`, never the abort signal,
+  so a cancel landing mid-level rejected the in-flight phases (recorded `blocked`) and then
+  dispatched EVERY remaining level, each aborting instantly and recorded `blocked` too.
+  Under `on_failure: 'warn'` those become `warned`, so the run aggregated to **HOLD** — a
+  user cancellation reported as a quality verdict, with fabricated `PRA-FRA` recommendations
+  persisted beneath it. `PipelineExecutor` received this guard; `WorkflowExecutor` did not.
+  Remaining levels are now recorded `skipped`: nothing was asked of them.
+
 - **A hard gate passed a workflow in which nothing had executed.** Introduced earlier the
   same day and caught by the ship gate before publish. `aggregateScores` had TWO
   zero-returning branches — empty input ("nothing was offered to score") and all-scoreless
@@ -851,6 +889,16 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) 
   engages and `markBrakeInert()` is never called.
 
 ### Design Notes
+
+- **Deliberately NOT fixed in 0.42.0, ranked and recorded rather than guessed at.** The
+  stage-4 audit re-ranked these against the current tree and none is critical: `cancel()`
+  does not reach the shell tool, so an `sh -c` child keeps running after a cancel (bounded at
+  `SHELL_COMMAND_TIMEOUT_MS`, 30 s); the local-definitions path ignores a pinned version
+  (`RegistryClient.resolve` drops `version` on that branch — dev-mode affordance, mitigated
+  by opt-in `verifyPins`); duplicate phase ids are reported as a dependency cycle with an
+  empty offender list (fails closed at planning time, but sends the reader to `depends_on`
+  where the bug is not); an empty or comment-only local YAML crashes with a raw `TypeError`
+  outside `resolve()`'s documented `ConfigurationError` contract.
 
 - **`clampModelBound`: an unusable SUPPLIED value clamps to the floor (1 ms), not to the
   operator default — and the helper's own prose says otherwise.** Two test names in

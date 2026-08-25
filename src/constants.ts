@@ -121,6 +121,17 @@ export const DEFAULT_TEMPERATURE = 0;
 export const SHELL_COMMAND_TIMEOUT_MS = 30_000;
 
 /**
+ * The agent-run request bound used when no usable one is supplied.
+ *
+ * ONE constant, deliberately. `AgentExecutor` and `AIProvider` each resolve a request
+ * timeout, and they briefly disagreed: an operator `config.timeout: 0` produced 300 s
+ * through the executor and 600 s through a direct `AIProvider.generate()`, so the same
+ * configuration meant two different bounds depending on which entry point a caller used,
+ * and neither was the documented default. Both now land here.
+ */
+export const DEFAULT_REQUEST_TIMEOUT_MS = 300_000;
+
+/**
  * Default allowlist of valid provider names for dynamic import.
  * Prevents path traversal via crafted provider strings (CWE-829).
  * Users can extend this via config.ai.additionalProviders.

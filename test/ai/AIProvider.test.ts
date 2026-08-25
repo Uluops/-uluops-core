@@ -863,6 +863,61 @@ describe('AIProvider', () => {
       expect(passed.aborted).toBe(true);
     });
 
+    /**
+     * The error must report the timeout that was actually INSTALLED.
+     *
+     * A regression created by the fix above, and reachable only because of it. `mapError`
+     * built `new TimeoutError(timeoutMs ?? this.config.timeout)` from the RAW option, and
+     * `??` does not skip `0` — so once every request started carrying a bound, a caller
+     * passing the Node "no timeout" idiom got a five-minute request failing with
+     * "Request timed out after 0ms. Consider increasing timeout with { timeout: 60000 }":
+     * a duration nobody measured, and advice that would LOWER the bound. sdk-core's
+     * TimeoutError multiplies the value (`Math.max(timeoutMs * 2, 60000)`) into that
+     * remediation string, which is why the `EXTERNAL-OK` waiver claiming it "reaches no
+     * arithmetic" was false here — the same false waiver deleted from AgentExecutor.
+     *
+     * POSITIVE CONTROL: pass `options.timeoutMs` instead of the resolved value at the two
+     * handleGenerateError call sites and the first two fail with 0 / NaN in the message.
+     */
+    it.each([
+      ['zero', 0],
+      ['NaN', Number.NaN],
+    ])('reports the installed bound, not a raw %s, when the request times out', async (_label, bad) => {
+      const { generateText } = await import('ai');
+      vi.mocked(generateText).mockRejectedValueOnce(
+        new DOMException('The operation was aborted due to timeout', 'TimeoutError'),
+      );
+
+      const provider = new AIProvider(mockConfig, mockCatalog(), noopLogger);
+      const err = await provider.generate({
+        model: 'sonnet', system: 't', prompt: 't', timeoutMs: bad as number,
+      }).catch((e: unknown) => e) as unknown as Error;
+
+      expect(err).toBeInstanceOf(TimeoutError);
+      // The fabricated duration, and the remediation derived from it.
+      expect(err.message).not.toContain('after 0ms');
+      expect(err.message).not.toContain('NaN');
+      // It reports the bound that actually fired — mockConfig's timeout, or the shared
+      // default if that is unusable too. Either way a real, positive number.
+      expect(err.message).toMatch(/after \d+ms/);
+    });
+
+    it('still reports a genuine caller timeout verbatim — the negative control', async () => {
+      // Without this, "does not report 0" would also pass for an implementation that had
+      // stopped reporting the caller's own value at all.
+      const { generateText } = await import('ai');
+      vi.mocked(generateText).mockRejectedValueOnce(
+        new DOMException('timed out', 'TimeoutError'),
+      );
+
+      const provider = new AIProvider(mockConfig, mockCatalog(), noopLogger);
+      const err = await provider.generate({
+        model: 'sonnet', system: 't', prompt: 't', timeoutMs: 45_000,
+      }).catch((e: unknown) => e) as unknown as Error;
+
+      expect(err.message).toContain('45000');
+    });
+
     it('maps RetryError to SdkApiError', async () => {
       const { generateText } = await import('ai');
       const mockGenerateText = vi.mocked(generateText);

@@ -36,7 +36,7 @@ import {
 } from '../errors/index.js';
 import type { ModelCapabilities } from '@uluops/registry-sdk';
 import type { Logger } from '@uluops/sdk-core';
-import { usableBudget, finitePositive } from '../utils/externalValue.js';
+import { usableBudget, resolveRequestTimeoutMs } from '../utils/externalValue.js';
 
 /**
  * What `mapUsage` accepts — DERIVED from the AI SDK's own `LanguageModelUsage`
@@ -467,7 +467,7 @@ export class AIProvider {
     try {
       result = await this.executeGeneration(options, languageModel, system, providerOptions, useStructuredOutput, isReasoning, stepTotals);
     } catch (error) {
-      return this.handleGenerateError(error, resolved, useStructuredOutput, options.timeoutMs, stepTotals, options.abortSignal);
+      return this.handleGenerateError(error, resolved, useStructuredOutput, resolveRequestTimeoutMs(options.timeoutMs, this.config.timeout), stepTotals, options.abortSignal);
     }
     // Result ASSEMBLY gets its own try, separate from the provider call above.
     //
@@ -495,7 +495,7 @@ export class AIProvider {
           ? ' — degrading to text extraction and reporting the usage already billed.'
           : ' — the error is being mapped and rethrown; usage accumulated during this run is NOT reported.'),
       );
-      return this.handleGenerateError(error, resolved, useStructuredOutput, options.timeoutMs, stepTotals, options.abortSignal);
+      return this.handleGenerateError(error, resolved, useStructuredOutput, resolveRequestTimeoutMs(options.timeoutMs, this.config.timeout), stepTotals, options.abortSignal);
     }
   }
 
@@ -579,10 +579,10 @@ export class AIProvider {
       stopWhen: stepCountIs(maxSteps + (useStructuredOutput ? 2 : 0)),
       ...(isReasoning ? {} : { temperature: options.temperature ?? DEFAULT_TEMPERATURE }),
       maxRetries: options.maxRetries,
-      // EXTERNAL-OK: mergeAbortSignals IS the seam for this pair. Both `options.timeoutMs`
-      // and `this.config.timeout` are external, and both are routed through finitePositive
-      // inside it, which is why it takes the config value as an argument rather than
-      // reading a default it cannot validate. Guarded at the callee, not waived away.
+      // EXTERNAL-OK: both arguments are resolved by `resolveRequestTimeoutMs` — a seam
+      // export of src/utils/externalValue.ts — one call inside mergeAbortSignals. The
+      // waiver is here only because this check reads a single line and the seam call is on
+      // the next one; the value is guarded, not exempted.
       abortSignal: mergeAbortSignals(options, this.config.timeout),
       ...(providerOptions ? { providerOptions } : {}),
       ...(prepareStep ? { prepareStep } : {}),
@@ -1809,9 +1809,19 @@ export class AIProvider {
         mapped.cause = cause;
         return mapped;
       }
-      // EXTERNAL-OK: an HTTP/SDK timeout handed straight to a client that validates its own options; it reaches
-    // no arithmetic and no threshold in this package.
-      const mapped = new TimeoutError(timeoutMs ?? this.config.timeout);
+      // `timeoutMs` here is ALREADY RESOLVED by resolveRequestTimeoutMs at the call site —
+      // the same value the abort signal was built from — so the error reports the bound that
+      // actually fired. It used to be the raw option under a `??`, which preserves `0`.
+      //
+      // The waiver that sat on this line ("handed straight to a client that validates its
+      // own options; it reaches no arithmetic and no threshold") was false here for the same
+      // reason it was false at AgentExecutor's resolution site: sdk-core's TimeoutError
+      // MULTIPLIES it — `Math.max(timeoutMs * 2, 60000)` — into operator-facing remediation
+      // advice. Deleted rather than carried.
+      // Routed through the resolver rather than waived: `timeoutMs` is optional here, and
+      // the old `?? this.config.timeout` fallback read the operator value RAW — the same
+      // unguarded seam one branch over. Idempotent when the caller already resolved it.
+      const mapped = new TimeoutError(resolveRequestTimeoutMs(timeoutMs, this.config.timeout));
       mapped.cause = cause;
       return mapped;
     }
@@ -1851,17 +1861,11 @@ function mergeAbortSignals(
   // caller with the same hang. The fallback is the operator's configured timeout, and if
   // that is unusable too, a conservative floor — an unusable configuration degrades to a
   // real bound, never to no bound.
-  const ms = finitePositive(options.timeoutMs)
-    ?? finitePositive(configTimeoutMs)
-    ?? FALLBACK_REQUEST_TIMEOUT_MS;
-  const timeout = AbortSignal.timeout(ms);
+  const timeout = AbortSignal.timeout(resolveRequestTimeoutMs(options.timeoutMs, configTimeoutMs));
   const caller = options.abortSignal;
   return caller ? AbortSignal.any([timeout, caller]) : timeout;
 }
 
-/** Last-resort request bound when neither the call nor the operator config supplies a usable
- *  one. Deliberately generous — it exists to stop an unbounded hang, not to cut work short. */
-const FALLBACK_REQUEST_TIMEOUT_MS = 600_000;
 
 /**
  * Type guard for AI SDK's APICallError.

@@ -134,7 +134,13 @@ const CHANNELS = [
 const NUMERIC_CONTEXT = /\?\?\s*[-\d]|\|\|\s*[-\d]|[-+*/]=|\s[-+*/]\s|[<>]=?\s|Math\.|parseInt|parseFloat|(?<![.\w])Number\s*\(|timeout|Tokens?\b|[Ss]core|[Bb]udget|[Ll]imit|[Mm]ax|[Mm]in\b|[Dd]epth|[Cc]ount|[Rr]etries|[Ww]eight/;
 
 /** Validators that discharge a site. A value routed through one of these is guarded. */
-const SEAMS = /externalInt|finitePositive|finiteNonNegative|clampModelBound|usableWeight|usableBudget|sanitizeModelCost|safeTokenCount|optionalTokenCount|externalLineNumber|\.finite\(\)|Number\.isFinite/;
+// Every name here must be an EXPORT of src/utils/externalValue.ts (or an equivalent
+// validating call). Adding a name to this list without a real guard behind it disarms the
+// instrument silently — the check keeps reporting "none unguarded" while a raw value flows.
+// `resolveRequestTimeoutMs` was added 2026-08-24 when the request-timeout seam moved into
+// externalValue.ts; before that it lived in AIProvider and the audit correctly refused to
+// recognise it, which is the behaviour to preserve.
+const SEAMS = /externalInt|finitePositive|finiteNonNegative|clampModelBound|usableWeight|usableBudget|resolveRequestTimeoutMs|sanitizeModelCost|safeTokenCount|optionalTokenCount|externalLineNumber|\.finite\(\)|Number\.isFinite/;
 
 const WAIVER = /EXTERNAL-OK:\s*\S+/;
 

@@ -111,6 +111,22 @@ export class WorkflowExecutor {
       let aborted = false;
 
       for (const level of levels) {
+        // A CANCEL stops the walk. Without this the loop checked only `stopped || aborted`,
+        // so a cancel landing mid-level rejected every in-flight phase with CancelledError,
+        // `createBlockedPhase` recorded each as `blocked` — and then, under the common
+        // `on_failure: 'warn' | 'continue'`, the loop dispatched EVERY remaining level, each
+        // phase aborting instantly against the already-fired signal and being recorded
+        // blocked too. Under 'warn' those are rewritten to `warned`, so `aggregate` returned
+        // HOLD: a user cancellation reported as a quality verdict, with N fabricated
+        // PRA-FRA recommendations persisted to the tracker beneath it.
+        //
+        // PipelineExecutor got this guard (`cancelledNow`) and WorkflowExecutor did not —
+        // the same defect one layer down, which is the shape this arc keeps finding. The
+        // remaining levels are recorded SKIPPED, not blocked: nothing was asked of them.
+        if (control?.abortSignal?.aborted) {
+          this.skipLevel(level, phaseResults, completedPhases);
+          continue;
+        }
         if (stopped || aborted) {
           this.skipLevel(level, phaseResults, completedPhases);
           continue;

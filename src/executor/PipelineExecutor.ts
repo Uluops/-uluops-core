@@ -690,6 +690,30 @@ export class PipelineExecutor {
     if (stageResult.status === 'failed') return true;
     if (resolveDecisionCategory(stageResult.result, this.warnUnclassified) === 'negative') return true;
 
+    // A gate over work that never ran fails, whether or not a threshold was declared.
+    //
+    // `gate.threshold` is optional, and without it `gateFailed` consults only the DECISION.
+    // But a workflow whose every phase was skipped reports SHIP (no phase failed — which is
+    // true), and an agents stage that dispatched nothing reports PASS (nothing came back
+    // negative — also true). Both are honest about what happened and both mean nothing was
+    // verified, so a threshold-less `on_failure: abort` gate passed them. The score channel
+    // was fixed to report 0 for exactly this case; the decision channel said PASS beside it.
+    //
+    // Sibling of the G5 check above ("hard gates must not silently pass unexecuted"), which
+    // covers a steps stage authored with no steps. Same rule, reached at runtime instead of
+    // at authoring time.
+    //
+    // Determined POSITIVELY, never inferred from a score: an empty `agentResults` means
+    // nothing was dispatched, and `phasesExecuted === 0` is counted by WorkflowExecutor
+    // itself. A stage that ran and legitimately scored 0 is untouched.
+    if (this.verifiedNothing(stageResult)) {
+      this.logger.warn(
+        `Stage "${stage.id}" has a gate but executed nothing — no agent was dispatched and ` +
+        `no phase ran. Failing the gate rather than passing unverified work.`,
+      );
+      return true;
+    }
+
     if (gate.threshold !== undefined) {
       const score = this.gateScore(gate, stageResult);
       if (score === null) {
@@ -697,6 +721,29 @@ export class PipelineExecutor {
         return false;
       }
       return score < gate.threshold;
+    }
+
+    return false;
+  }
+
+  /**
+   * Whether a gated stage demonstrably executed NOTHING.
+   *
+   * Returns true only on positive evidence, so an unrecognized stage shape, or any stage
+   * that genuinely ran, falls through to the ordinary gate checks. Absence of evidence is
+   * not evidence here — this decides whether to fail a gate.
+   */
+  private verifiedNothing(stageResult: StageResult): boolean {
+    // Inline-agents stage: the array is present and empty, meaning every agent's condition
+    // was false (or none were authored) so nothing was dispatched.
+    if (stageResult.agentResults && stageResult.agentResults.length === 0) return true;
+
+    // Workflow-ref stage: WorkflowExecutor counts this itself — a phase is "executed" only
+    // when it is neither skipped nor aborted.
+    const result = stageResult.result;
+    if (result?.type === 'workflow') {
+      const executed = (result as { metrics?: { phasesExecuted?: number } }).metrics?.phasesExecuted;
+      if (executed === 0) return true;
     }
 
     return false;

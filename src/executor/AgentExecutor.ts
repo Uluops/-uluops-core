@@ -21,7 +21,7 @@ import { mapCategory } from './mapCategory.js';
 import { renderUpstreamSection } from './upstreamContext.js';
 import type { UsageMetrics } from '../types/ai.js';
 import type { Logger } from '@uluops/sdk-core';
-import { DEFAULT_PASS_THRESHOLD, DEFAULT_WARN_THRESHOLD, DEFAULT_MAX_STEPS, DEFAULT_MAX_TOKENS, DEFAULT_MODEL_ALIAS, DEFAULT_TEMPERATURE, EXTRACTION_CONFIDENCE_THRESHOLD, SHELL_COMMAND_TIMEOUT_MS } from '../constants.js';
+import { DEFAULT_PASS_THRESHOLD, DEFAULT_WARN_THRESHOLD, DEFAULT_MAX_STEPS, DEFAULT_MAX_TOKENS, DEFAULT_MODEL_ALIAS, DEFAULT_TEMPERATURE, EXTRACTION_CONFIDENCE_THRESHOLD, SHELL_COMMAND_TIMEOUT_MS, DEFAULT_REQUEST_TIMEOUT_MS } from '../constants.js';
 
 /**
  * Maximum bytes retained from the LLM's raw text output on AgentResult.rawOutput.
@@ -645,7 +645,7 @@ export class AgentExecutor {
       timeoutMs: finitePositive(options?.timeoutMs)
         ?? finitePositive(defaults?.timeout)
         ?? finitePositive(this.config.timeout)
-        ?? 300_000,
+        ?? DEFAULT_REQUEST_TIMEOUT_MS,
       temperature: options?.temperature ?? defaults?.temperature ?? DEFAULT_TEMPERATURE,
       // EXTERNAL-OK: forwarded to the AI SDK as a generation option; it bounds the PROVIDER call, not any
       // arithmetic here, and the SDK rejects a malformed value at its own boundary.

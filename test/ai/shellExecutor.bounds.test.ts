@@ -36,9 +36,17 @@ describe('shellExecutor — model-supplied bounds are clamped on both sides', ()
   }, 20_000);
 
   it.each([[-1], [Number.NaN]])(
-    'a nonsensical timeoutMs (%s) falls back to the operator default, not an error', async (bad) => {
+    'a nonsensical timeoutMs (%s) is BOUNDED, not an error', async (bad) => {
       // These previously reached execFile and threw ERR_OUT_OF_RANGE, which the catch
       // reported as exitCode 1 — a configuration fault presented as a command failure.
+      //
+      // Renamed 2026-08-24. This said "falls back to the operator default", and the two
+      // parameters take DIFFERENT branches — `-1` clamps to the 1 ms floor, `NaN` falls
+      // back to the operator default — while the assertion (`{ type: 'timeout' }`) is
+      // satisfied by both. The test could not discover the difference it was named for,
+      // which is the instrument-that-cannot-fail pattern this suite exists to prevent,
+      // sitting inside the suite. The name now states what is actually asserted: bounded.
+      // The branch split itself is pinned as measured fact in test/utils/externalValue.test.ts.
       const res = await run({ timeoutMs: bad });
       expect(res.output[0]!.outcome).toEqual({ type: 'timeout' });
     }, 20_000);

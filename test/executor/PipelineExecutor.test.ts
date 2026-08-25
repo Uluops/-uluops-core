@@ -7,6 +7,7 @@ import type { AgentResult } from '../../src/types/agent.js';
 import { PipelineError, MaxStepsExhaustedError } from '../../src/errors/index.js';
 import type { AgentExecutor } from '../../src/executor/AgentExecutor.js';
 import type { CommandExecutor } from '../../src/executor/CommandExecutor.js';
+import type { WorkflowExecutor } from '../../src/executor/WorkflowExecutor.js';
 import type { RegistryClient } from '../../src/registry/RegistryClient.js';
 import {
   makeCommandResult,
@@ -1498,6 +1499,84 @@ describe('PipelineExecutor', () => {
       });
 
       const result = await executor.execute(def, { target: '/tmp', params: { mode: 'real' } });
+      expect(result.stages[1]!.status).toBe('completed');
+    });
+
+    /**
+     * The DECISION channel of the same class. `gate.threshold` is optional, and without it
+     * `gateFailed` consults only the decision — but "nothing ran" honestly reports PASS
+     * (nothing came back negative) and SHIP (no phase failed), so a threshold-less
+     * `on_failure: abort` gate passed work that was never verified. Fixing the score
+     * channel alone left this open one channel over, with identical inputs.
+     *
+     * POSITIVE CONTROL: remove the `verifiedNothing(stageResult)` check from `gateFailed`
+     * and both of these pass their gate and reach stage 2.
+     */
+    it('a THRESHOLD-LESS gate still fails when the stage dispatched no agents', async () => {
+      const executor = new PipelineExecutor(
+        makeWorkflowExecutor(), makeCommandExecutor(), makeAgentExecutor([makeValidatorResult()]), makeRegistry(), noopLogger,
+      );
+      const def = makePipelineDef({
+        stages: [
+          {
+            id: 'panel', name: 'Panel', type: 'agents' as const,
+            agents: [{ ref: 'a@1', condition: "params.mode == 'never'" }],
+            gate: { on_failure: 'abort' as const },   // no threshold — decision-only gating
+          },
+          { id: 'downstream', name: 'Downstream', type: 'command' as const, ref: 'c@1' },
+        ],
+      });
+
+      await expect(
+        executor.execute(def, { target: '/tmp', params: { mode: 'real' } }),
+      ).rejects.toThrow(/failed its gate/);
+    });
+
+    it('a THRESHOLD-LESS gate still fails when a nested workflow executed no phase', async () => {
+      const wfExec = {
+        execute: vi.fn().mockResolvedValue(makeWorkflowResult({
+          decision: 'SHIP',
+          decisionCategory: 'positive',
+          score: 0,
+          phases: [],
+          metrics: { ...makeWorkflowResult().metrics, phasesExecuted: 0, phasesSkipped: 2 },
+        })),
+      } as unknown as WorkflowExecutor;
+
+      const executor = new PipelineExecutor(wfExec, makeCommandExecutor(), agentExec, makeRegistry(), noopLogger);
+      const def = makePipelineDef({
+        stages: [
+          {
+            id: 'checks', name: 'Checks', type: 'workflow' as const, ref: 'release-checks@1',
+            gate: { on_failure: 'abort' as const },
+          },
+          { id: 'publish', name: 'Publish', type: 'command' as const, ref: 'c@1' },
+        ],
+      });
+
+      await expect(executor.execute(def, { target: '/tmp' })).rejects.toThrow(/failed its gate/);
+    });
+
+    it('a stage that RAN and scored 0 is judged on its own terms — the negative control', async () => {
+      // Without this, "nothing ran fails the gate" would also pass for an implementation
+      // that failed every gate, or that treated a legitimate 0 as "did not execute". A
+      // genuinely-zero-scoring stage under a THRESHOLD-LESS gate must still pass, because
+      // that gate was authored to judge decisions, not scores.
+      const executor = new PipelineExecutor(
+        makeWorkflowExecutor(), makeCommandExecutor(), makeAgentExecutor([makeValidatorResult({ score: 0, decision: 'PASS' })]), makeRegistry(), noopLogger,
+      );
+      const def = makePipelineDef({
+        stages: [
+          {
+            id: 'panel', name: 'Panel', type: 'agents' as const,
+            agents: [{ ref: 'a@1' }],
+            gate: { on_failure: 'abort' as const },
+          },
+          { id: 'downstream', name: 'Downstream', type: 'command' as const, ref: 'c@1' },
+        ],
+      });
+
+      const result = await executor.execute(def, { target: '/tmp' });
       expect(result.stages[1]!.status).toBe('completed');
     });
 

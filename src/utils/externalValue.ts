@@ -1,3 +1,4 @@
+import { DEFAULT_REQUEST_TIMEOUT_MS } from '../constants.js';
 /**
  * The single validating boundary for values that arrive from OUTSIDE this package.
  *
@@ -162,9 +163,21 @@ export function parseExternalNumber(text: unknown): number | undefined {
  * Clamp a bound supplied by the MODEL into the operator's allowed range.
  *
  * Kept as a named export because the call sites read better in their own vocabulary, but it
- * now derives from {@link externalInt} rather than restating the rule. A value the model did
- * not supply, or supplied unusably, falls back to the operator default; a usable one is
+ * now derives from {@link externalInt} rather than restating the rule. A usable value is
  * bounded on both sides and can only ever LOWER the ceiling.
+ *
+ * UNUSABLE values take two different branches, and this line used to claim they all took
+ * one ("or supplied unusably, falls back to the operator default"):
+ *
+ *     clampModelBound(0,   60000) -> 1       floor      (finite integer: clamped)
+ *     clampModelBound(-1,  60000) -> 1       floor      (finite integer: clamped)
+ *     clampModelBound(NaN, 60000) -> 60000   fallback   (not a finite integer)
+ *     clampModelBound(Inf, 60000) -> 60000   fallback   (not a finite integer)
+ *
+ * Both are safely bounded, which is the property that matters. Which SHOULD apply is an
+ * open behavioural question recorded in the CHANGELOG's Design Notes — see the note at the
+ * return statement. Documented here as measured fact so the split cannot be mistaken for a
+ * single rule by the next reader.
  *
  * Measured before this existed: with the operator ceiling at 2,000 ms, a model omitting the
  * field had its 5-second command killed at 2,004 ms; a model sending `timeoutMs: 0` ran the
@@ -228,3 +241,23 @@ export function usableWeight(authored: unknown): number {
 export function usableBudget(value: unknown): number | undefined {
   return finitePositive(value);
 }
+
+/**
+ * The request bound that will actually be installed, resolved from the same inputs the
+ * signal is built from.
+ *
+ * Split out so the error path can report the timeout that WAS installed rather than the raw
+ * option. `mapError` built `new TimeoutError(timeoutMs ?? this.config.timeout)` on the raw
+ * value, and `??` does not skip `0` — so once every request started carrying a bound, a
+ * caller passing the Node "no timeout" idiom got a five-minute request that failed with
+ * *"Request timed out after 0ms. Consider increasing timeout with { timeout: 60000 }"*: a
+ * duration nobody measured, and a remediation that would LOWER the bound. With `NaN` the
+ * advice read `{ timeout: NaN }`. Reachable only because the hang it replaced was fixed —
+ * the same defect class, one seam further out.
+ */
+export function resolveRequestTimeoutMs(optionsTimeoutMs: unknown, configTimeoutMs: number): number {
+  return finitePositive(optionsTimeoutMs)
+    ?? finitePositive(configTimeoutMs)
+    ?? DEFAULT_REQUEST_TIMEOUT_MS;
+}
+

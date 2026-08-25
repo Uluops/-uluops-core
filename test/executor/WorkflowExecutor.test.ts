@@ -684,6 +684,70 @@ describe('WorkflowExecutor', () => {
       expect(result.decision).toBe('BLOCK');
     });
 
+    it('a cancel stops the level walk instead of blocking every remaining phase', async () => {
+      // Without the guard, a cancel mid-run dispatched EVERY remaining level, each phase
+      // rejecting instantly against the fired signal and being recorded `blocked` — and
+      // under `on_failure: 'warn'` those are rewritten to `warned`, so the workflow
+      // aggregates to HOLD. A user cancellation reported as a quality verdict, with N
+      // fabricated PRA-FRA recommendations persisted underneath it.
+      //
+      // POSITIVE CONTROL: remove the `control?.abortSignal?.aborted` check from the level
+      // loop and the later phases come back `blocked`/`warned` instead of `skipped`.
+      const controller = new AbortController();
+      // Phase 1 COMPLETES; the cancel lands during it. This isolates the guard — if the
+      // phase also threw, the workflow would fail for that reason and the test could not
+      // tell the guard from the failure path.
+      const cmdExec = {
+        execute: vi.fn().mockImplementation(async () => {
+          controller.abort();
+          return makeCommandResult({ score: 90 });
+        }),
+      } as unknown as CommandExecutor;
+
+      const executor = new WorkflowExecutor(cmdExec, makeRegistry());
+      const def = makeWorkflowDef({
+        orchestration: {
+          phases: [
+            { id: 'p1', name: 'Phase 1', commands: ['cmd-a'] },
+            { id: 'p2', name: 'Phase 2', commands: ['cmd-b'], depends_on: ['p1'] },
+            { id: 'p3', name: 'Phase 3', commands: ['cmd-c'], depends_on: ['p2'] },
+          ],
+          on_failure: 'warn',
+        },
+      });
+
+      const result = await executor.execute(def, { target: '/tmp/test' }, { abortSignal: controller.signal });
+
+      // The downstream phases were never asked for — skipped, not failed.
+      expect(result.phases[1]!.decision).toBe('skipped');
+      expect(result.phases[2]!.decision).toBe('skipped');
+      // And no fabricated failure recommendations were manufactured for them.
+      expect(result.phases[1]!.commands).toHaveLength(0);
+      expect(result.phases[2]!.commands).toHaveLength(0);
+    });
+
+    it('a phase failure with on_failure warn still walks on — the negative control', async () => {
+      // Without this, "cancel stops the walk" would also pass for an implementation that
+      // had stopped walking on ANY failure, silently converting `warn` into `stop`.
+      const cmdExec = makeCommandExecutor([
+        makeCommandResult({ score: 10, decision: 'FAIL', decisionCategory: 'negative' }),
+        makeCommandResult({ score: 90 }),
+      ]);
+      const executor = new WorkflowExecutor(cmdExec, makeRegistry());
+      const def = makeWorkflowDef({
+        orchestration: {
+          phases: [
+            { id: 'p1', name: 'Phase 1', commands: ['cmd-a'], gate: { threshold: 80, aggregate: 'min' as const, on_fail: 'warn' as const } },
+            { id: 'p2', name: 'Phase 2', commands: ['cmd-b'], depends_on: ['p1'] },
+          ],
+          on_failure: 'warn',
+        },
+      });
+
+      const result = await executor.execute(def, { target: '/tmp/test' });
+      expect(result.phases[1]!.decision).not.toBe('skipped');
+    });
+
     it('all phases skipped scores 0, so a parent gate cannot pass it unverified', async () => {
       const cmdExec = makeCommandExecutor();
       const registry = makeRegistry();

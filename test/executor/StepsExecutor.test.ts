@@ -344,7 +344,13 @@ describe('StepsExecutor — authored bounds cannot disable the guards', () => {
   const run = (step: Record<string, unknown>) =>
     executor.execute([step] as never, { target: makeTarget() });
 
-  it('a step that sets timeout: 0 is still bounded by the operator default', async () => {
+  it('a step that sets timeout: 0 is still BOUNDED — and tightly, not by the 60 s default', async () => {
+    // Renamed 2026-08-24. This said "bounded by the operator default", but
+    // DEFAULT_STEP_TIMEOUT is 60_000 and the assertion below allows 3,500 ms against a 4 s
+    // sleep — so the operator default can never satisfy it. What the assertion actually
+    // pins is the 1 ms FLOOR that clampModelBound applies to a finite-but-unusable value.
+    // The old name sent a reader to "fix" the code toward the fallback reading, which
+    // breaks this line in a way that reads as an unrelated flake.
     const started = Date.now();
     const results = await run({ name: 'slow', command: 'sleep 4', timeout: 0 });
 

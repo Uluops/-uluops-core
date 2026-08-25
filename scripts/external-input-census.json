@@ -1,6 +1,6 @@
 {
   "counts": {
-    "public-api-arg": 26,
+    "public-api-arg": 28,
     "ai-sdk-response": 33,
     "dynamic-import": 1,
     "service-response": 27,
@@ -33,7 +33,8 @@
     "src/ai/AIProvider.ts|public-api-arg|?? usableBudget(this.config.contextBudget)",
     "src/ai/AIProvider.ts|public-api-arg|abortSignal: mergeAbortSignals(options, this.config.timeout),",
     "src/ai/AIProvider.ts|public-api-arg|const budgetTokens = this.config.defaultThinkingBudget;",
-    "src/ai/AIProvider.ts|public-api-arg|const mapped = new TimeoutError(timeoutMs ?? this.config.timeout);",
+    "src/ai/AIProvider.ts|public-api-arg|const mapped = new TimeoutError(resolveRequestTimeoutMs(timeoutMs, this.config.timeout));",
+    "src/ai/AIProvider.ts|public-api-arg|return this.handleGenerateError(error, resolved, useStructuredOutput, resolveRequestTimeoutMs(options.timeoutMs, this.config.timeout), stepTotals, options.abortSignal);",
     "src/ai/AIProvider.ts|public-api-arg|thinkingConfig: { thinkingBudget: this.config.defaultThinkingBudget },",
     "src/ai/AIProvider.ts|public-api-arg|this.concurrencyLimiter = new Semaphore(config.maxConcurrency ?? DEFAULT_MAX_CONCURRENCY);",
     "src/ai/ModelCatalog.ts|service-response|const model = await this.sdk.models.get(provider, modelId);",
