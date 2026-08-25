@@ -125,6 +125,11 @@ export class AgentExecutor {
       maxSteps: context.maxSteps,
       timeoutMs: context.timeoutMs,
       temperature: context.temperature,
+      // Threaded from ExecutionOptions, not from `context`: a cancel is a per-RUN event
+      // supplied by the caller, not a resolved configuration value like model or timeout.
+      // Absent this, cancelling stopped only the next stage from starting — the in-flight
+      // provider call ran to completion and was billed in full.
+      ...(options?.abortSignal ? { abortSignal: options.abortSignal } : {}),
       contextBudget: effectiveBudget,
       // EXTERNAL-OK: forwarded to the AI SDK, which validates and clamps its own retry count.
       maxRetries: this.config.maxRetries,

@@ -11,6 +11,7 @@ import {
   ForbiddenError,
   ServiceUnavailableError,
   TimeoutError,
+  CancelledError,
   SdkApiError,
   ConfigurationError,
 } from '../../src/errors/index.js';
@@ -590,6 +591,128 @@ describe('AIProvider', () => {
         system: 'test',
         prompt: 'test',
       })).rejects.toThrow(TimeoutError);
+    });
+
+    /**
+     * A caller CANCEL and an elapsed TIMEOUT both arrive here as a DOMException, and the
+     * classifier could not tell them apart — every abort mapped to
+     * `TimeoutError(timeoutMs)`, a duration nobody measured for an event that did not
+     * occur. An operator reading that raises the timeout, which cannot help; a
+     * timeout-keyed retry policy retries work the user asked to stop.
+     *
+     * The discriminator is the CALLER's signal, kept as its own object rather than merged
+     * into what the classifier inspects.
+     *
+     * POSITIVE CONTROL: remove the `callerSignal?.aborted` branch from `mapError` and the
+     * first three fail with TimeoutError. The fourth is the negative control and passes
+     * either way — it is what stops "everything is a cancel" from looking correct.
+     */
+    it('maps an abort attributable to the CALLER signal to CancelledError, not TimeoutError', async () => {
+      const { generateText } = await import('ai');
+      const mockGenerateText = vi.mocked(generateText);
+      const controller = new AbortController();
+      controller.abort();
+
+      mockGenerateText.mockRejectedValueOnce(new DOMException('The operation was aborted', 'AbortError'));
+
+      const provider = new AIProvider(mockConfig, mockCatalog(), noopLogger);
+      await expect(provider.generate({
+        model: 'sonnet', system: 'test', prompt: 'test',
+        timeoutMs: 30_000,
+        abortSignal: controller.signal,
+      })).rejects.toThrow(CancelledError);
+    });
+
+    it('reports a cancel as a cancel even when the abort surfaces as a TimeoutError DOMException', async () => {
+      // AbortSignal.any() propagates whichever member fired, so a cancel racing a timeout
+      // signal can surface under either name. Attribution must come from the signal, not
+      // from the DOMException's name.
+      const { generateText } = await import('ai');
+      const mockGenerateText = vi.mocked(generateText);
+      const controller = new AbortController();
+      controller.abort();
+
+      mockGenerateText.mockRejectedValueOnce(new DOMException('aborted', 'TimeoutError'));
+
+      const provider = new AIProvider(mockConfig, mockCatalog(), noopLogger);
+      const err = await provider.generate({
+        model: 'sonnet', system: 'test', prompt: 'test',
+        timeoutMs: 30_000,
+        abortSignal: controller.signal,
+      }).catch((e: unknown) => e);
+
+      expect(err).toBeInstanceOf(CancelledError);
+      expect(err).not.toBeInstanceOf(TimeoutError);
+    });
+
+    it('attributes a cancel that surfaces WRAPPED in a RetryError', async () => {
+      // A cancel landing during a retried request comes back wrapped. The recursive unwrap
+      // has to carry the signal, or the attribution is lost one layer down where the outer
+      // classification never sees it.
+      const { generateText } = await import('ai');
+      const mockGenerateText = vi.mocked(generateText);
+      const controller = new AbortController();
+      controller.abort();
+
+      mockGenerateText.mockRejectedValueOnce(new RetryError({
+        message: 'Retries exhausted',
+        reason: 'abort',
+        errors: [new DOMException('The operation was aborted', 'AbortError')],
+      }));
+
+      const provider = new AIProvider(mockConfig, mockCatalog(), noopLogger);
+      await expect(provider.generate({
+        model: 'sonnet', system: 'test', prompt: 'test',
+        timeoutMs: 30_000,
+        abortSignal: controller.signal,
+      })).rejects.toThrow(CancelledError);
+    });
+
+    it('an abort with NO caller signal is still a TimeoutError — the negative control', async () => {
+      // Without this, "aborts are cancels" would pass for an implementation that had
+      // stopped reporting timeouts at all. An UN-aborted caller signal is checked too:
+      // presence of a signal is not the discriminator, having FIRED is.
+      const { generateText } = await import('ai');
+      const mockGenerateText = vi.mocked(generateText);
+      const live = new AbortController(); // supplied, never aborted
+
+      mockGenerateText.mockRejectedValueOnce(new DOMException('timed out', 'TimeoutError'));
+      const provider = new AIProvider(mockConfig, mockCatalog(), noopLogger);
+      await expect(provider.generate({
+        model: 'sonnet', system: 'test', prompt: 'test',
+        timeoutMs: 30_000,
+        abortSignal: live.signal,
+      })).rejects.toThrow(TimeoutError);
+
+      mockGenerateText.mockRejectedValueOnce(new DOMException('timed out', 'TimeoutError'));
+      await expect(provider.generate({
+        model: 'sonnet', system: 'test', prompt: 'test', timeoutMs: 30_000,
+      })).rejects.toThrow(TimeoutError);
+    });
+
+    it('hands generateText a signal that carries BOTH the timeout and the caller cancel', async () => {
+      const { generateText } = await import('ai');
+      const mockGenerateText = vi.mocked(generateText);
+      mockGenerateText.mockResolvedValueOnce({
+        text: 'ok', usage: {}, totalUsage: {}, steps: [], finishReason: 'stop',
+      } as never);
+
+      const controller = new AbortController();
+      const provider = new AIProvider(mockConfig, mockCatalog(), noopLogger);
+      await provider.generate({
+        model: 'sonnet', system: 'test', prompt: 'test',
+        timeoutMs: 30_000,
+        abortSignal: controller.signal,
+      });
+
+      const passed = mockGenerateText.mock.calls[0]![0]!.abortSignal!;
+      expect(passed).toBeDefined();
+      expect(passed.aborted).toBe(false);
+      // Firing the CALLER's controller must abort what the request is actually listening
+      // to. Before the merge, `timeoutMs` won outright and the caller signal was dropped
+      // on the floor — a cancel could not reach the request at all.
+      controller.abort();
+      expect(passed.aborted).toBe(true);
     });
 
     it('maps RetryError to SdkApiError', async () => {

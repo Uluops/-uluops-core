@@ -31,6 +31,7 @@ import {
   ForbiddenError,
   ServiceUnavailableError,
   TimeoutError,
+  CancelledError,
   ConfigurationError,
 } from '../errors/index.js';
 import type { ModelCapabilities } from '@uluops/registry-sdk';
@@ -282,6 +283,14 @@ export interface AIGenerateOptions {
   /** Timeout in milliseconds */
   timeoutMs?: number;
 
+  /**
+   * Caller-supplied cancellation signal. Combined with the `timeoutMs` signal rather than
+   * replacing it — whichever fires first wins, and the run can still time out normally
+   * while remaining cancellable. An abort attributable to THIS signal raises
+   * `CancelledError`; a timeout still raises `TimeoutError`.
+   */
+  abortSignal?: AbortSignal;
+
   /** Temperature (0-1) */
   temperature?: number;
 
@@ -458,7 +467,7 @@ export class AIProvider {
     try {
       result = await this.executeGeneration(options, languageModel, system, providerOptions, useStructuredOutput, isReasoning, stepTotals);
     } catch (error) {
-      return this.handleGenerateError(error, resolved, useStructuredOutput, options.timeoutMs, stepTotals);
+      return this.handleGenerateError(error, resolved, useStructuredOutput, options.timeoutMs, stepTotals, options.abortSignal);
     }
     // Result ASSEMBLY gets its own try, separate from the provider call above.
     //
@@ -486,7 +495,7 @@ export class AIProvider {
           ? ' — degrading to text extraction and reporting the usage already billed.'
           : ' — the error is being mapped and rethrown; usage accumulated during this run is NOT reported.'),
       );
-      return this.handleGenerateError(error, resolved, useStructuredOutput, options.timeoutMs, stepTotals);
+      return this.handleGenerateError(error, resolved, useStructuredOutput, options.timeoutMs, stepTotals, options.abortSignal);
     }
   }
 
@@ -570,9 +579,7 @@ export class AIProvider {
       stopWhen: stepCountIs(maxSteps + (useStructuredOutput ? 2 : 0)),
       ...(isReasoning ? {} : { temperature: options.temperature ?? DEFAULT_TEMPERATURE }),
       maxRetries: options.maxRetries,
-      abortSignal: options.timeoutMs
-        ? AbortSignal.timeout(options.timeoutMs)
-        : undefined,
+      abortSignal: mergeAbortSignals(options),
       ...(providerOptions ? { providerOptions } : {}),
       ...(prepareStep ? { prepareStep } : {}),
       ...(useStructuredOutput ? { output: Output.object(options.output!) } : {}),
@@ -852,6 +859,7 @@ export class AIProvider {
     useStructuredOutput: boolean,
     timeoutMs?: number,
     stepTotals: StepTotals = emptyStepTotals(),
+    callerSignal?: AbortSignal,
   ): AIGenerateResult {
     // NoOutputGeneratedError is a DISTINCT class from NoObjectGeneratedError — its own
     // symbol marker, so NoObjectGeneratedError.isInstance() returns false for it
@@ -878,7 +886,7 @@ export class AIProvider {
         error.finishReason ?? 'error',
       );
     }
-    throw this.mapError(error, timeoutMs, resolved);
+    throw this.mapError(error, timeoutMs, resolved, callerSignal);
   }
 
   /**
@@ -1691,7 +1699,12 @@ export class AIProvider {
     return mapped;
   }
 
-  private mapError(error: unknown, timeoutMs?: number, resolved?: ResolvedModel): Error {
+  private mapError(
+    error: unknown,
+    timeoutMs?: number,
+    resolved?: ResolvedModel,
+    callerSignal?: AbortSignal,
+  ): Error {
     this.logger.error(`AI SDK error: ${formatErrorMessage(error)}`);
 
     const cause = error instanceof Error ? error : undefined;
@@ -1716,7 +1729,12 @@ export class AIProvider {
         + `${error.reason ? ` (${error.reason})` : ''}`;
 
       if (last !== undefined && last !== error) {
-        const mapped = this.mapError(last, timeoutMs, resolved);
+        // Forward `callerSignal` into the unwrap. Without it, a cancel that lands during a
+        // retried request comes back wrapped in a RetryError and the recursive call has no
+        // way to attribute the abort — the cancel would be re-mapped as a TimeoutError,
+        // which is the exact misreport this parameter exists to prevent, hidden one layer
+        // down where the outer classification never sees it.
+        const mapped = this.mapError(last, timeoutMs, resolved, callerSignal);
         mapped.message = `${detail}: ${mapped.message}`;
         // `cause` is the RetryError wrapper, NOT the unwrapped attempt — deliberate.
         // The message already carries the underlying failure; the wrapper is what
@@ -1737,6 +1755,18 @@ export class AIProvider {
     // The name set mirrors the SDK's own isAbortError guard in @ai-sdk/provider-utils.
     if (error instanceof Error
       && (error.name === 'TimeoutError' || error.name === 'AbortError' || error.name === 'ResponseAborted')) {
+      // Attribute the abort before naming it. A caller cancel and an elapsed timeout both
+      // arrive here as a DOMException, and reporting a cancel as `TimeoutError(timeoutMs)`
+      // states a duration nobody measured for an event that did not occur — the operator
+      // then raises the timeout, which cannot help, and a timeout-keyed retry policy
+      // retries work the user asked to stop. `callerSignal.aborted` is the discriminator:
+      // it is set only by cancel() or a consumer-supplied signal, never by the SDK's own
+      // timeout signal, which is a separate object.
+      if (callerSignal?.aborted) {
+        const mapped = new CancelledError();
+        mapped.cause = cause;
+        return mapped;
+      }
       // EXTERNAL-OK: an HTTP/SDK timeout handed straight to a client that validates its own options; it reaches
     // no arithmetic and no threshold in this package.
       const mapped = new TimeoutError(timeoutMs ?? this.config.timeout);
@@ -1748,6 +1778,22 @@ export class AIProvider {
     mapped.cause = cause;
     return mapped;
   }
+}
+
+/**
+ * The signal handed to `generateText`: the run timeout, the caller's cancellation, or both.
+ *
+ * `AbortSignal.any` is used rather than picking one, because they answer different
+ * questions and both must remain live — a cancellable run still needs to time out, and a
+ * run with a timeout still needs to be cancellable. The caller's signal is kept as its own
+ * object (never merged into what `mapError` inspects) so an abort can be attributed:
+ * `callerSignal.aborted` distinguishes a cancel from an elapsed timeout.
+ */
+function mergeAbortSignals(options: AIGenerateOptions): AbortSignal | undefined {
+  const timeout = options.timeoutMs ? AbortSignal.timeout(options.timeoutMs) : undefined;
+  const caller = options.abortSignal;
+  if (timeout && caller) return AbortSignal.any([timeout, caller]);
+  return timeout ?? caller;
 }
 
 /**

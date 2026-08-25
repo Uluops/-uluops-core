@@ -301,6 +301,19 @@ export interface ExecutionOptions {
   timeoutMs?: number;
 
   /**
+   * Caller-supplied cancellation signal, threaded to the provider call.
+   *
+   * `PipelineHandle.cancel()` sets this from its own controller. Before it existed, cancel
+   * flipped a status flag that was only read BETWEEN stages: the in-flight provider call
+   * ran to completion and was billed in full, so cancelling a long agent run stopped
+   * nothing that cost money — it only stopped the next stage from starting. Aborting the
+   * signal ends the HTTP request itself.
+   *
+   * An aborted run raises `CancelledError`, not `TimeoutError`.
+   */
+  abortSignal?: AbortSignal;
+
+  /**
    * Timeout for a single shell-tool invocation (bash/exec) in milliseconds, distinct
    * from `timeoutMs` (the overall agent run budget). Previously the shell tool silently
    * inherited `context.timeoutMs`, so a 30-minute agent budget authorised a single

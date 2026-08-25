@@ -381,9 +381,16 @@ console.log(`Stage ${status.stages.length} of pipeline`);
 // Wait for completion
 const result = await handle.wait();
 
-// Or cancel
+// Or cancel — aborts the in-flight provider request, not just the stage loop.
+// The running agent's HTTP call ends; the run reports `status: 'cancelled'`.
 await handle.cancel();
 ```
+
+Pass your own `abortSignal` on `ExecutionOptions` to tie a run to a lifetime you already
+have (an inbound request, a parent job). It is **merged** with the pipeline's own signal,
+not replaced, so `handle.cancel()` keeps working on the same run. A run stopped by either
+signal raises `CancelledError` — never `TimeoutError`, which would name a duration nobody
+measured.
 
 ### Convenience Methods
 

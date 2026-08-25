@@ -1,4 +1,4 @@
-import { describe, it, expect } from 'vitest';
+import { describe, it, expect, vi } from 'vitest';
 import { TokenBudgetTracker } from '../../src/ai/TokenBudgetTracker.js';
 
 describe('TokenBudgetTracker', () => {

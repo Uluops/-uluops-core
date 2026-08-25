@@ -3,6 +3,7 @@ import { PipelineExecutor } from '../../src/executor/PipelineExecutor.js';
 import type { ResolvedDefinition } from '../../src/types/registry.js';
 import type { PipelineDefinition } from '../../src/types/pipeline.js';
 import type { CommandResult } from '../../src/types/command.js';
+import type { AgentResult } from '../../src/types/agent.js';
 import { PipelineError, MaxStepsExhaustedError } from '../../src/errors/index.js';
 import type { AgentExecutor } from '../../src/executor/AgentExecutor.js';
 import type { CommandExecutor } from '../../src/executor/CommandExecutor.js';
@@ -376,6 +377,173 @@ describe('PipelineExecutor', () => {
       const result = await handle.status();
       expect(result.status).toBe('cancelled');
       expect(result.status).not.toBe('failed');
+    });
+
+    it('reports a cancel as cancelled even when the in-flight stage then FAILS ITS GATE', async () => {
+      // The sibling above covers the stage THROWING after cancel(). This is the other half
+      // of the same defect and was left open: the stage COMPLETES, fails its abort gate,
+      // and the gate branch's unconditional `state.status = 'failed'` overwrites the user's
+      // cancel — after which wait() rejects with a PipelineError at someone who asked to
+      // stop. Only the catch half had been fixed.
+      //
+      // POSITIVE CONTROL: remove the `cancelledNow(state)` guard added before applyGate in
+      // executeAsync and this fails — status reads 'failed' and wait() rejects.
+      let resolveCmd: ((v: CommandResult) => void) | undefined;
+      const slowCmd = new Promise<CommandResult>(r => { resolveCmd = r; });
+      const cmdExec = { execute: vi.fn().mockReturnValue(slowCmd) } as unknown as CommandExecutor;
+      const executor = new PipelineExecutor(
+        makeWorkflowExecutor(), cmdExec, agentExec, makeRegistry(), noopLogger,
+      );
+
+      const handle = await executor.start(makePipelineDef({
+        stages: [
+          {
+            id: 'stage-1', name: 'Stage 1', type: 'command', ref: 'slow@1.0.0',
+            gate: { threshold: 90, on_failure: 'abort' as const },
+          },
+          { id: 'stage-2', name: 'Stage 2', type: 'command', ref: 'fast@1.0.0' },
+        ],
+      }), { target: '/tmp/test' });
+
+      await handle.cancel();
+      // Completes normally, but at 40 it is well under the gate's threshold of 90.
+      resolveCmd!(makeCommandResult({ score: 40 }));
+      await new Promise(r => setTimeout(r, 0));
+      await new Promise(r => setTimeout(r, 0));
+
+      const result = await handle.status();
+      expect(result.status).toBe('cancelled');
+      expect(result.status).not.toBe('failed');
+      // The un-run stage is recorded as cancelled, not as a gate abort — the user stopped
+      // the run; the gate never got to decide anything about what came after.
+      expect(result.stages[1]!.skipReason).toBe('cancelled');
+      // And wait() must not reject at a user who asked to stop.
+      await expect(handle.wait()).resolves.toBeDefined();
+    });
+
+    it('a gate abort with NO cancel still fails the pipeline — the negative control', async () => {
+      // Without this, "cancel wins" would also pass for a guard that had disabled gate
+      // aborts altogether.
+      const cmdExec = makeCommandExecutor([makeCommandResult({ score: 40 })]);
+      const executor = new PipelineExecutor(
+        makeWorkflowExecutor(), cmdExec, agentExec, makeRegistry(), noopLogger,
+      );
+
+      const def = makePipelineDef({
+        stages: [
+          {
+            id: 'stage-1', name: 'Stage 1', type: 'command', ref: 'slow@1.0.0',
+            gate: { threshold: 90, on_failure: 'abort' as const },
+          },
+          { id: 'stage-2', name: 'Stage 2', type: 'command', ref: 'fast@1.0.0' },
+        ],
+      });
+
+      await expect(executor.execute(def, { target: '/tmp/test' })).rejects.toThrow(/failed its gate/);
+    });
+
+    /**
+     * `cancel()` used to flip a status flag that `executeAsync` read only BETWEEN stages.
+     * The agent currently talking to the model ran to completion and was billed in full —
+     * cancelling stopped the next stage from starting and nothing that cost money. On a
+     * long analyst run that is the entire expense of the stage the user was trying to stop.
+     *
+     * These assert on the SIGNAL the executors actually received, because that is the only
+     * thing that reaches the HTTP request. A status flag proves nothing about billing.
+     *
+     * POSITIVE CONTROL: remove `this.controller.abort()` from `cancel()` and all three
+     * fail — the signal is handed down but never fires.
+     */
+    it('cancel() aborts the signal handed to an inline-agents stage', async () => {
+      let seen: AbortSignal | undefined;
+      let resolveAgent: ((v: AgentResult) => void) | undefined;
+      const agentExecutor = {
+        execute: vi.fn((_r: unknown, _i: unknown, opts?: { abortSignal?: AbortSignal }) => {
+          seen = opts?.abortSignal;
+          return new Promise<AgentResult>(r => { resolveAgent = r; });
+        }),
+      } as unknown as AgentExecutor;
+
+      const executor = new PipelineExecutor(
+        makeWorkflowExecutor(), makeCommandExecutor(), agentExecutor, makeRegistry(), noopLogger,
+      );
+      const handle = await executor.start(makePipelineDef({
+        stages: [{ id: 'panel', name: 'Panel', type: 'agents' as const, agents: [{ ref: 'a@1' }] }],
+      }), { target: '/tmp' });
+
+      await new Promise(r => setTimeout(r, 0));
+      expect(seen).toBeDefined();
+      expect(seen!.aborted).toBe(false);
+
+      await handle.cancel();
+      expect(seen!.aborted).toBe(true);
+
+      resolveAgent!(makeValidatorResult());
+      await new Promise(r => setTimeout(r, 0));
+    });
+
+    it('cancel() aborts the signal handed to a nested command stage', async () => {
+      let seen: AbortSignal | undefined;
+      let resolveCmd: ((v: CommandResult) => void) | undefined;
+      const cmdExec = {
+        execute: vi.fn((_r: unknown, _i: unknown, o?: { abortSignal?: AbortSignal }) => {
+          seen = o?.abortSignal;
+          return new Promise<CommandResult>(r => { resolveCmd = r; });
+        }),
+      } as unknown as CommandExecutor;
+
+      const executor = new PipelineExecutor(
+        makeWorkflowExecutor(), cmdExec, agentExec, makeRegistry(), noopLogger,
+      );
+      const handle = await executor.start(makePipelineDef({
+        stages: [{ id: 's1', name: 'S1', type: 'command', ref: 'a@1' }],
+      }), { target: '/tmp' });
+
+      await new Promise(r => setTimeout(r, 0));
+      expect(seen).toBeDefined();
+
+      await handle.cancel();
+      expect(seen!.aborted).toBe(true);
+
+      resolveCmd!(makeCommandResult());
+      await new Promise(r => setTimeout(r, 0));
+    });
+
+    it("MERGES the caller's own abortSignal instead of replacing it", async () => {
+      // A consumer that already passes a signal (a request that went away, a parent job)
+      // must keep working — and handle.cancel() must still work on that same run. Taking
+      // either one alone silently disables the other.
+      let seen: AbortSignal | undefined;
+      let resolveCmd: ((v: CommandResult) => void) | undefined;
+      const cmdExec = {
+        execute: vi.fn((_r: unknown, _i: unknown, o?: { abortSignal?: AbortSignal }) => {
+          seen = o?.abortSignal;
+          return new Promise<CommandResult>(r => { resolveCmd = r; });
+        }),
+      } as unknown as CommandExecutor;
+
+      const caller = new AbortController();
+      const executor = new PipelineExecutor(
+        makeWorkflowExecutor(), cmdExec, agentExec, makeRegistry(), noopLogger,
+      );
+      const handle = await executor.start(
+        makePipelineDef({ stages: [{ id: 's1', name: 'S1', type: 'command', ref: 'a@1' }] }),
+        { target: '/tmp' },
+        { abortSignal: caller.signal },
+      );
+
+      await new Promise(r => setTimeout(r, 0));
+      expect(seen!.aborted).toBe(false);
+
+      // The CALLER's signal reaches the stage even though the pipeline made its own.
+      caller.abort();
+      expect(seen!.aborted).toBe(true);
+
+      resolveCmd!(makeCommandResult());
+      await new Promise(r => setTimeout(r, 0));
+      // And the pipeline still reports a normal outcome, not a cancel — nobody called
+      // cancel(); the caller's signal ended the provider work, which is a different event.
+      expect((await handle.status()).status).not.toBe('cancelled');
     });
 
     it('handle.cancel() throws on already-complete pipeline', async () => {

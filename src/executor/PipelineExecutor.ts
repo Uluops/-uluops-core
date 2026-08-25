@@ -79,8 +79,23 @@ export class PipelineExecutor {
       startTime: Date.now(),
     };
 
+    // The run's own cancellation source. Held here rather than on PipelineState because
+    // PipelineState is a PUBLIC type — a controller on it would become part of the shape
+    // consumers construct and serialize, and an AbortController does not survive either.
+    //
+    // Merged with any caller-supplied signal rather than replacing it: a consumer that
+    // already passes its own abortSignal (a request that went away, a parent job) must
+    // keep working, and `handle.cancel()` must also work on that same run.
+    const controller = new AbortController();
+    const runOptions: ExecutionOptions = {
+      ...options,
+      abortSignal: options?.abortSignal
+        ? AbortSignal.any([controller.signal, options.abortSignal])
+        : controller.signal,
+    };
+
     // Start execution in background, capturing errors into state
-    const execution = this.executeAsync(resolved, input, state, options);
+    const execution = this.executeAsync(resolved, input, state, runOptions);
     execution.catch((error) => {
       if (state.status === 'running') {
         state.status = 'failed';
@@ -88,7 +103,7 @@ export class PipelineExecutor {
       }
     });
 
-    return new PipelineHandle(pipelineId, state, execution);
+    return new PipelineHandle(pipelineId, state, execution, controller);
   }
 
   /**
@@ -198,6 +213,27 @@ export class PipelineExecutor {
         const stageResult = await this.executeStage(stage, input, options, state.stageResults, upstreamContext);
         state.stageResults.push(stageResult);
 
+        // A cancel that landed WHILE this stage was running wins over anything the gate
+        // would decide about it. This is the same defect as the catch below, one ring out:
+        // there the stage THREW after cancel() flipped the flag and the catch overwrote
+        // `cancelled` with `failed`; here the stage COMPLETED, failed its gate, and the
+        // unconditional `state.status = 'failed'` twelve lines down overwrote the cancel
+        // exactly the same way — so wait() threw a PipelineError at a user who had asked
+        // to stop. Only the catch half was fixed. The gate's sole output is a flow
+        // decision about stages that are not going to run now either way, so there is
+        // nothing lost by not consulting it; the completed stage's own result is already
+        // recorded above.
+        //
+        // Read through `cancelledNow()`: `cancel()` mutates `state.status` from ANOTHER
+        // task while this one is awaiting, and TypeScript's control-flow analysis cannot
+        // see that. It narrows `state.status` at the top-of-loop check above and then
+        // reports a direct comparison here as having no overlap — a compile error for the
+        // one case this guard exists to catch.
+        if (cancelledNow(state)) {
+          this.skipRemaining(def.pipeline.stages, i + 1, state, 'cancelled');
+          break;
+        }
+
         // Enact the stage gate (PDL $defs/gate). Until now gates were parsed
         // but never read — on_failure:abort flowed on like warn (G5).
         const flow = this.applyGate(stage, stageResult);
@@ -260,7 +296,7 @@ export class PipelineExecutor {
       if (isStepsStage(stage)) {
         return await this.executeStepsStage(stage, input, options, startTime);
       }
-      return await this.executeRefStage(stage, input, startTime);
+      return await this.executeRefStage(stage, input, startTime, options);
     } catch (error) {
       return {
         id: stage.id,
@@ -393,6 +429,10 @@ export class PipelineExecutor {
     stage: StageDefinition,
     input: ExecutionInput,
     startTime: number,
+    // Carried solely to forward the cancellation signal into a nested workflow or command.
+    // Everything else on ExecutionOptions is already resolved by the time a ref stage
+    // dispatches; a cancel is the one thing that arrives DURING execution.
+    options?: ExecutionOptions,
   ): Promise<StageResult> {
     // Stages with no content the engine can run (no ref, no agents, no steps —
     // e.g. multi-entry workflows:/commands: arrays): fail loud instead of
@@ -418,7 +458,7 @@ export class PipelineExecutor {
     const resolved = await this.registry.resolve(refName, refVersion, stage.type as 'command' | 'workflow');
 
     if (stage.type === 'workflow') {
-      const result = await this.workflowExecutor.execute(resolved, input);
+      const result = await this.workflowExecutor.execute(resolved, input, { abortSignal: options?.abortSignal });
       return {
         id: stage.id,
         name: stage.name,
@@ -429,7 +469,7 @@ export class PipelineExecutor {
       };
     }
 
-    const result = await this.commandExecutor.execute(resolved, input);
+    const result = await this.commandExecutor.execute(resolved, input, { abortSignal: options?.abortSignal });
     return {
       id: stage.id,
       name: stage.name,
@@ -698,6 +738,18 @@ function isStepsStage(stage: StageDefinition): boolean {
     (Array.isArray(stage.steps) && stage.steps.length > 0 && !stage.ref && !stage.agents);
 }
 
+/**
+ * Whether a concurrent `cancel()` has flipped the run's status.
+ *
+ * The function boundary is load-bearing, not stylistic: inside `executeAsync`'s loop
+ * TypeScript has already narrowed `state.status` at the top-of-loop cancellation check and
+ * treats a later direct comparison as impossible. The mutation happens in another task
+ * while this one awaits, which narrowing does not model.
+ */
+function cancelledNow(state: PipelineState): boolean {
+  return state.status === 'cancelled';
+}
+
 /** PDL schema default: a gate without on_failure is an abort gate. Corpus
  *  audit (2026-07-10, udl/pdl/v1): every stage gate declares on_failure
  *  explicitly, so the default activates nothing silently. */
@@ -712,11 +764,13 @@ class PipelineHandle implements IPipelineHandle {
   readonly executionId: string;
   private state: PipelineState;
   private execution: Promise<void>;
+  private controller: AbortController;
 
-  constructor(executionId: string, state: PipelineState, execution: Promise<void>) {
+  constructor(executionId: string, state: PipelineState, execution: Promise<void>, controller: AbortController) {
     this.executionId = executionId;
     this.state = state;
     this.execution = execution;
+    this.controller = controller;
   }
 
   async status(): Promise<PipelineResult> {
@@ -752,6 +806,16 @@ class PipelineHandle implements IPipelineHandle {
     }
     this.state.status = 'cancelled';
     this.state.error = 'Pipeline cancelled by user';
+    // Abort the in-flight provider call, not just the loop between stages.
+    //
+    // Until now cancel() set a flag that executeAsync only read at stage boundaries, so
+    // the agent currently talking to the model ran to completion and was billed in full —
+    // a cancel stopped the NEXT stage from starting and nothing that cost money. On a
+    // long analyst run that is the entire expense of the stage the user was trying to
+    // stop. The status flag is still set first: it is what the loop, the catch, and
+    // buildResult read to report `cancelled`, and aborting alone would surface as a
+    // provider error.
+    this.controller.abort();
   }
 
   private buildResult(): PipelineResult {

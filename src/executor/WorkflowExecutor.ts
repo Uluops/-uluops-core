@@ -80,7 +80,19 @@ export class WorkflowExecutor {
    * @throws {WorkflowError} on internal workflow failures (phase crashes, gate violations)
    * @throws {ConfigurationError} if the definition is not a valid workflow
    */
-  async execute(resolved: ResolvedDefinition, input: ExecutionInput): Promise<WorkflowResult> {
+  async execute(
+    resolved: ResolvedDefinition,
+    input: ExecutionInput,
+    /**
+     * Caller-supplied cancellation, threaded to every provider call this workflow makes.
+     *
+     * Passed as a parameter rather than held on the instance: one WorkflowExecutor serves
+     * concurrent runs, so a per-run field would let one caller's cancel abort another
+     * caller's workflow. Optional and trailing — existing two-argument callers are
+     * unaffected and simply remain uncancellable, which is what they are today.
+     */
+    control?: { abortSignal?: AbortSignal },
+  ): Promise<WorkflowResult> {
     const startTime = Date.now();
     const def = this.assertWorkflowDefinition(resolved);
     const phaseResults: PhaseResult[] = [];
@@ -102,7 +114,7 @@ export class WorkflowExecutor {
         const eligible = this.filterEligible(level, input, phaseResults, completedPhases);
         if (eligible.length === 0) continue;
 
-        const levelResults = await this.executePhasesParallel(eligible, input, maxParallel);
+        const levelResults = await this.executePhasesParallel(eligible, input, maxParallel, control);
         const behavior = this.processLevelResults(levelResults, onFailure, phaseResults, completedPhases, allRecommendations);
 
         if (behavior === 'stop') stopped = true;
@@ -291,6 +303,7 @@ export class WorkflowExecutor {
     phases: PhaseDefinition[],
     input: ExecutionInput,
     maxParallel?: number,
+    control?: { abortSignal?: AbortSignal },
   ): Promise<PhaseResult[]> {
     if (phases.length === 1) {
       // Single phase — no need for concurrency machinery, and DELIBERATELY no containment.
@@ -302,17 +315,17 @@ export class WorkflowExecutor {
       // it was that the resulting throw discarded every PRIOR level's completed work,
       // because buildPartialResult carried no metrics and no score. That is fixed there,
       // which keeps the contract and stops the loss.
-      return [await this.executePhase(phases[0]!, input)];
+      return [await this.executePhase(phases[0]!, input, control)];
     }
 
     if (maxParallel && maxParallel > 0 && maxParallel < phases.length) {
       // Semaphore-limited concurrency
-      return this.executePhasesWithLimit(phases, input, maxParallel);
+      return this.executePhasesWithLimit(phases, input, maxParallel, control);
     }
 
     // Unlimited parallel — all phases in this level run concurrently
     const settled = await Promise.allSettled(
-      phases.map(phase => this.executePhase(phase, input)),
+      phases.map(phase => this.executePhase(phase, input, control)),
     );
 
     const results: PhaseResult[] = [];
@@ -335,6 +348,7 @@ export class WorkflowExecutor {
     phases: PhaseDefinition[],
     input: ExecutionInput,
     limit: number,
+    control?: { abortSignal?: AbortSignal },
   ): Promise<PhaseResult[]> {
     const results: PhaseResult[] = new Array(phases.length);
     let nextIndex = 0;
@@ -344,7 +358,7 @@ export class WorkflowExecutor {
         const idx = nextIndex++;
         const phase = phases[idx]!;
         try {
-          results[idx] = await this.executePhase(phase, input);
+          results[idx] = await this.executePhase(phase, input, control);
         } catch (error) {
           results[idx] = this.createBlockedPhase(phase, error);
         }
@@ -356,7 +370,7 @@ export class WorkflowExecutor {
     return results;
   }
 
-  private async executePhase(phase: PhaseDefinition, input: ExecutionInput): Promise<PhaseResult> {
+  private async executePhase(phase: PhaseDefinition, input: ExecutionInput, control?: { abortSignal?: AbortSignal }): Promise<PhaseResult> {
     const phaseStart = Date.now();
     const commandResults: CommandResult[] = [];
     // Phase-scoped, not branch-scoped: "every step failed" is a property of the PHASE,
@@ -373,7 +387,7 @@ export class WorkflowExecutor {
 
     if (phase.parallel) {
       const settled = await Promise.allSettled(
-        stepRefs.map(step => this.executeStep(step.type, step.ref, input)),
+        stepRefs.map(step => this.executeStep(step.type, step.ref, input, control)),
       );
       for (let j = 0; j < settled.length; j++) {
         const outcome = settled[j]!;
@@ -395,7 +409,7 @@ export class WorkflowExecutor {
       // defect in that same object. Two branches of one method, one hardened.
       for (const step of stepRefs) {
         try {
-          commandResults.push(await this.executeStep(step.type, step.ref, input));
+          commandResults.push(await this.executeStep(step.type, step.ref, input, control));
         } catch (error) {
           errors.push(error instanceof Error ? error.message : String(error));
           commandResults.push(this.stepCrashPlaceholder(step.ref, error));
@@ -458,11 +472,11 @@ export class WorkflowExecutor {
    * with automatic fallback to AgentExecutor when a command ref resolves
    * to an agent definition (common in WDLs that use command: for agents).
    */
-  private async executeStep(type: 'command' | 'agent', ref: string, input: ExecutionInput): Promise<CommandResult> {
+  private async executeStep(type: 'command' | 'agent', ref: string, input: ExecutionInput, control?: { abortSignal?: AbortSignal }): Promise<CommandResult> {
     const [name, version] = parseRef(ref);
 
     if (type === 'agent') {
-      return this.executeAgentRef(name, version, ref, input);
+      return this.executeAgentRef(name, version, ref, input, control);
     }
 
     // Command ref — a WDL `command:` step may name a command OR an agent, and a
@@ -484,12 +498,12 @@ export class WorkflowExecutor {
     }
     if (resolved.type === 'agent') {
       // WDL used command: but definition is actually an agent — route directly
-      return this.executeAgentDirect(resolved, input, ref);
+      return this.executeAgentDirect(resolved, input, ref, control);
     }
-    return this.commandExecutor.execute(resolved, input);
+    return this.commandExecutor.execute(resolved, input, { abortSignal: control?.abortSignal });
   }
 
-  private async executeAgentRef(name: string, version: string | undefined, ref: string, input: ExecutionInput): Promise<CommandResult> {
+  private async executeAgentRef(name: string, version: string | undefined, ref: string, input: ExecutionInput, control?: { abortSignal?: AbortSignal }): Promise<CommandResult> {
     if (!this.agentExecutor) {
       throw new WorkflowError(
         `Phase references agent "${ref}" but no AgentExecutor is available`,
@@ -497,17 +511,17 @@ export class WorkflowExecutor {
       );
     }
     const resolved = await this.registry.resolve(name, version, 'agent');
-    return this.executeAgentDirect(resolved, input, ref);
+    return this.executeAgentDirect(resolved, input, ref, control);
   }
 
-  private async executeAgentDirect(resolved: ResolvedDefinition, input: ExecutionInput, ref: string): Promise<CommandResult> {
+  private async executeAgentDirect(resolved: ResolvedDefinition, input: ExecutionInput, ref: string, control?: { abortSignal?: AbortSignal }): Promise<CommandResult> {
     if (!this.agentExecutor) {
       throw new WorkflowError(
         `Phase references agent "${ref}" but no AgentExecutor is available`,
         { partialResult: undefined },
       );
     }
-    const agentResult = await this.agentExecutor.execute(resolved, input);
+    const agentResult = await this.agentExecutor.execute(resolved, input, { abortSignal: control?.abortSignal });
     return this.wrapAgentResult(agentResult, resolved);
   }
 

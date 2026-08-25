@@ -116,6 +116,25 @@ export function hasBilledMetrics(
   );
 }
 
+/**
+ * A run stopped because the CALLER asked it to — `PipelineHandle.cancel()`, or an
+ * `abortSignal` the consumer supplied on `ExecutionOptions`.
+ *
+ * Distinct from `TimeoutError`, which every abort used to map to. Both arrive at the AI
+ * SDK boundary as a `DOMException` and the classifier could not tell them apart, so a
+ * cancel was reported as `TimeoutError(timeoutMs)` — a duration nobody measured, for an
+ * event that did not occur. An operator reading that raises the timeout, which cannot
+ * help, and a retry policy keyed on timeouts retries work the user asked to stop.
+ */
+export class CancelledError extends ExecutionError {
+  override readonly code = 'CANCELLED' as const;
+
+  constructor(message = 'Execution was cancelled by the caller') {
+    super(message);
+    this.name = 'CancelledError';
+  }
+}
+
 export class MaxStepsExhaustedError extends ExecutionError {
   override readonly code = 'MAX_STEPS_EXHAUSTED' as const;
 

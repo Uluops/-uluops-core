@@ -643,6 +643,28 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) 
   **stop** subtracting a cached figure from it; doing so now undercounts. `total_effective` is
   `input + output + cache_creation`, unchanged in meaning and now correct in value.
 
+- **`PipelineHandle.cancel()` stopped nothing that cost money.** It set a status flag that
+  `executeAsync` read only BETWEEN stages, so the agent currently talking to the model ran
+  to completion and was billed in full — cancelling stopped the *next* stage from starting
+  and nothing else. On a long analyst run that is the entire expense of the stage the user
+  was trying to stop. `cancel()` now aborts an `AbortController` whose signal is threaded
+  through every executor to the provider call, ending the HTTP request itself.
+
+- **A cancel was reported as a timeout.** Both arrive at the AI SDK boundary as a
+  `DOMException`, and the classifier could not tell them apart, so every abort mapped to
+  `TimeoutError(timeoutMs)` — a duration nobody measured, for an event that did not occur.
+  An operator reading that raises the timeout, which cannot help; a timeout-keyed retry
+  policy retries work the user asked to stop. Attribution now comes from the caller's
+  signal (kept as its own object, never merged into what the classifier inspects), and
+  survives being wrapped in a `RetryError`.
+
+- **A cancel that landed while a stage was running could still be reported as a FAILURE.**
+  The gate branch's unconditional `state.status = 'failed'` overwrote `cancelled` when the
+  in-flight stage completed and failed its gate, and `wait()` then threw a `PipelineError`
+  at a user who had asked to stop. The sibling case — the stage *throwing* after `cancel()`
+  — was fixed earlier in this release; this is the other half of the same defect, and only
+  one half had been closed.
+
 - **The bash tool told the model a failed command had succeeded.** `executeShellAsString`
   (the Anthropic bash-tool adapter) returned `stdout || stderr || '(no output)'` for every
   command that ran, byte-identical for exit 0 and exit 1 — it returns a bare string and had
@@ -710,6 +732,24 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) 
   contradictory.
 
 ### Added
+
+- **`CancelledError`** (`code: 'CANCELLED'`, extends `ExecutionError`) — raised when a run
+  stops because the caller asked it to. Distinguishes a cancel from `TimeoutError`; see the
+  Fixed entry above for why they were conflated. `UluOpsErrorCodes` gains `CANCELLED`.
+
+- **`ExecutionOptions.abortSignal`** and **`AIGenerateOptions.abortSignal`** — a
+  caller-supplied cancellation signal, threaded to the provider call. It is **combined**
+  with the `timeoutMs` signal via `AbortSignal.any` rather than replacing it: a cancellable
+  run still times out, and a run with a timeout is still cancellable. `PipelineExecutor.start`
+  likewise merges any caller signal with the handle's own controller, so passing your own
+  signal does not disable `handle.cancel()`.
+
+- **`CommandExecutor.execute`** takes `abortSignal` on its `overrides` argument, and
+  **`WorkflowExecutor.execute`** takes a new optional third argument `{ abortSignal }`.
+  Both are optional and trailing — existing callers compile and behave unchanged, and simply
+  remain uncancellable, which is what they are today. The signal is a parameter rather than
+  executor state because one executor instance serves concurrent runs; a per-run field would
+  let one caller's cancel abort another caller's work.
 
 - **`AIGenerateResult.providerWarnings`** — the AI SDK reports settings it could not
   honor (`temperature is not supported when thinking is enabled`, clamped `max_tokens`,

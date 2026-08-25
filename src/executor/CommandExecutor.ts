@@ -70,7 +70,11 @@ export class CommandExecutor {
   async execute(
     resolved: ResolvedDefinition,
     input: ExecutionInput,
-    overrides?: { model?: string },
+    overrides?: {
+      model?: string;
+      /** Caller-supplied cancellation, forwarded to every agent this command dispatches. */
+      abortSignal?: AbortSignal;
+    },
   ): Promise<CommandResult> {
     const startTime = Date.now();
     if (resolved.type !== 'command') {
@@ -101,6 +105,7 @@ export class CommandExecutor {
         model,
         timeoutMs: def.command.execution.timeout,
         thresholds: def.command.execution.thresholds,
+        abortSignal: overrides?.abortSignal,
       });
 
       return this.wrapAgentResult(agentResult, def, resolved.hash, startTime, resolved.minSubscription);
@@ -113,6 +118,10 @@ export class CommandExecutor {
       return this.agentExecutor.execute(agentResolved, input, {
         model,
         timeoutMs: def.command.execution.timeout,
+        // Every agent in a multi-agent command shares the caller's signal, so one cancel
+        // ends the whole panel — including the ones still queued behind the concurrency
+        // limit, which abort before they ever reach the provider.
+        abortSignal: overrides?.abortSignal,
       });
     };
 
