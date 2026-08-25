@@ -536,13 +536,16 @@ export class WorkflowExecutor {
   }
 
   /**
-   * ⚠ DIVERGES from the shared `aggregateScores` util, deliberately and UNRESOLVED.
+   * Diverges from the shared `aggregateScores` util in exactly ONE case, deliberately.
    *
-   * This returns `null` when commands ran but none produce scores; the shared util returns
-   * `0` for the same input. Under `evaluateGate` that is not a cosmetic difference —
-   * **0 BLOCKS and null PASSES** — so an all-generator panel fails its gate in a pipeline
-   * or command and passes it here. See the note in `utils/aggregateScores.ts` for the
-   * evidence on both sides; resolving it is a decision about gate semantics, not a repair.
+   * They now AGREE on "commands ran, none scored" — both return `null`, which fail-opens at
+   * the gate (resolved 2026-08-24; the util used to return a fabricated 0 that blocked).
+   *
+   * They still differ on the EMPTY case, and that is the point: this method sees the phase
+   * definition, so it can tell an AUTHORED-empty phase (`commands: []` — nothing was asked
+   * for, which is suspicious and must block at 0) from a phase whose commands all came back
+   * scoreless. The util sees neither, because callers hand it a shaped array; it therefore
+   * declines to guess and returns null for both. See the note in `utils/aggregateScores.ts`.
    */
   private aggregatePhaseScore(results: CommandResult[], method: 'average' | 'min' | 'max'): number | null {
     // 0 here is DELIBERATE and is not a fabricated zero — reviewed and kept 2026-08-24.
@@ -584,17 +587,33 @@ export class WorkflowExecutor {
   private aggregate(
     config: WorkflowDefinition['workflow']['aggregation'],
     phases: PhaseResult[],
-  ): { decision: WorkflowDecision; decisionCategory: DecisionCategory; score: number } {
+  ): { decision: WorkflowDecision; decisionCategory: DecisionCategory; score: number | null } {
     const scorable = phases.filter(
       p => p.decision !== 'skipped' && p.decision !== 'aborted',
     );
     const method = config?.score?.method ?? 'weighted_average';
 
-    const score = aggregateScores(
-      scorable.map(p => ({ key: p.id, score: p.score })),
-      method,
-      config?.score?.weights,
-    );
+    // Same split as aggregatePhaseScore, one level up, and for the same reason: this layer
+    // holds the definition, so it can tell the two empty cases apart where the util cannot.
+    //
+    //   phases: []      AUTHORED-empty workflow — nothing was asked for. Scores 0, so a
+    //                   nested workflow-ref stage with a threshold FAILS its parent gate
+    //                   instead of passing unexamined. Sibling of PipelineExecutor's G5
+    //                   check ("hard gates must not silently pass unexecuted"). Pinned by
+    //                   'empty phases array produces SHIP with score 0'.
+    //   nothing scorable  Phases ran or were skipped and none produced a score. That is a
+    //                   scoring gap, not a failure, and aggregateScores reports it as null.
+    //
+    // The skipped/aborted filter above already encodes the second half of that: those
+    // phases are excluded so they cannot drag the average toward 0. Flooring the result to
+    // 0 anyway, which is what the util used to do, undid the exclusion it had just made.
+    const score = phases.length === 0
+      ? 0
+      : aggregateScores(
+        scorable.map(p => ({ key: p.id, score: p.score })),
+        method,
+        config?.score?.weights,
+      );
 
     const hasBlocked = phases.some(p => p.decision === 'blocked');
     const hasWarned = phases.some(p => p.decision === 'warned');

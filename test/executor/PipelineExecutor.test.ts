@@ -1163,6 +1163,65 @@ describe('PipelineExecutor', () => {
       expect(result.stages[1]!.status).toBe('completed');
     });
 
+    /**
+     * An all-GENERATOR agents stage. Until 2026-08-24 this synthesized `score: 0` for the
+     * stage — aggregateScores floored the empty scorable set — and gateScore's fallback
+     * (`stageResult.result?.score ?? null`) read that 0 as a real score, so the stage
+     * FAILED its threshold. The fail-open documented three lines above gateFailed never
+     * fired for agents stages, only for command stages, which is why the sibling test
+     * above passed while this case was broken.
+     *
+     * POSITIVE CONTROL: restore `if (scorable.length === 0) return 0;` in
+     * utils/aggregateScores.ts and the first two assertions below fail — stage 2 is never
+     * reached, and the stage score reads 0.
+     */
+    it('is fail-open for threshold checks on an all-scoreless AGENTS stage', async () => {
+      const agentExecutor = makeAgentExecutor([
+        makeValidatorResult({ agentType: 'generator', decision: 'COMPLETE', score: null, maxScore: null }),
+        makeValidatorResult({ agentType: 'generator', decision: 'COMPLETE', score: null, maxScore: null }),
+      ]);
+      const executor = new PipelineExecutor(makeWorkflowExecutor(), makeCommandExecutor(), agentExecutor, makeRegistry(), noopLogger);
+
+      const def = makePipelineDef({
+        stages: [
+          {
+            id: 'panel', name: 'Panel', type: 'agents' as const,
+            agents: [{ ref: 'a@1' }, { ref: 'b@1' }],
+            gate: { threshold: 70, on_failure: 'abort' as const },
+          },
+          { id: 'downstream', name: 'Downstream', type: 'command' as const, ref: 'c@1' },
+        ],
+      });
+      const result = await executor.execute(def, { target: '/tmp' });
+
+      expect(result.stages[1]!.status).toBe('completed');
+      // No agent scored, so the stage reports no score rather than a fabricated failing one.
+      expect(result.stages[0]!.result?.score ?? null).toBeNull();
+      expect(result.status).toBe('complete');
+    });
+
+    it('an all-scoreless agents stage is still gated on its DECISION — the negative control', async () => {
+      // Without this, "scoreless passes" would also pass for a stage gate that had stopped
+      // gating agents stages entirely. A negative decision fails regardless of score.
+      const agentExecutor = makeAgentExecutor([
+        makeValidatorResult({ agentType: 'generator', decision: 'FAIL', score: null, maxScore: null }),
+      ]);
+      const executor = new PipelineExecutor(makeWorkflowExecutor(), makeCommandExecutor(), agentExecutor, makeRegistry(), noopLogger);
+
+      const def = makePipelineDef({
+        stages: [
+          {
+            id: 'panel', name: 'Panel', type: 'agents' as const,
+            agents: [{ ref: 'a@1' }],
+            gate: { threshold: 70, on_failure: 'abort' as const },
+          },
+          { id: 'downstream', name: 'Downstream', type: 'command' as const, ref: 'c@1' },
+        ],
+      });
+      // An abort gate throws; the partial result carries the skipped downstream stage.
+      await expect(executor.execute(def, { target: '/tmp' })).rejects.toThrow(/failed its gate/);
+    });
+
     it('applies gate.aggregate over inline-agent scores (min catches the weakest agent)', async () => {
       const agentExecutor = makeAgentExecutor([
         makeValidatorResult({ score: 90 }),

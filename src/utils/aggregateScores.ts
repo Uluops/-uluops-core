@@ -24,36 +24,50 @@ export interface ScoredItem {
  * @param items - Scored items with keys for weight lookup
  * @param method - Aggregation method (defaults to 'average')
  * @param weights - Weight map keyed by item key (defaults to equal weight of 1)
- * @returns Aggregated score, rounded for average/weighted_average
+ * @returns Aggregated score, rounded for average/weighted_average — or `null` when
+ *          nothing scorable was supplied (empty input, or every item scoreless). Callers
+ *          that need "nothing was asked for" to BLOCK must decide that themselves; see the
+ *          note at the scoreless branch below.
  */
 
 export function aggregateScores(
   items: ScoredItem[],
   method: AggregationMethod = 'average',
   weights: Record<string, number> = {},
-): number {
-  if (items.length === 0) return 0;
-
+): number | null {
   const scorable = items.filter((i): i is ScoredItem & { score: number } => i.score != null);
-  // ⚠ DIVERGENCE — UNRESOLVED, NEEDS A DECISION. Do not "simplify" either side away.
+  // RESOLVED 2026-08-24 (Alex's call). Returns null — "no score" — for BOTH "nothing was
+  // asked for" (items empty) and "things ran but none produce scores" (scorable empty).
   //
-  // This returns 0 for BOTH "nothing was asked for" (items empty) and "things ran but none
-  // produce scores" (scorable empty). WorkflowExecutor.aggregatePhaseScore distinguishes
-  // them — 0 for the first, null for the second — and under evaluateGate that difference is
-  // load-bearing: **0 BLOCKS and null PASSES**. So an all-generator set fails its gate in a
-  // pipeline or command, and passes it in a workflow, for identical input.
+  // The two cases are not distinguishable HERE and never were: every caller pre-filters or
+  // shapes its input before this util sees it, so an authored-empty panel and an
+  // all-generator panel arrive as the same empty array. Deciding between them at this layer
+  // required information this layer does not hold, and the 0 it used to return was that
+  // decision made blind — a fabricated failing score that flowed to the tracker and the gate.
   //
-  // Evidence pulls both ways, which is why it is flagged rather than silently corrected:
-  //   FOR null — `PhaseResult.score` and `CommandResult.score` are both `number | null`,
-  //              documented "null for scoreless (generator/executor) commands", and the
-  //              score-nullability spec says do not coerce to 0.
-  //   FOR 0    — a test pins `returns 0 when all items have null scores`, and changing it
-  //              alters GATE SEMANTICS for every pipeline and command, not just a value.
+  // The block-on-authored-empty rule therefore lives at the caller that holds the
+  // definition: WorkflowExecutor.aggregatePhaseScore returns 0 for `commands: []` because
+  // "nothing was asked for" is suspicious and must block. That is a deliberate, documented
+  // divergence from this util, not the unresolved one it replaces.
   //
-  // Changing this is a behavioural decision about what a scoreless panel means at a gate,
-  // not a mechanical repair. Recorded here and at aggregatePhaseScore so the next reader
-  // finds the disagreement instead of re-deriving it.
-  if (scorable.length === 0) return 0;
+  // Behavioural consequence, accepted: under evaluateGate and PipelineExecutor.gateFailed
+  // null is fail-open, so an all-scoreless panel now PASSES its gate in pipelines and
+  // commands where it previously failed at 0. That matches what both gates already document
+  // ("scoreless stages are fail-open for the threshold check") — the fabricated 0 was
+  // defeating the contract those comments describe.
+  //
+  // REJECTED: keeping 0 and changing aggregatePhaseScore to match. It agrees the four
+  // surfaces, but stores a fabricated score in run data where 0 is indistinguishable from a
+  // genuinely-failing panel, and contradicts the result types — PhaseResult.score,
+  // CommandResult.score, WorkflowResult.score and PipelineResult.score are all
+  // `number | null`, documented "null for scoreless (generator/executor) commands".
+  // ALSO REJECTED: a `gate.onUnscored` field letting each definition declare the meaning.
+  // Principled, but it is an ADL/PDL schema change — seven repos and a corpus retranslate
+  // — to configure a case whose correct default both gates already state in prose.
+  //
+  // The one test that pinned 0 (`returns 0 when all items have null scores`) is retired to
+  // `returns null when all items have null scores` in test/utils/aggregateScores.test.ts.
+  if (scorable.length === 0) return null;
 
   const scores = scorable.map(i => i.score);
 
@@ -89,9 +103,11 @@ export function aggregateScores(
         totalWeight += w;
         weightedSum += item.score * w;
       }
-      // FABRICATION-OK: division guard. usableWeight now floors every weight at 1, so totalWeight is
-      // positive whenever there is anything to score; the branch is unreachable defence.
-      return totalWeight > 0 ? Math.round(weightedSum / totalWeight) : 0;
+      // Division guard. usableWeight floors every weight at 1, so totalWeight is positive
+      // whenever there is anything to score; the branch is unreachable defence. It returns
+      // null rather than 0 for the same reason the scoreless branch above does — if it ever
+      // did fire, no score was computable, and 0 would be a fabricated failing one.
+      return totalWeight > 0 ? Math.round(weightedSum / totalWeight) : null;
     }
     case 'average':
     default:

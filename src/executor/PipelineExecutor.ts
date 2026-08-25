@@ -301,11 +301,13 @@ export class PipelineExecutor {
     // signature. A crashed inline agent is stamped score: null by the rejection path
     // below, which is what actually distinguishes it — a legitimately-evaluated
     // {decision:'FAIL', score:0} is a real worst-case score and must stay in the average.
-    // Matches CommandExecutor's scoredResults filter; aggregateScores applies the same
-    // null guard internally, so this is belt-and-braces, not the sole defence.
-    const successResults = agentResults.filter(r => r.score != null);
+    // The exclusion happens INSIDE aggregateScores, which applies the identical null
+    // guard. This site used to pre-filter as well; that was removed 2026-08-24, because
+    // pre-filtering destroyed the distinction the util needs — an all-scoreless stage
+    // arrived as an empty array, indistinguishable from a stage with no agents, and the
+    // util floored it to a fabricated 0. Hand it the nulls and let it report `null`.
     const avgScore = aggregateScores(
-      successResults.map(r => ({ key: r.name, score: r.score ?? null })),
+      agentResults.map(r => ({ key: r.name, score: r.score ?? null })),
     );
     // Gate on vocabulary-resolved categories, not raw strings: lens agents emit
     // custom negatives (EXPOSED, BEWITCHED) that a literal-'FAIL' test reads as
@@ -337,8 +339,10 @@ export class PipelineExecutor {
         decision: stageFailed ? 'FAIL' : 'PASS',
         decisionCategory: stageFailed ? 'negative' as const : 'positive' as const,
         // KEEP: avgScore is a real average over child agents; maxScore 100 is its scale,
-        // not a fabrication. (Caveat: aggregateScores floors an all-null-scoring stage to
-        // 0 — a residual fabricated zero routed to composition-aggregation-spec, not fixed here.)
+        // not a fabrication. An all-scoreless stage now reports `null` rather than a
+        // fabricated 0 (the residual zero routed to composition-aggregation-spec, closed
+        // 2026-08-24) — so gateScore's documented fail-open for scoreless stages actually
+        // fires instead of being defeated by a 0 that reads as a failing score.
         score: avgScore,
         maxScore: 100,
         extractionConfidence: worstExtractionConfidence(agentResults),

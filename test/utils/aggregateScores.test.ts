@@ -6,8 +6,12 @@ function items(...scores: number[]): ScoredItem[] {
 }
 
 describe('aggregateScores', () => {
-  it('returns 0 for empty items', () => {
-    expect(aggregateScores([])).toBe(0);
+  it('returns null for empty items', () => {
+    // Was `toBe(0)` until 2026-08-24. The util cannot tell an authored-empty panel from an
+    // all-scoreless one — callers shape the array before it arrives — so it reports "no
+    // score" rather than fabricating a failing one. Blocking on authored-empty is decided
+    // by WorkflowExecutor.aggregatePhaseScore, which holds the definition.
+    expect(aggregateScores([])).toBeNull();
   });
 
   describe('min', () => {
@@ -112,12 +116,15 @@ describe('aggregateScores', () => {
       expect(aggregateScores(scored, 'average')).toBe(85);
     });
 
-    it('returns 0 when all items have null scores', () => {
+    it('returns null when all items have null scores', () => {
       const scored: ScoredItem[] = [
         { key: 'a', score: null },
         { key: 'b', score: null },
       ];
-      expect(aggregateScores(scored, 'average')).toBe(0);
+      // Retired from `toBe(0)` 2026-08-24. A panel of generators/executors produced no
+      // score; 0 asserted they all scored zero, which no agent did.
+      expect(aggregateScores(scored, 'average')).toBeNull();
+      expect(aggregateScores(scored, 'average')).not.toBe(0);
     });
 
     it('excludes null-score items from min', () => {
@@ -166,10 +173,13 @@ describe('aggregateScores — malformed authored weights cannot fabricate a scor
   ])('degrades a %s weight to neutral rather than fabricating', (_label, weights) => {
     const score = w(weights as Record<string, number>);
 
+    // Non-null is part of the claim: these items DO score (20 and 100), so a null here
+    // would mean the weight handling had swallowed them, not degraded to neutral.
+    expect(score).not.toBeNull();
     expect(Number.isFinite(score)).toBe(true);
     expect(Number.isNaN(score)).toBe(false);
     // A NaN score fail-OPENS a gate, because NaN < threshold is false.
-    expect(score < 70).toBe(true);
+    expect(score! < 70).toBe(true);
     expect(JSON.stringify({ score })).not.toContain('null');
   });
 
@@ -192,5 +202,67 @@ describe('aggregateScores — malformed authored weights cannot fabricate a scor
       const score = w(weights as Record<string, number>);
       expect(Number.isNaN(score)).toBe(false);
     }
+  });
+});
+
+/**
+ * The scoreless-panel semantics, asserted at the value the GATES actually read.
+ *
+ * Resolved 2026-08-24: null, not 0. Both consuming gates — WorkflowExecutor.evaluateGate
+ * and PipelineExecutor.gateFailed — treat null as fail-open and any number as gateable, so
+ * the difference between the two answers is the difference between an all-generator panel
+ * passing its gate and failing it.
+ *
+ * POSITIVE CONTROL: restore `if (scorable.length === 0) return 0;` (and the
+ * `items.length === 0` early return) and every assertion below fails — each one is written
+ * against the value, not against `not.toThrow()`.
+ */
+describe('aggregateScores — a scoreless panel reports no score, not a failing one', () => {
+  const scoreless = (n: number): ScoredItem[] =>
+    Array.from({ length: n }, (_, i) => ({ key: `gen${i}`, score: null }));
+
+  // Mirrors the two gates: null fail-opens, a number is compared to the threshold.
+  const gateBlocks = (score: number | null, threshold: number) =>
+    score !== null && score < threshold;
+
+  it.each(['average', 'min', 'max', 'sum', 'weighted_average'] as const)(
+    'reports null for an all-scoreless panel under %s',
+    method => {
+      expect(aggregateScores(scoreless(3), method)).toBeNull();
+    },
+  );
+
+  it('does not fabricate a zero for a single scoreless item', () => {
+    // The one-item case is where a "just take the average" implementation divides by zero
+    // and lands on NaN, which fail-opens for a different and much worse reason.
+    const score = aggregateScores(scoreless(1));
+    expect(score).toBeNull();
+    expect(Number.isNaN(score as unknown as number)).toBe(false);
+  });
+
+  it('an all-generator panel PASSES a threshold gate instead of failing at 0', () => {
+    expect(gateBlocks(aggregateScores(scoreless(4)), 80)).toBe(false);
+  });
+
+  it('a genuinely failing panel still BLOCKS — the negative control', () => {
+    // Without this, "scoreless passes" would also pass for an implementation that had
+    // stopped gating altogether, which is the failure mode the null is closest to.
+    expect(gateBlocks(aggregateScores(items(10, 20)), 80)).toBe(true);
+    expect(gateBlocks(aggregateScores(items(0, 0)), 80)).toBe(true);
+    expect(aggregateScores(items(0, 0))).toBe(0);
+  });
+
+  it('a real 0 and an absent score are distinguishable in the output', () => {
+    // The property the fabricated 0 destroyed: run data could not tell "every agent scored
+    // zero" from "no agent scored". Both are legitimate; only one is a failure.
+    expect(aggregateScores(items(0, 0, 0))).toBe(0);
+    expect(aggregateScores(scoreless(3))).toBeNull();
+    expect(aggregateScores(items(0, 0, 0))).not.toBe(aggregateScores(scoreless(3)));
+  });
+
+  it('one real score among scoreless items is reported alone, not averaged toward 0', () => {
+    const mixed: ScoredItem[] = [...scoreless(3), { key: 'scored', score: 90 }];
+    expect(aggregateScores(mixed, 'average')).toBe(90);
+    expect(aggregateScores(mixed, 'min')).toBe(90);
   });
 });

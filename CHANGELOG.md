@@ -643,6 +643,36 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) 
   **stop** subtracting a cached figure from it; doing so now undercounts. `total_effective` is
   `input + output + cache_creation`, unchanged in meaning and now correct in value.
 
+- **A scoreless panel now reports NO score instead of a fabricated `0`, and therefore PASSES
+  its gate instead of failing it.** `aggregateScores` returns `number | null`; it returns
+  `null` when nothing scorable was supplied — an empty item list, or one where every item
+  scored `null` (a panel of generators/executors, which do not score by design). It
+  previously returned `0`.
+
+  This is a **gate-semantics change**, not just a value change. Both consuming gates —
+  `WorkflowExecutor.evaluateGate` and `PipelineExecutor.gateFailed` — are fail-open on a
+  null score and gate on any number, so a stage or phase whose agents all came back
+  scoreless used to fail at `0 < threshold` and now passes. That is what both gates already
+  documented in prose ("scoreless stages are fail-open for the threshold check"); the
+  fabricated `0` was defeating the contract those comments describe. The case that changes
+  in practice is an **inline-agents stage of generators under a `gate.threshold`** — command
+  stages already fail-opened, because `CommandExecutor` guards the call.
+
+  What did NOT change: `WorkflowExecutor.aggregatePhaseScore` still scores an
+  **authored-empty phase** (`commands: []`) `0`, and `aggregate` still scores an
+  **authored-empty workflow** (`phases: []`) `0`, so a definition that asks for nothing
+  cannot pass a gate unexamined. Those two layers hold the definition and can tell
+  "nothing was asked for" from "nothing scored"; the shared util cannot — callers shape the
+  array before it arrives — so it declines to guess. The util and
+  `aggregatePhaseScore` now agree on every case except that one, which had been flagged
+  UNRESOLVED in comments at both sites since 2026-08-24.
+
+  Consumers reading `score` off a `WorkflowResult`, `PipelineResult` or `CommandResult` see
+  no signature change — all four result types already declared `number | null` — but a value
+  that was `0` may now be `null`, and stored run data can now distinguish "every agent
+  scored zero" from "no agent scored". Anything computing arithmetic on the field without a
+  null check was already unsound and will now surface it.
+
 - **`cached_input_tokens` no longer participates in effective-token arithmetic.** AI SDK v6
   dissolved the provider-shape difference that motivated the §3.2 disentangle: Anthropic cache
   reads and OpenAI/Google cached input now both arrive as `inputTokenDetails.cacheReadTokens`.

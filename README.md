@@ -741,6 +741,7 @@ if (category === 'negative') {
 
 - A **scoreless** child whose decision resolves `negative` fails the aggregate outright — it has no channel into the score average, so it gates categorically.
 - A **scored** child whose decision resolves `negative` but whose score passes (a lens verdict like `DISORDERED@82`) caps the aggregate at `WARN`/`conditional` — never an unqualified `PASS`, never a hard `FAIL`.
+- An **all-scoreless** panel (every child a generator/executor) aggregates to `null`, not `0` — no agent scored, so there is no score to report, and a `null` is fail-open at a threshold gate. A definition that asks for nothing is different: an authored-empty phase (`commands: []`) or workflow (`phases: []`) scores `0` and blocks, so a gate cannot pass unexamined.
 - A **crashed** parallel agent synthesizes a negative placeholder and fails the command — a gate that couldn't run its full panel doesn't emit an unqualified positive. Survivors' scores are preserved; the crash surfaces as a critical recommendation.
 
 ## Configuration

@@ -350,11 +350,14 @@ export class CommandExecutor {
     let maxScore: number | undefined;
 
     if (scoredResults.length > 0) {
+      // `?? undefined` is unreachable behind the length guard above — aggregateScores
+      // returns null only when nothing scorable was supplied, and scoredResults is
+      // non-empty here. Kept so the guard and the type agree rather than asserting.
       score = aggregateScores(
         scoredResults.map(r => ({ key: r.name, score: r.score })),
         aggregation.method,
         aggregation.weights,
-      );
+      ) ?? undefined;
 
       // Filter null scales (invariant: scored results have a scale, but be defensive);
       // undefined when none present — never fabricate 100.

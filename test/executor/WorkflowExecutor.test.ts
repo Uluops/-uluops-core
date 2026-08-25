@@ -684,7 +684,7 @@ describe('WorkflowExecutor', () => {
       expect(result.decision).toBe('BLOCK');
     });
 
-    it('all phases skipped results in SHIP decision with score 0', async () => {
+    it('all phases skipped results in SHIP decision with NO score', async () => {
       const cmdExec = makeCommandExecutor();
       const registry = makeRegistry();
       const executor = new WorkflowExecutor(cmdExec, registry);
@@ -707,7 +707,13 @@ describe('WorkflowExecutor', () => {
       expect(result.phases).toHaveLength(2);
       expect(result.phases[0]!.decision).toBe('skipped');
       expect(result.phases[1]!.decision).toBe('skipped');
-      expect(result.score).toBe(0);
+      // Was `toBe(0)` until 2026-08-24. Nothing executed, so there is nothing to score —
+      // and `aggregate` already excludes skipped phases precisely so they cannot drag the
+      // average toward 0. Reporting 0 undid that exclusion, and paired a fabricated
+      // failing score with a SHIP decision. Distinct from `phases: []` (authored-empty),
+      // which still scores 0 so a nested workflow cannot pass a parent gate unexamined —
+      // see 'empty phases array produces SHIP with score 0' below.
+      expect(result.score).toBeNull();
       expect(result.decision).toBe('SHIP');
       expect(result.metrics.phasesSkipped).toBe(2);
       expect(result.metrics.phasesExecuted).toBe(0);
