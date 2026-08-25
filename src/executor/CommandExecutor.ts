@@ -11,11 +11,11 @@ import type { Logger } from '@uluops/sdk-core';
 import { parseRef } from '../utils/parseRef.js';
 import { sumTokenMetrics } from '../utils/sumTokenMetrics.js';
 import { sumCostUsd } from '../utils/sumCostUsd.js';
-import { crashMetrics } from '../utils/crashMetrics.js';
 import { DEFAULT_PASS_THRESHOLD, DEFAULT_WARN_THRESHOLD } from '../constants.js';
 import { mapCategory } from './mapCategory.js';
 import { resolveDecisionCategory, type DecisionCategory } from './classifyDecision.js';
 import { aggregateScores, type AggregationMethod } from '../utils/aggregateScores.js';
+import { crashPlaceholder } from '../utils/crashPlaceholder.js';
 import { worstExtractionConfidence } from '../utils/worstExtractionConfidence.js';
 
 /**
@@ -160,29 +160,11 @@ export class CommandExecutor {
    * sites that must agree are two chances to disagree.
    */
   private crashPlaceholder(ref: string, reason: unknown, startedAt?: number): AgentResult {
-    const msg = reason instanceof Error ? reason.message : String(reason);
-    return {
-      name: ref,
-      agentType: 'validator',
-      decision: 'FAIL',
-      decisionCategory: 'negative',
-      // Crashed agent — no agent ran, so no score. Null pair, not fabricated 0/100.
-      score: null,
-      maxScore: null,
-      recommendations: [{
-        title: `Agent ${ref} failed: ${msg}`,
-        priority: 'critical',
-        severity: 'critical',
-        failureCode: 'PRA-FRA/C',
-      }],
-      // Reads real usage off the error when it carries any (MaxStepsExhaustedError
-      // is thrown after a successful, already-billed call); otherwise zero tokens with
-      // costUsd ABSENT, never a fabricated $0. See crashMetrics.
-      // Elapsed time is knowable even when tokens are not; supply it when the caller
-      // captured a start. crashMetrics only defaults to 0 for a caller that genuinely has
-      // no measurement.
-      metrics: crashMetrics(reason, startedAt !== undefined ? { durationMs: Date.now() - startedAt } : undefined),
-    } as AgentResult;
+    // Delegates to the shared factory in utils. This method's own docstring said "two call
+    // sites that must agree are two chances to disagree" — and there were three; the third
+    // had drifted on decisionCategory, priority, severity and failure code. Kept as a thin
+    // wrapper so the existing call sites read unchanged.
+    return crashPlaceholder(ref, reason, { startedAt });
   }
 
   /**

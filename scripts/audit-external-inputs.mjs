@@ -49,7 +49,7 @@
  * A waiver with no reason is rejected. Waivers do not bleed past the first line of real code.
  */
 
-import { readFileSync, writeFileSync, readdirSync, statSync, unlinkSync, existsSync } from 'node:fs';
+import { readFileSync, writeFileSync, readdirSync, statSync, unlinkSync, existsSync, mkdirSync, rmSync } from 'node:fs';
 import { join, relative } from 'node:path';
 
 const ROOT = new URL('..', import.meta.url).pathname;
@@ -140,6 +140,37 @@ const NUMERIC_CONTEXT = /\?\?\s*[-\d]|\|\|\s*[-\d]|[-+*/]=|\s[-+*/]\s|[<>]=?\s|M
 // `resolveRequestTimeoutMs` was added 2026-08-24 when the request-timeout seam moved into
 // externalValue.ts; before that it lived in AIProvider and the audit correctly refused to
 // recognise it, which is the behaviour to preserve.
+/**
+ * True when every entry point on a line sits INSIDE a seam call.
+ *
+ * Restored 2026-08-24 from `audit-fabricated-values.mjs:isFullyClamped`, which this script
+ * superseded and whose fix it dropped. That predecessor's docstring already recorded the
+ * lesson: *"Previously any line CONTAINING a clamp was skipped entirely, so a guarded value
+ * and an unguarded one on the same line were both exempted."*
+ *
+ * This script shipped with `guarded: SEAMS.test(line)` — the whole-line test, the exact
+ * defect its predecessor had already fixed — so `externalInt(input['a'], {...}) + input['b']`
+ * reported clean, and `Number.isFinite` being in SEAMS meant any line mentioning it for an
+ * unrelated value exempted every entry point on it.
+ *
+ * The instrument inheriting the disease it was built to detect is this project's own named
+ * failure mode; it recurred here in the successor to the file that fixed it.
+ *
+ * Blank the seam calls first, then ask whether any entry point survives.
+ */
+function fullyGuarded(line) {
+  if (!SEAMS.test(line)) return false;
+  const stripped = line
+    // Complete single-line seam calls.
+    .replace(new RegExp(String.raw`(?:${SEAMS.source})\s*\([^)]*\)`, 'g'), 'GUARDED')
+    // A seam call whose arguments continue onto the following lines — its closing paren is
+    // not on this line, so everything after the opening one is inside it. Without this the
+    // check false-positives on the multi-line form, which is how several real call sites in
+    // ToolHandler are written.
+    .replace(new RegExp(String.raw`(?:${SEAMS.source})\s*\(.*$`), 'GUARDED');
+  return !CHANNELS.some(ch => ch.re.test(stripped));
+}
+
 const SEAMS = /externalInt|finitePositive|finiteNonNegative|clampModelBound|usableWeight|usableBudget|resolveRequestTimeoutMs|sanitizeModelCost|safeTokenCount|optionalTokenCount|externalLineNumber|\.finite\(\)|Number\.isFinite/;
 
 const WAIVER = /EXTERNAL-OK:\s*\S+/;
@@ -193,7 +224,7 @@ function scan(files) {
           // it does, not where it sits in the file.
           fingerprint: `${relative(ROOT, file)}|${ch.id}|${line.trim().replace(/\s+/g, ' ')}`,
           numeric: NUMERIC_CONTEXT.test(line),
-          guarded: SEAMS.test(line),
+          guarded: fullyGuarded(line),
           waived: waived(lines, i),
         });
       }
@@ -278,6 +309,54 @@ if (process.argv.includes('--control')) {
       process.exit(1);
     }
     console.log('CONTROL: net-zero refactor (1 site moved) correctly registered as +1/-1 drift.');
+
+    // ── The drift control must exercise scan(), not just set arithmetic ──────────────
+    //
+    // Everything above this line mutates a Set read from the baseline. It proves that
+    // set-difference computes +1/-1 — arithmetic that was never in doubt — and cannot
+    // prove the thing that matters: that scan() emits a DISTINGUISHING fingerprint per
+    // site. It was therefore structurally incapable of catching the defect it sat beside,
+    // where identical lines collapsed under `new Set(...)` so a duplicated entry point was
+    // invisible. A control that never runs the instrument is testing the wrong object.
+    //
+    // Plant a file with TWO identical entry-point lines and require scan() to report two.
+    const dupDir = join(SRC, '__probe_dup__');
+    try {
+      mkdirSync(dupDir, { recursive: true });
+      const dupFile = join(dupDir, 'dup.ts');
+      writeFileSync(dupFile, [
+        'export function a(input: Record<string, unknown>): void {',
+        "  const v = input['dup_probe'];",
+        '  void v;',
+        '}',
+        'export function b(input: Record<string, unknown>): void {',
+        "  const v = input['dup_probe'];",
+        '  void v;',
+        '}',
+        '',
+      ].join('\n'));
+
+      const dupHits = scan([dupFile]).filter(h => h.text.includes('dup_probe'));
+      const seenDup = new Map();
+      const dupFps = dupHits.map(h => {
+        const n = (seenDup.get(h.fingerprint) ?? 0) + 1;
+        seenDup.set(h.fingerprint, n);
+        return n === 1 ? h.fingerprint : `${h.fingerprint}#${n}`;
+      });
+
+      if (dupHits.length !== 2) {
+        console.error(`CONTROL FAILED — planted 2 identical entry points, scan() found ${dupHits.length}.`);
+        process.exit(1);
+      }
+      if (new Set(dupFps).size !== 2) {
+        console.error('CONTROL FAILED — two identical entry points collapsed to one fingerprint.');
+        console.error('Drift cannot see a duplicated site, which is how a surface grows unnoticed.');
+        process.exit(1);
+      }
+      console.log('CONTROL: scan() emits 2 distinct fingerprints for 2 identical planted sites.');
+    } finally {
+      rmSync(dupDir, { recursive: true, force: true });
+    }
   } else {
     console.error('CONTROL FAILED — no baseline, so the drift half could not be exercised.');
     process.exit(1);
@@ -291,7 +370,20 @@ if (process.argv.includes('--control')) {
 const hits = scan(walk(SRC));
 const counts = {};
 for (const h of hits) counts[h.channel] = (counts[h.channel] ?? 0) + 1;
-const fingerprints = [...new Set(hits.map(h => h.fingerprint))].sort();
+// Occurrence-suffixed, so N identical sites yield N fingerprints.
+//
+// This was `[...new Set(...)]`, while the headline total summed RAW hits — so the census
+// reported 136 entry points and drift-watched 131. Two identical normalized lines in one
+// file and channel collapsed to a single fingerprint, which means ADDING a duplicate entry
+// point was invisible to drift, and DELETING one of a pair was invisible too. That is the
+// same net-zero blindness that broke the pass-7 instrument, reappearing one layer down in
+// its replacement.
+const seenFp = new Map();
+const fingerprints = hits.map(h => {
+  const n = (seenFp.get(h.fingerprint) ?? 0) + 1;
+  seenFp.set(h.fingerprint, n);
+  return n === 1 ? h.fingerprint : `${h.fingerprint}#${n}`;
+}).sort();
 
 // ── (2) CENSUS DRIFT — the half that can discover ────────────────────────────────────────
 if (process.argv.includes('--update')) {

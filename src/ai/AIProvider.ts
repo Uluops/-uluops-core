@@ -1845,7 +1845,17 @@ function mergeAbortSignals(
   options: AIGenerateOptions,
   configTimeoutMs: number,
 ): AbortSignal | undefined {
-  // Every request gets a timeout. There is no reachable path that installs none.
+  // Every request routed through THIS function gets a timeout — and `generateText` is
+  // called from exactly one site in this package (the `generate()` body above), which is
+  // the reason that is worth stating.
+  //
+  // The stronger sentence that stood here — "there is no reachable path that installs
+  // none" — was an unconditional reachability claim with nothing discharging it: no
+  // enumeration, no test asserting this is the only installer. A ship-gate review flagged
+  // it, correctly, as true of the paths someone thought to check while claiming more. The
+  // defect it replaced was invisible for the same reason: everyone believed the bound was
+  // installed. The claim is now scoped to what a reader can verify by grepping for
+  // `generateText(` in `src/`.
   //
   // This tested `options.timeoutMs ?` — truthiness — so a `0` was dropped and the request
   // ran with NO abort signal. `0` is the conventional Node spelling of "no timeout"

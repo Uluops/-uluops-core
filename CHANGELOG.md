@@ -79,6 +79,62 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) 
   **stop** subtracting a cached figure from it; doing so now undercounts. `total_effective` is
   `input + output + cache_creation`, unchanged in meaning and now correct in value.
 
+- **The "live gate" this release stakes its central claim on was invoked nowhere.**
+  `npm run check:external-inputs` appeared only as a `package.json` script — not in
+  `ci.yml`, not in `prepublishOnly` — while `audit-fabricated-values.mjs`'s header called it
+  "the live gate". Seven audit passes produced two instruments and both were opt-in commands
+  someone had to remember to type. Wired into CI and `prepublishOnly`, alongside
+  `--control`, because a census baseline only stays true if something regenerates and checks
+  it, and a gate nothing runs cannot fail.
+
+- **The census auditor discharged an entry point by WHOLE-LINE match — the fix its own
+  predecessor had already made.** `guarded: SEAMS.test(line)` reported any entry point on a
+  line containing any seam name as guarded, whatever value that seam actually protected, so
+  `externalInt(input['a'], {...}) + input['b']` read clean and `Number.isFinite` anywhere on
+  a line exempted everything on it. `audit-fabricated-values.mjs:isFullyClamped` — the
+  script this one superseded — blanks the guard's arguments before re-testing, and its
+  docstring records why. The rewrite dropped it. Restored, with multi-line seam calls
+  handled, and verified by planting the exact shape: the new check catches it and the old
+  one reports it clean.
+
+- **The census reported 136 entry points and drift-watched 131.** Fingerprints were deduped
+  through `new Set(...)` while the headline total summed raw hits, so two identical
+  normalized lines in one file and channel collapsed — meaning a DUPLICATED entry point was
+  invisible to drift and deleting one of a pair was invisible too. That is the same
+  net-zero blindness that defeated the previous count-based instrument, reappearing one
+  layer down in its replacement. Fingerprints are now occurrence-suffixed and the two
+  figures reconcile.
+
+- **The drift control mutated a Set in memory and never ran the scanner.** It proved that
+  set-difference computes +1/-1 — arithmetic never in doubt — and was structurally incapable
+  of catching the defect above, because it never asked whether `scan()` emits distinguishing
+  fingerprints. It now plants a file with two identical entry points and requires two
+  distinct fingerprints back. Restoring the `Set` dedupe makes the control fail, which is
+  the property it lacked.
+
+- **A crashed inline agent reached the tracker at a different severity than its siblings.**
+  `CommandExecutor.crashPlaceholder`'s docstring said "two call sites that must agree are
+  two chances to disagree" — there were three. The third omitted `decisionCategory` (leaving
+  classification to the `'FAIL'` fallback, the path that cannot read a custom vocabulary),
+  omitted `priority`, and stamped `severity: 'high'` / `PRA-FRA/H` where the other two stamp
+  `'critical'` / `PRA-FRA/C`. All three now build through one exported factory, which also
+  returns a complete `AgentResult` rather than an `as`-cast partial, and takes `agentType` as
+  an explicit fallback rather than hardcoding `'validator'` at each site.
+
+- **The un-submittable cost is now announced instead of dropped in silence.** `costUsd` has
+  no field on ops-sdk's wire type, so the pricing arc terminates in memory. That was
+  documented in this changelog and invisible at runtime — the one place `degradation.ts`
+  invariant (1), *"nothing degrades silently"*, was not honoured, inside the release that
+  exists to enforce it. `SubmissionClient` now warns once per client, naming why cost is
+  absent and why re-deriving it from the submitted tokens undercounts.
+
+- **`@uluops/ops-sdk` pinned to `5.13.0`.** The one caret in an otherwise exactly-pinned
+  dependency list, and it sat on the telemetry write path: `^5.13.0` reaches 5.19.x, which
+  raises `AnalysisEchoMismatchError` **after the write has landed**, in a package that
+  references that error nowhere. Core has no `update_run` path today, so the throw is not
+  directly reachable from here — but an unreviewed minor arriving on a plain `npm install`
+  is exactly what the rest of this file's exact pins exist to prevent.
+
 - **A gate over work that never ran passed when no `threshold` was declared.** The
   same-day fix above closed the SCORE channel; the DECISION channel stayed open one seam
   over. `gate.threshold` is optional, and without it `gateFailed` consults only the
@@ -826,7 +882,9 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) 
   is one people learn to scroll past. Census counts everything; inventory demands action only
   where a number is produced.
 
-  Current state: **75 entry points across 7 channels, 11 in numeric contexts, none unguarded.**
+  State at that pass: **75 entry points across 7 channels, 11 in numeric contexts, none
+  unguarded.** A point-in-time measurement, not a standing figure — see the note at the end
+  of this section for why every count in this document carries its pass.
 
 - **Seventh sweep — the instrument was broken by demonstration, not by argument.** Audit
   pass 7 (64/100, AF-006) planted a new, fully unguarded model-tool-args entry point while
@@ -852,7 +910,8 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) 
   responses**, which arrive SDK-typed with no parse call: `src/ai/AIProvider.ts` — 1,757
   lines, the ORIGIN of this entire defect class — contributed **1 of 75** census entries.
 
-  Adding them took the measured surface from **75 to 132 entry points**; `AIProvider` went
+  Adding them took the measured surface from **75 to 132 entry points** at that pass;
+  `AIProvider` went
   from 1 to 33.
 
   Also fixed: channel attribution was order-dependent (`break` after the first match meant
@@ -890,6 +949,26 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) 
 
 ### Design Notes
 
+- **64 `POSITIVE CONTROL:` comments across the test suite are PROSE, and only one has been
+  mechanically verified.** Each names the reversion that should make its test fail. The two
+  audit scripts got executable `--control` modes precisely because *"a check that has never
+  failed is indistinguishable from one that cannot"*; the test suite's controls did not get
+  the same treatment. One was found false during this release's ship gate — it claimed three
+  tests would fail and two did — and there is no mechanism that could have found it other
+  than trying it. The individual controls exercised this session were each run as real
+  mutations and held; the other ~60 are unverified claims about themselves. Recorded as the
+  largest un-instrumented assurance surface remaining, not as a resolved item.
+
+- **Every entry-point count in this document is a point-in-time measurement, and the live
+  figure is whatever `npm run check:external-inputs` prints.** This section quotes 75 (sixth
+  sweep) and 132 (seventh); the committed baseline currently holds 136 across 9 channels.
+  A ship-gate review flagged the three as a contradiction, and it read as one: a release
+  whose subject is *a stated number that no longer describes the state* reporting its own
+  headline metric three ways. They are not in conflict — each is correct for its pass, and
+  the surface grew because the instrument's reach grew, which is the finding. They are now
+  labelled with their pass so a reader does not have to reconstruct that. **Do not
+  transcribe any of them as current.** The census is the source; the document is a log.
+
 - **Deliberately NOT fixed in 0.42.0, ranked and recorded rather than guessed at.** The
   stage-4 audit re-ranked these against the current tree and none is critical: `cancel()`
   does not reach the shell tool, so an `sh -c` child keeps running after a cancel (bounded at
@@ -911,8 +990,17 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) 
   to the sane default. Recorded for a deliberate decision rather than settled in passing.
 
 
-- **UNRESOLVED, flagged rather than decided: two score aggregators disagree.**
-  `aggregateScores` returns `0` when items ran but none produce scores; `aggregatePhaseScore`
+- **RESOLVED IN THIS RELEASE — kept for its reasoning, not as an open item.** ⚠ This entry
+  said "UNRESOLVED, flagged rather than decided" until 2026-08-24, by which point the
+  release had decided it: `aggregateScores` returns `null` for the all-scoreless case (see
+  Fixed above), the test named below is retired, and the two aggregators now agree on every
+  case except authored-empty, which is deliberate and documented at both sites. A ship-gate
+  review found this note still asserting the divergence was live — a stale claim sitting
+  beside the state it describes, which is the exact defect shape this release is about, in
+  the document that describes it. The original text follows because the reasoning that
+  classified this as a decision rather than a repair is the part worth keeping.
+
+  ~~`aggregateScores` returns `0` when items ran but none produce scores; `aggregatePhaseScore`
   returns `null` for the same input. Under `evaluateGate` that is not cosmetic — **0 BLOCKS
   and null PASSES** — so an all-generator panel fails its gate in a pipeline or command and
   passes it in a workflow.
@@ -922,7 +1010,7 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) 
   for scoreless (generator/executor) commands"*, and the score-nullability spec says do not
   coerce to 0 — but a test pins `returns 0 when all items have null scores`, and changing it
   alters gate semantics for every pipeline and command rather than a single value. That is a
-  behavioural decision about what a scoreless panel means at a gate, not a mechanical repair.
+  behavioural decision about what a scoreless panel means at a gate, not a mechanical repair.~~
 
 
 > **Amended before release.** Finding 1's *reporting* half and the

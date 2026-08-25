@@ -57,6 +57,10 @@ export class SubmissionClient {
   private _ops?: OpsClient;
   private readonly analysisExtractor = new AnalysisSummaryExtractor();
 
+  /** One warning per client for the un-submittable cost field — a property of the wire
+   *  type, not of any run, so per-run warnings would be noise. */
+  private costDropWarned = false;
+
   constructor(private config: ResolvedConfig, private logger: Logger) {}
 
   /**
@@ -673,6 +677,29 @@ export class SubmissionClient {
    * release: a value computed correctly and then not carried across a boundary.
    */
   private extractTokens(metrics: ExecutionMetrics) {
+    // A COMPUTED cost that cannot be carried is announced, not dropped in silence.
+    //
+    // `costUsd` has no field on ops-sdk's wire type, so the whole pricing arc this release
+    // is largely about terminates in memory. That was documented in the CHANGELOG and
+    // invisible at runtime — the one place `types/degradation.ts` invariant (1), "nothing
+    // degrades silently", was not honoured, inside the release that exists to enforce it.
+    //
+    // A warning is the whole fix available here: there is no wire field to write to and no
+    // marker channel at this layer. It converts a silent drop into an observable one, so an
+    // operator reconciling spend against the tracker learns why the column is empty from
+    // the run rather than from the changelog. Once per client, because it is a property of
+    // the wire type and not of any particular run — per-run warnings would be noise.
+    if (metrics.costUsd !== undefined && !this.costDropWarned) {
+      this.costDropWarned = true;
+      this.logger.warn(
+        `Computed cost ($${metrics.costUsd.toFixed(4)} on this run) is NOT submitted to the `
+        + `tracker: @uluops/ops-sdk's wire type carries no cost field. Token counts are sent `
+        + `and are accurate, but cost is not derivable from them alone — input_tokens is `
+        + `cache-exclusive, so a consumer re-deriving spend from tokens will undercount. `
+        + `Read cost from the run result in-process until the wire type carries it.`,
+      );
+    }
+
     return {
       inputTokens: metrics.inputTokens,
       outputTokens: metrics.outputTokens,

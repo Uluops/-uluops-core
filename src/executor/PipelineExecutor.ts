@@ -14,10 +14,10 @@ import { parseRef } from '../utils/parseRef.js';
 import { formatErrorMessage } from '../utils/formatError.js';
 import { sumTokenMetrics } from '../utils/sumTokenMetrics.js';
 import { sumCostUsd } from '../utils/sumCostUsd.js';
-import { crashMetrics } from '../utils/crashMetrics.js';
 import { resolveDecisionCategory } from './classifyDecision.js';
 import { worstExtractionConfidence } from '../utils/worstExtractionConfidence.js';
 import { aggregateScores } from '../utils/aggregateScores.js';
+import { crashPlaceholder } from '../utils/crashPlaceholder.js';
 import type { Logger } from '@uluops/sdk-core';
 
 /**
@@ -528,26 +528,16 @@ export class PipelineExecutor {
       if (outcome.status === 'fulfilled') {
         results.push(outcome.value);
       } else {
-        // Surface rejected inline agents as failed results instead of silently dropping them
-        const errorMsg = outcome.reason instanceof Error ? outcome.reason.message : String(outcome.reason);
-        results.push({
-          name: dispatched[i]?.ref ?? 'unknown',
-          agentType: 'validator',
-          decision: 'FAIL',
-          // Crashed inline agent — no agent ran, so no score. Null pair, not fabricated 0/100.
-          score: null,
-          maxScore: null,
-          recommendations: [{
-            title: `Inline agent failed: ${dispatched[i]?.ref ?? 'unknown'}`,
-            description: errorMsg,
-            severity: 'high',
-            failureCode: 'PRA-FRA/H',
-          }],
-          // See crashMetrics: billed usage survives the throw; absent cost stays absent.
-          // The measured elapsed time is supplied through `extra` — it is knowable here
-          // even when the tokens are not, and the two are independent facts.
-          metrics: crashMetrics(outcome.reason, { durationMs: Date.now() - (dispatchStart[i] ?? Date.now()) }),
-        } as AgentResult);
+        // The SHARED factory — this was the third hand-built copy, and it had drifted on
+        // every field that classifies the event: no decisionCategory, no priority,
+        // severity 'high' and PRA-FRA/H where the other two stamp 'critical' and
+        // PRA-FRA/C. The same crash reached the tracker at two different severities
+        // depending on which executor dispatched it.
+        results.push(crashPlaceholder(
+          dispatched[i]?.ref ?? 'unknown',
+          outcome.reason,
+          { startedAt: dispatchStart[i] },
+        ));
       }
     }
     return results;

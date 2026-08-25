@@ -36,6 +36,21 @@ jobs:
       - name: Test
         run: npm test
 
+      # The external-input census. Added 2026-08-24 after a ship-gate review found that
+      # this "live gate" — the instrument the 0.42.0 release stakes its central claim on —
+      # was invoked nowhere: not here, not in prepublishOnly, only as a package.json entry
+      # somebody had to remember to type. A gate nothing runs cannot fail, and the census
+      # baseline it compares against only stays true if something regenerates and checks it.
+      #
+      # The control runs alongside it deliberately: it plants known-bad lines, requires
+      # every channel to fire, and requires scan() to distinguish two identical sites. A
+      # green census from an instrument that cannot fail is what this whole arc is about.
+      - name: External-input census
+        run: npm run check:external-inputs
+
+      - name: External-input census — control
+        run: npm run check:external-inputs:control
+
   security-audit:
     runs-on: ubuntu-latest
     steps:
