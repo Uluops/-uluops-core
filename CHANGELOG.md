@@ -20,8 +20,9 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) 
 
 - **`CancelledError`** (`code: 'CANCELLED'`, extends `ExecutionError`) — exported from the
   package root alongside the other twelve error classes. Raised when a run
-  stops because the caller asked it to. Distinguishes a cancel from `TimeoutError`; see the
-  Fixed entry above for why they were conflated. `UluOpsErrorCodes` gains `CANCELLED`.
+  stops because the caller asked it to. Distinguishes a cancel from `TimeoutError`; see
+  *"A cancel was reported as a timeout"* under **Changed** for why they were conflated.
+  `UluOpsErrorCodes` gains `CANCELLED`.
 
 - **`ExecutionOptions.abortSignal`** and **`AIGenerateOptions.abortSignal`** — a
   caller-supplied cancellation signal, threaded to the provider call. It is **combined**
@@ -2838,38 +2839,46 @@ const tool = aiProvider.createProviderShellTool(provider, targetDir, timeoutMs);
 - `PipelineHandle` class implementation added to `client/PipelineHandle.ts`
 
 <!-- Version comparison links -->
-[Unreleased]: https://github.com/Uluops/uluops-core/compare/v0.22.1...HEAD
-[0.22.1]: https://github.com/Uluops/uluops-core/compare/v0.22.0...v0.22.1
-[0.22.0]: https://github.com/Uluops/uluops-core/compare/v0.21.1...v0.22.0
-[0.21.1]: https://github.com/Uluops/uluops-core/compare/v0.21.0...v0.21.1
-[0.21.0]: https://github.com/Uluops/uluops-core/compare/v0.20.0...v0.21.0
-[0.20.0]: https://github.com/Uluops/uluops-core/compare/v0.19.0...v0.20.0
-[0.19.0]: https://github.com/Uluops/uluops-core/compare/v0.18.5...v0.19.0
-[0.18.5]: https://github.com/Uluops/uluops-core/compare/v0.18.3...v0.18.5
-[0.18.3]: https://github.com/Uluops/uluops-core/compare/v0.18.2...v0.18.3
-[0.18.2]: https://github.com/Uluops/uluops-core/compare/v0.18.1...v0.18.2
-[0.18.1]: https://github.com/Uluops/uluops-core/compare/v0.18.0...v0.18.1
-[0.18.0]: https://github.com/Uluops/uluops-core/compare/v0.17.1...v0.18.0
-[0.17.1]: https://github.com/Uluops/uluops-core/compare/v0.17.0...v0.17.1
-[0.17.0]: https://github.com/Uluops/uluops-core/compare/v0.16.0...v0.17.0
-[0.16.0]: https://github.com/Uluops/uluops-core/compare/v0.15.2...v0.16.0
-[0.15.2]: https://github.com/Uluops/uluops-core/compare/v0.15.1...v0.15.2
-[0.15.1]: https://github.com/Uluops/uluops-core/compare/v0.15.0...v0.15.1
-[0.15.0]: https://github.com/Uluops/uluops-core/compare/v0.13.0...v0.15.0
-[0.13.0]: https://github.com/Uluops/uluops-core/compare/v0.12.1...v0.13.0
-[0.12.1]: https://github.com/Uluops/uluops-core/compare/v0.12.0...v0.12.1
-[0.12.0]: https://github.com/Uluops/uluops-core/compare/v0.11.1...v0.12.0
-[0.11.1]: https://github.com/Uluops/uluops-core/compare/v0.11.0...v0.11.1
-[0.11.0]: https://github.com/Uluops/uluops-core/compare/v0.10.1...v0.11.0
-[0.10.1]: https://github.com/Uluops/uluops-core/compare/v0.10.0...v0.10.1
-[0.10.0]: https://github.com/Uluops/uluops-core/compare/v0.8.2...v0.10.0
-[0.8.2]: https://github.com/Uluops/uluops-core/compare/v0.8.1...v0.8.2
-[0.8.1]: https://github.com/Uluops/uluops-core/compare/v0.8.0...v0.8.1
-[0.8.0]: https://github.com/Uluops/uluops-core/compare/v0.7.0...v0.8.0
-[0.7.0]: https://github.com/Uluops/uluops-core/compare/v0.6.0...v0.7.0
-[0.6.0]: https://github.com/Uluops/uluops-core/compare/v0.5.0...v0.6.0
-[0.5.0]: https://github.com/Uluops/uluops-core/compare/v0.4.0...v0.5.0
-[0.4.0]: https://github.com/Uluops/uluops-core/compare/v0.3.0...v0.4.0
-[0.3.0]: https://github.com/Uluops/uluops-core/compare/v0.2.0...v0.3.0
-[0.2.0]: https://github.com/Uluops/uluops-core/compare/v0.1.0...v0.2.0
-[0.1.0]: https://github.com/Uluops/uluops-core/releases/tag/v0.1.0
+[Unreleased]: https://github.com/Uluops/-uluops-core/compare/v0.42.0...HEAD
+[0.42.0]: https://github.com/Uluops/-uluops-core/compare/v0.35.0...v0.42.0
+
+<!-- Link-reference note: the compare links below reference release tags, and several of
+     them (v0.22.1 among others) were never pushed to the remote, so those links 404. Only
+     nine tags exist, the newest being v0.35.0. `[Unreleased]` pointed at v0.22.1 — twenty
+     releases stale — until 2026-08-24. Corrected the two that describe the current release;
+     the historical rot is left as-is rather than silently rewritten, since a link ref is a
+     record of what was tagged and inventing tags to make links resolve would be worse. -->
+[0.22.1]: https://github.com/Uluops/-uluops-core/compare/v0.22.0...v0.22.1
+[0.22.0]: https://github.com/Uluops/-uluops-core/compare/v0.21.1...v0.22.0
+[0.21.1]: https://github.com/Uluops/-uluops-core/compare/v0.21.0...v0.21.1
+[0.21.0]: https://github.com/Uluops/-uluops-core/compare/v0.20.0...v0.21.0
+[0.20.0]: https://github.com/Uluops/-uluops-core/compare/v0.19.0...v0.20.0
+[0.19.0]: https://github.com/Uluops/-uluops-core/compare/v0.18.5...v0.19.0
+[0.18.5]: https://github.com/Uluops/-uluops-core/compare/v0.18.3...v0.18.5
+[0.18.3]: https://github.com/Uluops/-uluops-core/compare/v0.18.2...v0.18.3
+[0.18.2]: https://github.com/Uluops/-uluops-core/compare/v0.18.1...v0.18.2
+[0.18.1]: https://github.com/Uluops/-uluops-core/compare/v0.18.0...v0.18.1
+[0.18.0]: https://github.com/Uluops/-uluops-core/compare/v0.17.1...v0.18.0
+[0.17.1]: https://github.com/Uluops/-uluops-core/compare/v0.17.0...v0.17.1
+[0.17.0]: https://github.com/Uluops/-uluops-core/compare/v0.16.0...v0.17.0
+[0.16.0]: https://github.com/Uluops/-uluops-core/compare/v0.15.2...v0.16.0
+[0.15.2]: https://github.com/Uluops/-uluops-core/compare/v0.15.1...v0.15.2
+[0.15.1]: https://github.com/Uluops/-uluops-core/compare/v0.15.0...v0.15.1
+[0.15.0]: https://github.com/Uluops/-uluops-core/compare/v0.13.0...v0.15.0
+[0.13.0]: https://github.com/Uluops/-uluops-core/compare/v0.12.1...v0.13.0
+[0.12.1]: https://github.com/Uluops/-uluops-core/compare/v0.12.0...v0.12.1
+[0.12.0]: https://github.com/Uluops/-uluops-core/compare/v0.11.1...v0.12.0
+[0.11.1]: https://github.com/Uluops/-uluops-core/compare/v0.11.0...v0.11.1
+[0.11.0]: https://github.com/Uluops/-uluops-core/compare/v0.10.1...v0.11.0
+[0.10.1]: https://github.com/Uluops/-uluops-core/compare/v0.10.0...v0.10.1
+[0.10.0]: https://github.com/Uluops/-uluops-core/compare/v0.8.2...v0.10.0
+[0.8.2]: https://github.com/Uluops/-uluops-core/compare/v0.8.1...v0.8.2
+[0.8.1]: https://github.com/Uluops/-uluops-core/compare/v0.8.0...v0.8.1
+[0.8.0]: https://github.com/Uluops/-uluops-core/compare/v0.7.0...v0.8.0
+[0.7.0]: https://github.com/Uluops/-uluops-core/compare/v0.6.0...v0.7.0
+[0.6.0]: https://github.com/Uluops/-uluops-core/compare/v0.5.0...v0.6.0
+[0.5.0]: https://github.com/Uluops/-uluops-core/compare/v0.4.0...v0.5.0
+[0.4.0]: https://github.com/Uluops/-uluops-core/compare/v0.3.0...v0.4.0
+[0.3.0]: https://github.com/Uluops/-uluops-core/compare/v0.2.0...v0.3.0
+[0.2.0]: https://github.com/Uluops/-uluops-core/compare/v0.1.0...v0.2.0
+[0.1.0]: https://github.com/Uluops/-uluops-core/releases/tag/v0.1.0
