@@ -11,6 +11,16 @@ interface ShellResult {
   stdout: string;
   stderr: string;
   timedOut: boolean;
+  /**
+   * The child's exit status — meaningful ONLY when `termination === 'exited'`.
+   *
+   * On every other termination the child's status was never observed (it was killed, or
+   * never started), and this carries a placeholder `1`. `termination` is the field that
+   * says whether this number is a measurement or a stand-in; read it first. The placeholder
+   * is kept rather than made nullable because the OpenAI shell-tool outcome union requires
+   * a number and would have to re-invent one at the boundary — moving the fabrication
+   * rather than removing it. Both adapters carry the real story in `stderr` instead.
+   */
   exitCode: number;
   /**
    * How the process actually ended. `timedOut` alone could not distinguish these, and the
@@ -20,6 +30,7 @@ interface ShellResult {
    *   real timeout   { killed: true,  signal: 'SIGTERM' }
    *   external kill  { killed: false, signal: 'SIGKILL' }   <- was reported as a timeout
    *   maxBuffer      { code: 'ERR_CHILD_PROCESS_STDIO_MAXBUFFER' }  (a STRING code)
+   *   spawn failure  { code: 'ENOENT', syscall: 'spawn /bin/sh' }   (a STRING code)
    *   normal exit    { killed: false, signal: null, code: 3 }
    *
    * The old guard was `if (err.killed || err.signal)`, so the `|| err.signal` disjunct
@@ -28,7 +39,7 @@ interface ShellResult {
    * occur. A model reading that will rationally ask for a longer timeout, which cannot
    * help. Node distinguishes these; the code was discarding the distinction.
    */
-  termination: 'exited' | 'timeout' | 'signal' | 'output-limit';
+  termination: 'exited' | 'timeout' | 'signal' | 'output-limit' | 'spawn-failure';
 }
 
 interface OpenAIShellAction {
@@ -101,6 +112,24 @@ export async function runShellCommand(
       };
     }
 
+    // A STRING `code` that is not the maxBuffer sentinel is Node's own error identifier,
+    // not the child's exit status: the child never started. `cwd` missing gives ENOENT,
+    // an unreadable `cwd` gives EACCES, a file where a directory was expected ENOTDIR,
+    // and fd exhaustion EMFILE — and that list is OPEN, it grows with libuv. The
+    // PROVENANCE is closed and is what the test keys on: a NUMBER means the child ran
+    // and exited, a STRING means Node failed before it could. Classifying these as
+    // `exited` told the model "your command ran and failed", so it would go on to debug
+    // the command instead of the environment that could not run it.
+    if (typeof err.code === 'string') {
+      const syscall = (error as { syscall?: string }).syscall;
+      return {
+        stdout: err.stdout || '',
+        stderr: err.stderr ||
+          `Command could not be started (${err.code}${syscall ? `, ${syscall}` : ''}); it never ran, so no exit status exists. Check that the working directory exists and is readable.`,
+        timedOut: false, exitCode: 1, termination: 'spawn-failure',
+      };
+    }
+
     if (err.signal) {
       return {
         stdout: err.stdout || '',
@@ -149,9 +178,20 @@ export async function executeShellAsString(
   if (result.termination === 'timeout') return `Command timed out after ${timeoutMs}ms`;
   if (result.termination === 'signal') return result.stderr;
   if (result.termination === 'output-limit') return result.stderr;
-  const output = result.stdout || result.stderr || '(no output)';
-  if (output.length > MAX_SHELL_OUTPUT) {
-    return output.substring(0, MAX_SHELL_OUTPUT) + `\n\n[truncated — ${output.length} chars total, showing first ${MAX_SHELL_OUTPUT}]`;
+  if (result.termination === 'spawn-failure') return result.stderr;
+
+  const output = markTruncation(result.stdout || result.stderr || '(no output)', MAX_SHELL_OUTPUT);
+
+  // A FAILED command must say so. This returned the same shape for exit 0 and exit 1 —
+  // stdout when there was any, else stderr, else '(no output)' — so a model asking for
+  // `npm test` got the test output with no indication the suite had failed, and
+  // `grep -q pattern file` (silent, exit 1) got a literal '(no output)' that reads as
+  // success. The OpenAI twin has carried the exit code in its outcome since it was
+  // written; the Anthropic adapter returns a bare string and had nowhere to put it, so
+  // the status was simply dropped. It goes in the text, ahead of the output so that
+  // truncation can never remove it.
+  if (result.exitCode !== 0) {
+    return `Command failed with exit code ${result.exitCode}\n\n${output}`;
   }
   return output;
 }

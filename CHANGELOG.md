@@ -643,6 +643,29 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) 
   **stop** subtracting a cached figure from it; doing so now undercounts. `total_effective` is
   `input + output + cache_creation`, unchanged in meaning and now correct in value.
 
+- **The bash tool told the model a failed command had succeeded.** `executeShellAsString`
+  (the Anthropic bash-tool adapter) returned `stdout || stderr || '(no output)'` for every
+  command that ran, byte-identical for exit 0 and exit 1 — it returns a bare string and had
+  nowhere to put the exit status, so it dropped it. `npm test` failing came back as the test
+  report with no indication the suite had failed, and a silent failing command
+  (`grep -q pattern file`, exit 1) came back as a literal `(no output)`, which reads as
+  success. A non-zero exit now returns `Command failed with exit code N` ahead of the output,
+  so truncation cannot remove it. Success output is unchanged and carries no banner. The
+  OpenAI adapter was never affected — its structured `outcome` has carried the exit code
+  since it was written.
+
+- **A command that never STARTED was reported as a command that ran and failed.** A spawn
+  failure — `cwd` missing (`ENOENT`), unreadable (`EACCES`), not a directory (`ENOTDIR`), fds
+  exhausted (`EMFILE`) — arrives with a STRING `code`, fell through to the residual branch,
+  and was classified `termination: 'exited'` with a fabricated `exitCode: 1`. The model was
+  then told its command had failed and would go on to debug the command rather than the
+  environment that could not run it. New `termination: 'spawn-failure'`, discriminated by
+  PROVENANCE rather than by an errno list: a numeric `code` is the child's exit status, a
+  string `code` is Node's own error identifier and means the child never ran. That
+  distinction is closed and countable; the set of possible errno strings is not, and grows
+  with libuv. `ShellResult.termination` gains a member — widening a union that consumers
+  read, not one they construct.
+
 - **A scoreless panel now reports NO score instead of a fabricated `0`, and therefore PASSES
   its gate instead of failing it.** `aggregateScores` returns `number | null`; it returns
   `null` when nothing scorable was supplied — an empty item list, or one where every item
