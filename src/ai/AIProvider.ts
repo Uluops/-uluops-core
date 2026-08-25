@@ -36,7 +36,7 @@ import {
 } from '../errors/index.js';
 import type { ModelCapabilities } from '@uluops/registry-sdk';
 import type { Logger } from '@uluops/sdk-core';
-import { usableBudget } from '../utils/externalValue.js';
+import { usableBudget, finitePositive } from '../utils/externalValue.js';
 
 /**
  * What `mapUsage` accepts — DERIVED from the AI SDK's own `LanguageModelUsage`
@@ -579,7 +579,11 @@ export class AIProvider {
       stopWhen: stepCountIs(maxSteps + (useStructuredOutput ? 2 : 0)),
       ...(isReasoning ? {} : { temperature: options.temperature ?? DEFAULT_TEMPERATURE }),
       maxRetries: options.maxRetries,
-      abortSignal: mergeAbortSignals(options),
+      // EXTERNAL-OK: mergeAbortSignals IS the seam for this pair. Both `options.timeoutMs`
+      // and `this.config.timeout` are external, and both are routed through finitePositive
+      // inside it, which is why it takes the config value as an argument rather than
+      // reading a default it cannot validate. Guarded at the callee, not waived away.
+      abortSignal: mergeAbortSignals(options, this.config.timeout),
       ...(providerOptions ? { providerOptions } : {}),
       ...(prepareStep ? { prepareStep } : {}),
       ...(useStructuredOutput ? { output: Output.object(options.output!) } : {}),
@@ -1827,12 +1831,37 @@ export class AIProvider {
  * object (never merged into what `mapError` inspects) so an abort can be attributed:
  * `callerSignal.aborted` distinguishes a cancel from an elapsed timeout.
  */
-function mergeAbortSignals(options: AIGenerateOptions): AbortSignal | undefined {
-  const timeout = options.timeoutMs ? AbortSignal.timeout(options.timeoutMs) : undefined;
+function mergeAbortSignals(
+  options: AIGenerateOptions,
+  configTimeoutMs: number,
+): AbortSignal | undefined {
+  // Every request gets a timeout. There is no reachable path that installs none.
+  //
+  // This tested `options.timeoutMs ?` — truthiness — so a `0` was dropped and the request
+  // ran with NO abort signal. `0` is the conventional Node spelling of "no timeout"
+  // (`execFile` means exactly that), so it arrives by reasonable intent, and it arrived
+  // through three public `??` chains that all preserved it. A provider that accepts the
+  // connection and never answers then leaves this promise pending forever inside
+  // `concurrencyLimiter.run`, whose `finally` never runs — so the Semaphore permit is never
+  // released and every other agent in the process parks behind it. No error, no log, no
+  // exit.
+  //
+  // AgentExecutor now clamps at its resolution site, but `generate()` is PUBLIC and
+  // reachable without it, so falling back to `finitePositive` alone would leave a direct
+  // caller with the same hang. The fallback is the operator's configured timeout, and if
+  // that is unusable too, a conservative floor — an unusable configuration degrades to a
+  // real bound, never to no bound.
+  const ms = finitePositive(options.timeoutMs)
+    ?? finitePositive(configTimeoutMs)
+    ?? FALLBACK_REQUEST_TIMEOUT_MS;
+  const timeout = AbortSignal.timeout(ms);
   const caller = options.abortSignal;
-  if (timeout && caller) return AbortSignal.any([timeout, caller]);
-  return timeout ?? caller;
+  return caller ? AbortSignal.any([timeout, caller]) : timeout;
 }
+
+/** Last-resort request bound when neither the call nor the operator config supplies a usable
+ *  one. Deliberately generous — it exists to stop an unbounded hang, not to cut work short. */
+const FALLBACK_REQUEST_TIMEOUT_MS = 600_000;
 
 /**
  * Type guard for AI SDK's APICallError.

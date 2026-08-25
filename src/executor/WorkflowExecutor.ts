@@ -612,27 +612,22 @@ export class WorkflowExecutor {
     );
     const method = config?.score?.method ?? 'weighted_average';
 
-    // Same split as aggregatePhaseScore, one level up, and for the same reason: this layer
-    // holds the definition, so it can tell the two empty cases apart where the util cannot.
+    // `scorable` excludes skipped and aborted phases, so an EMPTY scorable array means no
+    // phase executed — whether because the workflow authored none (`phases: []`) or because
+    // every one of them was skipped. Both must BLOCK, and aggregateScores' empty-input
+    // branch returns 0 for exactly that reason; this site deliberately does NOT special-case
+    // either one, because doing so is what produced the regression the ship gate caught:
+    // a `skip_if` true at level 0 cascades every downstream phase to dependencies-not-met,
+    // all phases filter out, and the workflow returned SHIP with a null score that
+    // fail-opened through a parent `on_failure: abort` gate having verified nothing.
     //
-    //   phases: []      AUTHORED-empty workflow — nothing was asked for. Scores 0, so a
-    //                   nested workflow-ref stage with a threshold FAILS its parent gate
-    //                   instead of passing unexamined. Sibling of PipelineExecutor's G5
-    //                   check ("hard gates must not silently pass unexecuted"). Pinned by
-    //                   'empty phases array produces SHIP with score 0'.
-    //   nothing scorable  Phases ran or were skipped and none produced a score. That is a
-    //                   scoring gap, not a failure, and aggregateScores reports it as null.
-    //
-    // The skipped/aborted filter above already encodes the second half of that: those
-    // phases are excluded so they cannot drag the average toward 0. Flooring the result to
-    // 0 anyway, which is what the util used to do, undid the exclusion it had just made.
-    const score = phases.length === 0
-      ? 0
-      : aggregateScores(
-        scorable.map(p => ({ key: p.id, score: p.score })),
-        method,
-        config?.score?.weights,
-      );
+    // A phase that RAN and produced no score is a different fact and still yields null —
+    // that is the generator/executor case, and it is meant to fail-open.
+    const score = aggregateScores(
+      scorable.map(p => ({ key: p.id, score: p.score })),
+      method,
+      config?.score?.weights,
+    );
 
     const hasBlocked = phases.some(p => p.decision === 'blocked');
     const hasWarned = phases.some(p => p.decision === 'warned');

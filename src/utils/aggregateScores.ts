@@ -35,15 +35,32 @@ export function aggregateScores(
   method: AggregationMethod = 'average',
   weights: Record<string, number> = {},
 ): number | null {
-  const scorable = items.filter((i): i is ScoredItem & { score: number } => i.score != null);
-  // RESOLVED 2026-08-24 (Alex's call). Returns null — "no score" — for BOTH "nothing was
-  // asked for" (items empty) and "things ran but none produce scores" (scorable empty).
+  // NOTHING WAS SUPPLIED — nothing ran. Blocks at 0.
   //
-  // The two cases are not distinguishable HERE and never were: every caller pre-filters or
-  // shapes its input before this util sees it, so an authored-empty panel and an
-  // all-generator panel arrive as the same empty array. Deciding between them at this layer
-  // required information this layer does not hold, and the 0 it used to return was that
-  // decision made blind — a fabricated failing score that flowed to the tracker and the gate.
+  // CORRECTED 2026-08-24, same day, after the ship gate caught the regression. The first
+  // draft of this change returned `null` here too, on the reasoning that callers pre-filter
+  // and so the util cannot tell "nothing ran" from "nothing scored". That reasoning was
+  // falsified by the same commit that stated it, which REMOVED PipelineExecutor's
+  // pre-filter — so an empty array here now means exactly one thing: no item was offered,
+  // because nothing executed.
+  //
+  // The cost of getting it wrong was a hard gate passing unverified work. A workflow whose
+  // every phase was skipped (one `skip_if` at level 0 cascades the rest to
+  // dependencies-not-met) reached `gateFailed` with a null score and fail-opened through an
+  // `on_failure: abort` gate, and the same held for a pipeline agents-stage whose every
+  // agent's condition was false. Both are the condition `PipelineExecutor`'s G5 check and
+  // `aggregatePhaseScore`'s authored-empty branch exist to block, reached by a third route.
+  //
+  // Two branches, two different facts. Do not merge them again.
+  if (items.length === 0) return 0;
+
+  const scorable = items.filter((i): i is ScoredItem & { score: number } => i.score != null);
+  // THINGS RAN, NONE OF THEM SCORE. Reports null, which fail-opens at a gate.
+  //
+  // RESOLVED 2026-08-24 (Alex's call). This is the branch that was genuinely wrong: a panel
+  // of generators/executors produces no score BY DESIGN, and returning 0 asserted they all
+  // scored zero — a fabricated failing score that flowed to the tracker and blocked gates
+  // that both `evaluateGate` and `gateFailed` document as fail-open for scoreless work.
   //
   // The block-on-authored-empty rule therefore lives at the caller that holds the
   // definition: WorkflowExecutor.aggregatePhaseScore returns 0 for `commands: []` because
@@ -54,7 +71,8 @@ export function aggregateScores(
   // null is fail-open, so an all-scoreless panel now PASSES its gate in pipelines and
   // commands where it previously failed at 0. That matches what both gates already document
   // ("scoreless stages are fail-open for the threshold check") — the fabricated 0 was
-  // defeating the contract those comments describe.
+  // defeating the contract those comments describe. It applies ONLY to work that actually
+  // ran; see the empty-input branch above for why that distinction is load-bearing.
   //
   // REJECTED: keeping 0 and changing aggregatePhaseScore to match. It agrees the four
   // surfaces, but stores a fabricated score in run data where 0 is indistinguishable from a

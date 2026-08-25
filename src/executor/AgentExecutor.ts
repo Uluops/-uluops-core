@@ -1,4 +1,4 @@
-import { parseExternalNumber } from '../utils/externalValue.js';
+import { parseExternalNumber, finitePositive } from '../utils/externalValue.js';
 import type { ToolSet } from 'ai';
 import type { AIProvider, AIGenerateResult } from '../ai/AIProvider.js';
 import { ToolHandler, extToLanguage } from './ToolHandler.js';
@@ -235,7 +235,12 @@ export class AgentExecutor {
       // keeps the shell tool's provider in sync with the provider generate() will use.
       const modelInput = this.config.ai.modelOverride ?? context.model;
       const resolvedModel = await this.aiProvider.resolveModel(modelInput);
-      additionalTools = this.aiProvider.createProviderShellTool(resolvedModel.provider, input.target, options?.shellTimeoutMs ?? SHELL_COMMAND_TIMEOUT_MS);
+      // finitePositive, not `??`: a `shellTimeoutMs: 0` became clampModelBound's operator
+      // ceiling, which collapsed the range to 0 and ran model-issued shell commands with NO
+      // timeout and full host access — the exact defect clampModelBound's own docstring
+      // records, reintroduced on the operator side of the same helper.
+      const shellTimeoutMs = finitePositive(options?.shellTimeoutMs) ?? SHELL_COMMAND_TIMEOUT_MS;
+      additionalTools = this.aiProvider.createProviderShellTool(resolvedModel.provider, input.target, shellTimeoutMs);
     }
 
     const toolHandler = new ToolHandler(input.target, this.logger);
@@ -624,9 +629,23 @@ export class AgentExecutor {
       // EXTERNAL-OK: forwarded to the AI SDK as a generation option; it bounds the PROVIDER call, not any
       // arithmetic here, and the SDK rejects a malformed value at its own boundary.
       maxTokens: options?.maxTokens ?? defaults?.maxTokens ?? DEFAULT_MAX_TOKENS,
-      // EXTERNAL-OK: an HTTP/SDK timeout handed straight to a client that validates its own options; it reaches
-    // no arithmetic and no threshold in this package.
-      timeoutMs: options?.timeoutMs ?? defaults?.timeout ?? this.config.timeout ?? 300_000,
+      // NOT external-ok, and the waiver that used to sit here was false. It claimed the
+      // value "reaches no arithmetic and no threshold" and goes "straight to a client that
+      // validates its own options". It reaches `mergeAbortSignals`, which tests it for
+      // TRUTHINESS — so a `0` from any of three public seams (agent YAML `defaults.timeout`,
+      // `UluOpsConfig.timeout`, `ExecutionOptions.timeoutMs`, all `??`-chained so 0 survives)
+      // produced a generateText call with NO abort signal at all. An unresponsive provider
+      // then leaves the promise pending forever inside concurrencyLimiter.run, whose
+      // `finally` never runs, so the Semaphore permit is never released and every other
+      // agent in the process parks in an unabortable queue. No error, no log, no exit.
+      //
+      // `0` is the conventional Node spelling of "no timeout" (execFile means exactly that),
+      // so a consumer reaches this by reasonable intent — and StepsExecutor already measured
+      // and clamped the identical failure for `step.timeout` two files away.
+      timeoutMs: finitePositive(options?.timeoutMs)
+        ?? finitePositive(defaults?.timeout)
+        ?? finitePositive(this.config.timeout)
+        ?? 300_000,
       temperature: options?.temperature ?? defaults?.temperature ?? DEFAULT_TEMPERATURE,
       // EXTERNAL-OK: forwarded to the AI SDK as a generation option; it bounds the PROVIDER call, not any
       // arithmetic here, and the SDK rejects a malformed value at its own boundary.

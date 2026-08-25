@@ -684,7 +684,7 @@ describe('WorkflowExecutor', () => {
       expect(result.decision).toBe('BLOCK');
     });
 
-    it('all phases skipped results in SHIP decision with NO score', async () => {
+    it('all phases skipped scores 0, so a parent gate cannot pass it unverified', async () => {
       const cmdExec = makeCommandExecutor();
       const registry = makeRegistry();
       const executor = new WorkflowExecutor(cmdExec, registry);
@@ -707,13 +707,21 @@ describe('WorkflowExecutor', () => {
       expect(result.phases).toHaveLength(2);
       expect(result.phases[0]!.decision).toBe('skipped');
       expect(result.phases[1]!.decision).toBe('skipped');
-      // Was `toBe(0)` until 2026-08-24. Nothing executed, so there is nothing to score —
-      // and `aggregate` already excludes skipped phases precisely so they cannot drag the
-      // average toward 0. Reporting 0 undid that exclusion, and paired a fabricated
-      // failing score with a SHIP decision. Distinct from `phases: []` (authored-empty),
-      // which still scores 0 so a nested workflow cannot pass a parent gate unexamined —
-      // see 'empty phases array produces SHIP with score 0' below.
-      expect(result.score).toBeNull();
+      // Briefly `toBeNull()` on 2026-08-24; reverted the same day when the ship gate showed
+      // what it cost. My reasoning for the change was that `aggregate` excludes skipped
+      // phases so they cannot drag the average down, and flooring to 0 undid that. True
+      // when SOME phase ran — there is an average to protect. When NONE ran there is no
+      // average, and the null fail-opened a nested workflow-ref stage straight through an
+      // `on_failure: abort` gate: one `skip_if` true at level 0 cascades every downstream
+      // phase to dependencies-not-met, and a release gate verifies nothing while reporting
+      // SHIP.
+      //
+      // The SHIP decision is correct and unchanged — no phase failed. The score is what
+      // the gate reads, and it must say "nothing was verified", not "no opinion".
+      //
+      // POSITIVE CONTROL: change aggregateScores' empty-input branch back to `null` and
+      // this fails.
+      expect(result.score).toBe(0);
       expect(result.decision).toBe('SHIP');
       expect(result.metrics.phasesSkipped).toBe(2);
       expect(result.metrics.phasesExecuted).toBe(0);

@@ -6,12 +6,15 @@ function items(...scores: number[]): ScoredItem[] {
 }
 
 describe('aggregateScores', () => {
-  it('returns null for empty items', () => {
-    // Was `toBe(0)` until 2026-08-24. The util cannot tell an authored-empty panel from an
-    // all-scoreless one — callers shape the array before it arrives — so it reports "no
-    // score" rather than fabricating a failing one. Blocking on authored-empty is decided
-    // by WorkflowExecutor.aggregatePhaseScore, which holds the definition.
-    expect(aggregateScores([])).toBeNull();
+  it('returns 0 for empty items — nothing ran, so the gate must not fail-open', () => {
+    // Briefly changed to `toBeNull()` on 2026-08-24 and changed back the same day: the
+    // ship gate caught it as a hard-gate bypass. An empty array means no item was offered
+    // at all, which is "nothing executed" — a workflow whose every phase was skipped, or a
+    // pipeline agents-stage whose every agent's condition was false. Reporting null there
+    // fail-opened an `on_failure: abort` gate over work that never happened.
+    //
+    // Distinct from the branch below, where items ARE present and simply do not score.
+    expect(aggregateScores([])).toBe(0);
   });
 
   describe('min', () => {
@@ -224,6 +227,14 @@ describe('aggregateScores — a scoreless panel reports no score, not a failing 
   // Mirrors the two gates: null fail-opens, a number is compared to the threshold.
   const gateBlocks = (score: number | null, threshold: number) =>
     score !== null && score < threshold;
+
+  it('separates "nothing ran" from "nothing scored" — the distinction the gate reads', () => {
+    // The two facts that were briefly merged. They must never return the same value:
+    // one has to block, the other has to fail-open.
+    expect(aggregateScores([])).toBe(0);              // nothing ran      -> BLOCKS
+    expect(aggregateScores(scoreless(2))).toBeNull(); // ran, no scores   -> fail-opens
+    expect(aggregateScores([])).not.toBe(aggregateScores(scoreless(2)));
+  });
 
   it.each(['average', 'min', 'max', 'sum', 'weighted_average'] as const)(
     'reports null for an all-scoreless panel under %s',

@@ -109,8 +109,20 @@ export function externalInt(
   return clampToRange(value, min, max);
 }
 
-/** Bound a known-finite number into [min, max]. */
+/**
+ * Bound a known-finite number into [min, max].
+ *
+ * An INVERTED range (`max < min`) is a caller bug, and silently collapsing to `max` is how
+ * that bug becomes a disabled guard rather than a visible error: `clampToRange(n, 1, 0)`
+ * returned `0` for every input, so `clampModelBound(anything, 0)` turned the shell timeout
+ * OFF instead of bounding it. Measured before this line existed: `clamp(5000, 0) === 0`,
+ * and `exec({ timeout: 0 })` means no timeout at all.
+ *
+ * `min` wins on inversion. This helper exists to enforce a FLOOR; a nonsensical ceiling
+ * must not be able to breach it.
+ */
 function clampToRange(n: number, min: number, max: number): number {
+  if (max < min) return min;
   return Math.min(Math.max(n, min), max);
 }
 
@@ -159,8 +171,35 @@ export function parseExternalNumber(text: unknown): number | undefined {
  * full 5,011 ms to completion and reported a clean `exitCode: 0`.
  */
 export function clampModelBound(supplied: number | undefined, operatorDefault: number): number {
-  return externalInt(supplied, { min: 1, max: operatorDefault, fallback: operatorDefault });
+  // The OPERATOR default is external too. It arrives from agent YAML, UluOpsConfig, or
+  // ExecutionOptions through `??` chains that admit `0`, and a `0` ceiling here used to
+  // collapse the whole range (see clampToRange) — turning the bound off at exactly the seam
+  // written to enforce it. `finitePositive` rejects 0, negatives, NaN and Infinity alike.
+  const ceiling = finitePositive(operatorDefault) ?? DEFAULT_OPERATOR_CEILING_MS;
+  // NOTE — an UNUSABLE supplied value clamps to the FLOOR (1 ms), it does not fall back to
+  // the operator default. `externalInt(0, {min:1,…})` sees a finite integer and returns 1;
+  // `-1` does the same. Both are safely bounded, which is what matters here.
+  //
+  // This is left as-is DELIBERATELY, and the discrepancy is recorded rather than resolved,
+  // because the prose above and two test names ('a nonsensical timeoutMs (%s) falls back to
+  // the operator default', shellExecutor.bounds.test.ts) describe the fallback behaviour
+  // instead. Changing the code to match them was tried on 2026-08-24 and reverted: the
+  // StepsExecutor call site pins the tighter reading — 'a step that sets timeout: 0 is
+  // still bounded by the operator default' asserts elapsed < 3,500 ms against a 4 s sleep,
+  // which a 60 s DEFAULT_STEP_TIMEOUT can never satisfy. So one call site's test name says
+  // "operator default" while its assertion requires the floor.
+  //
+  // Which reading is right is a behavioural question about two different consumers, not a
+  // repair: the floor kills every command instantly (confusing, but bounded), the fallback
+  // is the sane duration (but weakens what StepsExecutor's test currently guarantees).
+  // Surfaced here for a deliberate decision rather than settled by whoever edits next.
+  return externalInt(supplied, { min: 1, max: ceiling, fallback: ceiling });
 }
+
+/** Last-resort ceiling when the operator's own bound is unusable (0, negative, NaN). Must
+ *  be a real bound, never Infinity — an unusable configuration should degrade to a
+ *  conservative limit, not to no limit. */
+const DEFAULT_OPERATOR_CEILING_MS = 30_000;
 
 /**
  * Validate an AUTHORED (definition YAML/JSON) scoring weight.

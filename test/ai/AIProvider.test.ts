@@ -806,6 +806,63 @@ describe('AIProvider', () => {
       expect(passed.aborted).toBe(true);
     });
 
+    /**
+     * EVERY request carries a timeout. There is no reachable path that installs none.
+     *
+     * `mergeAbortSignals` tested `options.timeoutMs ?` — truthiness — so a `0` was dropped
+     * and generateText ran with NO abort signal. `0` is the conventional Node spelling of
+     * "no timeout" (`execFile` means exactly that) and it reached here through three public
+     * `??` chains that all preserved it. A provider that accepts the connection and never
+     * answers then leaves the promise pending forever inside `concurrencyLimiter.run`,
+     * whose `finally` never runs — the Semaphore permit is never released and every other
+     * agent in the process parks behind it, with no error, no log and no exit.
+     *
+     * POSITIVE CONTROL: restore `options.timeoutMs ? AbortSignal.timeout(...) : undefined`
+     * and the first three fail with `abortSignal` undefined.
+     */
+    it.each([
+      ['zero — the conventional "no timeout" spelling', 0],
+      ['negative', -1],
+      ['NaN', Number.NaN],
+      ['Infinity', Number.POSITIVE_INFINITY],
+    ])('installs a timeout anyway when timeoutMs is %s', async (_label, bad) => {
+      const { generateText } = await import('ai');
+      const mockGenerateText = vi.mocked(generateText);
+      mockGenerateText.mockResolvedValueOnce({
+        text: 'ok', usage: {}, totalUsage: {}, steps: [], finishReason: 'stop',
+      } as never);
+
+      const provider = new AIProvider(mockConfig, mockCatalog(), noopLogger);
+      await provider.generate({
+        model: 'sonnet', system: 't', prompt: 't', timeoutMs: bad as number,
+      });
+
+      const passed = mockGenerateText.mock.calls[0]![0]!.abortSignal;
+      expect(passed).toBeDefined();
+      expect(passed!.aborted).toBe(false);
+    });
+
+    it('a usable timeoutMs is still honoured, and a cancel still merges — the negative control', async () => {
+      // Without this, "always installs a timeout" would also pass for an implementation
+      // that ignored the caller's value, or that dropped the cancel signal while adding one.
+      const { generateText } = await import('ai');
+      const mockGenerateText = vi.mocked(generateText);
+      mockGenerateText.mockResolvedValueOnce({
+        text: 'ok', usage: {}, totalUsage: {}, steps: [], finishReason: 'stop',
+      } as never);
+
+      const controller = new AbortController();
+      const provider = new AIProvider(mockConfig, mockCatalog(), noopLogger);
+      await provider.generate({
+        model: 'sonnet', system: 't', prompt: 't', timeoutMs: 30_000, abortSignal: controller.signal,
+      });
+
+      const passed = mockGenerateText.mock.calls[0]![0]!.abortSignal!;
+      expect(passed.aborted).toBe(false);
+      controller.abort();
+      expect(passed.aborted).toBe(true);
+    });
+
     it('maps RetryError to SdkApiError', async () => {
       const { generateText } = await import('ai');
       const mockGenerateText = vi.mocked(generateText);

@@ -1442,6 +1442,65 @@ describe('PipelineExecutor', () => {
       await expect(executor.execute(def, { target: '/tmp' })).rejects.toThrow(/failed its gate/);
     });
 
+    /**
+     * The SIBLING of the workflow all-phases-skipped bypass, one level down, found by
+     * tracing the class rather than the citation: an agents stage whose every agent's
+     * condition is FALSE dispatches nothing, so `agentResults` is empty — and an empty
+     * aggregate must block, not fail-open. Nothing ran, so a hard gate has verified
+     * nothing.
+     *
+     * Distinct from the all-GENERATOR stage above, which dispatches agents that genuinely
+     * execute and genuinely do not score: that one fail-opens, correctly. The discriminator
+     * is whether anything ran, not whether anything scored.
+     *
+     * POSITIVE CONTROL: change aggregateScores' empty-input branch to `null` and this
+     * fails — the stage passes its gate and stage 2 completes.
+     */
+    it('a stage whose every agent condition is FALSE blocks its gate, not fail-opens', async () => {
+      const agentExecutor = makeAgentExecutor([makeValidatorResult({ score: 95 })]);
+      const executor = new PipelineExecutor(makeWorkflowExecutor(), makeCommandExecutor(), agentExecutor, makeRegistry(), noopLogger);
+
+      const def = makePipelineDef({
+        stages: [
+          {
+            id: 'panel', name: 'Panel', type: 'agents' as const,
+            // Both conditions resolve definitively false — nothing is dispatched.
+            agents: [
+              { ref: 'a@1', condition: "params.mode == 'never'" },
+              { ref: 'b@1', condition: "params.mode == 'alsonever'" },
+            ],
+            gate: { threshold: 70, on_failure: 'abort' as const },
+          },
+          { id: 'downstream', name: 'Downstream', type: 'command' as const, ref: 'c@1' },
+        ],
+      });
+
+      await expect(
+        executor.execute(def, { target: '/tmp', params: { mode: 'real' } }),
+      ).rejects.toThrow(/failed its gate/);
+    });
+
+    it('the same stage with its conditions MET runs and passes — the negative control', async () => {
+      // Without this, "empty dispatch blocks" would also pass for a stage gate that had
+      // started blocking every agents stage regardless of what ran.
+      const agentExecutor = makeAgentExecutor([makeValidatorResult({ score: 95 })]);
+      const executor = new PipelineExecutor(makeWorkflowExecutor(), makeCommandExecutor(), agentExecutor, makeRegistry(), noopLogger);
+
+      const def = makePipelineDef({
+        stages: [
+          {
+            id: 'panel', name: 'Panel', type: 'agents' as const,
+            agents: [{ ref: 'a@1', condition: "params.mode == 'real'" }],
+            gate: { threshold: 70, on_failure: 'abort' as const },
+          },
+          { id: 'downstream', name: 'Downstream', type: 'command' as const, ref: 'c@1' },
+        ],
+      });
+
+      const result = await executor.execute(def, { target: '/tmp', params: { mode: 'real' } });
+      expect(result.stages[1]!.status).toBe('completed');
+    });
+
     it('applies gate.aggregate over inline-agent scores (min catches the weakest agent)', async () => {
       const agentExecutor = makeAgentExecutor([
         makeValidatorResult({ score: 90 }),

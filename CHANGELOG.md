@@ -79,6 +79,40 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) 
   **stop** subtracting a cached figure from it; doing so now undercounts. `total_effective` is
   `input + output + cache_creation`, unchanged in meaning and now correct in value.
 
+- **A hard gate passed a workflow in which nothing had executed.** Introduced earlier the
+  same day and caught by the ship gate before publish. `aggregateScores` had TWO
+  zero-returning branches — empty input ("nothing was offered to score") and all-scoreless
+  input ("things ran, none of them score"). Only the second was wrong; both were changed to
+  `null`. The consequence: a workflow whose every phase was SKIPPED — one `skip_if` true at
+  level 0 cascades every downstream phase to dependencies-not-met — returned `SHIP` with a
+  null score, and a parent stage's `on_failure: abort` gate fail-opened over work that never
+  ran. The pipeline sibling behaved the same way when every inline agent's `condition` was
+  false. Both are exactly the condition `PipelineExecutor`'s G5 check and
+  `aggregatePhaseScore`'s authored-empty branch exist to block, reached by a third route.
+  The empty-input branch is restored to `0`; the all-scoreless branch keeps `null`. The two
+  facts are now separately documented and separately tested so they cannot be merged again.
+
+- **`timeoutMs: 0` produced a provider request with no timeout at all.** `mergeAbortSignals`
+  tested the value for truthiness, so a `0` was dropped silently — and `0` is the
+  conventional Node spelling of "no timeout" (`execFile` means exactly that), arriving
+  through three public `??` chains that all preserve it: agent YAML `defaults.timeout`,
+  `UluOpsConfig.timeout`, and `ExecutionOptions.timeoutMs`. An unresponsive provider then
+  left the promise pending forever inside the concurrency limiter, whose `finally` never
+  ran, so the semaphore permit was never released and every other agent in the process
+  parked behind it — no error, no log, no exit. Every request now carries a timeout: the
+  call's value if usable, else the operator's configured timeout, else a conservative floor.
+  `AgentExecutor` clamps at its resolution site as well, since `generate()` is public and
+  reachable without it. The `EXTERNAL-OK` waiver that sat on the resolution line asserted the
+  value "reaches no arithmetic and no threshold"; it reached a truthiness test that discarded
+  it, and has been removed.
+
+- **`shellTimeoutMs: 0` disabled the shell timeout entirely.** The zero became
+  `clampModelBound`'s operator ceiling, and `clampToRange(n, 1, 0)` collapses to `0` for
+  every input — so `exec({ timeout: 0 })` ran model-issued shell commands unbounded with
+  full host access. That is the defect `clampModelBound`'s own docstring records, reappearing
+  on the operator side of the same helper. An inverted range now resolves to the floor rather
+  than silently collapsing, and an unusable operator ceiling falls back to a real bound.
+
 - **A crashed agent was recorded as a validator whatever it actually was.**
   `trackThrownRun` hardcoded `agentType: 'validator'` — type-valid for every agent kind and
   semantically false for all but one, so a crashed generator, explorer or forecaster was
@@ -817,6 +851,17 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) 
   engages and `markBrakeInert()` is never called.
 
 ### Design Notes
+
+- **`clampModelBound`: an unusable SUPPLIED value clamps to the floor (1 ms), not to the
+  operator default — and the helper's own prose says otherwise.** Two test names in
+  `shellExecutor.bounds.test.ts` also describe the fallback reading. Changing the code to
+  match the prose was tried and reverted: `StepsExecutor`'s "a step that sets `timeout: 0`
+  is still bounded" asserts elapsed < 3,500 ms against a 4 s sleep, which a 60 s
+  `DEFAULT_STEP_TIMEOUT` can never satisfy — so that call site's assertion pins the floor
+  reading while its sibling's name promises the other. Both readings are safely bounded;
+  they differ in whether a nonsensical authored timeout kills a command instantly or runs it
+  to the sane default. Recorded for a deliberate decision rather than settled in passing.
+
 
 - **UNRESOLVED, flagged rather than decided: two score aggregators disagree.**
   `aggregateScores` returns `0` when items ran but none produce scores; `aggregatePhaseScore`
