@@ -87,6 +87,23 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) 
   `--control`, because a census baseline only stays true if something regenerates and checks
   it, and a gate nothing runs cannot fail.
 
+- **The controls for both census fixes tested the wrong object.** Found by a gate pass
+  re-reading this same commit. The `fullyGuarded` repair below had NO positive control: all
+  ten planted lines in `--control` were seamless, so every one fired identically under the
+  whole-line match it replaced, and reverting the fix left `--control` green and the census
+  printing *"none unguarded"*. And the drift control applied its own local copy of the
+  occurrence-suffixer to `scan()` output while production kept an independent literal a
+  hundred lines away — so it asserted that ITS copy distinguishes duplicates, and reverting
+  the PRODUCTION suffixer left the control passing. (I had claimed otherwise; the revert was
+  caught by the baseline count, a different check with a different failure mode, and one the
+  script's own remediation line invites you to `--update` away.)
+
+  Both closed: one shared `suffixOccurrences` called by the census and the control alike, and
+  an eleventh plant carrying one guarded and one raw read on the same line. Reverting either
+  repair now fails `--control` by name. The comment above the drift control has said *"a
+  control that never runs the instrument is testing the wrong object"* since it was written;
+  it now describes the code beneath it.
+
 - **The census auditor discharged an entry point by WHOLE-LINE match — the fix its own
   predecessor had already made.** `guarded: SEAMS.test(line)` reported any entry point on a
   line containing any seam name as guarded, whatever value that seam actually protected, so
@@ -949,15 +966,22 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) 
 
 ### Design Notes
 
-- **64 `POSITIVE CONTROL:` comments across the test suite are PROSE, and only one has been
-  mechanically verified.** Each names the reversion that should make its test fail. The two
-  audit scripts got executable `--control` modes precisely because *"a check that has never
-  failed is indistinguishable from one that cannot"*; the test suite's controls did not get
-  the same treatment. One was found false during this release's ship gate — it claimed three
-  tests would fail and two did — and there is no mechanism that could have found it other
-  than trying it. The individual controls exercised this session were each run as real
-  mutations and held; the other ~60 are unverified claims about themselves. Recorded as the
-  largest un-instrumented assurance surface remaining, not as a resolved item.
+- **64 `POSITIVE CONTROL:` comments across the test suite are PROSE, and only those
+  exercised this session have been mechanically verified.** Each names the reversion that
+  should make its test fail. One was found false during this release's ship gate — it claimed
+  three tests would fail and two did — and there is no mechanism that could have found it
+  other than trying it.
+
+  > **Ranking corrected.** This entry called the prose controls *"the largest un-instrumented
+  > assurance surface remaining"* and a later gate pass argued that is wrong, convincingly: a
+  > false `POSITIVE CONTROL:` comment misdescribes *which* tests a reversion would break,
+  > while the test underneath still executes real assertions on every one of the 1,371-test
+  > runs — imprecise, not inert. An uncontrolled **gate** has nothing else covering it; if it
+  > silently stops working the output is a green line reading "none unguarded" that no other
+  > mechanism contradicts. The largest surface was the audit script's own guard logic, and it
+  > is now controlled (see Fixed). Building a harness for the 64 was assessed and
+  > deliberately not done — the risk is real but it is the cheaper one, and ranking it first
+  > pointed the next reader's attention at the wrong thing.
 
 - **Every entry-point count in this document is a point-in-time measurement, and the live
   figure is whatever `npm run check:external-inputs` prints.** This section quotes 75 (sixth

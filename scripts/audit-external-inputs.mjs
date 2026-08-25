@@ -134,9 +134,18 @@ const CHANNELS = [
 const NUMERIC_CONTEXT = /\?\?\s*[-\d]|\|\|\s*[-\d]|[-+*/]=|\s[-+*/]\s|[<>]=?\s|Math\.|parseInt|parseFloat|(?<![.\w])Number\s*\(|timeout|Tokens?\b|[Ss]core|[Bb]udget|[Ll]imit|[Mm]ax|[Mm]in\b|[Dd]epth|[Cc]ount|[Rr]etries|[Ww]eight/;
 
 /** Validators that discharge a site. A value routed through one of these is guarded. */
-// Every name here must be an EXPORT of src/utils/externalValue.ts (or an equivalent
-// validating call). Adding a name to this list without a real guard behind it disarms the
-// instrument silently — the check keeps reporting "none unguarded" while a raw value flows.
+// Names here are validating calls. MOST are exports of src/utils/externalValue.ts, and the
+// correspondence is NOT exact in either direction — stated plainly because an earlier version
+// of this comment claimed it was, and nothing derived or checked it:
+//
+//   in externalValue.ts, absent here : parseExternalNumber (string->number; its callers are
+//                                      matched by the string-to-number channel instead)
+//   here, not exported by that file  : sanitizeModelCost, safeTokenCount, optionalTokenCount,
+//                                      externalLineNumber (validating calls living nearer
+//                                      their own domains)
+//
+// Adding a name without a real guard behind it disarms the instrument silently — the check
+// keeps reporting "none unguarded" while a raw value flows.
 // `resolveRequestTimeoutMs` was added 2026-08-24 when the request-timeout seam moved into
 // externalValue.ts; before that it lived in AIProvider and the audit correctly refused to
 // recognise it, which is the behaviour to preserve.
@@ -161,6 +170,12 @@ const NUMERIC_CONTEXT = /\?\?\s*[-\d]|\|\|\s*[-\d]|[-+*/]=|\s[-+*/]\s|[<>]=?\s|M
 function fullyGuarded(line) {
   if (!SEAMS.test(line)) return false;
   const stripped = line
+    // Zero-argument seams that already carry their own parens. Without this they can never
+    // blank anything: interpolating `\.finite\(\)` into the call pattern below yields
+    // `\.finite\(\)\s*\([^)]*\)`, which demands a SECOND call after it. Inert under the
+    // whole-line test's replacement, and a latent trap — the next zod `.finite()` line that
+    // also matches a channel would report unguarded with no visible cause.
+    .replace(/\.finite\(\)/g, 'GUARDED')
     // Complete single-line seam calls.
     .replace(new RegExp(String.raw`(?:${SEAMS.source})\s*\([^)]*\)`, 'g'), 'GUARDED')
     // A seam call whose arguments continue onto the following lines — its closing paren is
@@ -169,6 +184,30 @@ function fullyGuarded(line) {
     // ToolHandler are written.
     .replace(new RegExp(String.raw`(?:${SEAMS.source})\s*\(.*$`), 'GUARDED');
   return !CHANNELS.some(ch => ch.re.test(stripped));
+}
+
+/**
+ * Occurrence-suffix a hit list so N identical sites yield N fingerprints.
+ *
+ * ONE definition, called by the census AND by `--control`. It was two: the control applied
+ * its own local copy to `scan()` output while production had an independent literal a
+ * hundred lines away, in top-level code `--control` exits before reaching. So the control
+ * asserted that ITS copy distinguishes duplicates — arithmetic never in doubt — and reverting
+ * the PRODUCTION suffixer left `--control` green. That revert was caught only by the census
+ * baseline count, which is a different check with a different failure mode, and which the
+ * script's own remediation line invites you to `--update` away.
+ *
+ * The comment on the drift control says "a control that never runs the instrument is testing
+ * the wrong object." It was testing the wrong object. Sharing the function is what makes the
+ * sentence true.
+ */
+function suffixOccurrences(hitList) {
+  const seen = new Map();
+  return hitList.map(h => {
+    const n = (seen.get(h.fingerprint) ?? 0) + 1;
+    seen.set(h.fingerprint, n);
+    return n === 1 ? h.fingerprint : `${h.fingerprint}#${n}`;
+  });
 }
 
 const SEAMS = /externalInt|finitePositive|finiteNonNegative|clampModelBound|usableWeight|usableBudget|resolveRequestTimeoutMs|sanitizeModelCost|safeTokenCount|optionalTokenCount|externalLineNumber|\.finite\(\)|Number\.isFinite/;
@@ -250,6 +289,15 @@ if (process.argv.includes('--control')) {
     "export const j = (result: any) => result.totalUsage;",
     // public-api-arg: a library consumer's value crossing into the package.
     "export class K { constructor(permits: number) { this.n = permits; } n = 0; }",
+    // PARTIALLY GUARDED — one read inside a seam call, one raw, on the SAME LINE.
+    //
+    // The only plant that exercises `fullyGuarded`. Every line above is seamless, so all ten
+    // fired identically under the whole-line `SEAMS.test(line)` this script shipped with —
+    // meaning the fix that replaced it had no control at all, which is the same
+    // guard-nothing-exercises shape the census itself was wired into CI to escape, one
+    // function inward. Reverting fullyGuarded to the whole-line test makes THIS line report
+    // clean and the assertion below fail.
+    "export const l = (input: Record<string, number>) => externalInt(input['a'], { min: 0, max: 9, fallback: 0 }) + input['b'];",
   ];
   let hits;
   try {
@@ -275,6 +323,22 @@ if (process.argv.includes('--control')) {
   }
   // The inventory half must also be able to fire: a planted numeric-context line that is
   // counted but never REPORTED would make the actionable half silently inert.
+  // The partially-guarded plant must be REPORTED. A whole-line seam match discharges it,
+  // so this assertion is what stands between `fullyGuarded` and silently reverting.
+  const partial = hits.filter(h => h.text.includes("input['b']"));
+  if (partial.length === 0) {
+    console.error('CONTROL FAILED — the partially-guarded plant produced no hit at all.');
+    console.error('The channel rule must see the raw read before guarding can be judged.');
+    process.exit(1);
+  }
+  if (partial.some(h => h.guarded)) {
+    console.error('CONTROL FAILED — a line with one GUARDED and one RAW read was discharged as guarded.');
+    console.error('That is whole-line matching: a seam anywhere on the line exempts everything on it.');
+    console.error('See fullyGuarded — the guard call must be blanked before the line is re-tested.');
+    process.exit(1);
+  }
+  console.log('CONTROL: a partially-guarded line is reported, not discharged by its seam call.');
+
   const numericHits = hits.filter(h => h.numeric && !h.guarded && !h.waived);
   if (numericHits.length === 0) {
     console.error('CONTROL FAILED — the numeric-context inventory reported nothing on known-bad input.');
@@ -337,12 +401,8 @@ if (process.argv.includes('--control')) {
       ].join('\n'));
 
       const dupHits = scan([dupFile]).filter(h => h.text.includes('dup_probe'));
-      const seenDup = new Map();
-      const dupFps = dupHits.map(h => {
-        const n = (seenDup.get(h.fingerprint) ?? 0) + 1;
-        seenDup.set(h.fingerprint, n);
-        return n === 1 ? h.fingerprint : `${h.fingerprint}#${n}`;
-      });
+      // The PRODUCTION suffixer, not a copy of it — see suffixOccurrences.
+      const dupFps = suffixOccurrences(dupHits);
 
       if (dupHits.length !== 2) {
         console.error(`CONTROL FAILED — planted 2 identical entry points, scan() found ${dupHits.length}.`);
@@ -378,12 +438,7 @@ for (const h of hits) counts[h.channel] = (counts[h.channel] ?? 0) + 1;
 // point was invisible to drift, and DELETING one of a pair was invisible too. That is the
 // same net-zero blindness that broke the pass-7 instrument, reappearing one layer down in
 // its replacement.
-const seenFp = new Map();
-const fingerprints = hits.map(h => {
-  const n = (seenFp.get(h.fingerprint) ?? 0) + 1;
-  seenFp.set(h.fingerprint, n);
-  return n === 1 ? h.fingerprint : `${h.fingerprint}#${n}`;
-}).sort();
+const fingerprints = suffixOccurrences(hits).sort();
 
 // ── (2) CENSUS DRIFT — the half that can discover ────────────────────────────────────────
 if (process.argv.includes('--update')) {

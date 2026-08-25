@@ -342,6 +342,12 @@ export class PipelineExecutor {
     // pre-filtering destroyed the distinction the util needs — an all-scoreless stage
     // arrived as an empty array, indistinguishable from a stage with no agents, and the
     // util floored it to a fabricated 0. Hand it the nulls and let it report `null`.
+    // AVERAGE — and the gate does not use this number. `gateScore` applies
+    // `gate.aggregate ?? 'min'` over the same agents, so a panel scoring 66 and 90 reports a
+    // stage score of 78 here and fails a threshold-70 gate on 66. Both behaviours are
+    // deliberate (the reported score describes the panel; the gate applies the authored
+    // aggregate), and until now the divergence was documented at neither site — so a reader
+    // explaining an abort saw 78 against a threshold of 70 and concluded the gate misfired.
     const avgScore = aggregateScores(
       agentResults.map(r => ({ key: r.name, score: r.score ?? null })),
     );
@@ -744,6 +750,10 @@ export class PipelineExecutor {
    * over inline-agent scores when present — crashed/scoreless agents excluded,
    * matching the stage-average exclusion — else the stage result's own score.
    */
+  // NOTE — this is NOT the score reported on the stage result. That one is a plain average
+  // (see executeAgentsStage); this applies the AUTHORED aggregate, default 'min'. The two
+  // legitimately differ, and a stage can report 78 while failing a threshold of 70 on its
+  // weakest agent. Documented at both ends because the divergence is invisible from either.
   private gateScore(gate: GateDefinition, stageResult: StageResult): number | null {
     const agentScores = (stageResult.agentResults ?? [])
       .map(r => r.score)
