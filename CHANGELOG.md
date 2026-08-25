@@ -99,10 +99,24 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) 
   prepended to it rather than replaced by it, so both survive and truncation cannot remove
   the explanation.
 
-  Found by CI, on the first run that had ever evaluated this branch. The test that caught it
-  asserted on the explanation text and therefore passed on macOS — silent shell, fallback
-  fires — and failed on all three CI Node versions, where `kill -9` makes the shell write
-  `Killed`. A one-machine suite could not see it, which is the argument for the push.
+  Found by CI, on the first run that had ever evaluated this branch — and the second run
+  found that the first fix had not reached the actual case.
+
+  `sh -c "sh -c 'kill -9 $$'"` takes DIFFERENT BRANCHES by platform, because whether the
+  outer shell execs or forks is a shell implementation detail. macOS: Node's own child is
+  killed, so `signal: 'SIGKILL'` and the signal branch runs. Linux: the outer shell forks,
+  survives, and reports a plain `exit 137` with stderr `Killed` — the `exited` branch, which
+  the first fix did not touch. Both are correct accounts; only one of them told the model
+  anything. A bare `Killed` alongside exit 137 is indistinguishable from a program that chose
+  to exit 137.
+
+  So the `exited` branch now spells out the shell's 128+N encoding — *"Exit code 137 is in
+  the range shells use for a signalled death (128+N), which would be signal 9"* — hedged
+  deliberately, because 128+N is a convention and a program may legitimately exit there. And
+  both platform shapes are now covered by simulated unit tests, so the coverage no longer
+  depends on which machine runs the suite: the integration test can only ever exercise its
+  own host's branch, which is why one machine reported green twice while CI reported red
+  twice, for two different reasons.
 
 - **A cancel now reaches the child process, not just the provider request.** `cancel()`
   aborted the LLM call and the run reported `CANCELLED` — while the `sh -c` child kept

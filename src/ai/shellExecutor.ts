@@ -161,11 +161,32 @@ export async function runShellCommand(
       };
     }
 
+    const exitCode = typeof err.code === 'number' ? err.code : 1;
+
+    // A shell encodes "my child died from signal N" as exit code 128+N, and that is the
+    // shape a signalled death takes whenever the shell FORKS rather than execs — which is
+    // platform- and shell-dependent for the same command. Measured: `sh -c "sh -c 'kill -9
+    // $$'"` reports `signal: 'SIGKILL'` on macOS (the outer shell execs, so Node's own child
+    // is the one killed) and a plain `exit 137` with stderr `Killed` on Linux (the outer
+    // shell forks and survives to report). Identical intent, two different branches of this
+    // function, and on the Linux side the model was handed the word "Killed" and nothing
+    // else — no signal, no number, no way to tell it apart from a program that chose to exit
+    // 137.
+    //
+    // HEDGED deliberately: 128+N is a shell CONVENTION, and a program may legitimately exit
+    // in that range on its own. The note says what the code conventionally means, not what
+    // definitely happened — the alternative is either silence or a claim we cannot support.
+    const signalHint = exitCode > 128 && exitCode < 160
+      ? `Exit code ${exitCode} is in the range shells use for a signalled death (128+N), which would be signal ${exitCode - 128}.`
+      : undefined;
+
     return {
       stdout: err.stdout || '',
-      stderr: err.stderr || String(error),
+      stderr: signalHint
+        ? explain(signalHint, err.stderr || String(error))
+        : (err.stderr || String(error)),
       timedOut: false,
-      exitCode: typeof err.code === 'number' ? err.code : 1,
+      exitCode,
       termination: 'exited',
     };
   }

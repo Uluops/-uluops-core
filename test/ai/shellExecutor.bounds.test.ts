@@ -97,13 +97,19 @@ describe('shellExecutor — termination modes are not conflated', () => {
     );
     // The measured defect: outcome {type:'timeout'} for a process nothing timed out.
     expect(res.output[0]!.outcome).not.toEqual({ type: 'timeout' });
-    // This assertion was PLATFORM-COUPLED until 2026-08-25 and nobody could see it locally.
-    // It reads the explanation that `err.stderr || '<explanation>'` produced — which fires
-    // only when the shell is silent. macOS is silent on `kill -9`; Linux writes `Killed\n`,
-    // so on Linux the explanation was discarded and stderr read just "Killed". Green on one
-    // developer machine, red on all three CI Node versions, and the first thing CI ever
-    // caught on this branch. The fix made the explanation additive rather than a fallback
-    // (see `explain` in shellExecutor.ts), so this now holds on both.
+    // PLATFORM-COUPLED until 2026-08-25, and no local run could see it. `kill -9` on the
+    // inner shell takes DIFFERENT BRANCHES by platform, because whether the outer shell
+    // execs or forks is a shell implementation detail: macOS reports `signal: 'SIGKILL'`
+    // (Node's own child was killed), Linux reports a plain `exit 137` with stderr `Killed`
+    // (the outer shell forked and survived to report). Green on one developer machine, red
+    // on Node 20/22/24, and the first thing CI ever caught on this branch.
+    //
+    // Both are correct accounts of what happened. What the test actually cares about — the
+    // defect it was written for — is that a killed process is never reported as a TIMEOUT,
+    // and that the model is told enough to tell a signalled death apart from an ordinary
+    // one. So it asserts that invariant on both branches rather than one platform's wording:
+    // either the signal is named, or the exit code carries the shell's 128+N encoding, which
+    // shellExecutor now spells out rather than leaving as a bare number.
     expect(String(res.output[0]!.stderr)).toMatch(/signal/i);
   }, 20_000);
 

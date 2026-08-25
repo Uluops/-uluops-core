@@ -467,3 +467,63 @@ describe('runShellCommand — the shell\'s own output does not swallow the expla
     expect(result.stderr.endsWith('\n')).toBe(false);
   });
 });
+
+/**
+ * BOTH platform shapes of a signalled death, simulated — so coverage does not depend on
+ * which machine runs the suite.
+ *
+ * `sh -c "sh -c 'kill -9 $$'"` takes different branches by platform, because whether the
+ * outer shell execs or forks is a shell implementation detail. macOS: Node's own child is
+ * killed, `signal: 'SIGKILL'`. Linux: the outer shell forks, survives, and reports a plain
+ * `exit 137` with stderr `Killed`. The integration test in shellExecutor.bounds.test.ts can
+ * only ever exercise the branch its host platform takes — it passed on macOS and failed on
+ * all three CI Node versions, twice, for two different reasons.
+ *
+ * POSITIVE CONTROL: remove the 128+N `signalHint` from runShellCommand's exited branch and
+ * the Linux case fails; remove `explain` from the signal branch and the macOS case fails.
+ */
+describe('runShellCommand — a signalled death is legible on either platform shape', () => {
+  beforeEach(() => { vi.clearAllMocks(); });
+
+  it('macOS shape: the child itself is signalled', async () => {
+    setupExec(Object.assign(new Error('killed'), { killed: false, signal: 'SIGKILL' }));
+    const r = await runShellCommand("sh -c 'kill -9 $$'", '/tmp', 10_000);
+
+    expect(r.termination).toBe('signal');
+    expect(r.stderr).toMatch(/signal/i);
+  });
+
+  it('Linux shape: the outer shell forks and reports exit 137', async () => {
+    setupExec(Object.assign(new Error('Command failed'), { code: 137, killed: false, signal: null, stderr: 'Killed\n' }));
+    const r = await runShellCommand("sh -c 'kill -9 $$'", '/tmp', 10_000);
+
+    // Both accounts are TRUE — the shell really did exit 137. What matters is that the
+    // model can tell this apart from an ordinary failure, which a bare "Killed" cannot.
+    expect(r.termination).toBe('exited');
+    expect(r.exitCode).toBe(137);
+    expect(r.stderr).toMatch(/signal/i);
+    expect(r.stderr).toContain('9');
+    // The shell's own word survives too.
+    expect(r.stderr).toContain('Killed');
+  });
+
+  it('an ordinary non-zero exit gets NO signal hint — the negative control', async () => {
+    // Without this, "explain the exit code" would also pass for an implementation that
+    // attached a signal story to every failure. 128+N is a CONVENTION, not a fact, and a
+    // plain exit 1 has nothing to do with signals.
+    setupExec(Object.assign(new Error('exit 1'), { code: 1, killed: false, signal: null, stderr: 'tests failed\n' }));
+    const r = await runShellCommand('npm test', '/tmp', 10_000);
+
+    expect(r.stderr).not.toMatch(/signal/i);
+    expect(r.stderr).toContain('tests failed');
+  });
+
+  it('hedges the 128+N reading rather than asserting it', async () => {
+    // A program may legitimately exit 137 on its own. The note must say what the code
+    // conventionally MEANS, not what definitely happened.
+    setupExec(Object.assign(new Error('x'), { code: 137, killed: false, signal: null }));
+    const r = await runShellCommand('cmd', '/tmp', 10_000);
+
+    expect(r.stderr).toMatch(/would be|range shells use/i);
+  });
+});
