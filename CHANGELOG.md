@@ -6,6 +6,12 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) 
 
 ## [Unreleased]
 
+## [0.43.1] - 2026-09-13
+
+### Changed
+
+- `@uluops/ops-sdk` 6.2.0 → 6.3.0, which adds `resolveWorkspaceOrg()` (the D13 workspace default). Core itself does not walk the tree — one execution, one run, and the CLI resolves the org before constructing core (`ulu exec --org`) — but every consumer in the delivery train must share ONE ops-sdk version or npm nests a second copy under core and the SDK's error classes stop matching across the boundary. No code change here.
+
 ## [0.43.0] - 2026-09-13
 
 > **Cut as a MINOR under 0.x — the breaking boundary for caret consumers.** `@uluops/cli`'s
