@@ -6,7 +6,7 @@
     "service-response": 27,
     "model-tool-args": 18,
     "json-parse": 5,
-    "process-env": 18,
+    "process-env": 19,
     "string-to-number": 4,
     "authored-yaml": 2
   },
@@ -54,6 +54,7 @@
     "src/client/UluOpsClient.ts|process-env|allowedTools: config.allowedTools ?? parseAllowedTools(env['ULUOPS_ALLOWED_TOOLS']),",
     "src/client/UluOpsClient.ts|process-env|const apiKey = config.apiKey ?? env['ULUOPS_API_KEY'] ?? env['ULU_API_KEY'];",
     "src/client/UluOpsClient.ts|process-env|const dashboardUrl = config.dashboardUrl ?? env['ULUOPS_DASHBOARD_URL'] ?? 'https://app.uluops.ai';",
+    "src/client/UluOpsClient.ts|process-env|const orgSlug = config.orgSlug ?? env['ULUOPS_ORG_SLUG'] ?? undefined;",
     "src/client/UluOpsClient.ts|process-env|const registryUrl = config.registryUrl ?? env['ULUOPS_REGISTRY_URL'] ?? 'https://api.uluops.ai/api/v1/registry';",
     "src/client/UluOpsClient.ts|process-env|const submissionUrl = config.submissionUrl ?? env['ULUOPS_SUBMISSION_URL'] ?? 'https://api.uluops.ai/api/v1';",
     "src/client/UluOpsClient.ts|process-env|debug: config.debug ?? (env['ULUOPS_DEBUG'] === 'true'),",
@@ -145,7 +146,7 @@
     "src/submission/SubmissionClient.ts|service-response|const response = await this.ops.runs.save(input);",
     "src/submission/SubmissionClient.ts|service-response|const response = await this.ops.runs.validate(input);",
     "src/submission/SubmissionClient.ts|service-response|const run = await this.ops.runs.get(runId);",
-    "src/submission/SubmissionClient.ts|service-response|const runs = await this.ops.runs.listByProject(project, {",
+    "src/submission/SubmissionClient.ts|service-response|const { data: runs } = await this.ops.runs.listByProject(project, {",
     "src/utils/externalValue.ts|string-to-number|const n = Number(text);"
   ]
 }

@@ -6,6 +6,39 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) 
 
 ## [Unreleased]
 
+## [0.43.0] - 2026-09-13
+
+> **Cut as a MINOR under 0.x — the breaking boundary for caret consumers.** `@uluops/cli`'s
+> pin will not absorb this on a plain `npm install`; it is re-pinned in the same delivery
+> train (project-org-routing-and-rehome checklist 2.4).
+
+### Added
+
+- **`orgSlug` on `UluOpsConfig`** (project-org-routing-and-rehome spec §3.5). The org the
+  tracker submission is saved under — passed to the underlying `OpsClient` as its
+  constructor `orgSlug`, i.e. `X-Org-Slug` on every submission request. Resolution:
+  explicit config, else the `ULUOPS_ORG_SLUG` env var (the name `@uluops/registry-sdk`
+  already honours), else **undefined, which means the API key holder's personal org** — the
+  API never infers an org from a project name (spec D2), so an `ulu exec` with neither set
+  files its run personally even when a work org has a project by that name. An API key
+  bound to an org ignores this and answers `403 ORG_ACCESS_DENIED` to a different value.
+  Client-level rather than per-call by design: one execution submits one run, so there is
+  no fan-out to route. `ResolvedConfig.orgSlug` is exposed for callers that want to print
+  where a run will land before submitting it.
+
+### Changed
+
+- **`@uluops/ops-sdk` 5.13.0 → 6.2.0 (a MAJOR, across the 6.0.0 strict-shape flip) and
+  `@uluops/sdk-core` 0.16.0 → 0.17.0 in one change** — the pair must move together or npm
+  nests a second `sdk-core` under `ops-sdk` and every `instanceof SdkApiError` guard
+  silently stops matching errors raised inside the SDK (root `CLAUDE.md`, tracker
+  `bfb1575e`). Verified: no nested `@uluops/sdk-core` under `node_modules/@uluops/ops-sdk`.
+  The one code-visible effect of the major here: `runs.listByProject` now returns the wire
+  envelope `{ data, total }` (ops-sdk 6.0.0, T13); `SubmissionClient.getHistory` unwraps it
+  and its own contract (an array of `RunHistoryEntry`) is unchanged. The 6.x per-call
+  `options.org` exists on the SDK but is not surfaced by core (see Added — one run per
+  execution). Full suite green against 6.2.0 before and after the change (1,384 → 1,387).
+
 ## [0.42.0] - 2026-08-23
 
 > **Cut as a MINOR, not a patch — deliberately.** `UsageMetrics.input_tokens` changed

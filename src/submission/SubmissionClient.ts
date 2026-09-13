@@ -208,6 +208,10 @@ export class SubmissionClient {
     // no arithmetic and no threshold in this package.
         timeout: this.config.timeout,
         onSecurityEvent: this.config.onSecurityEvent,
+        // Org routing (spec §3.5): where this execution's run is saved. Undefined
+        // → no header → the key holder's personal org. The run echo's orgSlug
+        // (read by buildDashboardUrl) is the API's answer to the same question.
+        orgSlug: this.config.orgSlug,
       });
     }
     return this._ops;
@@ -294,7 +298,12 @@ export class SubmissionClient {
     project: string,
     options?: Omit<SubmissionQueryOptions, 'project'>,
   ): Promise<RunHistoryEntry[]> {
-    const runs = await this.ops.runs.listByProject(project, {
+    // ops-sdk 6.0.0 (T13): list operations surface the wire envelope
+    // {data, total} instead of the bare array; `total` is the full matching
+    // count. This method's contract (an array) is unchanged.
+    // EXTERNAL-OK: ops-sdk 6.x parses this envelope with its Zod list schema before returning it;
+    // every field mapped below arrives typed and validated, as the bare array did before T13.
+    const { data: runs } = await this.ops.runs.listByProject(project, {
       workflowType: options?.workflowType,
       limit: options?.limit,
     });

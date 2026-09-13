@@ -18,6 +18,8 @@ const mockGet = vi.fn();
 // recommendations against the SDK's own exported schemas (FailureCodeSchema,
 // FailureDomainSchema, SeveritySchema, PrioritySchema); stubbing the module wholesale
 // would leave those undefined and test a sanitizer that cannot actually validate.
+import { OpsClient } from '@uluops/ops-sdk';
+
 vi.mock('@uluops/ops-sdk', async (importOriginal) => {
   const actual = await importOriginal<typeof import('@uluops/ops-sdk')>();
   return {
@@ -909,7 +911,7 @@ describe('SubmissionClient', () => {
 
   describe('getHistory', () => {
     it('lists run history for a project', async () => {
-      mockListByProject.mockResolvedValueOnce([
+      mockListByProject.mockResolvedValueOnce({ total: 0, data: [
         {
           id: 'run-1',
           projectId: 'proj-1',
@@ -925,7 +927,7 @@ describe('SubmissionClient', () => {
           createdAt: '2026-02-08T00:00:00Z',
           updatedAt: '2026-02-08T00:00:00Z',
         },
-      ]);
+      ] });
 
       const client = new SubmissionClient(baseConfig, testLogger);
       const history = await client.getHistory('test-project', { workflowType: 'ship', limit: 10 });
@@ -945,7 +947,7 @@ describe('SubmissionClient', () => {
     });
 
     it('converts null fields to undefined', async () => {
-      mockListByProject.mockResolvedValueOnce([
+      mockListByProject.mockResolvedValueOnce({ total: 0, data: [
         {
           id: 'run-2',
           projectId: 'proj-1',
@@ -961,7 +963,7 @@ describe('SubmissionClient', () => {
           createdAt: '2026-02-07T00:00:00Z',
           updatedAt: '2026-02-08T00:00:00Z',
         },
-      ]);
+      ] });
 
       const client = new SubmissionClient(baseConfig, testLogger);
       const history = await client.getHistory('test-project');
@@ -1002,6 +1004,36 @@ describe('SubmissionClient', () => {
       expect(result.allGatesPassed).toBe(true);
       expect(result.averageScore).toBe(95);
       expect(result.deduplicated).toBe(false);
+    });
+  });
+
+  describe('org routing (spec §3.5): orgSlug reaches the OpsClient', () => {
+    beforeEach(() => { vi.mocked(OpsClient).mockClear(); });
+
+    it('constructs OpsClient with orgSlug when configured', async () => {
+      mockSave.mockResolvedValueOnce({
+        run: { id: 'run-org', projectId: 'proj-456', runNumber: 1, workflowType: 'agent', allGatesPassed: true, averageScore: 80 },
+        agents: [],
+        correlation: { newIssues: 0, recurringIssues: 0, regressions: 0 },
+        deduplicated: false,
+      });
+      const client = new SubmissionClient({ ...baseConfig, orgSlug: 'ulu-labs' }, testLogger);
+      await client.submit(makeSubmission());
+      expect(OpsClient).toHaveBeenCalledTimes(1);
+      expect(vi.mocked(OpsClient).mock.calls[0]![0]).toMatchObject({ orgSlug: 'ulu-labs' });
+    });
+
+    it('constructs OpsClient WITHOUT orgSlug when not configured (control: the key is absent, not undefined-valued)', async () => {
+      mockSave.mockResolvedValueOnce({
+        run: { id: 'run-org', projectId: 'proj-456', runNumber: 1, workflowType: 'agent', allGatesPassed: true, averageScore: 80 },
+        agents: [],
+        correlation: { newIssues: 0, recurringIssues: 0, regressions: 0 },
+        deduplicated: false,
+      });
+      const client = new SubmissionClient(baseConfig, testLogger);
+      await client.submit(makeSubmission());
+      const cfg = vi.mocked(OpsClient).mock.calls[0]![0] as Record<string, unknown>;
+      expect(cfg.orgSlug).toBeUndefined();
     });
   });
 });

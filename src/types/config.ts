@@ -100,6 +100,17 @@ export interface UluOpsConfig {
   dashboardUrl?: string;
 
   /**
+   * Org slug the tracker submission is saved under (`X-Org-Slug` on every
+   * submission request). Falls back to the ULUOPS_ORG_SLUG env var. When
+   * neither is set the run lands in the API key holder's PERSONAL org — the
+   * API never infers an org from a project name (project-org-routing-and-
+   * rehome spec D2). An API key BOUND to an org ignores this and refuses a
+   * different value with 403 ORG_ACCESS_DENIED. Client-level by design: one
+   * execution submits one run, so there is no per-call fan-out to route.
+   */
+  orgSlug?: string;
+
+  /**
    * Local definitions directory for development
    * When set, SDK looks here first before remote registry
    * Supports: *.agent.yaml, *.command.yaml, *.workflow.yaml, *.pipeline.yaml
@@ -229,6 +240,8 @@ export interface ResolvedConfig {
   registryUrl: string;
   submissionUrl: string;
   dashboardUrl: string;
+  /** Resolved from config or ULUOPS_ORG_SLUG; undefined = personal org. */
+  orgSlug?: string;
   localDefinitions?: string;
   trackingEnabled: boolean;
   /** Security-event handler forwarded to the SDK clients (see {@link UluOpsConfig.onSecurityEvent}). */

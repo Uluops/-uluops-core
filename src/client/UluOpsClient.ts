@@ -749,6 +749,14 @@ export function resolveConfig(config: UluOpsConfig, env: NodeJS.ProcessEnv = pro
   const registryUrl = config.registryUrl ?? env['ULUOPS_REGISTRY_URL'] ?? 'https://api.uluops.ai/api/v1/registry';
   const submissionUrl = config.submissionUrl ?? env['ULUOPS_SUBMISSION_URL'] ?? 'https://api.uluops.ai/api/v1';
   const dashboardUrl = config.dashboardUrl ?? env['ULUOPS_DASHBOARD_URL'] ?? 'https://app.uluops.ai';
+  // Org routing (spec §3.5): explicit config, else the env var the registry
+  // SDK already honours, else undefined — which the ops-sdk turns into "no
+  // header", i.e. the key holder's personal org. Validated by ops-sdk's
+  // ORG_SLUG_PATTERN at client construction, not here.
+  // EXTERNAL-OK: a header VALUE, never a number or threshold; validated against ops-sdk's ORG_SLUG_PATTERN
+  // (1–100 alphanumeric/hyphen/underscore — no CRLF can reach the wire) at OpsClient construction,
+  // which throws InputValidationError. Nothing in this package reads it beyond passing it through.
+  const orgSlug = config.orgSlug ?? env['ULUOPS_ORG_SLUG'] ?? undefined;
 
   // Enforce HTTPS when a real API key is present to prevent credential exfiltration.
   // Allow HTTP for local development (no key, test_ prefix, or localhost/127.0.0.1).
@@ -773,6 +781,7 @@ export function resolveConfig(config: UluOpsConfig, env: NodeJS.ProcessEnv = pro
     registryUrl,
     submissionUrl,
     dashboardUrl,
+    orgSlug,
     localDefinitions: config.localDefinitions ?? env['ULUOPS_LOCAL_DEFINITIONS'],
     trackingEnabled: config.trackingEnabled ?? (env['ULUOPS_TRACKING_ENABLED'] !== 'false'),
     // Pass-through: a callback, nothing to default or resolve.

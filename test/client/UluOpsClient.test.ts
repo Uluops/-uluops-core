@@ -212,7 +212,7 @@ describe('UluOpsClient', () => {
   const envVars = [
     'ULUOPS_API_KEY', 'ULU_API_KEY', 'ULUOPS_REGISTRY_URL',
     'ULUOPS_SUBMISSION_URL', 'ULUOPS_DASHBOARD_URL', 'ULUOPS_LOCAL_DEFINITIONS',
-    'ULUOPS_TRACKING_ENABLED', 'ULUOPS_PROJECT', 'ULUOPS_DEBUG',
+    'ULUOPS_TRACKING_ENABLED', 'ULUOPS_PROJECT', 'ULUOPS_DEBUG', 'ULUOPS_ORG_SLUG',
     'ANTHROPIC_API_KEY',
   ];
 
@@ -262,6 +262,13 @@ describe('UluOpsClient', () => {
 
     it('accepts API key from config', () => {
       expect(() => resolveConfig({ apiKey: 'ulr_from-config-01234567' }, {})).not.toThrow();
+    });
+
+    it('resolves orgSlug from config, else ULUOPS_ORG_SLUG, else undefined (personal org)', () => {
+      const key = { apiKey: 'ulr_k-012345678901234567' };
+      expect(resolveConfig({ ...key, orgSlug: 'from-config' }, { ULUOPS_ORG_SLUG: 'from-env' }).orgSlug).toBe('from-config');
+      expect(resolveConfig(key, { ULUOPS_ORG_SLUG: 'from-env' }).orgSlug).toBe('from-env');
+      expect(resolveConfig(key, {}).orgSlug).toBeUndefined();
     });
 
     it('reads API key from ULUOPS_API_KEY env var', () => {

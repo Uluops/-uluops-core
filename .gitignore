@@ -14,3 +14,4 @@ docs/features/
 # Auto-generated context files
 CLAUDE.md
 **/CLAUDE.md
+.npmrc
