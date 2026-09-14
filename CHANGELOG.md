@@ -4,6 +4,13 @@ All notable changes to `@uluops/core` will be documented in this file.
 
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html). In addition to the standard `Added`/`Changed`/`Deprecated`/`Removed`/`Fixed`/`Security` sections, some entries use a few informational sections — `Internal` (test/CI/build-only changes), `Supply chain` / `Dependencies`, `Design Notes`, and `Migration` — which carry no consumer-facing API impact.
 
+## [0.43.2] - 2026-09-13
+
+### Changed
+
+- **`orgSlug` falls back to ops-sdk's `resolveWorkspaceOrg`** (nearest `.uluops.json` above `process.cwd()`, bounded at `$HOME`, then `ULUOPS_ORG_SLUG`, then personal) instead of reading the env var directly. Direct consumers — the autosave hook, embedders — now honour the workspace file exactly as the CLI and the tracker MCP do; until now core implemented the process-scoped default D13 rejected and only agreed with the other clients when the CLI resolved on its behalf (security audit run #187, trust-boundary F9). Explicit `orgSlug` in config still wins. A malformed or foreign-owned workspace file throws `InputValidationError` at `resolveConfig`, loudly.
+- `@uluops/ops-sdk` 6.3.0 → 6.3.1.
+
 ## [Unreleased]
 
 ## [0.43.1] - 2026-09-13

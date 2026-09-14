@@ -1,4 +1,5 @@
 import { finitePositive } from '../utils/externalValue.js';
+import { resolveWorkspaceOrg } from '@uluops/ops-sdk';
 import * as path from 'node:path';
 import { RegistryClient, type ResolvePinOptions } from '../registry/RegistryClient.js';
 import { SubmissionClient } from '../submission/SubmissionClient.js';
@@ -749,14 +750,18 @@ export function resolveConfig(config: UluOpsConfig, env: NodeJS.ProcessEnv = pro
   const registryUrl = config.registryUrl ?? env['ULUOPS_REGISTRY_URL'] ?? 'https://api.uluops.ai/api/v1/registry';
   const submissionUrl = config.submissionUrl ?? env['ULUOPS_SUBMISSION_URL'] ?? 'https://api.uluops.ai/api/v1';
   const dashboardUrl = config.dashboardUrl ?? env['ULUOPS_DASHBOARD_URL'] ?? 'https://app.uluops.ai';
-  // Org routing (spec §3.5): explicit config, else the env var the registry
-  // SDK already honours, else undefined — which the ops-sdk turns into "no
-  // header", i.e. the key holder's personal org. Validated by ops-sdk's
-  // ORG_SLUG_PATTERN at client construction, not here.
-  // EXTERNAL-OK: a header VALUE, never a number or threshold; validated against ops-sdk's ORG_SLUG_PATTERN
-  // (1–100 alphanumeric/hyphen/underscore — no CRLF can reach the wire) at OpsClient construction,
-  // which throws InputValidationError. Nothing in this package reads it beyond passing it through.
-  const orgSlug = config.orgSlug ?? env['ULUOPS_ORG_SLUG'] ?? undefined;
+  // Org routing (spec §3.5, D13): explicit config wins; otherwise the SAME
+  // resolver every other client uses — nearest `.uluops.json` above cwd, then
+  // `ULUOPS_ORG_SLUG`, then personal (no header). Until 0.43.2 core read the
+  // env var directly, i.e. the process-scoped default D13 rejected, and only
+  // the CLI (which resolves and passes `orgSlug`) agreed with the MCP; direct
+  // consumers such as the autosave hook did not (security audit run #187,
+  // trust-boundary F9). The resolver throws InputValidationError on a bad
+  // slug or a malformed/foreign-owned workspace file — loud, never silent.
+  // EXTERNAL-OK: a header VALUE, never a number or threshold; validated by ops-sdk's resolver
+  // (ORG_SLUG_PATTERN, 1–100 alphanumeric/hyphen/underscore — no CRLF can reach the wire) before
+  // it is returned. Nothing in this package reads it beyond passing it through.
+  const orgSlug = config.orgSlug ?? resolveWorkspaceOrg({ cwd: process.cwd(), env }).org;
 
   // Enforce HTTPS when a real API key is present to prevent credential exfiltration.
   // Allow HTTP for local development (no key, test_ prefix, or localhost/127.0.0.1).

@@ -264,7 +264,11 @@ describe('UluOpsClient', () => {
       expect(() => resolveConfig({ apiKey: 'ulr_from-config-01234567' }, {})).not.toThrow();
     });
 
-    it('resolves orgSlug from config, else ULUOPS_ORG_SLUG, else undefined (personal org)', () => {
+    // 0.43.2 (D13, run #187 F9): the fallback is ops-sdk's resolveWorkspaceOrg —
+    // nearest .uluops.json above process.cwd() (bounded at $HOME), THEN env.
+    // These cases hold as long as no .uluops.json sits between this worktree
+    // and $HOME; the workspace rung itself is covered in ops-sdk's own tests.
+    it('resolves orgSlug from config, else the D13 resolver (workspace file, then ULUOPS_ORG_SLUG), else undefined (personal org)', () => {
       const key = { apiKey: 'ulr_k-012345678901234567' };
       expect(resolveConfig({ ...key, orgSlug: 'from-config' }, { ULUOPS_ORG_SLUG: 'from-env' }).orgSlug).toBe('from-config');
       expect(resolveConfig(key, { ULUOPS_ORG_SLUG: 'from-env' }).orgSlug).toBe('from-env');
