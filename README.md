@@ -806,7 +806,7 @@ const client = new UluOpsClient({
   // Service URLs
   registryUrl: 'https://...',         // Registry API (or ULUOPS_REGISTRY_URL)
   submissionUrl: 'https://...',        // Submission API (or ULUOPS_SUBMISSION_URL)
-  orgSlug: 'ulu-labs',                 // Org the run is saved under (or ULUOPS_ORG_SLUG); omit = your personal org
+  orgSlug: 'ulu-labs',                 // Org the run is saved under; omit = the workspace default (nearest .uluops.json, else ULUOPS_ORG_SLUG, else your personal org)
 
   // Behavior
   trackingEnabled: true,              // Auto-submit results to validation service
