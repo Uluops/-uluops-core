@@ -8,7 +8,7 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) 
 
 ### Dependencies
 
-- `@uluops/ops-sdk` 6.3.1 → **6.4.1** (exact; 0.43.3 pinned 6.4.0, which reached Verdaccio only). No core behaviour changes; the bump exists so the org-routing train keeps ONE ops-sdk copy — `@uluops/cli` 0.30.0 moves to 6.4.0 for `projects.rehome` / `orgs.getVisibleAuditLog`, and an exact 6.3.1 here would nest a second ops-sdk under core in the CLI's tree (the 2.3 train rule; sdk-core stays a single hoisted 0.17.0 either way, so this is hygiene, not the dual-`SdkApiError` trap). 6.4.0 additively exposes `orgId` on project reads.
+- `@uluops/ops-sdk` 6.3.1 → **6.4.1** (exact; 0.43.3 pinned 6.4.0, which reached Verdaccio only). No core behaviour changes; the bump exists so the org-routing train keeps ONE ops-sdk copy — `@uluops/cli` 0.30.0 moves to 6.4.x for `projects.rehome` / `orgs.getVisibleAuditLog`, and an exact 6.3.1 here would nest a second ops-sdk under core in the CLI's tree (the 2.3 train rule; sdk-core stays a single hoisted 0.17.0 either way, so this is hygiene, not the dual-`SdkApiError` trap). 6.4.0 additively exposes `orgId` on project reads.
 
 ## [0.43.2] - 2026-09-13
 
