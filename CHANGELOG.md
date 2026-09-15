@@ -4,6 +4,12 @@ All notable changes to `@uluops/core` will be documented in this file.
 
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html). In addition to the standard `Added`/`Changed`/`Deprecated`/`Removed`/`Fixed`/`Security` sections, some entries use a few informational sections — `Internal` (test/CI/build-only changes), `Supply chain` / `Dependencies`, `Design Notes`, and `Migration` — which carry no consumer-facing API impact.
 
+## [0.43.5] - 2026-09-15
+
+### Dependencies
+
+- `@uluops/ops-sdk` 6.4.1 → **6.5.0** (exact). No core behaviour changes; the bump exists so the ulu log train keeps ONE ops-sdk copy in the CLI. 6.5.0 widens the `.uluops.json` reader's allowlist to `org`, `project`, `$schema` (ulu log spec D5): a checkout whose workspace file carries `project` is REFUSED by every older reader — and core reads that file for `ulu exec`'s org (`UluOpsClient.js` → `resolveWorkspaceOrg`). With 6.4.1 nested under core, the 0.31.0 CLI would have carried two readers: `ulu log` (6.5.0) reading the key while `ulu exec` (core's 6.4.1) refused the same file — proven 2026-09-15 by calling both readers from the CLI's own `node_modules` on a file carrying `project`. This is the "fix dies at the pin" shape one ring further out: the consumer was current, its dependency's dependency was not.
+
 ## [0.43.4] - 2026-09-15
 
 ### Dependencies
