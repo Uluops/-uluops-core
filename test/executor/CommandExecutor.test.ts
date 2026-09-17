@@ -698,6 +698,24 @@ describe('CommandExecutor', () => {
       expect(result.metrics.costUsd).not.toBe(0);
     });
 
+    it('a panel of SCORELESS agents reporting negative is a result, not a crash (ship #94)', async () => {
+      // assertNotAllCrashed keyed on `score === null && decisionCategory === 'negative'`,
+      // which is exactly the shape a genuinely scoreless explorer/generator returns for a
+      // negative decision. Two such agents therefore threw 'All agents failed' and the
+      // completed, billed run was discarded. Crash placeholders carry the synthesized
+      // version; real results carry a real one — discriminate on that.
+      const scoreless = (name: string) => makeValidatorResult({
+        name, agentType: 'explorer', score: null, maxScore: null, decision: 'FRAME_LOCKED', decisionCategory: 'negative',
+      });
+      const executor = new CommandExecutor(makeAgentExecutor([scoreless('agent-a'), scoreless('agent-b')]), makeRegistry());
+      const result = await executor.execute(makeCommandDef({
+        agents: ['agent-a@1.0.0', 'agent-b@1.0.0'],
+        execution: { model: { default: 'sonnet' }, timeout: 30000, thresholds: { pass: 75, warn: 50 }, sequential: false },
+      }), { target: '/tmp/test' });
+      expect(result.decisionCategory).toBe('negative');
+      expect(result.metrics.inputTokens).toBe(1000); // both agents' billed work survives
+    });
+
     it('throws when ALL parallel agents crash', async () => {
       const agentExec = {
         execute: vi.fn().mockRejectedValue(new Error('boom')),

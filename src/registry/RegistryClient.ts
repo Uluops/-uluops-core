@@ -287,18 +287,22 @@ export class RegistryClient {
       try {
         yamlContent = await fs.readFile(candidate.path, 'utf-8');
       } catch (error) {
-        const code = (error as NodeJS.ErrnoException).code;
+        const code = error instanceof Error && 'code' in error ? (error as NodeJS.ErrnoException).code : undefined;
         if (code === 'ENOENT') continue; // File doesn't exist, try next candidate
         if (code === 'ENOTDIR') continue; // Path component isn't a directory
-        throw new ConfigurationError(`Cannot read definition file: ${formatErrorMessage(error)}`);
+        throw new ConfigurationError(`Cannot read definition file: ${formatErrorMessage(error)}`, { cause: error });
       }
 
       let definition: Record<string, unknown>;
       try {
-        definition = yaml.parse(yamlContent) as Record<string, unknown>;
+        // Through the same guard as every other parse: a comment-only file is a
+        // named ConfigurationError here too, not a null dereference downstream.
+        definition = this.safeParseYaml(yamlContent, candidate.path);
       } catch (parseError) {
+        if (parseError instanceof ConfigurationError) throw parseError;
         throw new ConfigurationError(
           `Failed to parse definition YAML: ${parseError instanceof Error ? parseError.message : String(parseError)}`,
+          { cause: parseError },
         );
       }
       this.logger.debug(`Resolved locally: ${name} @ ${candidate.path}`);
@@ -475,7 +479,10 @@ export class RegistryClient {
       domain: (def.domain ?? 'general') as ResolvedDefinition['domain'],
       agentType: (def.agentType ?? undefined) as ResolvedDefinition['agentType'],
       minSubscription: (def.minSubscription as ResolvedDefinition['minSubscription']) ?? undefined,
-      riskProfile: (def as unknown as Record<string, unknown>).riskProfile as ResolvedDefinition['riskProfile'] ?? null,
+      // registry-sdk declares `riskProfile` on the definition since 0.5x; the
+      // `as unknown as Record` double cast that used to sit here predates that
+      // and read a field the type did not have (ship run #94, type-safety AF-002).
+      riskProfile: (def.riskProfile as ResolvedDefinition['riskProfile']) ?? null,
       ...(degradations.length > 0 && { degradations }),
     } as ResolvedDefinition;
   }
@@ -562,13 +569,31 @@ export class RegistryClient {
   // ─────────────────────────────────────────────────────────────────────────────
 
   private safeParseYaml(yamlContent: string, context: string): Record<string, unknown> {
+    let parsed: unknown;
     try {
-      return yaml.parse(yamlContent) as Record<string, unknown>;
+      parsed = yaml.parse(yamlContent);
     } catch (error) {
       throw new ConfigurationError(
         `Failed to parse YAML for "${context}": ${formatErrorMessage(error)}`,
+        { cause: error },
       );
     }
+    // `yaml.parse` returns null for an empty, blank or comment-only document and a
+    // scalar for a bare string — neither is a mapping, and the cast that used to
+    // sit here handed both to five callers that dereference the result
+    // (`p['agent']`, `'agent' in p`). A comment-only `.agent.yaml` therefore died
+    // with a raw TypeError instead of the ConfigurationError renderLocally was
+    // written to raise for it (ship run #94, code-auditor).
+    if (parsed === null || typeof parsed !== 'object' || Array.isArray(parsed)) {
+      const what = parsed === null
+        ? 'empty — a blank or comment-only file'
+        : `a ${Array.isArray(parsed) ? 'sequence' : typeof parsed}, not a mapping`;
+      throw new ConfigurationError(
+        `Definition YAML for "${context}" is ${what}; expected a top-level mapping ` +
+        `with an agent, command, workflow or pipeline key`,
+      );
+    }
+    return parsed as Record<string, unknown>;
   }
 
   // ─────────────────────────────────────────────────────────────────────────────
@@ -879,7 +904,8 @@ export class RegistryClient {
         } catch (error) {
           // ENOENT = directory doesn't exist — skip silently (expected for optional subdirs)
           // Other errors (permissions, YAML parse) are logged to aid debugging
-          if ((error as NodeJS.ErrnoException).code !== 'ENOENT') {
+          const code = error instanceof Error && 'code' in error ? (error as NodeJS.ErrnoException).code : undefined;
+          if (code !== 'ENOENT') {
             this.logger.debug(`listLocal: skipping ${dir}: ${error instanceof Error ? error.message : String(error)}`);
           }
         }

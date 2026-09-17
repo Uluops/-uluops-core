@@ -214,8 +214,8 @@ export class PreflightError extends UluOpsError {
 export class ConfigurationError extends UluOpsError {
   readonly code = 'CONFIGURATION_ERROR' as const;
 
-  constructor(message: string) {
-    super(message);
+  constructor(message: string, options?: ErrorOptions) {
+    super(message, options);
     this.name = 'ConfigurationError';
   }
 }
@@ -224,8 +224,8 @@ export class ConfigurationError extends UluOpsError {
 export class ModelNotFoundError extends UluOpsError {
   readonly code = 'MODEL_NOT_FOUND' as const;
 
-  constructor(message: string) {
-    super(message);
+  constructor(message: string, options?: ErrorOptions) {
+    super(message, options);
     this.name = 'ModelNotFoundError';
   }
 }
@@ -234,8 +234,8 @@ export class ModelNotFoundError extends UluOpsError {
 export class CapabilityError extends UluOpsError {
   readonly code = 'CAPABILITY_ERROR' as const;
 
-  constructor(message: string) {
-    super(message);
+  constructor(message: string, options?: ErrorOptions) {
+    super(message, options);
     this.name = 'CapabilityError';
   }
 }

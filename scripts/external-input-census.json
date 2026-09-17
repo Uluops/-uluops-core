@@ -8,7 +8,7 @@
     "json-parse": 5,
     "process-env": 18,
     "string-to-number": 4,
-    "authored-yaml": 2
+    "authored-yaml": 1
   },
   "fingerprints": [
     "src/ai/AIProvider.ts|ai-sdk-response|(sum, step) => sum + (step.toolCalls?.length ?? 0),",
@@ -133,8 +133,7 @@
     "src/parser/OutputExtractor.ts|json-parse|const parsed = JSON.parse(trimmed);",
     "src/parser/OutputExtractor.ts|json-parse|return JSON.parse(lastMatch[1].trim()) as unknown;",
     "src/parser/OutputNormalizer.ts|string-to-number|if (typeof s === 'string' && s.trim() !== '' && !isNaN(Number(s))) return s;",
-    "src/registry/RegistryClient.ts|authored-yaml|definition = yaml.parse(yamlContent) as Record<string, unknown>;",
-    "src/registry/RegistryClient.ts|authored-yaml|return yaml.parse(yamlContent) as Record<string, unknown>;",
+    "src/registry/RegistryClient.ts|authored-yaml|parsed = yaml.parse(yamlContent);",
     "src/registry/RegistryClient.ts|public-api-arg|timeout: config.timeout,",
     "src/registry/RegistryClient.ts|service-response|const result = await this.sdk.definitions.list({",
     "src/registry/RegistryClient.ts|service-response|const result = await this.sdk.render.preview(type as 'agent' | 'command' | 'workflow' | 'pipeline', { yaml: yamlContent, renderProfile: 'uluops-full' });",

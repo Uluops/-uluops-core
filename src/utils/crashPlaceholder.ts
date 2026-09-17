@@ -38,6 +38,15 @@ import { crashMetrics } from './crashMetrics.js';
  * fabrication has ONE site instead of three, and so a caller that gains access to the real
  * type can supply it without touching this file.
  */
+/**
+ * The version every crash placeholder carries — deliberately non-parseable as a
+ * real release. It is the POSITIVE crash marker: `CommandExecutor.assertNotAllCrashed`
+ * discriminates on it rather than on the `score === null && decisionCategory ===
+ * 'negative'` value shape, which a genuinely scoreless explorer/generator panel
+ * reporting a negative decision produces legitimately (ship run #94).
+ */
+export const CRASH_PLACEHOLDER_VERSION = '1.0.0-synthesized';
+
 export function crashPlaceholder(
   ref: string,
   reason: unknown,
@@ -56,7 +65,7 @@ export function crashPlaceholder(
     // non-parseable as a real release, matching every other synthesized result in this
     // package, so a consumer can tell it apart from an actual 1.0.0 rather than reading an
     // invented version as real definition identity.
-    version: '1.0.0-synthesized',
+    version: CRASH_PLACEHOLDER_VERSION,
     definitionHash: '',
     agentType: opts?.agentType ?? 'validator',
     decision: 'FAIL',

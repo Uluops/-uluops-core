@@ -1337,6 +1337,33 @@ describe('WorkflowExecutor', () => {
   // ─── max_parallel Concurrency Limit ─────────────────────────────────────
 
   describe('max_parallel', () => {
+    it('an unusable max_parallel (NaN from authored `.nan`) degrades to a conservative cap, not to no cap (ship #94)', async () => {
+      // `if (maxParallel && maxParallel > 0 && ...)` let NaN/Infinity/0/negatives fall
+      // through to the unlimited branch — the degradation externalValue.ts forbids.
+      let maxConcurrent = 0; let current = 0;
+      const cmdExec = {
+        execute: vi.fn().mockImplementation(async () => {
+          current++; maxConcurrent = Math.max(maxConcurrent, current);
+          await new Promise(r => setTimeout(r, 10)); current--;
+          return makeCommandResult({ score: 85 });
+        }),
+      } as unknown as CommandExecutor;
+      const executor = new WorkflowExecutor(cmdExec, makeRegistry());
+      const def = makeWorkflowDef({
+        orchestration: {
+          phases: [
+            { id: 'a', name: 'A', commands: ['cmd-a'] }, { id: 'b', name: 'B', commands: ['cmd-b'] },
+            { id: 'c', name: 'C', commands: ['cmd-c'] }, { id: 'd', name: 'D', commands: ['cmd-d'] },
+          ],
+          on_failure: 'stop',
+          max_parallel: Number.NaN as unknown as number,
+        },
+      });
+      const result = await executor.execute(def, { target: '/tmp/test' });
+      expect(result.phases).toHaveLength(4);
+      expect(maxConcurrent).toBe(1);
+    });
+
     it('limits concurrent phase execution', async () => {
       let maxConcurrent = 0;
       let currentConcurrent = 0;

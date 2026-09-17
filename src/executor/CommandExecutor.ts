@@ -15,7 +15,7 @@ import { DEFAULT_PASS_THRESHOLD, DEFAULT_WARN_THRESHOLD } from '../constants.js'
 import { mapCategory } from './mapCategory.js';
 import { resolveDecisionCategory, type DecisionCategory } from './classifyDecision.js';
 import { aggregateScores, type AggregationMethod } from '../utils/aggregateScores.js';
-import { crashPlaceholder } from '../utils/crashPlaceholder.js';
+import { crashPlaceholder, CRASH_PLACEHOLDER_VERSION } from '../utils/crashPlaceholder.js';
 import { worstExtractionConfidence } from '../utils/worstExtractionConfidence.js';
 
 /**
@@ -246,12 +246,17 @@ export class CommandExecutor {
    * scoreless-negative guard fails the command through the gate.
    */
   private assertNotAllCrashed(results: AgentResult[]): void {
-    const crashed = results.filter(r => r.score === null && r.decisionCategory === 'negative');
+    // Discriminate on the placeholder's own marker, not on `score === null &&
+    // decisionCategory === 'negative'`: that value shape is exactly what a panel
+    // of genuinely scoreless agents (explorer/generator class) returning a negative
+    // decision produces, and until ship run #94 such a panel was thrown away as
+    // "All agents failed" — a completed, billed run reported as a crash.
+    const crashed = results.filter(r => r.version === CRASH_PLACEHOLDER_VERSION);
     if (results.length > 0 && crashed.length === results.length) {
       const detail = crashed
         .flatMap(r => r.recommendations?.map(rec => rec.title) ?? [])
         .join('; ');
-      throw new ExecutionError(`All agents failed: ${detail}`);
+      throw new ExecutionError(`All agents failed (${crashed.length} of ${results.length} dispatched crashed): ${detail}`);
     }
   }
 

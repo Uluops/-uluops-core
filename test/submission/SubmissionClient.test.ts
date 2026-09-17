@@ -1037,3 +1037,31 @@ describe('SubmissionClient', () => {
     });
   });
 });
+
+describe('SubmissionClient — un-submittable cost is announced, not dropped (ship #94)', () => {
+  const costWarnings = () => warnings.filter(w => w.includes('is NOT submitted to the tracker'));
+  beforeEach(() => { warnings.length = 0; mockSave.mockResolvedValue({ run: { id: 'r', runNumber: 1 }, correlation: { newIssues: 0, recurringIssues: 0, regressions: 0 } }); });
+
+  it('warns once when a run carries a computed costUsd', async () => {
+    const client = new SubmissionClient(baseConfig, testLogger);
+    const result = makeResult(); (result.metrics as { costUsd?: number }).costUsd = 0.48;
+    await client.submit(makeSubmission({ result }));
+    expect(costWarnings()).toHaveLength(1);
+  });
+
+  it('does not warn a second time on the same client', async () => {
+    const client = new SubmissionClient(baseConfig, testLogger);
+    for (const cost of [0.48, 0.12]) {
+      const result = makeResult(); (result.metrics as { costUsd?: number }).costUsd = cost;
+      await client.submit(makeSubmission({ result }));
+    }
+    expect(costWarnings()).toHaveLength(1);
+  });
+
+  it('does not warn when costUsd is absent — nothing was dropped', async () => {
+    const client = new SubmissionClient(baseConfig, testLogger);
+    const result = makeResult(); delete (result.metrics as { costUsd?: number }).costUsd;
+    await client.submit(makeSubmission({ result }));
+    expect(costWarnings()).toHaveLength(0);
+  });
+});

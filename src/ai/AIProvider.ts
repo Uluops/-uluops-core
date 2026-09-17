@@ -13,6 +13,9 @@ import {
 import type { LanguageModelUsage } from 'ai';
 import type { ProviderOptions } from '@ai-sdk/provider-utils';
 
+/** Bound on RetryError unwrapping in mapError — real SDK chains are 1–2 deep. */
+const MAX_RETRY_UNWRAP_DEPTH = 8;
+
 import { createAnthropic, type AnthropicProvider } from '@ai-sdk/anthropic';
 import { createOpenAI, type OpenAIProvider } from '@ai-sdk/openai';
 import { createGoogleGenerativeAI } from '@ai-sdk/google';
@@ -1347,7 +1350,7 @@ export class AIProvider {
     } catch (error) {
       if (error instanceof ConfigurationError) throw error;
 
-      const errCode = (error as NodeJS.ErrnoException).code;
+      const errCode = error instanceof Error && 'code' in error ? (error as NodeJS.ErrnoException).code : undefined;
       if (errCode === 'ERR_MODULE_NOT_FOUND' || errCode === 'MODULE_NOT_FOUND') {
         throw new ConfigurationError(
           `Provider "${providerName}" requires @ai-sdk/${providerName}. ` +
@@ -1753,6 +1756,7 @@ export class AIProvider {
     timeoutMs?: number,
     resolved?: ResolvedModel,
     callerSignal?: AbortSignal,
+    depth = 0,
   ): Error {
     this.logger.error(`AI SDK error: ${formatErrorMessage(error)}`);
 
@@ -1777,13 +1781,16 @@ export class AIProvider {
       const detail = `Retries exhausted${attempts ? ` after ${attempts} attempt(s)` : ''}`
         + `${error.reason ? ` (${error.reason})` : ''}`;
 
-      if (last !== undefined && last !== error) {
+      // The self-reference check stops A.errors = [A]; the depth bound stops
+      // A.errors = [B], B.errors = [A] — a hand-built or middleware-wrapped
+      // cycle that recursed to a RangeError instead of a mapped error (ship #94).
+      if (last !== undefined && last !== error && depth < MAX_RETRY_UNWRAP_DEPTH) {
         // Forward `callerSignal` into the unwrap. Without it, a cancel that lands during a
         // retried request comes back wrapped in a RetryError and the recursive call has no
         // way to attribute the abort — the cancel would be re-mapped as a TimeoutError,
         // which is the exact misreport this parameter exists to prevent, hidden one layer
         // down where the outer classification never sees it.
-        const mapped = this.mapError(last, timeoutMs, resolved, callerSignal);
+        const mapped = this.mapError(last, timeoutMs, resolved, callerSignal, depth + 1);
         mapped.message = `${detail}: ${mapped.message}`;
         // `cause` is the RetryError wrapper, NOT the unwrapped attempt — deliberate.
         // The message already carries the underlying failure; the wrapper is what

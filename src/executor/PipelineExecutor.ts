@@ -1,4 +1,5 @@
 import type { AgentExecutor } from './AgentExecutor.js';
+import { finiteNonNegative } from '../utils/externalValue.js';
 import type { CommandExecutor } from './CommandExecutor.js';
 import type { WorkflowExecutor } from './WorkflowExecutor.js';
 import type { RegistryClient } from '../registry/RegistryClient.js';
@@ -711,12 +712,26 @@ export class PipelineExecutor {
     }
 
     if (gate.threshold !== undefined) {
+      // Authored YAML reaches here type-erased: `.nan` / `.inf` / a string are all
+      // authorable. `score < NaN` is false, so an unusable threshold used to make
+      // an on_failure: abort hard gate pass every stage silently — while the
+      // WorkflowExecutor twin (`score >= threshold`) failed CLOSED on the same
+      // input. Same seam as every other authored bound (externalValue), same
+      // polarity as the workflow gate now: unusable → fail closed, and say so.
+      const threshold = finiteNonNegative(gate.threshold);
+      if (threshold === undefined) {
+        this.logger.warn(
+          `Gate threshold on stage "${stage.id}" is not a usable number (${String(gate.threshold)}) — ` +
+          `failing the gate rather than comparing against it (fail-closed; ship run #94)`,
+        );
+        return true;
+      }
       const score = this.gateScore(gate, stageResult);
       if (score === null) {
         this.logger.warn(`Gate threshold on stage "${stage.id}" is not evaluable (no scores) — passing (fail-open)`);
         return false;
       }
-      return score < gate.threshold;
+      return score < threshold;
     }
 
     return false;

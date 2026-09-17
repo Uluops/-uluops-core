@@ -1300,6 +1300,20 @@ describe('PipelineExecutor', () => {
       ],
     });
 
+    it('an unusable gate threshold (NaN from authored `.nan`) fails CLOSED, not open (ship #94)', async () => {
+      // `score < NaN` is false, so gateFailed used to return false and an
+      // on_failure: abort hard gate passed every stage. The WorkflowExecutor twin
+      // (`score >= threshold`) failed closed on the same input — opposite polarity.
+      const cmdExec = makeCommandExecutor([makeCommandResult({ decision: 'PASS', decisionCategory: 'positive', score: 85 })]);
+      const executor = new PipelineExecutor(makeWorkflowExecutor(), cmdExec, agentExec, makeRegistry(), noopLogger);
+      const def = makePipelineDef(twoStages({ threshold: Number.NaN, on_failure: 'abort' }));
+      const handle = await executor.start(def, { target: '/tmp' });
+      await expect(handle.wait()).rejects.toThrow(/failed its gate/);
+      const result = await handle.status();
+      expect(result.status).toBe('failed');
+      expect(result.stages[1]!.status).not.toBe('completed');
+    });
+
     it('aborts the pipeline when a failing stage carries on_failure: abort', async () => {
       const cmdExec = makeCommandExecutor([makeCommandResult({ decision: 'FAIL', decisionCategory: 'negative', score: 40 })]);
       const executor = new PipelineExecutor(makeWorkflowExecutor(), cmdExec, agentExec, makeRegistry(), noopLogger);

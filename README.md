@@ -10,7 +10,7 @@
 [![TypeScript](https://img.shields.io/badge/TypeScript-5.7+-blue.svg)](https://www.typescriptlang.org/)
 [![Tests](https://img.shields.io/badge/tests-passing-brightgreen)](test/)
 
-The foundational execution engine for UluOps. Orchestrates AI-powered code analysis through a 4-layer execution hierarchy (Agent > Command > Workflow > Pipeline), manages LLM tool loops via Vercel AI SDK, and integrates with UluOps Registry and Validation services.
+The foundational execution engine for UluOps. Orchestrates AI-powered code analysis through a 4-layer execution hierarchy (Agent > Command > Workflow > Pipeline), manages LLM tool loops via Vercel AI SDK, and integrates with the UluOps registry and tracker — every run's findings become tracked issues with fingerprints, so a resolved finding that comes back is a regression, not a new issue.
 
 ## Prerequisites
 
@@ -90,7 +90,7 @@ This still requires an AI provider key but no UluOps API key or network access t
   - [Pipeline Execution](#pipeline-execution)
   - [Convenience Methods](#convenience-methods)
   - [Discovery](#discovery)
-  - [Validation Tracking](#validation-tracking)
+  - [Result Tracking](#result-tracking)
   - [Integrity Verification](#integrity-verification)
 - [Architecture](#architecture)
 - [Execution Hierarchy](#execution-hierarchy)
@@ -114,7 +114,7 @@ The `@uluops/core` SDK provides:
 - **Content-Addressed Integrity Verification** - Registry-resolved definitions carry a SHA-256 YAML content hash (`sha256:…`) and, for agents/commands, a `promptHash` over the frozen rendered prompt. Hashing uses the shared `@uluops/sdk-core` implementation, so the client and registry hash identically. Remote resolution executes the **frozen `runtimeMd`** the `promptHash` certifies (not a live re-render). Callers can pin `expectedHash`/`expectedPromptHash` (from a trusted channel) on `resolve()`/`ExecutionOptions`; pins are verified **fail-closed** on every resolve path (cache/local/remote) and a mismatch throws `IntegrityError`. Verification is opt-in — unpinned resolves behave as before. See [Integrity Verification](#integrity-verification).
 - **Universal Agent Output** - Single `agentOutputSchema` with categories + artifacts for all 6 agent types (validator, executor, analyst, generator, explorer, forecaster)
 - **Structured Output Extraction** - 4-strategy fallback: AI SDK structured output > JSON code fence > inline JSON > regex text parsing
-- **Validation Tracking** - Automatic result submission with issue correlation, regression detection, per-agent execution recording, and analytics
+- **Result Tracking** - Automatic submission of every run's findings to the tracker: issue correlation by fingerprint, regression detection, per-agent execution recording, and analytics
 - **Analysis Summary Extraction** - Automatic extraction of category scores, cognitive system metrics, epistemic assessments, and exploration maps from agent results at submission time. Execution telemetry (tokens, model, duration) travels first-class on `agents[]`, never inside analysis data
 - **Local Development Support** - Load definitions from local YAML files with registry fallback
 - **Bundled Starter Agents** - 5 built-in agents for immediate use without registry access
@@ -131,7 +131,7 @@ Bundled starter agents (no registry needed): `code-validator`, `docs-validator`,
 
 ### UluOps API Key
 
-Required for registry and validation service access:
+Required for registry and tracker access:
 
 ```bash
 # Environment variable (recommended)
@@ -431,7 +431,7 @@ console.log(info.name, info.version, info.interface);
 client.clearCache();
 ```
 
-### Validation Tracking
+### Result Tracking
 
 Submit execution results, preview submissions, and query run history:
 
@@ -462,6 +462,8 @@ for (const entry of history) {
 // Run details: fetch full details for a specific run
 const run = await client.getRun('run-uuid');
 ```
+
+`response.correlation` carries counts. The per-finding detail — which recommendation matched which existing issue by fingerprint, and which resolved issue a run caught again — is typed here as `FingerprintedRecommendation` and `RegressionInfo` (re-exported from the package root) but is read from the tracker through `@uluops/ops-sdk` directly (`runs.get`, `issues.getHistory`); core submits, it does not fetch it back.
 
 > `allGatesPassed` on history entries and run reads is `boolean | null` (since
 > v0.34.0): `null` = **NOT_A_GATE** — the run carried no gate-bearing agents
@@ -809,7 +811,7 @@ const client = new UluOpsClient({
   orgSlug: 'ulu-labs',                 // Org the run is saved under; omit = the workspace default (nearest .uluops.json, else ULUOPS_ORG_SLUG, else your personal org)
 
   // Behavior
-  trackingEnabled: true,              // Auto-submit results to validation service
+  trackingEnabled: true,              // Auto-submit results to the tracker
   timeout: 300000,                    // Request timeout in ms
   defaultProject: 'my-project',       // Default project for result submission
   debug: false,                       // Detailed execution logging (or ULUOPS_DEBUG)
@@ -1165,6 +1167,23 @@ Or via environment variable:
 ULUOPS_ALLOWED_TOOLS=bash
 ```
 
+### Security events
+
+Every SDK client core constructs — the tracker client, the registry client — forwards security-relevant events to one handler you supply on the config: a rejected credential, a blocked upstream redirect (a possible MITM or misroute), a failed token refresh, or a credential swap. Nothing is logged for you; the handler is the channel.
+
+```typescript
+import type { SecurityEvent } from '@uluops/core';
+
+const client = new UluOpsClient({
+  onSecurityEvent: (event: SecurityEvent) => {
+    // event.type: 'auth_failure' | 'redirect_rejected' | 'token_refresh_failed' | 'auth_strategy_replaced'
+    audit.record(event.type, event.timestamp, event);
+  },
+});
+```
+
+The handler and event types — `SecurityEventHandler`, `SecurityEvent`, `SecurityEventType`, `AuthType`, `AuthFailureEvent`, `RedirectRejectedEvent`, `TokenRefreshFailedEvent`, `AuthStrategyReplacedEvent` — are re-exported from the package root (they originate in `@uluops/sdk-core`). `ResolvedConfig.onSecurityEvent` carries the handler through to every client core builds.
+
 ### Filesystem Sandboxing
 
 The `ToolHandler` restricts LLM file operations to the target directory:
@@ -1205,7 +1224,8 @@ Per-step results (`name`, `status`, `exitCode`, `output`, `durationMs`) are retu
 |---------|---------|
 | `@uluops/sdk-core` | Shared HTTP infrastructure (HttpClient, errors, auth) |
 | `@uluops/registry-sdk` | Registry API client for definitions, models, and server-side normalization (`?normalize=true`) |
-| `@uluops/ops-sdk` | Validation tracking API client (6.x) |
+| `@uluops/ops-sdk` | Tracker API client (6.x) — runs, findings, issues, analytics |
+| `@uluops/taxonomy` | The failure taxonomy (4 domains, 28 modes, 5 severities); `isCanonicalMode` guards failure codes at submission |
 | `ai` | Vercel AI SDK v6 - LLM communication and tool loops |
 | `@ai-sdk/anthropic` | Anthropic provider for AI SDK |
 | `@ai-sdk/openai` | OpenAI provider for AI SDK |

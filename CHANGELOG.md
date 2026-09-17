@@ -4,6 +4,31 @@ All notable changes to `@uluops/core` will be documented in this file.
 
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html). In addition to the standard `Added`/`Changed`/`Deprecated`/`Removed`/`Fixed`/`Security` sections, some entries use a few informational sections — `Internal` (test/CI/build-only changes), `Supply chain` / `Dependencies`, `Design Notes`, and `Migration` — which carry no consumer-facing API impact.
 
+## [Unreleased]
+
+### Changed
+
+- **`@uluops/ops-sdk` 6.5.0 → 6.5.1.** Behaviour inherited on the result-tracking path: org-scoped saves share one token refresh (per-call views no longer shadow sdk-core's dedup gate), and a save carrying an empty analysis array no longer throws a false `AnalysisEchoMismatchError` after the run has landed. No core code changes.
+- **README**: "Validation" retired as the category (seven sites — intro, TOC, Features, the config comment, the `### Validation Tracking` section → `### Result Tracking`, the ops-sdk dependency row); `@uluops/taxonomy` added to the Dependencies table (it has been a runtime dependency since 0.36); `FingerprintedRecommendation` / `RegressionInfo` explained where the tracking example leaves off; a **Security events** subsection documents `onSecurityEvent` and the eight re-exported event types, which had no README presence at all (ship run #94, public-interface AF-002/AF-004).
+
+### Fixed (ship run #94 — each verified against source before the fix, each pinned by a test written first and watched fail)
+
+- **A comment-only or empty definition file is a `ConfigurationError`, not a `TypeError`.** `yaml.parse` returns `null` for a blank or comment-only document and a scalar for a bare string; `safeParseYaml` cast that to a mapping and five callers dereferenced it (`p['agent']`, `'agent' in p`), and a sixth site in the local resolver parsed raw. All six now go through one guard that names the file and says what it found (`src/registry/RegistryClient.ts`).
+- **An unusable pipeline gate threshold fails CLOSED.** `gateFailed` compared `score < gate.threshold` against authored YAML, so `.nan` made an `on_failure: abort` hard gate pass every stage silently — while the workflow gate (`score >= threshold`) failed closed on the same input. Both gates now route the threshold through `finiteNonNegative`, warn, and fail closed when it is unusable (`PipelineExecutor.gateFailed`, `WorkflowExecutor.evaluateGate`).
+- **A panel of scoreless agents reporting a negative decision is a result, not a crash.** `assertNotAllCrashed` keyed on `score === null && decisionCategory === 'negative'` — exactly the shape an explorer/generator panel returning negative produces — and threw `All agents failed`, discarding a completed, billed run. It now discriminates on the crash placeholder's own marker (`CRASH_PLACEHOLDER_VERSION`, exported from `utils/crashPlaceholder`); the message says how many of the dispatched agents crashed.
+- **`max_parallel` goes through the `externalValue` seam.** It was the one authored bound read raw: `.nan`, `.inf`, `0` and negatives all fell through to UNLIMITED parallelism. Absent still means no cap; present-but-unusable now means a cap of 1 with a warning. **Behaviour change for `max_parallel: 0`**, which used to mean unlimited and now means sequential — 0 was never a documented value.
+- **`mapError`'s RetryError unwrap has a depth bound** (8). The self-reference check stopped `A.errors = [A]`; a two-node cycle recursed to a `RangeError` instead of a mapped error.
+- **`riskProfile` no longer read through an `as unknown as` double cast** — `@uluops/registry-sdk` declares the field now; the cast predates that (type-safety AF-002). Three `NodeJS.ErrnoException` reads guard with `instanceof Error && 'code' in error` like `preflight.ts` already did. `ConfigurationError`, `ModelNotFoundError` and `CapabilityError` accept `ErrorOptions`, and the RegistryClient wrap sites pass `{ cause }` so the original stack survives.
+- **Tests**: the once-per-client cost-drop warning is now asserted (fires once, not twice, not when cost is absent) — test-architect's mutation showed removing it passed the suite.
+
+### Known, not fixed here
+
+Recorded by ship run #94, deferred as design decisions rather than patched:
+- Tracking is best-effort by design (`trackingFailed` / `trackingError` on the result, a warning, no throw) and `capWithWarning` truncates past 100 agents / analysis records with a warning; whether either should be a hard failure is a product call.
+- `clampModelBound`'s own comment records a deliberate, unresolved disagreement between its prose ("falls back to the operator default") and its code (an unusable `timeout: 0` clamps to a 1 ms floor).
+- The pipeline run-level `analysisSummary` is the first agent's; later stages' summaries survive as records only.
+- Steps stages ignore the abort signal; thrown-run billed-metrics tracking exists only on `runAgent`; context eviction is still inferred from a 5 % token delta (run #93 item 10) while Anthropic's `contextManagement` metadata sits captured and unread; `check:external-inputs`' authored-yaml channel matches `yaml.parse(` calls, not reads, so a green gate is not evidence for authored numeric bounds.
+
 ## [0.43.5] - 2026-09-15
 
 ### Dependencies
@@ -22,12 +47,6 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) 
 
 - **`orgSlug` falls back to ops-sdk's `resolveWorkspaceOrg`** (nearest `.uluops.json` above `process.cwd()`, bounded at `$HOME`, then `ULUOPS_ORG_SLUG`, then personal) instead of reading the env var directly. Direct consumers — the autosave hook, embedders — now honour the workspace file exactly as the CLI and the tracker MCP do; until now core implemented the process-scoped default D13 rejected and only agreed with the other clients when the CLI resolved on its behalf (security audit run #187, trust-boundary F9). Explicit `orgSlug` in config still wins. A malformed or foreign-owned workspace file throws `InputValidationError` at `resolveConfig`, loudly.
 - `@uluops/ops-sdk` 6.3.0 → 6.3.1.
-
-## [Unreleased]
-
-### Changed
-
-- **`@uluops/ops-sdk` 6.5.0 → 6.5.1.** Behaviour inherited on the result-tracking path: org-scoped saves share one token refresh (per-call views no longer shadow sdk-core's dedup gate), and a save carrying an empty analysis array no longer throws a false `AnalysisEchoMismatchError` after the run has landed. No core code changes.
 
 ## [0.43.1] - 2026-09-13
 

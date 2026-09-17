@@ -1,4 +1,5 @@
 import type { AgentExecutor } from './AgentExecutor.js';
+import { externalInt, finiteNonNegative } from '../utils/externalValue.js';
 import type { CommandExecutor } from './CommandExecutor.js';
 import type { RegistryClient } from '../registry/RegistryClient.js';
 import type { ResolvedDefinition } from '../types/registry.js';
@@ -339,9 +340,24 @@ export class WorkflowExecutor {
       return [await this.executePhase(phases[0]!, input, control)];
     }
 
-    if (maxParallel && maxParallel > 0 && maxParallel < phases.length) {
+    // `max_parallel` is authored YAML and was the one authored bound in this
+    // package read raw: `.nan`, `.inf`, 0 and negatives all failed the old
+    // `maxParallel && maxParallel > 0` guard and fell through to UNLIMITED
+    // parallelism — the degradation externalValue forbids ("a conservative
+    // limit, not no limit"). Absent still means no cap; present-but-unusable
+    // now means a cap of 1, said out loud (ship run #94).
+    const cap = maxParallel === undefined
+      ? undefined
+      : externalInt(maxParallel, { min: 1, max: Math.max(1, phases.length), fallback: 1 });
+    if (maxParallel !== undefined && cap !== maxParallel && !(typeof maxParallel === 'number' && Number.isInteger(maxParallel) && maxParallel > phases.length)) {
+      this.logger.warn(
+        `workflow orchestration.max_parallel is not a usable positive integer (${String(maxParallel)}) — ` +
+        `running phases with a concurrency of ${cap} rather than unlimited`,
+      );
+    }
+    if (cap !== undefined && cap < phases.length) {
       // Semaphore-limited concurrency
-      return this.executePhasesWithLimit(phases, input, maxParallel, control);
+      return this.executePhasesWithLimit(phases, input, cap, control);
     }
 
     // Unlimited parallel — all phases in this level run concurrently
@@ -614,7 +630,15 @@ export class WorkflowExecutor {
   ): 'passed' | 'warned' | 'blocked' {
     if (!gate) return 'passed';
     if (score === null) return 'passed';
-    if (score >= gate.threshold) return 'passed';
+    // An unusable threshold (authored `.nan`) already blocked here — `score >= NaN`
+    // is false — but silently. Name it, and keep the polarity the pipeline gate
+    // now shares (ship run #94).
+    const threshold = finiteNonNegative(gate.threshold);
+    if (threshold === undefined) {
+      this.logger.warn(`Phase gate threshold is not a usable number (${String(gate.threshold)}) — blocking (fail-closed)`);
+      return 'blocked';
+    }
+    if (score >= threshold) return 'passed';
     if (gate.on_fail === 'warn') return 'warned';
     return 'blocked';
   }

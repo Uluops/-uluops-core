@@ -106,6 +106,16 @@ describe('RegistryClient', () => {
       expect(result.agentType).toBe('validator');
     });
 
+    it('a comment-only or empty definition file is a ConfigurationError, not a TypeError (ship #94)', async () => {
+      // yaml.parse('# only a comment') is null; safeParseYaml used to cast that to a
+      // Record and five callers dereferenced it, so this died with
+      // "Cannot use 'in' operator" instead of the named error written for it.
+      await fs.writeFile(path.join(tmpDir, 'empty-def.agent.yaml'), '# only a comment\n');
+      const client = new RegistryClient({ ...baseConfig, localDefinitions: tmpDir }, noopLogger);
+      await expect(client.resolve('empty-def')).rejects.toThrow(ConfigurationError);
+      await expect(client.resolve('empty-def')).rejects.toThrow(/empty-def/);
+    });
+
     it('throws ConfigurationError naming the file for a local agent YAML missing agent.interface', async () => {
       // Previously crashed later as TypeError: Cannot read properties of
       // undefined (reading 'agentType') in buildAgentConfig (issue 2563691d).

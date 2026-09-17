@@ -936,6 +936,25 @@ describe('AIProvider', () => {
         prompt: 'test',
       })).rejects.toThrow(SdkApiError);
     });
+
+    it('a mutually-referential RetryError chain is mapped, not a RangeError (ship #94 — depth bound)', async () => {
+      const { generateText } = await import('ai');
+      const mockGenerateText = vi.mocked(generateText);
+      // A.errors -> [B], B.errors -> [A]: the self-reference guard (`last !== error`)
+      // does not see it, so mapError recursed to stack exhaustion.
+      const a = new RetryError({ message: 'outer', reason: 'maxRetriesExceeded', errors: [] });
+      const b = new RetryError({ message: 'inner', reason: 'maxRetriesExceeded', errors: [a] });
+      (a as unknown as { errors: unknown[] }).errors = [b];
+      mockGenerateText.mockRejectedValueOnce(a);
+      const provider = new AIProvider(mockConfig, mockCatalog(), noopLogger);
+      let caught: unknown;
+      try {
+        await provider.generate({ model: 'sonnet', system: 'test', prompt: 'test' });
+      } catch (err) { caught = err; }
+      expect(caught).toBeDefined();
+      expect(caught).not.toBeInstanceOf(RangeError);
+      expect((caught as Error).message).toMatch(/Retries exhausted/);
+    });
   });
 
   describe('buildBudgetPrepareStep (via generate)', () => {
