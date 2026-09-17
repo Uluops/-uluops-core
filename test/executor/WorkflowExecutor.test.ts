@@ -2064,3 +2064,104 @@ describe('WorkflowExecutor — billed work survives a blocked phase and a thrown
     expect(skipped!.score).toBeNull();
   });
 });
+
+describe('WorkflowExecutor — evaluateGate polarity respects the author\'s on_fail (ship #95)', () => {
+  // Ship #94's unusable-threshold guard returned 'blocked' BEFORE the on_fail check, so a
+  // phase whose author declared `on_fail: warn` was blocked anyway — overriding a posture
+  // the author explicitly opted into, and diverging from the pipeline gate's own polarity
+  // (a failed gate always flows through `resolveOnFailure`).
+  it('an unusable threshold on a warn-postured gate WARNS, not blocks', async () => {
+    const cmdExec = makeCommandExecutor([makeCommandResult({ score: 85 })]);
+    const registry = makeRegistry();
+    const executor = new WorkflowExecutor(cmdExec, registry);
+    const def = makeWorkflowDef({
+      orchestration: {
+        phases: [
+          { id: 'a', name: 'A', commands: ['cmd-a'], gate: { threshold: Number.NaN, aggregate: 'average', on_fail: 'warn' } },
+        ],
+        on_failure: 'continue',
+      },
+    });
+    const result = await executor.execute(def, { target: '/tmp/test' });
+    expect(result.phases[0]!.decision).toBe('warned');
+  });
+
+  it('an unusable threshold on a blocking gate (on_fail unset / stop) still BLOCKS — fail-closed preserved', async () => {
+    const cmdExec = makeCommandExecutor([makeCommandResult({ score: 85 })]);
+    const registry = makeRegistry();
+    const executor = new WorkflowExecutor(cmdExec, registry);
+    const def = makeWorkflowDef({
+      orchestration: {
+        phases: [
+          { id: 'a', name: 'A', commands: ['cmd-a'], gate: { threshold: Number.NaN, aggregate: 'average', on_fail: 'stop' } },
+        ],
+        on_failure: 'stop',
+      },
+    });
+    const result = await executor.execute(def, { target: '/tmp/test' });
+    expect(result.phases[0]!.decision).toBe('blocked');
+  });
+});
+
+describe('WorkflowExecutor — max_parallel Infinity is unusable, not a usable ceiling (ship #95, test-architect)', () => {
+  // Mutating the cap computation to treat maxParallel === Infinity as usable passed the
+  // entire suite before this test existed — `.inf` is directly authorable YAML and is
+  // exactly the "a conservative limit, not no limit" degradation the ship #94 fix exists
+  // to prevent for NaN. externalValue's own `Number.isInteger` guard already rejects
+  // Infinity (Number.isInteger(Infinity) === false), so the fix is already correct; this
+  // closes the coverage gap, not a defect.
+  it('an Infinity max_parallel degrades to the conservative cap of 1, not to unlimited', async () => {
+    let maxConcurrent = 0; let current = 0;
+    const cmdExec = {
+      execute: vi.fn().mockImplementation(async () => {
+        current++; maxConcurrent = Math.max(maxConcurrent, current);
+        await new Promise(r => setTimeout(r, 10)); current--;
+        return makeCommandResult({ score: 85 });
+      }),
+    } as unknown as CommandExecutor;
+    const executor = new WorkflowExecutor(cmdExec, makeRegistry());
+    const def = makeWorkflowDef({
+      orchestration: {
+        phases: [
+          { id: 'a', name: 'A', commands: ['cmd-a'] }, { id: 'b', name: 'B', commands: ['cmd-b'] },
+          { id: 'c', name: 'C', commands: ['cmd-c'] }, { id: 'd', name: 'D', commands: ['cmd-d'] },
+        ],
+        on_failure: 'stop',
+        max_parallel: Number.POSITIVE_INFINITY as unknown as number,
+      },
+    });
+    const result = await executor.execute(def, { target: '/tmp/test' });
+    expect(result.phases).toHaveLength(4);
+    expect(maxConcurrent).toBe(1);
+  });
+
+  // Negative control for the fix above (issue 5227a3ee): a genuinely large but FINITE
+  // authored cap that exceeds the level's phase count is a real ceiling doing its job and
+  // must NOT be treated as unusable or warned about.
+  it('control: an authored cap larger than the level runs everything concurrently, with no warning', async () => {
+    const warnings: string[] = [];
+    const logger = { warn: (m: string) => warnings.push(m), debug() {}, info() {}, error() {} };
+    let maxConcurrent = 0; let current = 0;
+    const cmdExec = {
+      execute: vi.fn().mockImplementation(async () => {
+        current++; maxConcurrent = Math.max(maxConcurrent, current);
+        await new Promise(r => setTimeout(r, 10)); current--;
+        return makeCommandResult({ score: 85 });
+      }),
+    } as unknown as CommandExecutor;
+    const executor = new WorkflowExecutor(cmdExec, makeRegistry(), undefined, logger as never);
+    const def = makeWorkflowDef({
+      orchestration: {
+        phases: [
+          { id: 'a', name: 'A', commands: ['cmd-a'] }, { id: 'b', name: 'B', commands: ['cmd-b'] },
+        ],
+        on_failure: 'stop',
+        max_parallel: 10,
+      },
+    });
+    const result = await executor.execute(def, { target: '/tmp/test' });
+    expect(result.phases).toHaveLength(2);
+    expect(maxConcurrent).toBe(2);
+    expect(warnings.some(w => w.includes('max_parallel'))).toBe(false);
+  });
+});

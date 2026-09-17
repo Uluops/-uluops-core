@@ -831,6 +831,7 @@ const client = new UluOpsClient({
                                       // each get their own ceiling and do not coordinate with each other.
                                       // Distinct from a workflow's per-level `max_parallel`, which caps one layer only.
   dashboardUrl: 'https://app.uluops.ai', // Dashboard link prefix for run URLs
+  onSecurityEvent: (event) => { /* see Security events below */ }, // Optional handler for auth/redirect security events
 
   // Security
   allowedTools: ['bash'],             // Operator tool allowlist (or ULUOPS_ALLOWED_TOOLS)
@@ -1002,7 +1003,7 @@ The SDK provides a structured error hierarchy:
 | `CancelledError` | `AIProvider.generate()` (reached via any executor) | The run stopped because the CALLER asked it to — `PipelineHandle.cancel()`, or an `abortSignal` you supplied on `ExecutionOptions`. Subclass of `ExecutionError` (code `CANCELLED`). Check it BEFORE `ExecutionError`, and note it is deliberately **not** a `TimeoutError`: a cancel names no elapsed duration, so treating the two alike sends you to raise a timeout that was never the cause, and makes timeout-keyed retry logic retry work you asked to stop |
 | `MaxStepsExhaustedError` | `AgentExecutor.execute()` | The tool loop hit the `maxSteps` ceiling while the model was still calling tools, leaving empty output. Subclass of `ExecutionError` (code `MAX_STEPS_EXHAUSTED`); carries `error.steps`, `error.finishReason`, and `error.billedMetrics?` (typed `ExecutionMetricsLike`) — the tokens and cost ALREADY BILLED before the ceiling was hit. A step-ceiling run is by construction the longest run the engine produces, so read `billedMetrics` rather than recording the run as free; it is **absent**, never zero, when nothing is known (absent is an admission, zero is a claim). Raise `maxSteps`, narrow the target, or lower the context budget so wrap-up triggers earlier |
 | `ParseError` | `OutputExtractor.extractWithMetadata()` | LLM output could not be parsed as structured JSON. Check `error.contentPreview` for raw output |
-| `SubmissionError` | `SubmissionClient` methods | Validation service rejected a submission. Use `SubmissionErrorCodes` to narrow by code |
+| `SubmissionError` | `SubmissionClient` methods | The tracker rejected a submission. Use `SubmissionErrorCodes` to narrow by code |
 | `WorkflowError` | `WorkflowExecutor.execute()` | Phase gate failure. `error.context.partialResult` is `Partial<WorkflowResult> \| CommandResult[] \| undefined` — a partial aggregate object, a raw array of completed command results, or absent, depending which internal path threw |
 | `PipelineError` | `PipelineExecutor.execute()` | Pipeline stage failure. Check `error.context` for stage name/index |
 | `SubscriptionRequiredError` | `RegistryClient.resolve()` | Definition requires a higher subscription tier. Check `error.requiredTier`, `error.currentTier`, and `error.upgradeUrl` for upgrade guidance |

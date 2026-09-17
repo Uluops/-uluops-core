@@ -116,6 +116,24 @@ describe('RegistryClient', () => {
       await expect(client.resolve('empty-def')).rejects.toThrow(/empty-def/);
     });
 
+    // The null arm above was the only one exercised — mutating the guard to check only
+    // `parsed === null` still passed the full suite, so a bare scalar document or a
+    // top-level sequence fell through to the old raw TypeError undetected (ship run #95,
+    // test-architect).
+    it('a bare scalar YAML document is a ConfigurationError, not a TypeError', async () => {
+      await fs.writeFile(path.join(tmpDir, 'scalar-def.agent.yaml'), 'just a string\n');
+      const client = new RegistryClient({ ...baseConfig, localDefinitions: tmpDir }, noopLogger);
+      await expect(client.resolve('scalar-def')).rejects.toThrow(ConfigurationError);
+      await expect(client.resolve('scalar-def')).rejects.toThrow(/scalar-def/);
+    });
+
+    it('a top-level sequence YAML document is a ConfigurationError, not a TypeError', async () => {
+      await fs.writeFile(path.join(tmpDir, 'sequence-def.agent.yaml'), '- a\n- b\n');
+      const client = new RegistryClient({ ...baseConfig, localDefinitions: tmpDir }, noopLogger);
+      await expect(client.resolve('sequence-def')).rejects.toThrow(ConfigurationError);
+      await expect(client.resolve('sequence-def')).rejects.toThrow(/sequence-def/);
+    });
+
     it('throws ConfigurationError naming the file for a local agent YAML missing agent.interface', async () => {
       // Previously crashed later as TypeError: Cannot read properties of
       // undefined (reading 'agentType') in buildAgentConfig (issue 2563691d).

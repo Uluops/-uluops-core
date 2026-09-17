@@ -713,6 +713,8 @@ describe('CommandExecutor', () => {
         execution: { model: { default: 'sonnet' }, timeout: 30000, thresholds: { pass: 75, warn: 50 }, sequential: false },
       }), { target: '/tmp/test' });
       expect(result.decisionCategory).toBe('negative');
+      // 1000 = 2 agents x the fixture's default inputTokens: 500 (makeValidatorResult in
+      // fixtures.ts) — the assertion that both agents' billed work survives and sums.
       expect(result.metrics.inputTokens).toBe(1000); // both agents' billed work survives
     });
 

@@ -74,6 +74,23 @@ export interface RunSubmissionResponse {
    * from a fetched run).
    */
   repairedRecommendations?: number;
+
+  /**
+   * How many entries the client DROPPED to stay under the wire's client-side
+   * ceilings before sending — agents (100), recommendations (500), analysis
+   * records (100). Each ceiling is enforced inside `@uluops/ops-sdk` before any
+   * HTTP call and would otherwise abort the whole save, so core truncates the
+   * tail and warns; until now the warning was the only signal, and a caller
+   * reading the response had no way to know the run on the tracker is shorter
+   * than the run in memory (ship run #95, anxiety-reader). Zeros are measured:
+   * `{ agents: 0, ... }` means nothing was dropped. Absent on `getRun()` for the
+   * same reason as `repairedRecommendations`.
+   */
+  truncated?: {
+    agents: number;
+    recommendations: number;
+    analysisRecords: number;
+  };
 }
 
 /**

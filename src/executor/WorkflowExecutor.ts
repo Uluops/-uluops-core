@@ -1,5 +1,6 @@
 import type { AgentExecutor } from './AgentExecutor.js';
 import { externalInt, finiteNonNegative } from '../utils/externalValue.js';
+import { CRASH_PLACEHOLDER_VERSION } from '../utils/crashPlaceholder.js';
 import type { CommandExecutor } from './CommandExecutor.js';
 import type { RegistryClient } from '../registry/RegistryClient.js';
 import type { ResolvedDefinition } from '../types/registry.js';
@@ -349,7 +350,11 @@ export class WorkflowExecutor {
     const cap = maxParallel === undefined
       ? undefined
       : externalInt(maxParallel, { min: 1, max: Math.max(1, phases.length), fallback: 1 });
-    if (maxParallel !== undefined && cap !== maxParallel && !(typeof maxParallel === 'number' && Number.isInteger(maxParallel) && maxParallel > phases.length)) {
+    // A usable integer LARGER than the level is clamped to the level by externalInt —
+    // that is a ceiling doing its job, not an unusable value, and it must not warn.
+    const authoredCapExceedsLevel =
+      typeof maxParallel === 'number' && Number.isInteger(maxParallel) && maxParallel > phases.length;
+    if (maxParallel !== undefined && cap !== maxParallel && !authoredCapExceedsLevel) {
       this.logger.warn(
         `workflow orchestration.max_parallel is not a usable positive integer (${String(maxParallel)}) — ` +
         `running phases with a concurrency of ${cap} rather than unlimited`,
@@ -630,15 +635,25 @@ export class WorkflowExecutor {
   ): 'passed' | 'warned' | 'blocked' {
     if (!gate) return 'passed';
     if (score === null) return 'passed';
-    // An unusable threshold (authored `.nan`) already blocked here — `score >= NaN`
-    // is false — but silently. Name it, and keep the polarity the pipeline gate
-    // now shares (ship run #94).
+    // An unusable threshold (authored `.nan`, `.inf`, a negative) is a gate FAILURE,
+    // not a verdict of its own: it is named, then routed through the author's declared
+    // posture exactly like a below-threshold score. That is what the pipeline twin does
+    // — `PipelineExecutor.applyGate` hands every failed gate to `resolveOnFailure`.
+    //
+    // Ship #94 returned 'blocked' from here ABOVE the `on_fail` check, so a phase whose
+    // author declared `on_fail: warn` was blocked, while the comment claimed a polarity
+    // with the pipeline gate that the pipeline gate does not have. The old code, for what
+    // it is worth, fell through `score >= NaN` (false) into the on_fail branch and
+    // returned 'warned' — silently, but with the right posture (ship run #95).
     const threshold = finiteNonNegative(gate.threshold);
     if (threshold === undefined) {
-      this.logger.warn(`Phase gate threshold is not a usable number (${String(gate.threshold)}) — blocking (fail-closed)`);
-      return 'blocked';
+      this.logger.warn(
+        `Phase gate threshold is not a usable number (${String(gate.threshold)}) — ` +
+        `treating the gate as failed (fail-closed); the phase's on_fail decides the posture`,
+      );
+    } else if (score >= threshold) {
+      return 'passed';
     }
-    if (score >= threshold) return 'passed';
     if (gate.on_fail === 'warn') return 'warned';
     return 'blocked';
   }
@@ -704,11 +719,11 @@ export class WorkflowExecutor {
       type: 'command',
       name: ref,
       // No definition backs this result — the step crashed before its
-      // definition could even be resolved. '1.0.0-synthesized' is deliberately
+      // definition could even be resolved. The marker is deliberately
       // non-parseable as a real release, so downstream consumers
       // (SubmissionClient's realVersion) can tell it apart from an actual
       // 1.0.0 release instead of putting an empty string on the wire.
-      version: '1.0.0-synthesized',
+      version: CRASH_PLACEHOLDER_VERSION,
       definitionHash: '',
       agentType: 'validator',
       decision: 'FAIL',

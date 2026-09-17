@@ -8,6 +8,14 @@ import {
   type AnalysisRecordInput,
   type RecommendationInput,
 } from '@uluops/ops-sdk';
+
+// `@uluops/ops-sdk` declares these two fields as INLINE `z.enum(...)` on
+// RecommendationInputSchema rather than as standalone exported schemas (unlike
+// FailureCodeSchema/FailureDomainSchema/SeveritySchema/PrioritySchema, which ARE
+// exported) — there is nothing to import. Kept as local constants, re-checked
+// whenever the ops-sdk pin moves, same discipline as MAX_ANALYSIS_RECORDS below.
+const VALID_CLASSIFICATION_CONFIDENCE = ['high', 'medium', 'low'] as const;
+const VALID_CLASSIFIED_BY = ['agent', 'classifier', 'human'] as const;
 import type { Logger } from '@uluops/sdk-core';
 import type { ResolvedConfig } from '../types/config.js';
 import type { ExecutionResult, ExecutionMetrics } from '../types/execution.js';
@@ -19,6 +27,7 @@ import type { RunSubmission, RunSubmissionResponse, RunHistoryEntry, SubmissionQ
 import { AnalysisSummaryExtractor } from '../analysis/AnalysisSummaryExtractor.js';
 import { EXTRACTION_CONFIDENCE_THRESHOLD } from '../constants.js';
 import { isCanonicalMode } from '@uluops/taxonomy';
+import { CRASH_PLACEHOLDER_VERSION } from '../utils/crashPlaceholder.js';
 
 /**
  * Ceiling on `analysisRecords` in one `runs.save` payload. Mirrors
@@ -44,6 +53,66 @@ const MAX_ANALYSIS_RECORDS = 100;
 const MAX_RUN_AGENTS = 100;
 
 /**
+ * Ceiling on `recommendations` in one `runs.save` payload. Mirrors
+ * `recommendations: z.array(RecommendationInputSchema).max(500)` in
+ * `@uluops/ops-sdk`'s `SaveRunInputSchema`. `analysisRecords` and `agents` were
+ * already capped with a warning; `recommendations` was the one sibling array with
+ * no ceiling at all, and `PipelineExecutor` flattens recommendations across every
+ * stage with no per-stage limit — confirmed to abort the whole save past 500
+ * (ship run #95, code-auditor).
+ */
+const MAX_RECOMMENDATIONS = 500;
+
+/**
+ * Clamp a maxScore into the wire's `min(0).max(100)` before it can abort a save.
+ *
+ * `AgentExecutor` clamps `score` into [0,100] but never range-checks the paired
+ * `maxScore` — an agent declaring a 200-point rubric sends `maxScore: 200` straight
+ * through, and the two are documented as a resolved pair elsewhere in this file.
+ * Confirmed: an unclamped 200 aborts the whole `runs.save`, losing every agent,
+ * recommendation and analysis record for the run (ship run #95, code-auditor).
+ */
+function clampMaxScore(value: number, logger: Logger): number {
+  if (value >= 0 && value <= 100) return value;
+  const clamped = Math.max(0, Math.min(100, value));
+  logger.warn(`Agent maxScore ${value} is outside [0,100]; clamping to ${clamped} before submission.`);
+  return clamped;
+}
+
+/**
+ * Clamp a run's averageScore into the wire's `min(0).max(100)` before it can abort a
+ * save. Per-agent scores are already clamped (see {@link clampMaxScore}), but
+ * `aggregation.method: 'sum'` is an authorable {@link AggregationMethod} — summing two
+ * 90-score agents legitimately produces 180 here (ship run #95, code-auditor).
+ */
+function clampAverageScore(value: number, logger: Logger): number {
+  if (value >= 0 && value <= 100) return value;
+  const clamped = Math.max(0, Math.min(100, value));
+  logger.warn(`Run averageScore ${value} is outside [0,100] (aggregation.method: 'sum' can exceed 100); clamping to ${clamped} before submission.`);
+  return clamped;
+}
+
+/**
+ * Repair a token count against the wire's `int().nonnegative()` constraint (all nine
+ * `TokenUsageSchema` fields declare `.int()`). `finite() && n > 0` in this package's own
+ * sum helpers admits a fractional count, which aborts the whole save — confirmed:
+ * `inputTokens: 10.5` throws `expected int, received number` (ship run #95, code-auditor).
+ * Rounds rather than truncating: a fraction here is a computation artifact (an averaged
+ * or apportioned count), not a sentinel worth preserving exactly.
+ */
+function repairTokenCount(value: number | undefined, logger: Logger, field: string): number | undefined {
+  if (value === undefined) return undefined;
+  if (!Number.isFinite(value) || value < 0) {
+    logger.warn(`Token field ${field}=${value} is not a usable non-negative number; omitting from submission.`);
+    return undefined;
+  }
+  if (Number.isInteger(value)) return value;
+  const rounded = Math.round(value);
+  logger.warn(`Token field ${field}=${value} is not an integer (wire requires int()); rounding to ${rounded}.`);
+  return rounded;
+}
+
+/**
  * Thin wrapper around @uluops/ops-sdk for execution result submission.
  *
  * Delegates all API operations to OpsClient (which handles retry,
@@ -57,11 +126,16 @@ export class SubmissionClient {
   private _ops?: OpsClient;
   private readonly analysisExtractor = new AnalysisSummaryExtractor();
 
-  /** One warning per client for the un-submittable cost field — a property of the wire
-   *  type, not of any run, so per-run warnings would be noise. */
-  private costDropWarned = false;
-
   constructor(private config: ResolvedConfig, private logger: Logger) {}
+
+  /**
+   * Reset at the start of each {@link transformToOpsInput} call and read at the end to
+   * populate {@link RunSubmissionResponse.truncated}. `capWithWarning` already knows,
+   * per call, how many entries it dropped — this just tallies that by kind instead of
+   * discarding it after the log line (ship run #95, anxiety-reader).
+   */
+  private truncationTally: { agents: number; recommendations: number; analysisRecords: number } =
+    { agents: 0, recommendations: 0, analysisRecords: 0 };
 
   /**
    * Repair one recommendation so it cannot abort the submission.
@@ -86,6 +160,20 @@ export class SubmissionClient {
     r: ExecutionResult['recommendations'][number],
   ): { sanitized: RecommendationInput; repairs: string[] } {
     const repairs: string[] = [];
+    const repairLineNumber = (v: number | null | undefined) => {
+      if (v === undefined || v === null || !Number.isFinite(v)) return undefined;
+      const repaired = Math.max(0, Math.round(v));
+      if (repaired !== v) repairs.push(`lineNumber=${v} repaired to ${repaired} (wire requires a non-negative integer)`);
+      return repaired;
+    };
+    const keepSecondaryFailureCodes = (value: string[] | undefined, reps: string[]): string[] | undefined => {
+      if (value === undefined) return undefined;
+      const trimmed = value.filter(v => v.length <= 20).slice(0, 20);
+      if (trimmed.length !== value.length) {
+        reps.push(`secondaryFailureCodes truncated ${value.length}→${trimmed.length} entries (wire caps at 20 entries of ≤20 chars)`);
+      }
+      return trimmed.length > 0 ? trimmed : undefined;
+    };
 
     const keepIfValid = <T>(
       schema: { safeParse(v: unknown): { success: boolean } },
@@ -95,6 +183,18 @@ export class SubmissionClient {
       if (value === undefined || value === null) return undefined;
       if (schema.safeParse(value).success) return value;
       repairs.push(`${field}=${JSON.stringify(value)} omitted (wire schema would reject it)`);
+      return undefined;
+    };
+
+    const keepIfMember = <T extends string>(
+      allowed: readonly T[],
+      value: T | undefined,
+      field: string,
+      reps: string[],
+    ): T | undefined => {
+      if (value === undefined || value === null) return undefined;
+      if ((allowed as readonly string[]).includes(value)) return value;
+      reps.push(`${field}=${JSON.stringify(value)} omitted (wire schema would reject it)`);
       return undefined;
     };
 
@@ -157,12 +257,24 @@ export class SubmissionClient {
       failureMode,
       category: clamp(r.category, 100, 'category'),
       filePath: clamp(r.filePath, 1000, 'filePath'),
-      lineNumber: r.lineNumber,
+      // The wire declares `z.number().int().nonnegative().nullish()`. Every OTHER field
+      // in this method is repaired or omitted against its own wire constraint; this one
+      // was forwarded raw — a negative line number (a sentinel some producers use for
+      // "unknown") or a fractional one (a miscomputed midpoint) each aborted the whole
+      // save. Repair, don't drop: round toward zero, then floor negatives at 0 rather than
+      // discarding a value that names a real (if slightly wrong) location (ship run #95,
+      // code-auditor).
+      lineNumber: repairLineNumber(r.lineNumber),
       description: clamp(r.description, 10_000, 'description'),
-      classificationConfidence: r.classificationConfidence,
-      classifiedBy: r.classifiedBy,
-      secondaryFailureCodes: r.secondaryFailureCodes,
-      taxonomyVersion: r.taxonomyVersion,
+      // The wire declares two closed enums and two bounded arrays/strings for these four
+      // fields; they were the only fields in this method with NO repair pass at all —
+      // 'very high' or a 21-element secondaryFailureCodes each aborted the whole save
+      // (ship run #95, code-auditor). Same policy as everything else here: keep what the
+      // wire accepts, omit only what it would reject, warn on every omission.
+      classificationConfidence: keepIfMember(VALID_CLASSIFICATION_CONFIDENCE, r.classificationConfidence, 'classificationConfidence', repairs),
+      classifiedBy: keepIfMember(VALID_CLASSIFIED_BY, r.classifiedBy, 'classifiedBy', repairs),
+      secondaryFailureCodes: keepSecondaryFailureCodes(r.secondaryFailureCodes, repairs),
+      taxonomyVersion: clamp(r.taxonomyVersion, 50, 'taxonomyVersion'),
     };
 
     if (repairs.length > 0) {
@@ -182,11 +294,16 @@ export class SubmissionClient {
    * which would lose the entire run's payload — truncating loses only the
    * tail, and the warning names exactly how much.
    */
-  private capWithWarning<T>(items: T[], max: number, label: string): T[] {
+  private capWithWarning<T>(
+    items: T[], max: number, label: string,
+    kind?: keyof SubmissionClient['truncationTally'],
+  ): T[] {
     if (items.length <= max) return items;
+    const dropped = items.length - max;
+    if (kind) this.truncationTally[kind] += dropped;
     this.logger.warn(
       `Submission produced ${items.length} ${label}, exceeding the wire limit of ${max}; ` +
-      `dropping the last ${items.length - max} (mirrors the @uluops/ops-sdk client-side schema cap).`,
+      `dropping the last ${dropped} (mirrors the @uluops/ops-sdk client-side schema cap).`,
     );
     return items.slice(0, max);
   }
@@ -234,7 +351,7 @@ export class SubmissionClient {
       return this.createLocalResponse(submission);
     }
 
-    const { input, repairedRecommendations } = this.transformToOpsInput(submission);
+    const { input, repairedRecommendations, truncated } = this.transformToOpsInput(submission);
     const response = await this.ops.runs.save(input);
 
     return {
@@ -251,6 +368,7 @@ export class SubmissionClient {
       },
       deduplicated: response.deduplicated,
       repairedRecommendations,
+      truncated,
     };
   }
 
@@ -425,7 +543,9 @@ export class SubmissionClient {
   private transformToOpsInput(submission: RunSubmission): {
     input: Parameters<OpsClient['runs']['save']>[0];
     repairedRecommendations: number;
+    truncated: { agents: number; recommendations: number; analysisRecords: number };
   } {
+    this.truncationTally = { agents: 0, recommendations: 0, analysisRecords: 0 };
     const { result } = submission;
 
     // Workflow/pipeline results: decompose phases/stages into per-agent entries.
@@ -445,7 +565,7 @@ export class SubmissionClient {
         const analysis = this.analysisExtractor.extract(result as AgentResult, submission.resolvedDefinition);
         analysisSummary = analysis.summary;
         analysisRecords = analysis.records.length > 0
-          ? this.capWithWarning(analysis.records, MAX_ANALYSIS_RECORDS, 'analysis records')
+          ? this.capWithWarning(analysis.records, MAX_ANALYSIS_RECORDS, 'analysis records', 'analysisRecords')
           : undefined;
         for (const w of analysis.warnings ?? []) this.logger.warn(w);
       } else if (this.isPipelineResult(result)) {
@@ -463,7 +583,7 @@ export class SubmissionClient {
           }
         }
         if (allRecords.length > 0) {
-          analysisRecords = this.capWithWarning(allRecords, MAX_ANALYSIS_RECORDS, 'analysis records');
+          analysisRecords = this.capWithWarning(allRecords, MAX_ANALYSIS_RECORDS, 'analysis records', 'analysisRecords');
         }
       }
     }
@@ -482,20 +602,30 @@ export class SubmissionClient {
       );
     }
 
+    const cappedRecommendations = this.capWithWarning(
+      sanitizedRecommendations.map(r => r.sanitized), MAX_RECOMMENDATIONS, 'recommendations', 'recommendations',
+    );
+
     return {
       input: {
         project: submission.project,
         workflowType: submission.workflowType,
         idempotencyKey: submission.idempotencyKey,
         agents,
-        recommendations: sanitizedRecommendations.map(r => r.sanitized),
+        recommendations: cappedRecommendations,
         timestamp: new Date().toISOString(),
         rawMarkdown: submission.rawMarkdown,
         summary: {
           allGatesPassed: this.isPositiveDecision(result),
           // OMIT when scoreless — the tracker computes the average over scored agents
           // or stores null. Never fabricate 0. (score-nullability spec, averageScore decision.)
-          ...(result.score != null ? { averageScore: result.score } : {}),
+          //
+          // CLAMPED, not forwarded raw: per-agent scores are clamped at [0,100]
+          // (AgentExecutor), but `aggregation.method: 'sum'` is an authorable
+          // AggregationMethod and summing two 90-score agents legitimately produces
+          // 180 here — outside the wire's `min(0).max(100)` and enough to abort the
+          // whole save (ship run #95, code-auditor).
+          ...(result.score != null ? { averageScore: clampAverageScore(result.score, this.logger) } : {}),
         },
         definitionType: result.type,
         definitionName: result.name,
@@ -506,6 +636,7 @@ export class SubmissionClient {
         analysisRecords,
       },
       repairedRecommendations,
+      truncated: { ...this.truncationTally },
     };
   }
 
@@ -558,7 +689,7 @@ export class SubmissionClient {
       agents.push(this.resultToAgent(result));
     }
 
-    return this.capWithWarning(agents, MAX_RUN_AGENTS, 'agent entries (from workflow phases)');
+    return this.capWithWarning(agents, MAX_RUN_AGENTS, 'agent entries (from workflow phases)', 'agents');
   }
 
   /**
@@ -598,7 +729,7 @@ export class SubmissionClient {
       agents.push(this.resultToAgent(result));
     }
 
-    return this.capWithWarning(agents, MAX_RUN_AGENTS, 'agent entries (from pipeline stages)');
+    return this.capWithWarning(agents, MAX_RUN_AGENTS, 'agent entries (from pipeline stages)', 'agents');
   }
 
   /**
@@ -612,7 +743,7 @@ export class SubmissionClient {
     const score = result.score ?? null;
     const maxScore = score === null
       ? undefined
-      : (('maxScore' in result ? result.maxScore : undefined) ?? 100);
+      : clampMaxScore(('maxScore' in result ? result.maxScore : undefined) ?? 100, this.logger);
     return {
       name: result.name,
       definitionVersion: this.realVersion(result.version),
@@ -638,7 +769,7 @@ export class SubmissionClient {
   private commandToAgent(cmd: CommandResult) {
     const score = cmd.score ?? null;
     // Omit the scale on the wire when scoreless (see resultToAgent).
-    const maxScore = score === null ? undefined : (cmd.maxScore ?? 100);
+    const maxScore = score === null ? undefined : clampMaxScore(cmd.maxScore ?? 100, this.logger);
     return {
       name: cmd.name,
       definitionVersion: this.realVersion(cmd.version),
@@ -668,7 +799,7 @@ export class SubmissionClient {
    * definition, and suppressing it would drop genuine data.
    */
   private realVersion(v: string | undefined): string | undefined {
-    return v && v !== 'unknown' && v !== '1.0.0-synthesized' ? v : undefined;
+    return v && v !== 'unknown' && v !== CRASH_PLACEHOLDER_VERSION ? v : undefined;
   }
 
   /**
@@ -698,8 +829,13 @@ export class SubmissionClient {
     // operator reconciling spend against the tracker learns why the column is empty from
     // the run rather than from the changelog. Once per client, because it is a property of
     // the wire type and not of any particular run — per-run warnings would be noise.
-    if (metrics.costUsd !== undefined && !this.costDropWarned) {
-      this.costDropWarned = true;
+    // Per-run, not per-client (ship run #95 — Alex's call, reversing ship #94's
+    // once-per-client suppression). A per-client warning fires on the first run of a
+    // long-lived client and then goes silent for every run after, so an operator
+    // reconciling a SPECIFIC run's spend against the tracker sees nothing on that run's
+    // own output — only on whichever run happened to be first. The gap this exists to
+    // announce is per-run money; the signal now matches it.
+    if (metrics.costUsd !== undefined) {
       this.logger.warn(
         `Computed cost ($${metrics.costUsd.toFixed(4)} on this run) is NOT submitted to the `
         + `tracker: @uluops/ops-sdk's wire type carries no cost field. Token counts are sent `
@@ -710,14 +846,14 @@ export class SubmissionClient {
     }
 
     return {
-      inputTokens: metrics.inputTokens,
-      outputTokens: metrics.outputTokens,
-      cacheCreationTokens: metrics.cacheCreationTokens,
-      cacheReadTokens: metrics.cacheReadTokens,
-      cachedInputTokens: metrics.cachedInputTokens,
-      reasoningOutputTokens: metrics.reasoningOutputTokens,
-      thinkingTokens: metrics.thinkingTokens,
-      totalEffectiveTokens: metrics.totalEffectiveTokens,
+      inputTokens: repairTokenCount(metrics.inputTokens, this.logger, 'inputTokens') ?? 0,
+      outputTokens: repairTokenCount(metrics.outputTokens, this.logger, 'outputTokens') ?? 0,
+      cacheCreationTokens: repairTokenCount(metrics.cacheCreationTokens, this.logger, 'cacheCreationTokens'),
+      cacheReadTokens: repairTokenCount(metrics.cacheReadTokens, this.logger, 'cacheReadTokens'),
+      cachedInputTokens: repairTokenCount(metrics.cachedInputTokens, this.logger, 'cachedInputTokens'),
+      reasoningOutputTokens: repairTokenCount(metrics.reasoningOutputTokens, this.logger, 'reasoningOutputTokens'),
+      thinkingTokens: repairTokenCount(metrics.thinkingTokens, this.logger, 'thinkingTokens'),
+      totalEffectiveTokens: repairTokenCount(metrics.totalEffectiveTokens, this.logger, 'totalEffectiveTokens'),
     };
   }
 
@@ -725,11 +861,10 @@ export class SubmissionClient {
    * Create a local-only response when tracking is disabled
    */
   private createLocalResponse(submission: RunSubmission): RunSubmissionResponse {
-    // No network call is made, but running the same sanitize pass here keeps
-    // repairedRecommendations meaningful offline too — it's what WOULD be
-    // repaired if this run were submitted (tracker 97efa7e2).
-    const repairedRecommendations = submission.result.recommendations
-      .filter(r => this.sanitizeRecommendation(r).repairs.length > 0).length;
+    // No network call is made, but running the transform here keeps repairedRecommendations
+    // AND truncated meaningful offline too — both are what WOULD happen if this run were
+    // submitted (tracker 97efa7e2; truncated added ship run #95).
+    const { repairedRecommendations, truncated } = this.transformToOpsInput(submission);
     return {
       runId: 'local',
       runNumber: 0,
@@ -746,6 +881,7 @@ export class SubmissionClient {
       },
       deduplicated: false,
       repairedRecommendations,
+      truncated,
     };
   }
 }

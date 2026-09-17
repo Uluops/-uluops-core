@@ -362,9 +362,15 @@ export class RegistryClient {
 
     // If type not provided, search registry to find it
     if (!resolvedType) {
+      // `limit` bounds a FUZZY-ranked search, applied server-side BEFORE the exact-name
+      // filter below runs client-side. A real definition named e.g. "validator" in a
+      // crowded namespace could rank past position 10 on relevance and never reach this
+      // filter at all — a false "not found" rather than a false match (ship run #95,
+      // anxiety-reader; unverified against the search API's ranking guarantee, so this
+      // widens the window rather than claiming the false-negative is closed).
       const searchResult = await this.sdk.definitions.list({
         search: name,
-        limit: 10,
+        limit: 100,
         status: 'published',
       });
 

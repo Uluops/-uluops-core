@@ -1038,7 +1038,7 @@ describe('SubmissionClient', () => {
   });
 });
 
-describe('SubmissionClient — un-submittable cost is announced, not dropped (ship #94)', () => {
+describe('SubmissionClient — un-submittable cost is announced, not dropped (ship #94, per-run since ship #95)', () => {
   const costWarnings = () => warnings.filter(w => w.includes('is NOT submitted to the tracker'));
   beforeEach(() => { warnings.length = 0; mockSave.mockResolvedValue({ run: { id: 'r', runNumber: 1 }, correlation: { newIssues: 0, recurringIssues: 0, regressions: 0 } }); });
 
@@ -1049,13 +1049,17 @@ describe('SubmissionClient — un-submittable cost is announced, not dropped (sh
     expect(costWarnings()).toHaveLength(1);
   });
 
-  it('does not warn a second time on the same client', async () => {
+  // Ship #94 suppressed this to once per CLIENT; ship #95 reverses that (Alex's call) —
+  // a long-lived client's second and later runs each carry real, un-submitted cost, and an
+  // operator reconciling THAT run's spend against the tracker needs a signal on that run,
+  // not only on whichever run happened to be first.
+  it('warns on EVERY run that carries a computed costUsd, not just the first', async () => {
     const client = new SubmissionClient(baseConfig, testLogger);
     for (const cost of [0.48, 0.12]) {
       const result = makeResult(); (result.metrics as { costUsd?: number }).costUsd = cost;
       await client.submit(makeSubmission({ result }));
     }
-    expect(costWarnings()).toHaveLength(1);
+    expect(costWarnings()).toHaveLength(2);
   });
 
   it('does not warn when costUsd is absent — nothing was dropped', async () => {
@@ -1063,5 +1067,153 @@ describe('SubmissionClient — un-submittable cost is announced, not dropped (sh
     const result = makeResult(); delete (result.metrics as { costUsd?: number }).costUsd;
     await client.submit(makeSubmission({ result }));
     expect(costWarnings()).toHaveLength(0);
+  });
+});
+
+describe('SubmissionClient — egress guards against the pinned ops-sdk wire validator (ship run #95, code-auditor)', () => {
+  beforeEach(() => {
+    vi.clearAllMocks();
+    warnings.length = 0;
+  });
+  const okSave = () => mockSave.mockResolvedValueOnce({
+    run: { id: 'r', projectId: 'p', runNumber: 1, workflowType: 'w', allGatesPassed: true, averageScore: 1 },
+    agents: [], correlation: { newIssues: 0, recurringIssues: 0, regressions: 0 },
+  });
+
+  it('clamps an out-of-range maxScore (a 200-point rubric) into [0,100] instead of aborting the save', async () => {
+    okSave();
+    const client = new SubmissionClient(baseConfig, testLogger);
+    const result = makeResult({ score: 90, maxScore: 200 } as never);
+    await client.submit(makeSubmission({ result }));
+    const input = mockSave.mock.calls[0]![0] as { agents: Array<{ maxScore?: number }> };
+    expect(input.agents[0]!.maxScore).toBe(100);
+    expect(warnings.join(' ')).toContain('maxScore');
+  });
+
+  it('control: a valid maxScore passes through untouched with no warning', async () => {
+    okSave();
+    const client = new SubmissionClient(baseConfig, testLogger);
+    const result = makeResult({ score: 90, maxScore: 100 } as never);
+    await client.submit(makeSubmission({ result }));
+    const input = mockSave.mock.calls[0]![0] as { agents: Array<{ maxScore?: number }> };
+    expect(input.agents[0]!.maxScore).toBe(100);
+    expect(warnings.some(w => w.includes('maxScore'))).toBe(false);
+  });
+
+  it('clamps an averageScore that exceeds 100 (aggregation.method: "sum" over multiple agents)', async () => {
+    okSave();
+    const client = new SubmissionClient(baseConfig, testLogger);
+    const result = makeResult({ score: 180 } as never);
+    await client.submit(makeSubmission({ result }));
+    const input = mockSave.mock.calls[0]![0] as { summary: { averageScore?: number } };
+    expect(input.summary.averageScore).toBe(100);
+    expect(warnings.join(' ')).toContain('averageScore');
+  });
+
+  it('repairs a fractional or negative lineNumber into a non-negative integer instead of aborting the save', async () => {
+    const sent1 = await (async () => {
+      okSave();
+      const client = new SubmissionClient(baseConfig, testLogger);
+      await client.submit(makeSubmission({ result: makeResult({ recommendations: [{ agent: 'a', title: 't', priority: 'high', lineNumber: -1 }] as never }) }));
+      return mockSave.mock.calls[0]![0].recommendations[0];
+    })();
+    expect(sent1.lineNumber).toBe(0);
+
+    const sent2 = await (async () => {
+      okSave();
+      const client = new SubmissionClient(baseConfig, testLogger);
+      await client.submit(makeSubmission({ result: makeResult({ recommendations: [{ agent: 'a', title: 't', priority: 'high', lineNumber: 12.5 }] as never }) }));
+      return mockSave.mock.calls[1]![0].recommendations[0];
+    })();
+    expect(sent2.lineNumber).toBe(13);
+    expect(warnings.join(' ')).toContain('lineNumber');
+  });
+
+  it('omits an off-enum classificationConfidence and classifiedBy instead of aborting the save', async () => {
+    okSave();
+    const client = new SubmissionClient(baseConfig, testLogger);
+    await client.submit(makeSubmission({
+      result: makeResult({
+        recommendations: [{
+          agent: 'a', title: 't', priority: 'high',
+          classificationConfidence: 'very high', classifiedBy: 'oracle',
+        }] as never,
+      }),
+    }));
+    const sent = mockSave.mock.calls[0]![0].recommendations[0];
+    expect(sent.classificationConfidence).toBeUndefined();
+    expect(sent.classifiedBy).toBeUndefined();
+    expect(warnings.join(' ')).toContain('classificationConfidence');
+    expect(warnings.join(' ')).toContain('classifiedBy');
+  });
+
+  it('control: valid classificationConfidence/classifiedBy pass through untouched', async () => {
+    okSave();
+    const client = new SubmissionClient(baseConfig, testLogger);
+    await client.submit(makeSubmission({
+      result: makeResult({
+        recommendations: [{
+          agent: 'a', title: 't', priority: 'high',
+          classificationConfidence: 'high', classifiedBy: 'agent',
+        }] as never,
+      }),
+    }));
+    const sent = mockSave.mock.calls[0]![0].recommendations[0];
+    expect(sent.classificationConfidence).toBe('high');
+    expect(sent.classifiedBy).toBe('agent');
+  });
+
+  it('truncates an over-length secondaryFailureCodes array to the wire\'s 20-entry cap', async () => {
+    okSave();
+    const client = new SubmissionClient(baseConfig, testLogger);
+    const codes = Array.from({ length: 21 }, (_, i) => `CODE-${i}`);
+    await client.submit(makeSubmission({
+      result: makeResult({ recommendations: [{ agent: 'a', title: 't', priority: 'high', secondaryFailureCodes: codes }] as never }),
+    }));
+    const sent = mockSave.mock.calls[0]![0].recommendations[0];
+    expect(sent.secondaryFailureCodes).toHaveLength(20);
+    expect(warnings.join(' ')).toContain('secondaryFailureCodes');
+  });
+
+  it('caps recommendations at the wire\'s 500-item ceiling, warning and truncating rather than aborting the save', async () => {
+    okSave();
+    const client = new SubmissionClient(baseConfig, testLogger);
+    const recs = Array.from({ length: 501 }, (_, i) => ({ agent: 'a', title: `finding ${i}`, priority: 'suggested' as const }));
+    const response = await client.submit(makeSubmission({ result: makeResult({ recommendations: recs as never }) }));
+    const input = mockSave.mock.calls[0]![0] as { recommendations: unknown[] };
+    expect(input.recommendations).toHaveLength(500);
+    expect(response.truncated?.recommendations).toBe(1);
+    expect(warnings.some(w => w.includes('recommendations') && w.includes('500'))).toBe(true);
+  });
+
+  it('control: exactly 500 recommendations pass through with truncated.recommendations === 0', async () => {
+    okSave();
+    const client = new SubmissionClient(baseConfig, testLogger);
+    const recs = Array.from({ length: 500 }, (_, i) => ({ agent: 'a', title: `finding ${i}`, priority: 'suggested' as const }));
+    const response = await client.submit(makeSubmission({ result: makeResult({ recommendations: recs as never }) }));
+    expect(response.truncated?.recommendations).toBe(0);
+    expect(response.truncated?.agents).toBe(0);
+    expect(response.truncated?.analysisRecords).toBe(0);
+  });
+
+  it('repairs a non-integer token count (e.g. an averaged inputTokens: 10.5) instead of aborting the save', async () => {
+    okSave();
+    const client = new SubmissionClient(baseConfig, testLogger);
+    const result = makeResult();
+    (result.metrics as { inputTokens: number }).inputTokens = 10.5;
+    await client.submit(makeSubmission({ result }));
+    const input = mockSave.mock.calls[0]![0] as { agents: Array<{ tokens?: { inputTokens: number } }> };
+    expect(input.agents[0]!.tokens!.inputTokens).toBe(11);
+    expect(warnings.join(' ')).toContain('inputTokens');
+  });
+
+  it('omits an unusable (negative) optional token field rather than sending it raw', async () => {
+    okSave();
+    const client = new SubmissionClient(baseConfig, testLogger);
+    const result = makeResult();
+    (result.metrics as { cacheReadTokens?: number }).cacheReadTokens = -5;
+    await client.submit(makeSubmission({ result }));
+    const input = mockSave.mock.calls[0]![0] as { agents: Array<{ tokens?: { cacheReadTokens?: number } }> };
+    expect(input.agents[0]!.tokens!.cacheReadTokens).toBeUndefined();
   });
 });

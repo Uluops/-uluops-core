@@ -18,7 +18,7 @@ import { sumCostUsd } from '../utils/sumCostUsd.js';
 import { resolveDecisionCategory } from './classifyDecision.js';
 import { worstExtractionConfidence } from '../utils/worstExtractionConfidence.js';
 import { aggregateScores } from '../utils/aggregateScores.js';
-import { crashPlaceholder } from '../utils/crashPlaceholder.js';
+import { crashPlaceholder, CRASH_PLACEHOLDER_VERSION } from '../utils/crashPlaceholder.js';
 import type { Logger } from '@uluops/sdk-core';
 
 /**
@@ -371,12 +371,12 @@ export class PipelineExecutor {
         type: 'command',
         name: stage.name,
         // No definition backs this result — it's a synthesized aggregate over
-        // the stage's child agent results, not a real command. '1.0.0-synthesized'
-        // is deliberately non-parseable as a real release (a genuine definition
+        // the stage's child agent results, not a real command. The marker is
+        // deliberately non-parseable as a real release (a genuine definition
         // is never versioned this way), so downstream consumers (SubmissionClient's
         // realVersion) can tell it apart from an actual 1.0.0 release instead of
         // reporting an invented version as real definition identity.
-        version: '1.0.0-synthesized',
+        version: CRASH_PLACEHOLDER_VERSION,
         definitionHash: '',
         agentType: 'analyst',
         decision: stageFailed ? 'FAIL' : 'PASS',
@@ -613,10 +613,10 @@ export class PipelineExecutor {
         type: 'command',
         name: stage.name,
         // No definition backs this result — it's a synthesized summary of a
-        // steps-only stage, not a real command. '1.0.0-synthesized' is deliberately
+        // steps-only stage, not a real command. The marker is deliberately
         // non-parseable as a real release, so downstream consumers (SubmissionClient's
         // realVersion) can tell it apart from an actual 1.0.0 release.
-        version: '1.0.0-synthesized',
+        version: CRASH_PLACEHOLDER_VERSION,
         definitionHash: '',
         agentType: 'analyst',
         decision,

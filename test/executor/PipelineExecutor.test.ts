@@ -1847,3 +1847,23 @@ describe('PipelineExecutor — inline-agent crash reads billed metrics off the e
     expect(result.metrics.costUsd).not.toBe(0);
   });
 });
+
+describe('PipelineExecutor — gate threshold Infinity is unusable, not a permissive ceiling (ship #95, test-architect)', () => {
+  const twoStages = (gate: object) => ({
+    stages: [
+      { id: 'gated', name: 'Gated', type: 'command' as const, ref: 'a@1', gate },
+      { id: 'downstream', name: 'Downstream', type: 'command' as const, ref: 'b@1' },
+    ],
+  });
+
+  it('an Infinity gate threshold fails CLOSED, like NaN (ship #94 twin)', async () => {
+    const cmdExec = makeCommandExecutor([makeCommandResult({ decision: 'PASS', decisionCategory: 'positive', score: 85 })]);
+    const executor = new PipelineExecutor(makeWorkflowExecutor(), cmdExec, agentExec, makeRegistry(), noopLogger);
+    const def = makePipelineDef(twoStages({ threshold: Number.POSITIVE_INFINITY, on_failure: 'abort' }));
+    const handle = await executor.start(def, { target: '/tmp' });
+    await expect(handle.wait()).rejects.toThrow(/failed its gate/);
+    const result = await handle.status();
+    expect(result.status).toBe('failed');
+    expect(result.stages[1]!.status).not.toBe('completed');
+  });
+});
