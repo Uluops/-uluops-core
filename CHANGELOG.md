@@ -25,6 +25,10 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) 
 
 ## [Unreleased]
 
+### Changed
+
+- **`@uluops/ops-sdk` 6.5.0 → 6.5.1.** Behaviour inherited on the result-tracking path: org-scoped saves share one token refresh (per-call views no longer shadow sdk-core's dedup gate), and a save carrying an empty analysis array no longer throws a false `AnalysisEchoMismatchError` after the run has landed. No core code changes.
+
 ## [0.43.1] - 2026-09-13
 
 ### Changed
