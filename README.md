@@ -656,7 +656,7 @@ import {
 } from '@uluops/core';
 ```
 
-Upstream stage-forwarding bounds (see [Stage context forwarding](#pipelines)) are exported
+Upstream stage-forwarding bounds (see [Stage context forwarding](#pipeline-execution)) are exported
 from the same entry point:
 
 ```typescript
