@@ -1217,3 +1217,96 @@ describe('SubmissionClient — egress guards against the pinned ops-sdk wire val
     expect(input.agents[0]!.tokens!.cacheReadTokens).toBeUndefined();
   });
 });
+
+describe('SubmissionClient — ship run #96 fix batch: NaN-transparent clamps, throwing repair, truncation marker', () => {
+  beforeEach(() => {
+    vi.clearAllMocks();
+    warnings.length = 0;
+  });
+  const okSave = () => mockSave.mockResolvedValueOnce({
+    run: { id: 'r', projectId: 'p', runNumber: 1, workflowType: 'w', allGatesPassed: true, averageScore: 1 },
+    agents: [], correlation: { newIssues: 0, recurringIssues: 0, regressions: 0 },
+  });
+
+  it('clamps a NaN maxScore to 100 instead of forwarding NaN (which would abort the save)', async () => {
+    okSave();
+    const client = new SubmissionClient(baseConfig, testLogger);
+    const result = makeResult({ score: 90, maxScore: Number.NaN } as never);
+    await client.submit(makeSubmission({ result }));
+    const input = mockSave.mock.calls[0]![0] as { agents: Array<{ maxScore?: number }> };
+    expect(input.agents[0]!.maxScore).toBe(100);
+    expect(Number.isNaN(input.agents[0]!.maxScore)).toBe(false);
+    expect(warnings.join(' ')).toContain('maxScore');
+  });
+
+  it('clamps a NaN averageScore to 100 instead of forwarding NaN', async () => {
+    okSave();
+    const client = new SubmissionClient(baseConfig, testLogger);
+    const result = makeResult({ score: Number.NaN } as never);
+    await client.submit(makeSubmission({ result }));
+    const input = mockSave.mock.calls[0]![0] as { summary: { averageScore?: number } };
+    expect(input.summary.averageScore).toBe(100);
+    expect(Number.isNaN(input.summary.averageScore)).toBe(false);
+  });
+
+  it('repairs a non-array secondaryFailureCodes instead of throwing', async () => {
+    okSave();
+    const client = new SubmissionClient(baseConfig, testLogger);
+    const result = makeResult({ recommendations: [{ agent: 'a', title: 't', priority: 'high', secondaryFailureCodes: 'STR-OMI/H' as never }] });
+    const response = await client.submit(makeSubmission({ result }));
+    expect(response).toBeDefined();
+    const sent = mockSave.mock.calls[0]![0].recommendations[0];
+    expect(sent.secondaryFailureCodes).toBeUndefined();
+    expect(warnings.join(' ')).toContain('secondaryFailureCodes');
+  });
+
+  it('drops non-string entries from secondaryFailureCodes instead of throwing on a null element', async () => {
+    okSave();
+    const client = new SubmissionClient(baseConfig, testLogger);
+    const result = makeResult({ recommendations: [{ agent: 'a', title: 't', priority: 'high', secondaryFailureCodes: [null, 'STR-OMI/H', 42] as never }] });
+    const response = await client.submit(makeSubmission({ result }));
+    expect(response).toBeDefined();
+    const sent = mockSave.mock.calls[0]![0].recommendations[0];
+    expect(sent.secondaryFailureCodes).toEqual(['STR-OMI/H']);
+  });
+
+  it('a malformed secondaryFailureCodes on the offline (tracking-disabled) path does not throw', async () => {
+    const client = new SubmissionClient({ ...baseConfig, trackingEnabled: false }, testLogger);
+    const result = makeResult({ recommendations: [{ agent: 'a', title: 't', priority: 'high', secondaryFailureCodes: 'bad' as never }] });
+    await expect(client.submit(makeSubmission({ result }))).resolves.toBeDefined();
+  });
+
+  it('appends a stable truncation-marker recommendation when recommendations are capped', async () => {
+    okSave();
+    const client = new SubmissionClient(baseConfig, testLogger);
+    const recs = Array.from({ length: 501 }, (_, i) => ({ agent: 'a', title: `finding ${i}`, priority: 'suggested' as const }));
+    await client.submit(makeSubmission({ result: makeResult({ recommendations: recs as never }) }));
+    const input = mockSave.mock.calls[0]![0] as { recommendations: Array<{ agent: string; title: string; priority: string; failureCode?: string }> };
+    expect(input.recommendations).toHaveLength(500);
+    const marker = input.recommendations[input.recommendations.length - 1]!;
+    expect(marker.agent).toBe('uluops-core');
+    expect(marker.title).toBe('Submission truncated at the client-side wire ceiling');
+    expect(marker.priority).toBe('critical');
+    expect(marker.failureCode).toBe('PRA-FRA/C');
+  });
+
+  it('control: no truncation marker when nothing was truncated', async () => {
+    okSave();
+    const client = new SubmissionClient(baseConfig, testLogger);
+    await client.submit(makeSubmission({ result: makeResult() }));
+    const input = mockSave.mock.calls[0]![0] as { recommendations: Array<{ agent: string }> };
+    expect(input.recommendations.some(r => r.agent === 'uluops-core')).toBe(false);
+  });
+
+  it('the truncation marker itself does not push the array over the 500 ceiling', async () => {
+    okSave();
+    const client = new SubmissionClient(baseConfig, testLogger);
+    const recs = Array.from({ length: 500 }, (_, i) => ({ agent: 'a', title: `finding ${i}`, priority: 'suggested' as const }));
+    // Force an agents-side truncation alongside an already-at-ceiling recommendations array.
+    const pipeline = makePipelineResultWithAgents(Array.from({ length: 110 }, () => [1]));
+    (pipeline as { recommendations?: unknown[] }).recommendations = recs;
+    await client.submit(makeSubmission({ result: pipeline as never }));
+    const input = mockSave.mock.calls[0]![0] as { recommendations: unknown[] };
+    expect(input.recommendations.length).toBeLessThanOrEqual(500);
+  });
+});

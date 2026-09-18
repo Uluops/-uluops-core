@@ -204,6 +204,26 @@ export interface ExecutionResult {
    */
   trackingError?: TrackingError;
 
+  /**
+   * Count of recommendations the tracking submission had to repair (coerce/omit/
+   * truncate a field) before sending. Mirrors {@link RunSubmissionResponse.repairedRecommendations}
+   * — populated here (ship run #96) so every execution entry point (`runAgent`,
+   * `runCommand`, `runWorkflow`, `runPipeline`, `run`), not only the low-level manual
+   * `client.submit()`, can observe it. Absent when tracking is disabled or failed
+   * (see `trackingFailed`), same as the response it mirrors.
+   */
+  repairedRecommendations?: number;
+
+  /**
+   * How many agents/recommendations/analysis records the tracking submission dropped
+   * at the client-side wire ceilings. Mirrors {@link RunSubmissionResponse.truncated} —
+   * populated here (ship run #96, anxiety-reader F13) for the same reason as
+   * {@link repairedRecommendations}: `UluOpsClient.trackIfEnabled` previously kept only
+   * `dashboardUrl` off the submission response, so `truncated` was computed, returned,
+   * and then unreachable from every primary entry point.
+   */
+  submissionTruncated?: { agents: number; recommendations: number; analysisRecords: number };
+
   /** All recommendations (flattened for workflows/pipelines) */
   recommendations: Recommendation[];
 

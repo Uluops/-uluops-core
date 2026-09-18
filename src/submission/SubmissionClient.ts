@@ -73,6 +73,14 @@ const MAX_RECOMMENDATIONS = 500;
  * recommendation and analysis record for the run (ship run #95, code-auditor).
  */
 function clampMaxScore(value: number, logger: Logger): number {
+  // NaN is neither >=0 nor <=100, so it fell into the clamp branch below — and
+  // Math.max(0, Math.min(100, NaN)) is NaN, which still aborts the whole save.
+  // Reject it the same way repairTokenCount does, before the range test, rather
+  // than logging a repair that didn't happen (ship run #96, code-auditor).
+  if (!Number.isFinite(value)) {
+    logger.warn(`Agent maxScore ${value} is not a usable number; clamping to 100 before submission.`);
+    return 100;
+  }
   if (value >= 0 && value <= 100) return value;
   const clamped = Math.max(0, Math.min(100, value));
   logger.warn(`Agent maxScore ${value} is outside [0,100]; clamping to ${clamped} before submission.`);
@@ -86,6 +94,10 @@ function clampMaxScore(value: number, logger: Logger): number {
  * 90-score agents legitimately produces 180 here (ship run #95, code-auditor).
  */
 function clampAverageScore(value: number, logger: Logger): number {
+  if (!Number.isFinite(value)) {
+    logger.warn(`Run averageScore ${value} is not a usable number; clamping to 100 before submission.`);
+    return 100;
+  }
   if (value >= 0 && value <= 100) return value;
   const clamped = Math.max(0, Math.min(100, value));
   logger.warn(`Run averageScore ${value} is outside [0,100] (aggregation.method: 'sum' can exceed 100); clamping to ${clamped} before submission.`);
@@ -166,11 +178,24 @@ export class SubmissionClient {
       if (repaired !== v) repairs.push(`lineNumber=${v} repaired to ${repaired} (wire requires a non-negative integer)`);
       return repaired;
     };
-    const keepSecondaryFailureCodes = (value: string[] | undefined, reps: string[]): string[] | undefined => {
-      if (value === undefined) return undefined;
-      const trimmed = value.filter(v => v.length <= 20).slice(0, 20);
-      if (trimmed.length !== value.length) {
-        reps.push(`secondaryFailureCodes truncated ${value.length}→${trimmed.length} entries (wire caps at 20 entries of ≤20 chars)`);
+    const keepSecondaryFailureCodes = (value: unknown, reps: string[]): string[] | undefined => {
+      if (value === undefined || value === null) return undefined;
+      // `string[]` was a compile-time claim over data that arrives from outside the
+      // package (the public API, per externalValue.ts's own provenance doctrine) —
+      // a bare string threw on .filter, and [null, ...] threw on .length. Both are
+      // now REPAIRED, matching this method's contract, instead of throwing out of
+      // the one layer documented as never aborting the save (ship run #96, code-auditor).
+      if (!Array.isArray(value)) {
+        reps.push(`secondaryFailureCodes=${JSON.stringify(value)} omitted (expected an array)`);
+        return undefined;
+      }
+      const strings = value.filter((v): v is string => typeof v === 'string');
+      if (strings.length !== value.length) {
+        reps.push(`secondaryFailureCodes: ${value.length - strings.length} non-string entr${value.length - strings.length === 1 ? 'y' : 'ies'} dropped`);
+      }
+      const trimmed = strings.filter(v => v.length <= 20).slice(0, 20);
+      if (trimmed.length !== strings.length) {
+        reps.push(`secondaryFailureCodes truncated ${strings.length}→${trimmed.length} entries (wire caps at 20 entries of ≤20 chars)`);
       }
       return trimmed.length > 0 ? trimmed : undefined;
     };
@@ -294,6 +319,32 @@ export class SubmissionClient {
    * which would lose the entire run's payload — truncating loses only the
    * tail, and the warning names exactly how much.
    */
+  /**
+   * A stable, correlatable recommendation naming what this submission dropped at the
+   * client-side wire ceilings. `agent`/`title`/`failureCode` are fixed regardless of
+   * WHAT was truncated, so the tracker correlates it as one persistent issue rather
+   * than a new fingerprint every run — the goal is a durable "this run is incomplete"
+   * signal, not a itemized diff of the drop.
+   */
+  private buildTruncationMarker(droppedRecommendations: number): RecommendationInput {
+    const parts: string[] = [];
+    if (this.truncationTally.agents > 0) parts.push(`${this.truncationTally.agents} agent entries`);
+    if (droppedRecommendations > 0) parts.push(`${droppedRecommendations} recommendations`);
+    if (this.truncationTally.analysisRecords > 0) parts.push(`${this.truncationTally.analysisRecords} analysis records`);
+    return {
+      agent: 'uluops-core',
+      title: 'Submission truncated at the client-side wire ceiling',
+      priority: 'critical',
+      severity: 'critical',
+      failureCode: 'PRA-FRA/C',
+      description: `This run dropped ${parts.join(', ') || 'data'} to stay under @uluops/ops-sdk's `
+        + `client-side limits (agents≤${MAX_RUN_AGENTS}, recommendations≤${MAX_RECOMMENDATIONS}, `
+        + `analysisRecords≤${MAX_ANALYSIS_RECORDS}). Treat this run's data as INCOMPLETE: issue `
+        + `correlation cannot distinguish a dropped recommendation from a genuinely resolved one. See `
+        + `the response's \`truncated\` field for exact counts.`,
+    };
+  }
+
   private capWithWarning<T>(
     items: T[], max: number, label: string,
     kind?: keyof SubmissionClient['truncationTally'],
@@ -602,9 +653,25 @@ export class SubmissionClient {
       );
     }
 
-    const cappedRecommendations = this.capWithWarning(
+    const preCapRecommendationCount = sanitizedRecommendations.length;
+    let cappedRecommendations = this.capWithWarning(
       sanitizedRecommendations.map(r => r.sanitized), MAX_RECOMMENDATIONS, 'recommendations', 'recommendations',
     );
+    // Truncation (here or in agents/analysisRecords, tallied above) previously had NO
+    // channel onto the wire itself — only a local log line and the `truncated` response
+    // field, which the tracker's issue correlation never sees. A recommendation absent
+    // this run reads as RESOLVED to correlation, and reappearing next run reads as a
+    // REGRESSION — silent data loss becomes fabricated issue-lifecycle history. Put a
+    // stable, correlatable marker on the wire itself whenever anything was dropped
+    // (ship run #96, anxiety-reader F8).
+    if (preCapRecommendationCount > cappedRecommendations.length
+      || this.truncationTally.agents > 0
+      || this.truncationTally.analysisRecords > 0) {
+      if (cappedRecommendations.length >= MAX_RECOMMENDATIONS) {
+        cappedRecommendations = cappedRecommendations.slice(0, MAX_RECOMMENDATIONS - 1);
+      }
+      cappedRecommendations = [...cappedRecommendations, this.buildTruncationMarker(preCapRecommendationCount - cappedRecommendations.length)];
+    }
 
     return {
       input: {

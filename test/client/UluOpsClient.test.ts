@@ -679,6 +679,39 @@ describe('UluOpsClient', () => {
       expect(result.dashboardUrl).toBe('https://app.uluops.ai/runs/run-123');
     });
 
+    // Ship run #96 (anxiety-reader F13): trackIfEnabled previously kept only dashboardUrl
+    // off the submission response, so repairedRecommendations/truncated were computed,
+    // returned by SubmissionClient, and then unreachable from every primary entry point
+    // (runAgent/runCommand/runWorkflow/runPipeline/run) — only the manual client.submit()
+    // could see them.
+    it('surfaces repairedRecommendations and submissionTruncated from the submission response onto the result', async () => {
+      const client = new UluOpsClient({ apiKey: 'ulr_test-key-012345678901', trackingEnabled: true });
+      mockRegistryResolve.mockResolvedValue(makeResolvedDef('agent', 'code-validator'));
+      mockAgentExecutorExecute.mockResolvedValue(makeAgentResult());
+      mockSubmissionSubmit.mockResolvedValueOnce(makeSubmissionResponse({
+        repairedRecommendations: 3,
+        truncated: { agents: 0, recommendations: 12, analysisRecords: 0 },
+      }));
+
+      const result = await client.runAgent('code-validator', '/tmp/test');
+
+      expect(result.repairedRecommendations).toBe(3);
+      expect(result.submissionTruncated).toEqual({ agents: 0, recommendations: 12, analysisRecords: 0 });
+    });
+
+    it('control: repairedRecommendations/submissionTruncated are absent when tracking fails', async () => {
+      const client = new UluOpsClient({ apiKey: 'ulr_test-key-012345678901', trackingEnabled: true });
+      mockRegistryResolve.mockResolvedValue(makeResolvedDef('agent', 'code-validator'));
+      mockAgentExecutorExecute.mockResolvedValue(makeAgentResult());
+      mockSubmissionSubmit.mockRejectedValueOnce(new Error('network error'));
+
+      const result = await client.runAgent('code-validator', '/tmp/test');
+
+      expect(result.trackingFailed).toBe(true);
+      expect(result.repairedRecommendations).toBeUndefined();
+      expect(result.submissionTruncated).toBeUndefined();
+    });
+
     it('surfaces a typed trackingError (non-fatal) when submission returns 402 PROJECT_LIMIT', async () => {
       const client = new UluOpsClient({ apiKey: 'ulr_test-key-012345678901', trackingEnabled: true });
       mockRegistryResolve.mockResolvedValue(makeResolvedDef('agent', 'code-validator'));

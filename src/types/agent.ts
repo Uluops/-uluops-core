@@ -504,6 +504,20 @@ interface AgentResultBase {
    */
   trackingError?: TrackingError;
 
+  /**
+   * Count of recommendations the tracking submission had to repair before sending.
+   * Mirrors `ExecutionResult.repairedRecommendations` (ship run #96) — see there for
+   * why this is populated here rather than only on the low-level submission response.
+   */
+  repairedRecommendations?: number;
+
+  /**
+   * How many agents/recommendations/analysis records the tracking submission dropped
+   * at the client-side wire ceilings. Mirrors `ExecutionResult.submissionTruncated`
+   * (ship run #96, anxiety-reader F13).
+   */
+  submissionTruncated?: { agents: number; recommendations: number; analysisRecords: number };
+
   /** Execution metrics */
   metrics: ExecutionMetrics;
 

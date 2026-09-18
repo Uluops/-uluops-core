@@ -120,18 +120,46 @@ describe('RegistryClient', () => {
     // `parsed === null` still passed the full suite, so a bare scalar document or a
     // top-level sequence fell through to the old raw TypeError undetected (ship run #95,
     // test-architect).
-    it('a bare scalar YAML document is a ConfigurationError, not a TypeError', async () => {
+    //
+    // Both tests below use `.agent.yaml`, which routes through renderLocally's own
+    // independent `!agent` guard — that guard ALSO throws a ConfigurationError naming the
+    // file, so these tests pass even with safeParseYaml's own Array.isArray/typeof-object
+    // checks removed (confirmed by test-architect via direct mutation). They're kept as
+    // valid coverage of the agent path; the isolated tests below (ship run #96) use
+    // `.command.yaml`, whose renderLocally branch has no shape check before tryRenderViaAPI,
+    // so only safeParseYaml's own guard can catch these two shapes.
+    it('a bare scalar YAML document is a ConfigurationError, not a TypeError (agent path — see isolated test below)', async () => {
       await fs.writeFile(path.join(tmpDir, 'scalar-def.agent.yaml'), 'just a string\n');
       const client = new RegistryClient({ ...baseConfig, localDefinitions: tmpDir }, noopLogger);
       await expect(client.resolve('scalar-def')).rejects.toThrow(ConfigurationError);
       await expect(client.resolve('scalar-def')).rejects.toThrow(/scalar-def/);
     });
 
-    it('a top-level sequence YAML document is a ConfigurationError, not a TypeError', async () => {
+    it('a top-level sequence YAML document is a ConfigurationError, not a TypeError (agent path — see isolated test below)', async () => {
       await fs.writeFile(path.join(tmpDir, 'sequence-def.agent.yaml'), '- a\n- b\n');
       const client = new RegistryClient({ ...baseConfig, localDefinitions: tmpDir }, noopLogger);
       await expect(client.resolve('sequence-def')).rejects.toThrow(ConfigurationError);
       await expect(client.resolve('sequence-def')).rejects.toThrow(/sequence-def/);
+    });
+
+    // Isolated on `.command.yaml`: renderLocally's command branch calls tryRenderViaAPI
+    // directly with no shape check of its own, so these two fail ONLY if safeParseYaml's
+    // own Array.isArray/typeof-object guard is doing the work (ship run #96, test-architect
+    // — ".agent.yaml tests can pass for the wrong reason"). Both assert the guard's own
+    // message text ("not a mapping" / "expected a top-level mapping"), not just any
+    // ConfigurationError, so a removed guard cannot be masked by an unrelated throw.
+    it('a bare scalar .command.yaml is rejected by safeParseYaml itself, not a downstream guard', async () => {
+      await fs.writeFile(path.join(tmpDir, 'scalar-cmd.command.yaml'), 'just a string\n');
+      const client = new RegistryClient({ ...baseConfig, localDefinitions: tmpDir }, noopLogger);
+      await expect(client.resolve('scalar-cmd')).rejects.toThrow(ConfigurationError);
+      await expect(client.resolve('scalar-cmd')).rejects.toThrow(/is a string, not a mapping/);
+    });
+
+    it('a top-level sequence .command.yaml is rejected by safeParseYaml itself, not a downstream guard', async () => {
+      await fs.writeFile(path.join(tmpDir, 'sequence-cmd.command.yaml'), '- a\n- b\n');
+      const client = new RegistryClient({ ...baseConfig, localDefinitions: tmpDir }, noopLogger);
+      await expect(client.resolve('sequence-cmd')).rejects.toThrow(ConfigurationError);
+      await expect(client.resolve('sequence-cmd')).rejects.toThrow(/is a sequence, not a mapping/);
     });
 
     it('throws ConfigurationError naming the file for a local agent YAML missing agent.interface', async () => {

@@ -604,6 +604,13 @@ export class UluOpsClient {
       });
       // Attach dashboard URL to original result for caller convenience
       result.dashboardUrl = response.dashboardUrl;
+      // Surface the submission's repair/truncation signals onto the result too —
+      // previously only the low-level manual client.submit() could see these; every
+      // primary entry point (runAgent/runCommand/runWorkflow/runPipeline/run) discarded
+      // them here, reproducing the exact "computed and dropped at a boundary" defect
+      // this field exists to announce (ship run #96, anxiety-reader F13).
+      result.repairedRecommendations = response.repairedRecommendations;
+      result.submissionTruncated = response.truncated;
 
       await this.recordExecutions(resolved, result, response.runId);
     } catch (error) {
