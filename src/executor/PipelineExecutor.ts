@@ -19,6 +19,7 @@ import { resolveDecisionCategory } from './classifyDecision.js';
 import { worstExtractionConfidence } from '../utils/worstExtractionConfidence.js';
 import { aggregateScores } from '../utils/aggregateScores.js';
 import { crashPlaceholder, CRASH_PLACEHOLDER_VERSION } from '../utils/crashPlaceholder.js';
+import { verifiedNothingExecuted } from '../utils/executionEvidence.js';
 import type { Logger } from '@uluops/sdk-core';
 
 /**
@@ -750,14 +751,9 @@ export class PipelineExecutor {
     if (stageResult.agentResults && stageResult.agentResults.length === 0) return true;
 
     // Workflow-ref stage: WorkflowExecutor counts this itself — a phase is "executed" only
-    // when it is neither skipped nor aborted.
-    const result = stageResult.result;
-    if (result?.type === 'workflow') {
-      const executed = (result as { metrics?: { phasesExecuted?: number } }).metrics?.phasesExecuted;
-      if (executed === 0) return true;
-    }
-
-    return false;
+    // when it is neither skipped nor aborted. Shared with SubmissionClient, which applies the
+    // same check at the submission boundary (the fabricated-0 reach a gate does not cover).
+    return verifiedNothingExecuted(stageResult.result);
   }
 
   /**
@@ -883,8 +879,20 @@ class PipelineHandle implements IPipelineHandle {
   private buildResult(): PipelineResult {
     const durationMs = Date.now() - this.state.startTime;
 
+    // A stage whose nested result demonstrably executed nothing enters the roll-up as
+    // SCORELESS, not as 0. WorkflowExecutor hands an all-skipped workflow `score: 0` on
+    // purpose (aggregateScores' empty-input branch) so that a GATE over that stage blocks;
+    // gateFailed reads the execution count before trusting that 0. When the stage has no
+    // gate, nothing reads it — and this line used to carry it straight into the pipeline
+    // average as a measured zero, where `stagesExecuted` (correctly 1: the stage ran) meant
+    // SubmissionClient's own check could no longer tell. One ungated all-skipped stage
+    // beside a genuine 85 averaged to 43 (score-aggregation-semantics spec v0.2.0 §7 L3-2).
+    // A stage that ran and legitimately scored 0 still enters as 0.
     const score = aggregateScores(
-      this.state.stageResults.map(s => ({ key: s.id, score: s.result?.score ?? null })),
+      this.state.stageResults.map(s => ({
+        key: s.id,
+        score: verifiedNothingExecuted(s.result) ? null : (s.result?.score ?? null),
+      })),
     );
 
     const recommendations = this.state.stageResults

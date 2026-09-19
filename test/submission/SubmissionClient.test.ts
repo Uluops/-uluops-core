@@ -1310,3 +1310,145 @@ describe('SubmissionClient — ship run #96 fix batch: NaN-transparent clamps, t
     expect(input.recommendations.length).toBeLessThanOrEqual(500);
   });
 });
+
+describe('SubmissionClient — a run that verified NOTHING must not submit averageScore: 0 (score-aggregation-semantics spec v0.2.0)', () => {
+  beforeEach(() => {
+    vi.clearAllMocks();
+    warnings.length = 0;
+  });
+  const okSave = () => mockSave.mockResolvedValueOnce({
+    run: { id: 'r', projectId: 'p', runNumber: 1, workflowType: 'w', allGatesPassed: true, averageScore: null },
+    agents: [], correlation: { newIssues: 0, recurringIssues: 0, regressions: 0 },
+  });
+
+  // aggregateScores' empty-input branch returns 0 when no phase ran (deliberate, 2026-08-24,
+  // so a gated pipeline stage blocks instead of fail-opening). WorkflowExecutor.aggregate
+  // therefore hands an all-skipped workflow `score: 0, decision: 'SHIP'`. That 0 is a gate
+  // signal, not a measurement — and standalone, or under an ungated stage, nothing consumes
+  // it as a gate before it reaches the tracker.
+  const allSkippedWorkflow = (): WorkflowResult => ({
+    type: 'workflow',
+    name: 'release-checks',
+    version: '1.0.0',
+    definitionHash: 'sha256:wf',
+    decision: 'SHIP',
+    decisionCategory: 'positive',
+    score: 0,
+    recommendations: [],
+    durationMs: 10,
+    phases: [
+      { id: 'p1', name: 'P1', decision: 'skipped', gateThreshold: 70, score: null, durationMs: 0, commands: [] },
+      { id: 'p2', name: 'P2', decision: 'skipped', gateThreshold: 70, score: null, durationMs: 0, commands: [] },
+    ],
+    metrics: {
+      inputTokens: 0, outputTokens: 0, totalEffectiveTokens: 0, durationMs: 10, model: 'mixed',
+      phasesExecuted: 0, phasesPassed: 0, phasesWarned: 0, phasesBlocked: 0, phasesSkipped: 2,
+      phasesAborted: 0, commands: [],
+    },
+  });
+
+  it('omits averageScore for an all-skipped workflow (phasesExecuted === 0) instead of submitting 0', async () => {
+    okSave();
+    const client = new SubmissionClient(baseConfig, testLogger);
+    await client.submit(makeSubmission({ result: allSkippedWorkflow() }));
+
+    const input = mockSave.mock.calls[0]![0] as { summary: Record<string, unknown> };
+    // Assert on the KEY SET, not `.toBeUndefined()` — the latter passes vacuously against a
+    // summary object that was never built at all.
+    expect(Object.keys(input.summary)).toContain('allGatesPassed');
+    expect(Object.keys(input.summary)).not.toContain('averageScore');
+  });
+
+  it('CONTROL: a workflow whose one phase RAN and scored 0 still submits averageScore: 0', async () => {
+    // The discriminating control. Without it, an implementation that drops averageScore
+    // unconditionally — or on `score === 0` — passes the test above. A genuine failing run
+    // is a real measurement and must reach the tracker as one.
+    okSave();
+    const wf = allSkippedWorkflow();
+    wf.phases = [{ id: 'p1', name: 'P1', decision: 'blocked', gateThreshold: 70, score: 0, durationMs: 5, commands: [] }];
+    wf.decision = 'BLOCK';
+    wf.decisionCategory = 'negative';
+    wf.metrics = { ...wf.metrics, phasesExecuted: 1, phasesBlocked: 1, phasesSkipped: 0 };
+
+    const client = new SubmissionClient(baseConfig, testLogger);
+    await client.submit(makeSubmission({ result: wf }));
+
+    const input = mockSave.mock.calls[0]![0] as { summary: Record<string, unknown> };
+    expect(Object.keys(input.summary)).toContain('averageScore');
+    expect(input.summary.averageScore).toBe(0);
+  });
+
+  it('CONTROL: a scored workflow is untouched', async () => {
+    okSave();
+    const wf = allSkippedWorkflow();
+    wf.score = 85;
+    wf.phases = [{ id: 'p1', name: 'P1', decision: 'passed', gateThreshold: 70, score: 85, durationMs: 5, commands: [] }];
+    wf.metrics = { ...wf.metrics, phasesExecuted: 1, phasesPassed: 1, phasesSkipped: 0 };
+
+    const client = new SubmissionClient(baseConfig, testLogger);
+    await client.submit(makeSubmission({ result: wf }));
+
+    const input = mockSave.mock.calls[0]![0] as { summary: Record<string, unknown> };
+    expect(input.summary.averageScore).toBe(85);
+  });
+
+  it('a pipeline with NO stage results (stagesExecuted === 0) omits averageScore — the branch the PDL schema forbids but core does not enforce', async () => {
+    okSave();
+    const pipeline = {
+      type: 'pipeline',
+      name: 'empty',
+      status: 'completed',
+      version: '1.0.0',
+      definitionHash: 'sha256:pl',
+      decision: 'PASS',
+      decisionCategory: 'positive',
+      score: 0, // what aggregateScores([]) returns for an empty stageResults array
+      recommendations: [],
+      durationMs: 1,
+      stages: [],
+      metrics: {
+        inputTokens: 0, outputTokens: 0, totalEffectiveTokens: 0, durationMs: 1, model: 'mixed',
+        stagesExecuted: 0, stagesPassed: 0, stagesFailed: 0, stagesWarned: 0, stagesSkipped: 0,
+      },
+    } as unknown as PipelineResult;
+
+    const client = new SubmissionClient(baseConfig, testLogger);
+    await client.submit(makeSubmission({ result: pipeline }));
+
+    const input = mockSave.mock.calls[0]![0] as { summary: Record<string, unknown> };
+    expect(Object.keys(input.summary)).not.toContain('averageScore');
+  });
+
+  it('a completed, UNGATED workflow-ref stage wrapping an all-skipped workflow: the enclosing pipeline omits averageScore (spec §7 L3-2)', async () => {
+    // stagesExecuted is 1 — the stage itself ran — so the result-level check alone cannot
+    // catch this. It is caught upstream: PipelineExecutor.buildResult enters a stage that
+    // verified nothing into the roll-up as scoreless (null), so the pipeline's own score is
+    // null and the existing `!= null` guard omits it. This fixture models what buildResult
+    // now produces; the PipelineExecutor tests pin the roll-up itself.
+    okSave();
+    const nested = allSkippedWorkflow();
+    const pipeline = {
+      type: 'pipeline',
+      name: 'wrap',
+      version: '1.0.0',
+      definitionHash: 'sha256:pl',
+      status: 'completed',
+      decision: 'PASS',
+      decisionCategory: 'positive',
+      score: null,
+      recommendations: [],
+      durationMs: 20,
+      stages: [{ id: 's1', name: 'S1', type: 'workflow', status: 'completed', durationMs: 10, result: nested }],
+      metrics: {
+        inputTokens: 0, outputTokens: 0, totalEffectiveTokens: 0, durationMs: 20, model: 'mixed',
+        stagesExecuted: 1, stagesPassed: 1, stagesFailed: 0, stagesWarned: 0, stagesSkipped: 0,
+      },
+    } as unknown as PipelineResult;
+
+    const client = new SubmissionClient(baseConfig, testLogger);
+    await client.submit(makeSubmission({ result: pipeline }));
+
+    const input = mockSave.mock.calls[0]![0] as { summary: Record<string, unknown> };
+    expect(Object.keys(input.summary)).not.toContain('averageScore');
+  });
+});

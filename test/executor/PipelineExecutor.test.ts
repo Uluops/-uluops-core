@@ -1867,3 +1867,48 @@ describe('PipelineExecutor — gate threshold Infinity is unusable, not a permis
     expect(result.stages[1]!.status).not.toBe('completed');
   });
 });
+
+describe('PipelineExecutor — an UNGATED stage that verified nothing enters the pipeline roll-up as scoreless, not 0 (score-aggregation-semantics spec v0.2.0 §7 L3-2)', () => {
+  // WorkflowExecutor hands an all-skipped workflow `score: 0` deliberately, so a GATE over it
+  // blocks. Without a gate nothing reads that 0 — and buildResult used to average it in as a
+  // measured zero, dragging a genuine 85 down to 43 and handing SubmissionClient a pipeline
+  // whose `stagesExecuted` (1 — the stage did run) says "something executed".
+  const allSkipped = () => makeWorkflowResult({
+    decision: 'SHIP', decisionCategory: 'positive', score: 0, phases: [],
+    metrics: { ...makeWorkflowResult().metrics, phasesExecuted: 0, phasesSkipped: 2 },
+  });
+  const twoStages = {
+    stages: [
+      { id: 'checks', name: 'Checks', type: 'workflow' as const, ref: 'release-checks@1' },   // NO gate
+      { id: 'audit', name: 'Audit', type: 'command' as const, ref: 'c@1' },
+    ],
+  };
+
+  it('an all-skipped ungated workflow stage beside a real 85 rolls up to 85, not 43', async () => {
+    const cmdExec = makeCommandExecutor([makeCommandResult({ decision: 'PASS', decisionCategory: 'positive', score: 85 })]);
+    const executor = new PipelineExecutor(makeWorkflowExecutor([allSkipped()]), cmdExec, agentExec, makeRegistry(), noopLogger);
+    const result = await executor.execute(makePipelineDef(twoStages), { target: '/tmp' });
+    expect(result.stages[0]!.status).toBe('completed');   // ungated: the stage is not failed
+    expect(result.metrics.stagesExecuted).toBe(2);        // and it counts as executed
+    expect(result.score).toBe(85);
+  });
+
+  it('a lone all-skipped ungated workflow stage rolls up to null (omittable), not 0', async () => {
+    const executor = new PipelineExecutor(makeWorkflowExecutor([allSkipped()]), makeCommandExecutor(), agentExec, makeRegistry(), noopLogger);
+    const def = makePipelineDef({ stages: [twoStages.stages[0]!] });
+    const result = await executor.execute(def, { target: '/tmp' });
+    expect(result.score).toBeNull();
+    expect(result.decision).toBe('PASS');                 // decision channel deliberately unchanged
+  });
+
+  it('CONTROL: a workflow stage that RAN and scored 0 still rolls up as 0 — 0 and 85 average to 43', async () => {
+    const ranAndFailed = makeWorkflowResult({
+      decision: 'BLOCK', decisionCategory: 'negative', score: 0,
+      metrics: { ...makeWorkflowResult().metrics, phasesExecuted: 1, phasesBlocked: 1 },
+    });
+    const cmdExec = makeCommandExecutor([makeCommandResult({ decision: 'PASS', decisionCategory: 'positive', score: 85 })]);
+    const executor = new PipelineExecutor(makeWorkflowExecutor([ranAndFailed]), cmdExec, agentExec, makeRegistry(), noopLogger);
+    const result = await executor.execute(makePipelineDef(twoStages), { target: '/tmp' });
+    expect(result.score).toBe(43);
+  });
+});

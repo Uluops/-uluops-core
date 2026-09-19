@@ -28,6 +28,7 @@ import { AnalysisSummaryExtractor } from '../analysis/AnalysisSummaryExtractor.j
 import { EXTRACTION_CONFIDENCE_THRESHOLD } from '../constants.js';
 import { isCanonicalMode } from '@uluops/taxonomy';
 import { CRASH_PLACEHOLDER_VERSION } from '../utils/crashPlaceholder.js';
+import { verifiedNothingExecuted } from '../utils/executionEvidence.js';
 
 /**
  * Ceiling on `analysisRecords` in one `runs.save` payload. Mirrors
@@ -687,12 +688,25 @@ export class SubmissionClient {
           // OMIT when scoreless — the tracker computes the average over scored agents
           // or stores null. Never fabricate 0. (score-nullability spec, averageScore decision.)
           //
+          // ALSO OMIT when the score is a NON-null number that nothing measured. aggregateScores'
+          // empty-input branch returns 0 when no phase/stage ran — deliberately, so that a GATED
+          // pipeline stage over an all-skipped workflow blocks instead of fail-opening (2026-08-24).
+          // That 0 is a gate signal, and PipelineExecutor.gateFailed confirms "nothing ran" from
+          // execution counts before acting on it. Standalone, or under a stage with no gate, no
+          // gate ever reads it and the same 0 arrived here as a measurement: `0 != null` is true,
+          // and the tracker stored a scored run that verified nothing, indistinguishable from a
+          // genuine failing one (748fcc02, 1082d5fb). Same positive-evidence check as the gate,
+          // same polarity as the null case above: send what is real, omit what is not. The run
+          // itself still submits — its agents, recommendations and skip structure are real data.
+          //
           // CLAMPED, not forwarded raw: per-agent scores are clamped at [0,100]
           // (AgentExecutor), but `aggregation.method: 'sum'` is an authorable
           // AggregationMethod and summing two 90-score agents legitimately produces
           // 180 here — outside the wire's `min(0).max(100)` and enough to abort the
           // whole save (ship run #95, code-auditor).
-          ...(result.score != null ? { averageScore: clampAverageScore(result.score, this.logger) } : {}),
+          ...(result.score != null && !verifiedNothingExecuted(result)
+            ? { averageScore: clampAverageScore(result.score, this.logger) }
+            : {}),
         },
         definitionType: result.type,
         definitionName: result.name,

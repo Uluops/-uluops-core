@@ -28,6 +28,15 @@ export interface ScoredItem {
  *          nothing scorable was supplied (empty input, or every item scoreless). Callers
  *          that need "nothing was asked for" to BLOCK must decide that themselves; see the
  *          note at the scoreless branch below.
+ *
+ * Rounding is a known boundary property, not a bug (tracker e76c2577, documented here by
+ * request; no behaviour change): `average` and `weighted_average` round to the nearest
+ * integer BEFORE the caller compares against an integer gate threshold, so verdicts are
+ * integer-quantised at the boundary. At DEFAULT_PASS_THRESHOLD (75), a true mean of 74.5
+ * rounds to 75 and PASSES while 74.4 rounds to 74 and FAILS — a sub-point difference in
+ * agent scores flips a binary CI gate. `min`, `max` and `sum` are not rounded, and gates on
+ * them compare the exact value. A gate authored near a threshold should expect this; a
+ * caller that needs sub-integer resolution must not use the rounding methods.
  */
 
 export function aggregateScores(
