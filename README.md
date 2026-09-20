@@ -1095,8 +1095,8 @@ members you have not handled.
 > `@uluops/ops-sdk` each carry an exact pin of `@uluops/sdk-core`, and exact pins dedupe only
 > while they are **equal**. Whenever they drift apart — core 0.43.5 pinned 0.17.0 beside a
 > registry-sdk that nested 0.15.0 — two copies are installed, two distinct `SdkApiError`
-> class objects exist, and an error minted inside one is not an `instanceof` the other. At
-> 0.43.6 all three pin 0.18.0 and one copy is hoisted, but that alignment is a property of
+> class objects exist, and an error minted inside one is not an `instanceof` the other. Since
+> the release that pins sdk-core 0.18.0 in core, all three agree and one copy is hoisted, but that alignment is a property of
 > the current pins, not a guarantee: the next unpaired bump reopens it silently.
 > `isSdkApiError` and its aliases are themselves `instanceof`-based and are **not** an escape
 > hatch.
