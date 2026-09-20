@@ -6,6 +6,8 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) 
 
 ## [Unreleased]
 
+## [0.43.6] - 2026-09-20
+
 ### Changed
 
 - **`@uluops/sdk-core` 0.17.0 → 0.18.0, `@uluops/registry-sdk` 0.49.0 → 0.54.0, `@uluops/ops-sdk` 6.5.1 → 6.7.0 — one `SdkApiError` identity per process again.** Both SDKs pin sdk-core 0.18.0 exactly since 2026-09-19, and every consumer that pins core beside them (the CLI 0.31.1 today) was hoisting 0.18.0 while core nested its own 0.17.0 — and a third copy, 0.15.0, under the registry-sdk 0.49.0 core carried. Two class identities means every `instanceof` / `isOpsApiError`-style guard on one side silently stops matching errors raised on the other (the CLAUDE.md "bump sdk-core in the same change" rule, first hit on tracker `bfb1575e`). Behaviour inherited on the tracking path: `AgentReliability.declinedRate` and nullable registry effectiveness rates now parse instead of being stripped/refused; structured 404/409 error codes survive through sdk-core 0.18.0. No core code changes; typecheck, lint and 1438 tests unchanged.
