@@ -6,6 +6,8 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) 
 
 ## [Unreleased]
 
+## [0.44.1] - 2026-10-03
+
 ### Fixed
 
 - **Registry "not found" was never recognised, so unregistered models and alias misses failed
