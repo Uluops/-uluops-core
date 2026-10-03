@@ -1,6 +1,7 @@
 import { parseExternalNumber, finitePositive } from '../utils/externalValue.js';
 import type { ToolSet } from 'ai';
 import type { AIProvider, AIGenerateResult } from '../ai/AIProvider.js';
+import { SHELL_SCHEMA_FALLBACK_PROVIDERS } from '../ai/AIProvider.js';
 import { ToolHandler, extToLanguage } from './ToolHandler.js';
 import { ToolAdapter } from '../ai/ToolAdapter.js';
 import { TokenBudgetTracker } from '../ai/TokenBudgetTracker.js';
@@ -21,7 +22,7 @@ import { mapCategory } from './mapCategory.js';
 import { renderUpstreamSection } from './upstreamContext.js';
 import type { UsageMetrics } from '../types/ai.js';
 import type { Logger } from '@uluops/sdk-core';
-import { DEFAULT_PASS_THRESHOLD, DEFAULT_WARN_THRESHOLD, DEFAULT_MAX_STEPS, DEFAULT_MAX_TOKENS, DEFAULT_MODEL_ALIAS, DEFAULT_TEMPERATURE, EXTRACTION_CONFIDENCE_THRESHOLD, SHELL_COMMAND_TIMEOUT_MS, DEFAULT_REQUEST_TIMEOUT_MS } from '../constants.js';
+import { DEFAULT_PASS_THRESHOLD, DEFAULT_WARN_THRESHOLD, DEFAULT_MAX_STEPS, DEFAULT_MAX_TOKENS, DEFAULT_MODEL_ALIAS, DEFAULT_TEMPERATURE, EXTRACTION_CONFIDENCE_THRESHOLD, SHELL_COMMAND_TIMEOUT_MS, DEFAULT_REQUEST_TIMEOUT_MS, DEFAULT_CONTEXT_BUDGET } from '../constants.js';
 
 /**
  * Maximum bytes retained from the LLM's raw text output on AgentResult.rawOutput.
@@ -213,7 +214,7 @@ export class AgentExecutor {
     // Execution-phase degradation markers (resolution-phase markers are merged
     // from resolved.degradations inside buildResult). These feed the run's
     // derived completeness — see deriveCompleteness().
-    const executionMarkers = this.collectExecutionMarkers(result, rawText, extraction, toolAdapter.budgetTracker);
+    const executionMarkers = this.collectExecutionMarkers(result, rawText, extraction, toolAdapter.budgetTracker, toolAdapter.shellSchemaFallback);
 
     return this.buildResult(resolved, agentType, context, parsed, effectiveDecision, extraction, recommendations, durationMs, metrics, decisionCategory, rawText, executionMarkers);
   }
@@ -230,6 +231,7 @@ export class AgentExecutor {
   ) {
     const agentTools = runtime.interface?.tools;
     let additionalTools: ToolSet | undefined;
+    let shellSchemaFallback = false;
     // Case-insensitive: the corpus declares `Bash` (98 v3 ADLs) while this check and operators'
     // allowedTools say `bash`. An exact match meant no corpus agent could ever be offered a shell,
     // even after its tools reached the runtime (tracker 38ce9462).
@@ -251,6 +253,7 @@ export class AgentExecutor {
       // records, reintroduced on the operator side of the same helper.
       const shellTimeoutMs = finitePositive(options?.shellTimeoutMs) ?? SHELL_COMMAND_TIMEOUT_MS;
       additionalTools = this.aiProvider.createProviderShellTool(resolvedModel.provider, input.target, shellTimeoutMs);
+      shellSchemaFallback = additionalTools !== undefined && SHELL_SCHEMA_FALLBACK_PROVIDERS.has(resolvedModel.provider);
       if (additionalTools) {
         this.logger.info(
           `Shell offered (provider ${resolvedModel.provider}): model-issued commands run via sh -c, starting in ` +
@@ -268,7 +271,7 @@ export class AgentExecutor {
     const budgetTracker = new TokenBudgetTracker(effectiveBudget);
     const adapter = new ToolAdapter(toolHandler, additionalTools, budgetTracker);
 
-    return { toolHandler, budgetTracker, adapter };
+    return { toolHandler, budgetTracker, adapter, shellSchemaFallback };
   }
 
   /**
@@ -465,8 +468,34 @@ export class AgentExecutor {
     rawText: string,
     extraction: ExtractionResult,
     budgetTracker: TokenBudgetTracker,
+    shellSchemaFallback = false,
   ): DegradationMarker[] {
     const markers: DegradationMarker[] = [];
+
+    // OpenRouter plan 1e: an unregistered model runs on fabricated defaults, and until this it
+    // did so silently. INFO, not degraded: coverage and verdict are untouched; what is unreliable
+    // is the capability set (structured output off), the context budget, and cost.
+    if (result.modelRegistered === false) {
+      markers.push({
+        code: 'model.unregistered-defaults',
+        phase: 'execution',
+        severity: 'info',
+        detail: `${result.model} is not in the model catalog, so it ran on defaults: DEFAULT_CAPABILITIES `
+          + `(structured output off), the ${DEFAULT_CONTEXT_BUDGET.toLocaleString('en-US')}-token default context `
+          + 'budget, and no cost estimate.',
+      });
+    }
+
+    // OpenRouter plan S5: the run's bash was the schema fallback, not a provider-defined tool,
+    // so a comparison with a native-bash run of the same model differs in that affordance.
+    if (shellSchemaFallback) {
+      markers.push({
+        code: 'tools.shell-schema-fallback',
+        phase: 'execution',
+        severity: 'info',
+        detail: `Shell access used the schema-fallback bash tool (provider ${result.provider} has no provider-defined shell tool).`,
+      });
+    }
 
     if (budgetTracker.forcedWrapUp) {
       markers.push({

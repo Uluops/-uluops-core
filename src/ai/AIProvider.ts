@@ -9,7 +9,10 @@ import {
   type LanguageModel,
   type ToolSet,
   type CallWarning,
+  tool,
 } from 'ai';
+import { createRequire } from 'node:module';
+import { z } from 'zod';
 import type { LanguageModelUsage } from 'ai';
 import type { ProviderOptions } from '@ai-sdk/provider-utils';
 
@@ -39,7 +42,7 @@ import {
 } from '../errors/index.js';
 import type { ModelCapabilities } from '@uluops/registry-sdk';
 import type { Logger } from '@uluops/sdk-core';
-import { usableBudget, resolveRequestTimeoutMs } from '../utils/externalValue.js';
+import { usableBudget, resolveRequestTimeoutMs, finitePositive } from '../utils/externalValue.js';
 
 /**
  * What `mapUsage` accepts — DERIVED from the AI SDK's own `LanguageModelUsage`
@@ -248,6 +251,11 @@ export interface AIGenerateResult<TOutput = unknown> {
    */
   usageShapeDrift?: string[];
 
+  /** Whether the model was found in the registry catalog (`ResolvedModel.registered`). `false`
+   *  means it ran on fabricated defaults: DEFAULT_CAPABILITIES, the default context budget, and
+   *  no cost estimate. AgentExecutor turns that into an info marker (OpenRouter plan 1e). */
+  modelRegistered?: boolean;
+
   /** Provider warnings the AI SDK emitted for this call — unsupported settings, clamped
    *  values, silently-dropped parameters. This is the SDK's OWN drift channel and core
    *  used to discard it entirely, which is why a stale request option produced no signal
@@ -337,7 +345,46 @@ export class AIProvider {
   /** Factory name overrides for providers that don't follow the `create<Name>` convention */
   private static readonly FACTORY_NAME_OVERRIDES: Record<string, string> = {
     google: 'createGoogleGenerativeAI',
+    openrouter: 'createOpenRouter',
   };
+
+  /**
+   * Providers whose npm package is not `@ai-sdk/<name>`, with the version core is built against.
+   * Every site that names a provider package goes through `packageFor()`, so a provider listed
+   * here is never reported as `@ai-sdk/<name>` (OpenRouter plan S1: the old message named
+   * `@ai-sdk/openrouter`, which does not exist).
+   *
+   * `pin` is checked at load (`ensureProvider`): a different MAJOR is refused. The OpenRouter
+   * provider's npm `latest` is 3.x (peer `ai ^7`, Node 22) while core runs `ai@6`; a 3.x install
+   * imports cleanly and then fails inside the AI SDK, in wording that names nothing core controls.
+   */
+  private static readonly PACKAGE_NAME_OVERRIDES: Record<string, { package: string; pin: string }> = {
+    openrouter: { package: '@openrouter/ai-sdk-provider', pin: '2.10.0' },
+  };
+
+  /** npm package that provides `providerName`. */
+  static packageFor(providerName: string): string {
+    return AIProvider.PACKAGE_NAME_OVERRIDES[providerName]?.package ?? `@ai-sdk/${providerName}`;
+  }
+
+  /** The install command to print for `providerName`, pinned where core pins it. */
+  static installHintFor(providerName: string): string {
+    const override = AIProvider.PACKAGE_NAME_OVERRIDES[providerName];
+    return override ? `npm install ${override.package}@${override.pin}` : `npm install @ai-sdk/${providerName}`;
+  }
+
+  /**
+   * Installed version of a provider package, resolved the way the dynamic import resolves it,
+   * or undefined if it cannot be read. A static seam so tests can stand in a version.
+   */
+  static readInstalledVersion(packageName: string): string | undefined {
+    try {
+      const pkg = createRequire(import.meta.url)(`${packageName}/package.json`) as { version?: unknown };
+      return typeof pkg.version === 'string' ? pkg.version : undefined;
+    } catch {
+      return undefined;
+    }
+  }
 
   /**
    * Allowlist of valid provider names for dynamic import.
@@ -738,7 +785,7 @@ export class AIProvider {
     // cache_read from the final step with cache_creation 0, a cache read with no
     // corresponding write. Fall back to `usage` only for callers/mocks that predate
     // totalUsage.
-    const usage = this.mapUsage(result.totalUsage ?? result.usage, result.providerMetadata, resolved.provider);
+    const usage = this.mapUsage(result.totalUsage ?? result.usage, result.providerMetadata, resolved.provider, resolved.modelId);
 
     this.logger.info(
       // EXTERNAL-OK: reads a COUNT or an enum off the SDK result, not a priced quantity. An array length and a
@@ -784,6 +831,7 @@ export class AIProvider {
       toolCallCount,
       model: `${resolved.provider}:${resolved.modelId}`,
       provider: resolved.provider,
+      modelRegistered: resolved.registered,
       steps: result.steps.length,
       finishReason: result.finishReason,
       costUsd: this.computeCostUsd(usage, resolved.cost),
@@ -842,6 +890,7 @@ export class AIProvider {
       stepTotalsToUsage(stepTotals),
       stepTotals.providerMetadata,
       resolved.provider,
+      resolved.modelId,
     );
     const providerWarnings = formatCallWarnings(stepTotals.warnings);
     const usageShapeDrift = this.detectUsageShapeDrift(stepTotals.providerMetadata);
@@ -852,6 +901,7 @@ export class AIProvider {
       toolCallCount: stepTotals.toolCalls,
       model: `${resolved.provider}:${resolved.modelId}`,
       provider: resolved.provider,
+      modelRegistered: resolved.registered,
       steps: stepTotals.steps,
       finishReason,
       costUsd: stepTotals.sawUsage ? this.computeCostUsd(usage, resolved.cost) : undefined,
@@ -965,6 +1015,23 @@ export class AIProvider {
       } as unknown as ToolSet;
     }
 
+    if (SHELL_SCHEMA_FALLBACK_PROVIDERS.has(provider)) {
+      // OpenRouter plan S5: OpenRouter has no provider-defined shell tool, so routed models get a
+      // plain function tool. It is named `bash` so the operator's allowedTools gate applies
+      // exactly as it does to Anthropic's native tool (D6 lean), and it threads the per-call
+      // abortSignal like the native tools above. `restart` mirrors the native schema and is
+      // ignored, as the native execute ignores it. Scoped to OpenRouter only (D8): widening it
+      // would change other providers' tool surface. AgentExecutor marks runs that use it.
+      return {
+        bash: tool({
+          description: 'Run a shell command in the target directory and return its combined stdout and stderr.',
+          inputSchema: z.object({ command: z.string(), restart: z.boolean().optional() }),
+          execute: async ({ command }, opts) =>
+            executeShellAsString(command, targetDir, timeoutMs, this.logger, opts?.abortSignal),
+        }),
+      } as ToolSet;
+    }
+
     return undefined;
   }
 
@@ -1016,7 +1083,35 @@ export class AIProvider {
     anthropic: (r, o, b) => this.buildAnthropicOptions(r, o, b),
     openai: (r, o) => this.buildOpenAIOptions(r, o),
     google: (r, o) => this.buildGoogleOptions(r, o),
+    openrouter: (r, o) => this.buildOpenRouterOptions(r, o),
   };
+
+  /**
+   * OpenRouter request options (OpenRouter plan S4). Option names are the 2.10.0 provider's,
+   * checked in the Phase 0 spike (traces/phase0-spike-findings.md).
+   *
+   * - `provider.require_parameters` and `usage.include` are FORCED after the caller's block, so
+   *   no caller option can turn them off. `require_parameters` is the only capability guard for a
+   *   routed model (an unregistered model's DEFAULT_CAPABILITIES says tools: true whatever the
+   *   endpoint supports); `usage.include` is what makes OpenRouter report billed cost.
+   * - The thinking budget maps to `reasoning.max_tokens` for a model whose capabilities say it
+   *   thinks, as buildAnthropicOptions auto-enables thinking on the direct route. A caller's own
+   *   `reasoning` block wins.
+   */
+  private buildOpenRouterOptions(resolved: ResolvedModel, userOptions?: ProviderOptions): ProviderOptions {
+    const user = (userOptions?.['openrouter'] as Record<string, unknown> | undefined) ?? {};
+    const orOpts: Record<string, unknown> = { ...user };
+    orOpts['provider'] = { ...((user['provider'] as Record<string, unknown> | undefined) ?? {}), require_parameters: true };
+    orOpts['usage'] = { ...((user['usage'] as Record<string, unknown> | undefined) ?? {}), include: true };
+    // Through the finitePositive seam, not verbatim like the Anthropic builder: OpenRouter forwards
+    // to whichever upstream serves the request, so no single provider can be relied on to reject a
+    // malformed budget. A non-finite or non-positive value sends no reasoning option at all.
+    const thinkingBudget = finitePositive(this.config.defaultThinkingBudget);
+    if (resolved.capabilities.extendedThinking && !('reasoning' in user) && thinkingBudget !== undefined) {
+      orOpts['reasoning'] = { max_tokens: thinkingBudget };
+    }
+    return { ...userOptions, openrouter: orOpts } as ProviderOptions;
+  }
 
   private buildProviderOptions(
     resolved: ResolvedModel,
@@ -1321,16 +1416,28 @@ export class AIProvider {
       );
     }
 
+    const pinned = AIProvider.PACKAGE_NAME_OVERRIDES[providerName];
+    if (pinned) {
+      const installed = AIProvider.readInstalledVersion(pinned.package);
+      if (installed !== undefined && installed.split('.')[0] !== pinned.pin.split('.')[0]) {
+        throw new ConfigurationError(
+          `Provider "${providerName}" requires ${pinned.package}@${pinned.pin}; ${installed} is installed. ` +
+          `Major ${installed.split('.')[0]} targets a different AI SDK than this core (ai@6). ` +
+          `Install: ${AIProvider.installHintFor(providerName)}`,
+        );
+      }
+    }
+
     try {
-      // Dynamic import of @ai-sdk/<provider>.
+      // Dynamic import of the provider package (@ai-sdk/<provider>, or a PACKAGE_NAME_OVERRIDES entry).
       // SECURITY: additionalProviders names map to npm package names (@ai-sdk/<name>).
       // The package is resolved from the consuming project's node_modules — it carries
       // the full trust of the npm registry and the project's dependency tree. There is
       // no integrity verification beyond npm's own lockfile checksums. An attacker who
       // can write to node_modules (supply chain compromise, dependency confusion) could
       // achieve code execution via a malicious provider package.
-      const mod = await import(`@ai-sdk/${providerName}`) as Record<string, unknown>;
-      this.logger.info(`Loaded AI provider: @ai-sdk/${providerName}`);
+      const mod = await import(AIProvider.packageFor(providerName)) as Record<string, unknown>;
+      this.logger.info(`Loaded AI provider: ${AIProvider.packageFor(providerName)}`);
 
       // Check override map first, then try standard naming convention (createMistral, createCohere, etc.)
       const factoryName = AIProvider.FACTORY_NAME_OVERRIDES[providerName]
@@ -1340,7 +1447,7 @@ export class AIProvider {
 
       if (!createProvider || typeof createProvider !== 'function') {
         throw new ConfigurationError(
-          `@ai-sdk/${providerName} does not export ${factoryName} or default. ` +
+          `${AIProvider.packageFor(providerName)} does not export ${factoryName} or default. ` +
           `Check the package documentation.`,
         );
       }
@@ -1353,8 +1460,8 @@ export class AIProvider {
       const errCode = error instanceof Error && 'code' in error ? (error as NodeJS.ErrnoException).code : undefined;
       if (errCode === 'ERR_MODULE_NOT_FOUND' || errCode === 'MODULE_NOT_FOUND') {
         throw new ConfigurationError(
-          `Provider "${providerName}" requires @ai-sdk/${providerName}. ` +
-          `Install: npm install @ai-sdk/${providerName}`,
+          `Provider "${providerName}" requires ${AIProvider.packageFor(providerName)}. ` +
+          `Install: ${AIProvider.installHintFor(providerName)}`,
         );
       }
       throw error;
@@ -1391,6 +1498,7 @@ export class AIProvider {
     usage: MappableUsage,
     providerMetadata?: Record<string, unknown>,
     provider?: string,
+    modelId?: string,
   ): UsageMetrics {
     // input_tokens is CACHE-EXCLUSIVE. AI SDK v6 flattens `inputTokens` from the
     // provider's `inputTokens.total`, which INCLUDES cache reads and cache writes
@@ -1440,7 +1548,11 @@ export class AIProvider {
     // the documented invariant that `??=` "can never override the unified value".
     const unifiedReasoning = optionalTokenCount(usage.outputTokenDetails?.reasoningTokens);
     if (unifiedReasoning !== undefined) {
-      if (provider === 'google') base.thinking_tokens = unifiedReasoning;
+      // C7 (OpenRouter plan): bucket by the model's upstream FAMILY, not the route. A Gemini
+      // model reached through OpenRouter (`google/*`) reports thinking exactly as direct Google
+      // does, and filing it under reasoning_tokens would split one model's history by route.
+      const googleFamily = provider === 'google' || (provider === 'openrouter' && modelId?.startsWith('google/') === true);
+      if (googleFamily) base.thinking_tokens = unifiedReasoning;
       else base.reasoning_tokens = unifiedReasoning;
     }
 
@@ -1448,6 +1560,7 @@ export class AIProvider {
     this.extractAnthropicUsage(base, providerMetadata);
     this.extractOpenAIUsage(base, providerMetadata);
     this.extractGoogleUsage(base, providerMetadata);
+    this.extractOpenRouterUsage(base, providerMetadata);
 
     // 5. Generic provider metadata scan for non-bundled providers.
     // Best-effort extraction of cache tokens from unknown provider metadata.
@@ -1502,6 +1615,8 @@ export class AIProvider {
     // here previously implied this detector was watching them; it was not.
     openai: ['responseId', 'serviceTier', 'acceptedPredictionTokens', 'rejectedPredictionTokens', 'logprobs'],
     google: ['usageMetadata'],
+    // @openrouter/ai-sdk-provider 2.10.0, observed live (Phase 0 spike, 2026-10-03).
+    openrouter: ['provider', 'reasoning_details', 'annotations', 'usage'],
   };
 
   /**
@@ -1526,6 +1641,7 @@ export class AIProvider {
     anthropic: ['cacheCreationInputTokens', 'cacheReadInputTokens'],
     openai: [],
     google: ['usageMetadata'],
+    openrouter: ['usage'],
   };
 
   /** Providers already warned about this process — drift is chronic once present; one warn is signal, per-run warns are noise. */
@@ -1680,8 +1796,26 @@ export class AIProvider {
     base.thinking_tokens ??= optionalTokenCount(gUsage.thoughtsTokenCount);
   }
 
+  /**
+   * OpenRouter's block (`providerMetadata.openrouter.usage`). Cache reads normally arrive on the
+   * SDK-standard path (Phase 0: the provider fills `inputTokenDetails`), so this is a FALLBACK,
+   * `??=`, for responses that carry only the block. Billed cost (`usage.cost`) is read per step
+   * by the cost work (S6b), not here.
+   */
+  private extractOpenRouterUsage(base: UsageMetrics, providerMetadata?: Record<string, unknown>): void {
+    const block = providerMetadata?.['openrouter'];
+    if (!block || typeof block !== 'object') return;
+    const usage = (block as Record<string, unknown>)['usage'];
+    if (!usage || typeof usage !== 'object') return;
+    const details = (usage as Record<string, unknown>)['promptTokensDetails'];
+    if (details && typeof details === 'object') {
+      const cached = (details as Record<string, unknown>)['cachedTokens'];
+      if (typeof cached === 'number') base.cache_read_input_tokens ??= optionalTokenCount(cached);
+    }
+  }
+
   private extractGenericUsage(base: UsageMetrics, providerMetadata: Record<string, unknown>): void {
-    const KNOWN_PROVIDERS = new Set(['anthropic', 'openai', 'google']);
+    const KNOWN_PROVIDERS = new Set(['anthropic', 'openai', 'google', 'openrouter']);
     for (const [key, value] of Object.entries(providerMetadata)) {
       if (KNOWN_PROVIDERS.has(key) || typeof value !== 'object' || !value) continue;
       const meta = value as Record<string, unknown>;
@@ -1740,6 +1874,17 @@ export class AIProvider {
       mapped = new SdkApiError(
         404,
         `Provider returned HTTP 404 for ${modelRef}. ${diagnosis} Provider message: ${error.message}`,
+      );
+    } else if (status === 400 && resolved && !resolved.registered) {
+      // 1e (OpenRouter plan): an unregistered model's context budget is the default, not its
+      // real window, so a context-length 400 is very likely that default. The 404 branch above
+      // already uses `registered` to explain itself; this is the same move for 400.
+      const modelRef = `${resolved.provider}:${resolved.modelId}`;
+      mapped = new SdkApiError(
+        400,
+        `Provider returned HTTP 400 for ${modelRef}. ${modelRef} is not in the model catalog, so its ` +
+        `context budget is the ${DEFAULT_CONTEXT_BUDGET.toLocaleString('en-US')}-token default, not its real ` +
+        `window; a context-length rejection is likely that default. Provider message: ${error.message}`,
       );
     } else if (status >= 500) {
       mapped = new ServiceUnavailableError(
@@ -1917,3 +2062,10 @@ function isAPICallError(error: unknown): error is APICallError {
 function isRetryError(error: unknown): error is RetryError {
   return RetryError.isInstance(error);
 }
+
+/**
+ * Providers that get the schema-fallback `bash` tool from `createProviderShellTool` rather than a
+ * provider-defined one (OpenRouter plan S5, D8: OpenRouter only). Exported so the executor can
+ * mark runs that use it without a second provider-name branch.
+ */
+export const SHELL_SCHEMA_FALLBACK_PROVIDERS: ReadonlySet<string> = new Set(['openrouter']);

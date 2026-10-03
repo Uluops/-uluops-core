@@ -137,5 +137,5 @@ export const DEFAULT_REQUEST_TIMEOUT_MS = 300_000;
  * Users can extend this via config.ai.additionalProviders.
  */
 export const DEFAULT_DYNAMIC_PROVIDERS = [
-  'anthropic', 'openai', 'google', 'mistral', 'cohere', 'groq', 'xai', 'deepseek',
+  'anthropic', 'openai', 'google', 'mistral', 'cohere', 'groq', 'xai', 'deepseek', 'openrouter',
 ] as const;

@@ -109,7 +109,7 @@ The `@uluops/core` SDK provides:
 - **4-Layer Execution Hierarchy** - Agent > Command > Workflow > Pipeline orchestration
 - **AI SDK v6 Integration** - Vercel AI SDK for LLM communication with automatic tool loops (`maxSteps`) and built-in retry
 - **Registry-Backed Model Resolution** - Model aliases resolved via UluOps Registry with provider metadata
-- **Multi-Provider AI** - Anthropic-first with deepest optimization (caching, context management, bash tools); OpenAI + Google bundled; Mistral, Cohere, and 10+ others via dynamic `@ai-sdk/*` import. See [SCOPE.md](https://github.com/Uluops/-uluops-core/blob/main/SCOPE.md) for provider strategy.
+- **Multi-Provider AI** - Anthropic-first with deepest optimization (caching, context management, bash tools); OpenAI + Google bundled; Mistral, Cohere, and 10+ others via dynamic `@ai-sdk/*` import; OpenRouter (experimental) via `@openrouter/ai-sdk-provider`. See [SCOPE.md](https://github.com/Uluops/-uluops-core/blob/main/SCOPE.md) for provider strategy.
 - **Filesystem Sandboxing** - ToolHandler restricts LLM file access to the target directory with symlink-aware path validation
 - **Content-Addressed Integrity Verification** - Registry-resolved definitions carry a SHA-256 YAML content hash (`sha256:…`) and, for agents/commands, a `promptHash` over the frozen rendered prompt. Hashing uses the shared `@uluops/sdk-core` implementation, so the client and registry hash identically. Remote resolution executes the **frozen `runtimeMd`** the `promptHash` certifies (not a live re-render). Callers can pin `expectedHash`/`expectedPromptHash` (from a trusted channel) on `resolve()`/`ExecutionOptions`; pins are verified **fail-closed** on every resolve path (cache/local/remote) and a mismatch throws `IntegrityError`. Verification is opt-in — unpinned resolves behave as before. See [Integrity Verification](#integrity-verification).
 - **Universal Agent Output** - Single `agentOutputSchema` with categories + artifacts for all 6 agent types (validator, executor, analyst, generator, explorer, forecaster)
@@ -172,6 +172,41 @@ const client = new UluOpsClient({
 });
 ```
 
+### OpenRouter (experimental)
+
+Route any OpenRouter model through core with an `openrouter:<slug>` model string. Install the
+provider yourself, at the version core is built against:
+
+```bash
+npm install @openrouter/ai-sdk-provider@2.10.0
+export OPENROUTER_API_KEY=your_openrouter_key   # auto-detected like the keys above
+```
+
+```typescript
+const result = await client.runAgent('code-validator', './src', {
+  model: 'openrouter:deepseek/deepseek-v4-flash',
+});
+```
+
+- **Pin 2.10.0.** The package's npm `latest` is 3.x, which targets `ai@7`; core runs `ai@6` and
+  refuses a different major at load with an error naming both versions. Under strict pnpm
+  isolation the package must be hoisted, because core resolves it with a dynamic `import()` from
+  its own install location (the same as the other non-bundled providers).
+- **Catalog data.** OpenRouter slugs resolve against the registry catalog (core 0.45.0+), so a
+  listed slug gets its real capabilities, context window and price. A slug the catalog does not
+  list runs on defaults and the run carries an info marker, `model.unregistered-defaults`.
+- **Routing guards.** Core always sends `provider.require_parameters: true` (route only to
+  endpoints that support every parameter sent, the only capability guard for a routed model) and
+  `usage.include: true`; caller options cannot turn either off. A thinking-capable model gets
+  `reasoning.max_tokens` from `defaultThinkingBudget`, as direct Anthropic models get thinking.
+- **Shell.** OpenRouter has no provider-defined shell tool, so routed agents that request `bash`
+  get a schema-fallback `bash` tool. The `allowedTools` gate applies exactly as for Anthropic's
+  native tool (`bash` stays off unless you allow it), and runs that use it carry an info marker,
+  `tools.shell-schema-fallback`.
+- **Not yet:** OpenRouter's billed cost (only the registry estimate is reported), typed errors
+  for OpenRouter's credit (402) and no-endpoint responses, and route tagging in the Tracker. A
+  routed run is recorded under its `openrouter:<slug>` model string.
+
 ## Usage
 
 ### Agent Execution
@@ -228,7 +263,7 @@ if (result.completeness !== 'complete') {
 ```
 
 - **`completeness`**: `'complete' | 'partial' | 'failed'`, derived from degradation markers (any `critical` ⇒ `failed`; any `degraded` ⇒ `partial`; else `complete`). Absent ⇒ treat as `complete`. **`PASS` + `partial` is a legitimate, gate-satisfying pass** (decided 2026-07-10, recorded in `types/degradation.ts`): the agent passed the scope it could cover — forced wrap-up and context eviction are normal operation on large repos. Gates never downgrade on completeness; consumers that care about evidence span read `completeness` alongside the decision.
-- **`degradationMarkers`**: typed `{ code, phase, severity, detail? }[]`. `code` is the stable contract (e.g. `budget.forced-wrap-up`, `context.evicted`, `steps.near-exhaustion`, `extraction.low-confidence`, `usage.provider-metadata-shape-drift`, `provider.warnings`, `render.raw-yaml-fallback`); `detail` is human-only — never match on it. `phase` is `'resolution' | 'execution'`.
+- **`degradationMarkers`**: typed `{ code, phase, severity, detail? }[]`. `code` is the stable contract (e.g. `budget.forced-wrap-up`, `context.evicted`, `steps.near-exhaustion`, `extraction.low-confidence`, `usage.provider-metadata-shape-drift`, `provider.warnings`, `model.unregistered-defaults`, `tools.shell-schema-fallback`, `render.raw-yaml-fallback`); `detail` is human-only — never match on it. `phase` is `'resolution' | 'execution'`.
 
   > **`budget.forced-wrap-up` is emitted only when the wrap-up brake could actually engage.**
   > On an Anthropic structured-output run the provider overrides `toolChoice` to select its

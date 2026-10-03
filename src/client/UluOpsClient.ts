@@ -846,7 +846,7 @@ export function resolveAIConfig(ai: AIConfig | undefined, env: NodeJS.ProcessEnv
     }
   } else {
     // Auto-detect: scan env vars for known provider API keys
-    const KNOWN_PROVIDERS = ['anthropic', 'openai', 'google', 'mistral', 'cohere'] as const;
+    const KNOWN_PROVIDERS = ['anthropic', 'openai', 'google', 'mistral', 'cohere', 'openrouter'] as const;
     for (const name of KNOWN_PROVIDERS) {
       const apiKey = resolveProviderApiKey(name, env);
       if (apiKey) {

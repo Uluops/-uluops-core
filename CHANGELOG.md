@@ -6,6 +6,37 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) 
 
 ## [Unreleased]
 
+### Added
+
+- **OpenRouter as a provider, experimental (OpenRouter plan v0.6.1, slices 1b and 1e).** Model
+  strings `openrouter:<slug>` route through `@openrouter/ai-sdk-provider`, which the consumer
+  installs at 2.10.0 (as with the other non-bundled providers). `OPENROUTER_API_KEY` is
+  auto-detected and `openrouter` is in `DEFAULT_DYNAMIC_PROVIDERS`.
+  - **Package and factory.** Every message that names a provider package goes through one map, so
+    an OpenRouter install error names `@openrouter/ai-sdk-provider@2.10.0`; it used to name
+    `@ai-sdk/openrouter`, which does not exist. The factory is `createOpenRouter`.
+  - **Install guard.** A provider package whose major differs from core's pin is refused at load,
+    naming the installed version and the pin. The package's npm `latest` is 3.x (peer `ai ^7`);
+    without the guard it imports and then fails inside the AI SDK.
+  - **Options.** `provider.require_parameters` and `usage.include` are forced on after caller
+    options. The thinking budget maps to `reasoning.max_tokens` for thinking-capable models.
+  - **Usage.** OpenRouter metadata no longer raises `usage.provider-metadata-shape-drift` on every
+    run; cache reads fall back to the provider block when the standard field is absent.
+  - **Shell.** A schema-fallback `bash` tool for OpenRouter only, behind the same `allowedTools`
+    gate as Anthropic's native bash, with an info marker `tools.shell-schema-fallback`.
+- **`model.unregistered-defaults` info marker.** A model not in the registry catalog runs on
+  `DEFAULT_CAPABILITIES`, the default context budget and no cost estimate; it now says so on the
+  result instead of silently. `AIGenerateResult.modelRegistered` carries the flag.
+
+### Changed
+
+- **Reasoning tokens bucket by upstream family (C7).** A `google/*` model reached through
+  OpenRouter reports `thinking_tokens`, as direct Google does, instead of `reasoning_tokens`, so
+  one model's history does not split by route.
+- **A 400 on an unregistered model names the default context budget.** The message says the
+  model is not in the catalog and that its budget is the 200,000-token default, which is the
+  likely cause of a context-length rejection. Registered models keep the plain message.
+
 ### Fixed
 
 - **Agents that declare `Bash` are offered a shell when the operator allows it (tracker
@@ -54,6 +85,11 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) 
   since no registry-resolved agent was offered a shell.
 - **`allowedTools` gates bash only.** The docs implied an explicit list restricts the other tools;
   it does not. The read-only filesystem tools are always available. Documented, not changed.
+
+### Internal
+
+- `@openrouter/ai-sdk-provider` 2.10.0 is an exact **dev** dependency so the tests run against
+  the real package. It is not a runtime dependency; consumers install it.
 
 ## [0.45.0] - 2026-10-03
 

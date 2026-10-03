@@ -576,6 +576,68 @@ describe('AgentExecutor', () => {
     });
   });
 
+  // OpenRouter plan 1e and S5: what a routed run took silently is now disclosed as info markers.
+  describe('OpenRouter disclosure markers', () => {
+    function bashDef(): ResolvedDefinition {
+      return makeValidatorDef({
+        runtime: {
+          prompt: 'test',
+          defaults: { model: 'sonnet', timeout: 30000 },
+          config: { maxScore: 100, threshold: 75, categories: [], outputSchema: 'json' },
+          interface: { tools: ['bash'] },
+        } as unknown as AgentRuntime,
+      });
+    }
+
+    it('marks a run whose model is not in the catalog (model.unregistered-defaults, info)', async () => {
+      const executor = new AgentExecutor(baseConfig, mockAIProvider({ modelRegistered: false, model: 'openrouter:nosuch/model' }), noopLogger);
+      const result = await executor.execute(makeValidatorDef(), { target: tmpDir });
+
+      const marker = result.degradationMarkers?.find((m) => m.code === 'model.unregistered-defaults');
+      expect(marker?.severity).toBe('info');
+      expect(marker?.detail).toContain('openrouter:nosuch/model');
+      expect(result.completeness).toBe('complete');
+    });
+
+    it('does not mark a registered model', async () => {
+      const executor = new AgentExecutor(baseConfig, mockAIProvider({ modelRegistered: true }), noopLogger);
+      const result = await executor.execute(makeValidatorDef(), { target: tmpDir });
+      expect(result.degradationMarkers?.some((m) => m.code === 'model.unregistered-defaults') ?? false).toBe(false);
+    });
+
+    it('marks a run that used the schema-fallback bash (tools.shell-schema-fallback, info)', async () => {
+      const ai = mockAIProvider({ provider: 'openrouter' });
+      (ai.resolveModel as ReturnType<typeof vi.fn>).mockResolvedValue({ provider: 'openrouter', modelId: 'deepseek/deepseek-v4-flash', capabilities: { tools: true }, registered: true });
+      (ai.createProviderShellTool as ReturnType<typeof vi.fn>).mockReturnValue({ bash: {} });
+      const executor = new AgentExecutor({ ...baseConfig, allowedTools: ['bash'] }, ai, noopLogger);
+
+      const result = await executor.execute(bashDef(), { target: tmpDir });
+
+      expect(result.degradationMarkers?.find((m) => m.code === 'tools.shell-schema-fallback')?.severity).toBe('info');
+    });
+
+    it('does not mark a native shell tool (anthropic)', async () => {
+      const ai = mockAIProvider();
+      (ai.createProviderShellTool as ReturnType<typeof vi.fn>).mockReturnValue({ bash: {} });
+      const executor = new AgentExecutor({ ...baseConfig, allowedTools: ['bash'] }, ai, noopLogger);
+
+      const result = await executor.execute(bashDef(), { target: tmpDir });
+
+      expect(result.degradationMarkers?.some((m) => m.code === 'tools.shell-schema-fallback') ?? false).toBe(false);
+    });
+
+    it('the allowedTools gate still applies on OpenRouter: no bash permitted, no shell tool (D6 lean)', async () => {
+      const ai = mockAIProvider({ provider: 'openrouter' });
+      (ai.resolveModel as ReturnType<typeof vi.fn>).mockResolvedValue({ provider: 'openrouter', modelId: 'x/y', capabilities: { tools: true }, registered: true });
+      const executor = new AgentExecutor(baseConfig, ai, noopLogger); // allowedTools undefined → bash denied
+
+      const result = await executor.execute(bashDef(), { target: tmpDir });
+
+      expect(ai.createProviderShellTool).not.toHaveBeenCalled();
+      expect(result.degradationMarkers?.some((m) => m.code === 'tools.shell-schema-fallback') ?? false).toBe(false);
+    });
+  });
+
   describe('initial message', () => {
     it('includes project structure in initial message', async () => {
       const ai = mockAIProvider();
