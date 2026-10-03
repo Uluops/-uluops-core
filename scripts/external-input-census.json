@@ -1,6 +1,6 @@
 {
   "counts": {
-    "public-api-arg": 29,
+    "public-api-arg": 30,
     "ai-sdk-response": 33,
     "dynamic-import": 1,
     "service-response": 27,
@@ -32,6 +32,7 @@
     "src/ai/AIProvider.ts|dynamic-import|const mod = await import(AIProvider.packageFor(providerName)) as Record<string, unknown>;",
     "src/ai/AIProvider.ts|public-api-arg|?? usableBudget(this.config.contextBudget)",
     "src/ai/AIProvider.ts|public-api-arg|abortSignal: mergeAbortSignals(options, this.config.timeout),",
+    "src/ai/AIProvider.ts|public-api-arg|const budget = usableBudget(this.config.contextBudget) ?? DEFAULT_CONTEXT_BUDGET;",
     "src/ai/AIProvider.ts|public-api-arg|const budgetTokens = this.config.defaultThinkingBudget;",
     "src/ai/AIProvider.ts|public-api-arg|const mapped = new TimeoutError(resolveRequestTimeoutMs(timeoutMs, this.config.timeout));",
     "src/ai/AIProvider.ts|public-api-arg|const thinkingBudget = finitePositive(this.config.defaultThinkingBudget);",

@@ -91,6 +91,19 @@ describe('S1–S3: loading the OpenRouter provider', () => {
     expect((err as Error).message).toContain('2.10.0');
   });
 
+  it('packageFor names the override package, and @ai-sdk/<name> otherwise', () => {
+    expect(AIProvider.packageFor('openrouter')).toBe('@openrouter/ai-sdk-provider');
+    expect(AIProvider.packageFor('mistral')).toBe('@ai-sdk/mistral');
+  });
+
+  it('a provider package that is not installed keeps the import error as cause', async () => {
+    const provider = new AIProvider({ ...config, ai: { ...config.ai, providers: { mistral: { apiKey: 'k' } } } }, catalog, noopLogger);
+    const err = await provider.ensureProvider('mistral').catch((e: unknown) => e) as Error;
+    expect(err).toBeInstanceOf(ConfigurationError);
+    expect(err.message).toContain('npm install @ai-sdk/mistral');
+    expect(err.cause).toBeInstanceOf(Error);
+  });
+
   it('accepts the pinned version', async () => {
     vi.spyOn(AIProvider, 'readInstalledVersion').mockReturnValue('2.10.0');
     const provider = new AIProvider(config, catalog, noopLogger);
@@ -121,6 +134,27 @@ describe('S4: OpenRouter provider options', () => {
 
   it('sends no reasoning option for a model without extendedThinking', () => {
     expect(build(model())?.['reasoning']).toBeUndefined();
+  });
+
+  it('a caller reasoning: null counts as unset: the default applies, no bare null is sent', () => {
+    const opts = build(
+      model({ capabilities: { tools: true, extendedThinking: true } as ResolvedModel['capabilities'] }),
+      { openrouter: { reasoning: null } },
+    );
+    expect(opts?.['reasoning']).toEqual({ max_tokens: 10_000 });
+  });
+
+  it('sends no reasoning option when the configured thinking budget is not finite and positive', () => {
+    for (const bad of [Number.NaN, 0, -5]) {
+      const opts = internals(new AIProvider({ ...config, defaultThinkingBudget: bad }, catalog, noopLogger))
+        .buildProviderOptions(model({ capabilities: { tools: true, extendedThinking: true } as ResolvedModel['capabilities'] }))?.['openrouter'];
+      expect(opts?.['reasoning']).toBeUndefined();
+    }
+  });
+
+  it('a non-object caller provider block is replaced, not spread into index keys', () => {
+    const opts = build(model(), { openrouter: { provider: 'price' } });
+    expect(opts?.['provider']).toEqual({ require_parameters: true });
   });
 
   it("keeps a caller's own reasoning block", () => {
@@ -204,15 +238,21 @@ describe('S5: schema fallback bash, OpenRouter only (D8)', () => {
     expect([...SHELL_SCHEMA_FALLBACK_PROVIDERS]).toEqual(['openrouter']);
   });
 
-  it('cancelling during a long command kills the child', async () => {
+  // Real process. The timing bound shows the call returned early (the child was signalled); the
+  // text shows how it was reported. Node rejects an aborted exec with the STRING code ABORT_ERR,
+  // which the spawn-failure branch used to claim ("could not be started") before the
+  // cancellation check ran.
+  it('cancelling during a long command returns early and reports a cancel, not a spawn failure', async () => {
     const provider = new AIProvider(config, catalog, noopLogger);
     const tools = provider.createProviderShellTool('openrouter', process.cwd(), 30_000) as Record<string, { execute: (i: unknown, o: unknown) => Promise<string> }>;
     const ac = new AbortController();
     const started = Date.now();
     const run = tools['bash']!.execute({ command: 'sleep 20' }, { abortSignal: ac.signal, toolCallId: 't', messages: [] });
     setTimeout(() => ac.abort(), 200);
-    await run.catch(() => undefined);
+    const out = await run;
     expect(Date.now() - started).toBeLessThan(5_000);
+    expect(out).toContain('cancelled');
+    expect(out).not.toContain('could not be started');
   });
 });
 
@@ -229,14 +269,62 @@ describe('1e: a 400 on an unregistered model names the default budget', () => {
   it('names the 200k default and the unregistered status', () => {
     const provider = new AIProvider(config, catalog, noopLogger);
     const mapped = internals(provider).mapAPICallError(err400, model({ registered: false, contextWindow: undefined }));
-    expect(mapped.message).toContain('not in the model catalog');
+    expect(mapped.message).toContain('did not resolve from the model catalog');
     expect(mapped.message).toContain('200,000');
     expect(mapped.message).toContain('maximum context length');
+  });
+
+  it("an unknown slug's 400 is not blamed on the budget", () => {
+    const typo = new APICallError({
+      message: 'deepseek/deepsek-v4 is not a valid model ID', url: 'u', requestBodyValues: {}, statusCode: 400,
+    });
+    const mapped = internals(new AIProvider(config, catalog, noopLogger)).mapAPICallError(typo, model({ registered: false }));
+    expect(mapped.message).not.toContain('context budget');
+  });
+
+  it("names the operator's contextBudget when one is set", () => {
+    const provider = new AIProvider({ ...config, contextBudget: 120_000 }, catalog, noopLogger);
+    const mapped = internals(provider).mapAPICallError(err400, model({ registered: false, contextWindow: undefined }));
+    expect(mapped.message).toContain('120,000');
   });
 
   it('a registered model keeps the plain 400 message', () => {
     const provider = new AIProvider(config, catalog, noopLogger);
     const mapped = internals(provider).mapAPICallError(err400, model({ registered: true, contextWindow: 32_768 }));
-    expect(mapped.message).not.toContain('not in the model catalog');
+    expect(mapped.message).not.toContain('did not resolve from the model catalog');
+  });
+});
+
+// ─── Error shapes measured in Phase 0 ────────────────────────────────────────
+
+describe('OpenRouter error shapes', () => {
+  const map = (e: APICallError, r?: ResolvedModel) => internals(new AIProvider(config, catalog, noopLogger)).mapAPICallError(e, r);
+
+  it('an error in a 200 body maps by its numeric code', () => {
+    const inBody = new APICallError({
+      message: 'Rate limit exceeded upstream', url: 'u', requestBodyValues: {}, statusCode: 200,
+      data: { code: 429, message: 'Rate limit exceeded upstream' },
+    });
+    expect(map(inBody, model()).name).toBe('RateLimitError');
+  });
+
+  it('a 200 with no numeric body code is left as it was', () => {
+    const odd = new APICallError({ message: 'x', url: 'u', requestBodyValues: {}, statusCode: 200, data: { code: 'weird' } });
+    expect(map(odd, model()).message).toContain('HTTP 200');
+  });
+
+  it('a no-endpoint 404 on a registered model is not reported as a stale catalog', () => {
+    const noEndpoint = new APICallError({
+      message: 'No endpoints found that support the requested parameters', url: 'u', requestBodyValues: {}, statusCode: 404,
+      data: { error: { message: 'No endpoints found', code: 404, metadata: { failed_routing_step: 'Filter by Parameters' } } },
+    });
+    const mapped = map(noEndpoint, model({ registered: true }));
+    expect(mapped.message).toContain('Filter by Parameters');
+    expect(mapped.message).not.toContain('STALE');
+  });
+
+  it('a plain 404 on a registered model still says the catalog is stale', () => {
+    const plain = new APICallError({ message: 'not found', url: 'u', requestBodyValues: {}, statusCode: 404 });
+    expect(map(plain, model({ registered: true })).message).toContain('STALE');
   });
 });

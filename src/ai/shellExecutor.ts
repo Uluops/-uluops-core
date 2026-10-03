@@ -131,6 +131,19 @@ export async function runShellCommand(
       };
     }
 
+    // A caller abort arrives here as a signalled death (Node kills the child with SIGTERM).
+    // Reporting it as "terminated by signal SIGTERM" would tell the model its command was
+    // killed by something unexplained; it was stopped on purpose. Checked BEFORE the string-code
+    // branch below: Node rejects an aborted exec with the string code ABORT_ERR, which that branch
+    // reported as "could not be started" (the command had started; the caller stopped it).
+    if (signal?.aborted) {
+      return {
+        stdout: err.stdout || '',
+        stderr: explain('Command was cancelled before it completed.', err.stderr),
+        timedOut: false, exitCode: 1, termination: 'cancelled',
+      };
+    }
+
     // A STRING `code` that is not the maxBuffer sentinel is Node's own error identifier,
     // not the child's exit status: the child never started. `cwd` missing gives ENOENT,
     // an unreadable `cwd` gives EACCES, a file where a directory was expected ENOTDIR,
@@ -148,17 +161,6 @@ export async function runShellCommand(
           err.stderr,
         ),
         timedOut: false, exitCode: 1, termination: 'spawn-failure',
-      };
-    }
-
-    // A caller abort arrives here as a signalled death (Node kills the child with SIGTERM).
-    // Reporting it as "terminated by signal SIGTERM" would tell the model its command was
-    // killed by something unexplained; it was stopped on purpose.
-    if (signal?.aborted) {
-      return {
-        stdout: err.stdout || '',
-        stderr: explain('Command was cancelled before it completed.', err.stderr),
-        timedOut: false, exitCode: 1, termination: 'cancelled',
       };
     }
 

@@ -382,6 +382,8 @@ export class AIProvider {
       const pkg = createRequire(import.meta.url)(`${packageName}/package.json`) as { version?: unknown };
       return typeof pkg.version === 'string' ? pkg.version : undefined;
     } catch {
+      // Unreadable (not installed, or an exports map that hides package.json). The caller then
+      // skips the major guard and logs that the pin went unchecked.
       return undefined;
     }
   }
@@ -1024,7 +1026,7 @@ export class AIProvider {
       // would change other providers' tool surface. AgentExecutor marks runs that use it.
       return {
         bash: tool({
-          description: 'Run a shell command in the target directory and return its combined stdout and stderr.',
+          description: 'Run a shell command in the target directory. Returns stdout, or stderr when stdout is empty.',
           inputSchema: z.object({ command: z.string(), restart: z.boolean().optional() }),
           execute: async ({ command }, opts) =>
             executeShellAsString(command, targetDir, timeoutMs, this.logger, opts?.abortSignal),
@@ -1101,13 +1103,16 @@ export class AIProvider {
   private buildOpenRouterOptions(resolved: ResolvedModel, userOptions?: ProviderOptions): ProviderOptions {
     const user = (userOptions?.['openrouter'] as Record<string, unknown> | undefined) ?? {};
     const orOpts: Record<string, unknown> = { ...user };
-    orOpts['provider'] = { ...((user['provider'] as Record<string, unknown> | undefined) ?? {}), require_parameters: true };
-    orOpts['usage'] = { ...((user['usage'] as Record<string, unknown> | undefined) ?? {}), include: true };
+    // A caller block that is not a plain object (a string, an array) is replaced, not spread:
+    // spreading a string yields index keys, and the forced flags must land on a real object.
+    orOpts['provider'] = { ...asPlainObject(user['provider']), require_parameters: true };
+    orOpts['usage'] = { ...asPlainObject(user['usage']), include: true };
     // Through the finitePositive seam, not verbatim like the Anthropic builder: OpenRouter forwards
     // to whichever upstream serves the request, so no single provider can be relied on to reject a
     // malformed budget. A non-finite or non-positive value sends no reasoning option at all.
     const thinkingBudget = finitePositive(this.config.defaultThinkingBudget);
-    if (resolved.capabilities.extendedThinking && !('reasoning' in user) && thinkingBudget !== undefined) {
+    // `reasoning: null`/undefined counts as unset, so the default applies and no bare null is sent.
+    if (resolved.capabilities.extendedThinking && user['reasoning'] == null && thinkingBudget !== undefined) {
       orOpts['reasoning'] = { max_tokens: thinkingBudget };
     }
     return { ...userOptions, openrouter: orOpts } as ProviderOptions;
@@ -1419,7 +1424,11 @@ export class AIProvider {
     const pinned = AIProvider.PACKAGE_NAME_OVERRIDES[providerName];
     if (pinned) {
       const installed = AIProvider.readInstalledVersion(pinned.package);
-      if (installed !== undefined && installed.split('.')[0] !== pinned.pin.split('.')[0]) {
+      if (installed === undefined) {
+        this.logger.debug(
+          `Could not read the installed version of ${pinned.package}; the ${pinned.pin} major-version check was skipped.`,
+        );
+      } else if (installed.split('.')[0] !== pinned.pin.split('.')[0]) {
         throw new ConfigurationError(
           `Provider "${providerName}" requires ${pinned.package}@${pinned.pin}; ${installed} is installed. ` +
           `Major ${installed.split('.')[0]} targets a different AI SDK than this core (ai@6). ` +
@@ -1459,9 +1468,17 @@ export class AIProvider {
 
       const errCode = error instanceof Error && 'code' in error ? (error as NodeJS.ErrnoException).code : undefined;
       if (errCode === 'ERR_MODULE_NOT_FOUND' || errCode === 'MODULE_NOT_FOUND') {
+        // The package itself may be installed while one of ITS dependencies is missing; the
+        // install hint would then send the operator to reinstall what they already have.
+        const pkg = AIProvider.packageFor(providerName);
+        const message = error instanceof Error ? error.message : '';
+        const transitive = message !== '' && !message.includes(`'${pkg}'`) && !message.includes(`"${pkg}"`)
+          && AIProvider.readInstalledVersion(pkg) !== undefined;
         throw new ConfigurationError(
-          `Provider "${providerName}" requires ${AIProvider.packageFor(providerName)}. ` +
-          `Install: ${AIProvider.installHintFor(providerName)}`,
+          transitive
+            ? `Provider "${providerName}": ${pkg} is installed but one of its dependencies could not be loaded (${message}).`
+            : `Provider "${providerName}" requires ${pkg}. Install: ${AIProvider.installHintFor(providerName)}`,
+          { cause: error },
         );
       }
       throw error;
@@ -1802,6 +1819,11 @@ export class AIProvider {
    * `??=`, for responses that carry only the block. Billed cost (`usage.cost`) is read per step
    * by the cost work (S6b), not here.
    */
+  // A FALLBACK, unreachable on 2.10.0: the provider fills the SDK-standard
+  // inputTokenDetails.cacheReadTokens (Phase 0), which mapUsage reads first, so `??=` below never
+  // assigns. It is kept so a provider release that stops filling the standard field degrades to
+  // this block instead of to zero. The drift check covers only the outer `usage` key; inner keys
+  // (`cost`, `promptTokensDetails`) become depended-on in slice 1c, which extends it.
   private extractOpenRouterUsage(base: UsageMetrics, providerMetadata?: Record<string, unknown>): void {
     const block = providerMetadata?.['openrouter'];
     if (!block || typeof block !== 'object') return;
@@ -1843,7 +1865,14 @@ export class AIProvider {
    * unchanged; the caller still attaches `cause`.
    */
   private mapAPICallError(error: APICallError, resolved?: ResolvedModel): Error {
-    const status = error.statusCode ?? 0;
+    // OpenRouter can answer HTTP 200 with an error in the body; its provider package raises that
+    // as an APICallError with statusCode 200 and the body's `{code, message, metadata}` as `data`.
+    // A numeric code in the error range is the status the error actually carries.
+    const bodyCode = (error.data as { code?: unknown } | undefined)?.code;
+    const status = error.statusCode === 200 && typeof bodyCode === 'number' && bodyCode >= 400 && bodyCode < 600
+      ? bodyCode
+      : error.statusCode ?? 0;
+    const routingStep = routingFailureStep(error.data);
     let mapped: Error;
 
     if (status === 429) {
@@ -1857,6 +1886,17 @@ export class AIProvider {
     } else if (status === 403) {
       mapped = new ForbiddenError(
         `Forbidden (HTTP 403). Check API key permissions or billing status. Provider message: ${error.message}`,
+      );
+    } else if (status === 404 && routingStep !== undefined) {
+      // OpenRouter's "no endpoint" 404: the model exists, but no upstream endpoint passed a routing
+      // filter (core forces provider.require_parameters, so tools or structured output can empty
+      // the set). Not a catalog problem: the stale-catalog diagnosis below would mislead.
+      const modelRef = resolved ? `${resolved.provider}:${resolved.modelId}` : 'the requested model';
+      mapped = new SdkApiError(
+        404,
+        `No provider endpoint for ${modelRef} accepted the request (routing step "${routingStep}"). The model ` +
+        `exists; none of its endpoints supports every parameter sent (tools, structured output, reasoning), or ` +
+        `the provider filters exclude them all. Provider message: ${error.message}`,
       );
     } else if (status === 404) {
       // A provider 404 has two unrelated causes that are indistinguishable
@@ -1875,16 +1915,20 @@ export class AIProvider {
         404,
         `Provider returned HTTP 404 for ${modelRef}. ${diagnosis} Provider message: ${error.message}`,
       );
-    } else if (status === 400 && resolved && !resolved.registered) {
-      // 1e (OpenRouter plan): an unregistered model's context budget is the default, not its
-      // real window, so a context-length 400 is very likely that default. The 404 branch above
-      // already uses `registered` to explain itself; this is the same move for 400.
+    } else if (status === 400 && resolved && !resolved.registered && /context|token/i.test(error.message)) {
+      // 1e (OpenRouter plan): an unregistered model's context budget is the operator's or the
+      // default, not its real window, so a context-length 400 is very likely that budget. Keyed to
+      // a context/token message: OpenRouter also answers 400 for an unknown slug ("is not a valid
+      // model ID"), which the budget explanation would misdiagnose. "Not registered" also covers a
+      // registry outage, which resolves every model unregistered.
       const modelRef = `${resolved.provider}:${resolved.modelId}`;
+      const budget = usableBudget(this.config.contextBudget) ?? DEFAULT_CONTEXT_BUDGET;
       mapped = new SdkApiError(
         400,
-        `Provider returned HTTP 400 for ${modelRef}. ${modelRef} is not in the model catalog, so its ` +
-        `context budget is the ${DEFAULT_CONTEXT_BUDGET.toLocaleString('en-US')}-token default, not its real ` +
-        `window; a context-length rejection is likely that default. Provider message: ${error.message}`,
+        `Provider returned HTTP 400 for ${modelRef}. ${modelRef} did not resolve from the model catalog ` +
+        `(not registered, or the registry was unreachable), so its context budget is ` +
+        `${budget.toLocaleString('en-US')} tokens, not its real window; a context-length rejection is likely ` +
+        `that budget. Set contextBudget below the model's window. Provider message: ${error.message}`,
       );
     } else if (status >= 500) {
       mapped = new ServiceUnavailableError(
@@ -2069,3 +2113,20 @@ function isRetryError(error: unknown): error is RetryError {
  * mark runs that use it without a second provider-name branch.
  */
 export const SHELL_SCHEMA_FALLBACK_PROVIDERS: ReadonlySet<string> = new Set(['openrouter']);
+
+/** `value` if it is a plain object, else an empty object (never spread a string or array). */
+function asPlainObject(value: unknown): Record<string, unknown> {
+  return value !== null && typeof value === 'object' && !Array.isArray(value) ? value as Record<string, unknown> : {};
+}
+
+/**
+ * OpenRouter's routing-failure step (`error.metadata.failed_routing_step`, e.g. "Filter by Parameters"),
+ * read from an APICallError's `data` in either shape it arrives in: the parsed error response
+ * (`{error: {metadata}}`) or the in-body error object itself (`{metadata}`).
+ */
+function routingFailureStep(data: unknown): string | undefined {
+  const body = asPlainObject(data);
+  const err = asPlainObject(body['error'] ?? body);
+  const step = asPlainObject(err['metadata'])['failed_routing_step'];
+  return typeof step === 'string' && step !== '' ? step : undefined;
+}

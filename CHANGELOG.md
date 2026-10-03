@@ -19,11 +19,23 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) 
     naming the installed version and the pin. The package's npm `latest` is 3.x (peer `ai ^7`);
     without the guard it imports and then fails inside the AI SDK.
   - **Options.** `provider.require_parameters` and `usage.include` are forced on after caller
-    options. The thinking budget maps to `reasoning.max_tokens` for thinking-capable models.
+    options; a caller `provider`/`usage` value that is not an object is replaced, not spread. The
+    thinking budget maps to `reasoning.max_tokens` for models the catalog reports as
+    `extendedThinking`, and a caller `reasoning: null` counts as unset. **No registered model
+    reports `extendedThinking` today, on any provider:** the registry emits
+    `capabilities.reasoning`, which registry-sdk does not declare and strips, so core's
+    auto-thinking default (Anthropic `thinking`, OpenAI `reasoningEffort`, Google
+    `thinkingConfig`, and now OpenRouter `reasoning`) has not fired for a registered model since
+    the registry's models.dev sync (2026-01-25). Not changed here; turning it on changes every
+    run's cost and behaviour, and is tracked as its own decision.
   - **Usage.** OpenRouter metadata no longer raises `usage.provider-metadata-shape-drift` on every
     run; cache reads fall back to the provider block when the standard field is absent.
   - **Shell.** A schema-fallback `bash` tool for OpenRouter only, behind the same `allowedTools`
-    gate as Anthropic's native bash, with an info marker `tools.shell-schema-fallback`.
+    gate as Anthropic's native bash, with an info marker `tools.shell-schema-fallback` that says
+    the tool was offered and that its commands come from whichever upstream served the request.
+  - **Errors.** An error OpenRouter returns inside an HTTP 200 body maps by its numeric code (a
+    429 in the body is a `RateLimitError`). A no-endpoint 404 (`failed_routing_step` in the
+    error metadata) names the routing step instead of diagnosing a stale catalog.
 - **`model.unregistered-defaults` info marker.** A model not in the registry catalog runs on
   `DEFAULT_CAPABILITIES`, the default context budget and no cost estimate; it now says so on the
   result instead of silently. `AIGenerateResult.modelRegistered` carries the flag.
@@ -33,9 +45,22 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) 
 - **Reasoning tokens bucket by upstream family (C7).** A `google/*` model reached through
   OpenRouter reports `thinking_tokens`, as direct Google does, instead of `reasoning_tokens`, so
   one model's history does not split by route.
-- **A 400 on an unregistered model names the default context budget.** The message says the
-  model is not in the catalog and that its budget is the 200,000-token default, which is the
-  likely cause of a context-length rejection. Registered models keep the plain message.
+- **A context-length 400 on an unregistered model names the budget it ran with.** The message
+  says the model did not resolve from the catalog (not registered, or the registry was
+  unreachable) and names the budget: the operator's `contextBudget`, else the 200,000-token
+  default. Keyed to a context/token message, so an unknown slug's 400 ("is not a valid model
+  ID") is not blamed on the budget. Registered models keep the plain message.
+- **A provider package that is not installed keeps the import error as `cause`**, and when the
+  package IS installed but one of its own dependencies is missing, the message says so instead
+  of telling the operator to install what they already have. An unreadable installed version now
+  logs that the major-version check was skipped.
+
+### Fixed
+
+- **A cancelled shell command is reported as cancelled, not as "could not be started".** Node
+  rejects an aborted `exec` with the string code `ABORT_ERR`, which the spawn-failure branch
+  claimed before the cancellation check ran. The model was told its command never started when
+  the caller had stopped it. Affects every provider's shell tool; pre-existing.
 
 ### Fixed
 
