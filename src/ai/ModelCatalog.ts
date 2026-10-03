@@ -8,7 +8,8 @@ import type {
   ModelTier,
 } from '@uluops/registry-sdk';
 import { isNotFoundError as isRegistryNotFound } from '@uluops/registry-sdk/errors';
-import { ModelNotFoundError, CapabilityError } from '../errors/index.js';
+import { SDK_VERSION as REGISTRY_SDK_VERSION } from '@uluops/registry-sdk/config/constants';
+import { ModelNotFoundError, CapabilityError, ConfigurationError } from '../errors/index.js';
 import type { Logger } from '@uluops/sdk-core';
 
 /**
@@ -336,7 +337,7 @@ export class ModelCatalog {
       return result;
     } catch (error) {
       if (this.isNotFoundError(error)) return null;
-      throw error;
+      throw this.routeMissError(error, 'resolveAlias', alias) ?? error;
     }
   }
 
@@ -384,7 +385,7 @@ export class ModelCatalog {
       return model;
     } catch (error) {
       if (this.isNotFoundError(error)) return null;
-      throw error;
+      throw this.routeMissError(error, 'get', key) ?? error;
     }
   }
 
@@ -427,24 +428,46 @@ export class ModelCatalog {
   /**
    * Check if an error is a 404/not-found from the registry API.
    *
-   * Uses registry-sdk's own guard. It is an `instanceof` check, and registry-sdk carries its own
-   * nested @uluops/sdk-core (0.18.0, against core's 0.18.1), so the guard must come from the same
-   * package that throws. A structural check on `status` was used here until issue d99bb92f. The
-   * SDK error carries `statusCode`, so that check never matched: every registry 404 was rethrown,
-   * unregistered models failed resolution instead of taking DEFAULT_CAPABILITIES, and alias misses
-   * never fell through to tier resolution.
+   * Uses registry-sdk's own guard. It is an `instanceof` check, so it must come from the package
+   * that throws. Until registry-sdk 0.58.0 that package carried its own nested @uluops/sdk-core
+   * (0.18.0, against core's 0.18.1); 0.58.0 dedupes onto core's copy, but importing the guard from
+   * registry-sdk keeps working whichever way the tree resolves. A structural check on `status` was
+   * used here until issue d99bb92f. The SDK error carries `statusCode`, so that check never
+   * matched: every registry 404 was rethrown, unregistered models failed resolution instead of
+   * taking DEFAULT_CAPABILITIES, and alias misses never fell through to tier resolution.
+   *
+   * A 404 whose `details.reason` is `'route'` is **not** "not found" (OpenRouter plan S11): the
+   * request matched no registry endpoint, so the catalog was never asked. Treating it as
+   * unregistered would silently give a registered model DEFAULT_CAPABILITIES. `'model'`, `'alias'`
+   * and an absent reason (a registry deployed before the field existed) mean not-found as before.
    */
   private isNotFoundError(error: unknown): boolean {
-    return isRegistryNotFound(error);
+    return isRegistryNotFound(error) && !isRouteMiss(error);
+  }
+
+  /**
+   * Wrap a registry route miss so the message names what was being looked up. The bare SDK message
+   * ("The requested endpoint does not exist") names neither the model nor the operation.
+   * Returns undefined for any other error, which the caller rethrows unchanged.
+   */
+  private routeMissError(error: unknown, operation: 'get' | 'resolveAlias', input: string): ConfigurationError | undefined {
+    if (!isRegistryNotFound(error) || !isRouteMiss(error)) return undefined;
+    return new ConfigurationError(
+      `Registry lookup for "${input}" (models.${operation}) matched no registry endpoint ` +
+        `(404, details.reason "route"), so the model catalog was never queried. ` +
+        `This client uses @uluops/registry-sdk ${REGISTRY_SDK_VERSION}; ids and aliases containing "/" ` +
+        `need registry-sdk 0.58.0+ against a registry API with the /models/lookup route.`,
+      { cause: error },
+    );
   }
 
   private toResolvedModel(alias: AliasResolution, input: string): ResolvedModel {
     const model = alias.model;
-    const targetParts = alias.target.split(':');
+    const [targetProvider, targetModelId] = splitAliasTarget(alias.target);
     return {
-      provider: model?.provider ?? targetParts[0] ?? 'unknown',
-      modelId: model?.modelId ?? targetParts[1] ?? alias.target,
-      providerModelId: model?.providerModelId ?? targetParts[1] ?? alias.target,
+      provider: model?.provider ?? targetProvider ?? 'unknown',
+      modelId: model?.modelId ?? targetModelId ?? alias.target,
+      providerModelId: model?.providerModelId ?? targetModelId ?? alias.target,
       tier: model?.tier ?? 'standard',
       capabilities: model?.capabilities ?? DEFAULT_CAPABILITIES,
       contextWindow: model?.limits?.context || undefined,
@@ -471,4 +494,25 @@ export class ModelCatalog {
       );
     }
   }
+}
+
+/** True when a registry 404 says no endpoint matched (`details.reason === 'route'`). */
+function isRouteMiss(error: unknown): boolean {
+  const details = (error as { details?: unknown }).details;
+  return typeof details === 'object' && details !== null && (details as { reason?: unknown }).reason === 'route';
+}
+
+/**
+ * Split an alias target into provider and model id at its FIRST separator, whichever of `/` or `:`
+ * comes first (C24). The registry emits `provider/modelId` (registry services/model/index.ts:1216),
+ * and an OpenRouter model id itself contains `/` and may end in `:free`, so
+ * `openrouter/meta-llama/llama-3.3-70b-instruct:free` is provider `openrouter` + the rest. The
+ * `provider:modelId` form is still accepted. Until this, the target was split on every `:` and only
+ * the second part kept, so a `/` target became one provider string with no model id.
+ */
+function splitAliasTarget(target: string): [string | undefined, string | undefined] {
+  const at = [target.indexOf('/'), target.indexOf(':')].filter(i => i > 0);
+  if (at.length === 0) return [undefined, undefined];
+  const i = Math.min(...at);
+  return [target.slice(0, i), target.slice(i + 1) || undefined];
 }

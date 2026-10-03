@@ -6,6 +6,36 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) 
 
 ## [Unreleased]
 
+### Changed
+
+- **`@uluops/registry-sdk` pinned to 0.58.0 (from 0.54.0), and model ids containing `/` resolve
+  (OpenRouter plan S11, slice 1a).** registry-sdk 0.58.0 fetches such ids, and every OpenRouter
+  slug is one, through the registry's `GET /models/lookup` query form. 0.54.0 sent them in the
+  path, the registry's edge decoded `%2F`, and every lookup missed. So
+  `openrouter:anthropic/claude-sonnet-4` now resolves `registered: true` with the catalog row's
+  capabilities, context window and cost, where it took `DEFAULT_CAPABILITIES` before. The bump
+  also removes registry-sdk's nested `@uluops/sdk-core` 0.18.0: the tree now holds one sdk-core
+  (0.18.1).
+- **A registry 404 with `details.reason: 'route'` is a failure, not an unregistered model.** The
+  registry tags every 404 (`'model'`, `'alias'`, `'route'`; registry API `6cf20ba`+). `'route'`
+  means the request matched no endpoint, so the catalog was never asked; resolving it as
+  unregistered would silently give a registered model default capabilities. It now throws
+  `ConfigurationError` naming the model input, the lookup and the registry-sdk version, with the
+  SDK error as `cause`. `'model'`, `'alias'` and an absent reason behave as before.
+  **This check and the pin bump ship together on purpose:** against the deployed registry,
+  registry-sdk 0.54.0 receives `'route'` for every slash id, so the check alone would turn every
+  such lookup into an error.
+
+### Fixed
+
+- **Alias targets in `provider/modelId` form parse correctly (C24).** When an alias resolution
+  carries no model object, core splits the target string. It split on `:` and kept only the
+  second part, but the registry emits targets as `provider/modelId`, so the whole target became
+  the provider and the model id was lost. For OpenRouter targets
+  (`openrouter/meta-llama/llama-3.3-70b-instruct:free`) the `:free` suffix was cut off too. The
+  target now splits at its first separator, whichever of `/` or `:` comes first; the
+  `provider:modelId` form still works.
+
 ### Internal
 
 - **Dev-dependency advisories cleared; CI `security-audit` green again.** The job audits dev

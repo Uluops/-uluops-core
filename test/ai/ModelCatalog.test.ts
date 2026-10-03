@@ -1,6 +1,6 @@
 import { describe, it, expect, vi, beforeEach } from 'vitest';
 import { ModelCatalog, sanitizeModelCost } from '../../src/ai/ModelCatalog.js';
-import { ModelNotFoundError, CapabilityError } from '../../src/errors/index.js';
+import { ModelNotFoundError, CapabilityError, ConfigurationError } from '../../src/errors/index.js';
 import type { RegistryClient as RegistrySdk } from '@uluops/registry-sdk';
 import type { Model, AliasResolution } from '@uluops/registry-sdk';
 import { NotFoundError } from '@uluops/registry-sdk/errors';
@@ -10,8 +10,8 @@ import { NotFoundError } from '@uluops/registry-sdk/errors';
  * `statusCode` (not `status`). This fixture used to fabricate `{ status: 404 }`, a shape the real
  * SDK never produces. The suite passed while every real registry 404 was rethrown (issue d99bb92f).
  */
-function makeNotFoundError(message = 'Not found'): Error {
-  return new NotFoundError('Model', message);
+function makeNotFoundError(message = 'Not found', reason?: 'model' | 'alias' | 'route'): Error {
+  return new NotFoundError('Model', message, undefined, 'NOT_FOUND', reason ? { reason } : undefined);
 }
 
 // ─── Test Data Factories ─────────────────────────────────────────────────────
@@ -106,6 +106,36 @@ describe('ModelCatalog', () => {
       expect(result.tier).toBe('standard'); // default when model is null
     });
 
+    // C24 (OpenRouter plan): the registry emits alias targets as `provider/modelId`
+    // (services/model/index.ts:1216). Splitting on ':' made the provider the whole string and lost
+    // the modelId, and for slash slugs a `:free` suffix was cut off too.
+    it('parses a provider/modelId alias target on its first "/" (C24)', async () => {
+      const sdk = mockSdk({
+        resolveAlias: vi.fn().mockResolvedValue(
+          makeAliasResolution({ model: null, target: 'openrouter/meta-llama/llama-3.3-70b-instruct:free' }),
+        ),
+      });
+      const catalog = new ModelCatalog(sdk);
+
+      const result = await catalog.resolve('llama-free');
+
+      expect(result.provider).toBe('openrouter');
+      expect(result.modelId).toBe('meta-llama/llama-3.3-70b-instruct:free');
+      expect(result.providerModelId).toBe('meta-llama/llama-3.3-70b-instruct:free');
+    });
+
+    it('parses a direct provider/modelId alias target (C24)', async () => {
+      const sdk = mockSdk({
+        resolveAlias: vi.fn().mockResolvedValue(makeAliasResolution({ model: null, target: 'anthropic/claude-sonnet-4-6' })),
+      });
+      const catalog = new ModelCatalog(sdk);
+
+      const result = await catalog.resolve('sonnet-x');
+
+      expect(result.provider).toBe('anthropic');
+      expect(result.modelId).toBe('claude-sonnet-4-6');
+    });
+
     it('falls through to tier when alias not found', async () => {
       const sdk = mockSdk({
         resolveAlias: vi.fn().mockRejectedValue(makeNotFoundError()),
@@ -133,6 +163,47 @@ describe('ModelCatalog', () => {
       expect(result.modelId).toBe('claude-sonnet-4-5-20250929');
       expect(result.resolvedFrom).toBe('anthropic:claude-sonnet-4-5-20250929');
       expect(sdk.models.get).toHaveBeenCalledWith('anthropic', 'claude-sonnet-4-5-20250929');
+    });
+
+    // S11 (OpenRouter plan): a 404 whose details.reason is 'route' means the request never reached
+    // the catalog (an old registry-sdk sending a slash id in the path form). That is a transport
+    // failure, not an unregistered model, and must not silently take DEFAULT_CAPABILITIES.
+    it("treats a route-miss 404 (details.reason 'route') as a failure, not as unregistered", async () => {
+      const sdk = mockSdk({
+        getModel: vi.fn().mockRejectedValue(makeNotFoundError('The requested endpoint does not exist', 'route')),
+      });
+      const catalog = new ModelCatalog(sdk);
+
+      const err = await catalog.resolve('openrouter:anthropic/claude-sonnet-4').catch((e: unknown) => e);
+
+      expect(err).toBeInstanceOf(ConfigurationError);
+      const message = (err as Error).message;
+      expect(message).toContain('openrouter:anthropic/claude-sonnet-4');
+      expect(message).toContain('registry-sdk');
+      expect((err as Error).cause).toBeInstanceOf(NotFoundError);
+    });
+
+    it("a route-miss 404 on alias lookup also fails loudly instead of falling through to tiers", async () => {
+      const sdk = mockSdk({
+        resolveAlias: vi.fn().mockRejectedValue(makeNotFoundError('The requested endpoint does not exist', 'route')),
+      });
+      const catalog = new ModelCatalog(sdk);
+
+      await expect(catalog.resolve('~anthropic/claude-fable-latest')).rejects.toBeInstanceOf(ConfigurationError);
+    });
+
+    it("model- and alias-reason 404s keep today's behaviour (unregistered / tier fallthrough)", async () => {
+      const sdk = mockSdk({
+        getModel: vi.fn().mockRejectedValue(makeNotFoundError('missing', 'model')),
+        resolveAlias: vi.fn().mockRejectedValue(makeNotFoundError('missing', 'alias')),
+        listModels: vi.fn().mockResolvedValue({ models: [makeModel({ tier: 'budget' })] }),
+      });
+      const catalog = new ModelCatalog(sdk);
+
+      const explicit = await catalog.resolve('openrouter:nope/nope');
+      expect(explicit.registered).toBe(false);
+      const tier = await catalog.resolve('budget');
+      expect(tier.tier).toBe('budget');
     });
 
     it('allows unregistered models with default capabilities', async () => {
