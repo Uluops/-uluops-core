@@ -168,7 +168,10 @@ describe('S4: OpenRouter provider options', () => {
 
 // ─── S6a + C7: usage ─────────────────────────────────────────────────────────
 
-/** A Phase 0 shape: DeepSeek V4 Flash, 3 steps, via OpenRouter (traces/phase0-spike-findings.md). */
+/**
+ * Modelled on the Phase 0 trace (DeepSeek V4 Flash via OpenRouter, traces/phase0-spike-findings.md): the
+ * key layout is the provider's, but `cost` is the 3-step SUM, which no single step's block carries.
+ */
 const openrouterMeta = {
   openrouter: {
     provider: 'Relace',

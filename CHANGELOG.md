@@ -61,9 +61,6 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) 
   rejects an aborted `exec` with the string code `ABORT_ERR`, which the spawn-failure branch
   claimed before the cancellation check ran. The model was told its command never started when
   the caller had stopped it. Affects every provider's shell tool; pre-existing.
-
-### Fixed
-
 - **Agents that declare `Bash` are offered a shell when the operator allows it (tracker
   `38ce9462`).** Since the gate landed (`611682e`, 2026-02-09) this never happened for a
   registry-resolved agent, on any provider. Two defects stacked: `RegistryClient` built agent
