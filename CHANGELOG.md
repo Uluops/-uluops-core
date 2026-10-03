@@ -6,6 +6,8 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) 
 
 ## [Unreleased]
 
+## [0.45.0] - 2026-10-03
+
 ### Changed
 
 - **`@uluops/registry-sdk` pinned to 0.58.0 (from 0.54.0), and model ids containing `/` resolve
