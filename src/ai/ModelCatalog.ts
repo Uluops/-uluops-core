@@ -7,6 +7,7 @@ import type {
   ModelCapabilities,
   ModelTier,
 } from '@uluops/registry-sdk';
+import { isNotFoundError as isRegistryNotFound } from '@uluops/registry-sdk/errors';
 import { ModelNotFoundError, CapabilityError } from '../errors/index.js';
 import type { Logger } from '@uluops/sdk-core';
 
@@ -423,12 +424,18 @@ export class ModelCatalog {
     return resolved;
   }
 
-  /** Check if an error is a 404/not-found from the registry API */
+  /**
+   * Check if an error is a 404/not-found from the registry API.
+   *
+   * Uses registry-sdk's own guard. It is an `instanceof` check, and registry-sdk carries its own
+   * nested @uluops/sdk-core (0.18.0, against core's 0.18.1), so the guard must come from the same
+   * package that throws. A structural check on `status` was used here until issue d99bb92f. The
+   * SDK error carries `statusCode`, so that check never matched: every registry 404 was rethrown,
+   * unregistered models failed resolution instead of taking DEFAULT_CAPABILITIES, and alias misses
+   * never fell through to tier resolution.
+   */
   private isNotFoundError(error: unknown): boolean {
-    if (typeof error === 'object' && error !== null && 'status' in error) {
-      return (error as { status: number }).status === 404;
-    }
-    return false;
+    return isRegistryNotFound(error);
   }
 
   private toResolvedModel(alias: AliasResolution, input: string): ResolvedModel {

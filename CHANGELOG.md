@@ -6,6 +6,31 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) 
 
 ## [Unreleased]
 
+### Fixed
+
+- **Registry "not found" was never recognised, so unregistered models and alias misses failed
+  resolution (issue `d99bb92f`).** `ModelCatalog.isNotFoundError` tested `'status' in error`, but
+  `@uluops/registry-sdk`'s `NotFoundError` carries `statusCode` and has no `status`. The check
+  could never match, and every registry 404 was rethrown. As a result:
+  - An explicit unregistered `provider:modelId` failed instead of taking the documented
+    allow-through with `DEFAULT_CAPABILITIES` (`registered: false`).
+  - Alias misses never fell through to tier resolution. Inputs that are not well-known aliases
+    reached the offline fallback, which rethrew.
+
+  The check now uses registry-sdk's own guard. That guard is an `instanceof` check, and
+  registry-sdk carries its own nested `@uluops/sdk-core`, so it is imported from
+  `@uluops/registry-sdk/errors`, the package that throws.
+- **Behaviour change.** Unregistered models now **resolve**, with default capabilities, instead of
+  throwing. This is what the code and its documentation always intended; it is new in practice.
+  Callers that relied on the throw to reject unknown models should validate explicitly (for
+  example with `requiredCapabilities`).
+
+### Internal
+
+- The `ModelCatalog` test fixture fabricated `{ status: 404 }`, a shape the SDK never produces,
+  which is why 63 tests passed over the defect. Fixtures now build the real registry-sdk
+  `NotFoundError`. Negative control: against the unfixed check, 19 of 63 tests fail.
+
 ## [0.44.0] - 2026-10-03
 
 ### Changed

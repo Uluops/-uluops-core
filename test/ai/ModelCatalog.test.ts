@@ -3,12 +3,15 @@ import { ModelCatalog, sanitizeModelCost } from '../../src/ai/ModelCatalog.js';
 import { ModelNotFoundError, CapabilityError } from '../../src/errors/index.js';
 import type { RegistryClient as RegistrySdk } from '@uluops/registry-sdk';
 import type { Model, AliasResolution } from '@uluops/registry-sdk';
+import { NotFoundError } from '@uluops/registry-sdk/errors';
 
-/** Simulate a 404 error from the registry SDK (has status property like ApiError) */
+/**
+ * A registry 404 exactly as @uluops/registry-sdk throws it: its own NotFoundError, carrying
+ * `statusCode` (not `status`). This fixture used to fabricate `{ status: 404 }`, a shape the real
+ * SDK never produces. The suite passed while every real registry 404 was rethrown (issue d99bb92f).
+ */
 function makeNotFoundError(message = 'Not found'): Error {
-  const err = new Error(message);
-  (err as Error & { status: number }).status = 404;
-  return err;
+  return new NotFoundError('Model', message);
 }
 
 // ─── Test Data Factories ─────────────────────────────────────────────────────
@@ -472,7 +475,7 @@ describe('ModelCatalog', () => {
       });
 
       it('does NOT use the fallback for a 404 (alias genuinely unknown)', async () => {
-        const notFound = Object.assign(new Error('not found'), { status: 404 });
+        const notFound = makeNotFoundError('not found');
         const sdk = mockSdk({
           resolveAlias: vi.fn().mockRejectedValue(notFound),
           listModels: vi.fn().mockResolvedValue({ models: [] }),
