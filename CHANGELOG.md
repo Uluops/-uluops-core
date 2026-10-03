@@ -6,6 +6,19 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) 
 
 ## [Unreleased]
 
+### Internal
+
+- **Dev-dependency advisories cleared; CI `security-audit` green again.** The job audits dev
+  dependencies at `--audit-level=high` and had failed since 0.43.6 on `js-yaml` 4.3.1 (via
+  eslint), `brace-expansion` (via eslint, typescript-eslint and glob's minimatch) and `esbuild`
+  0.27.3-0.28.0 (via tsx and vite). `npm audit fix` moved the first two in range (`js-yaml`
+  4.3.2). It cleared `esbuild` by **downgrading** to 0.27.2, below the vulnerable range, because
+  tsx 4.21.0 pins `esbuild ~0.27.0`; instead the exact `tsx` dev pin moves to 4.23.15 (same
+  major, `esbuild ~0.28.0`), which brings `esbuild` 0.28.2 forward. Nothing here ships in the
+  package; the production audit (`--omit=dev`, part of `prepublishOnly`) was already clean.
+- **Left open, below CI's threshold:** two moderate advisories in `vitest` / `@vitest/mocker`
+  (GHSA-82fw-gwwq-j7x9). The only fix is vitest 5, a major upgrade, which is its own change.
+
 ## [0.44.1] - 2026-10-03
 
 ### Fixed

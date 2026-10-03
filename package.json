@@ -73,7 +73,7 @@
     "@typescript-eslint/parser": "8.54.0",
     "eslint": "9.39.2",
     "safe-regex2": "^5.1.1",
-    "tsx": "4.21.0",
+    "tsx": "4.23.15",
     "typescript": "5.9.3",
     "typescript-eslint": "8.54.0",
     "vitest": "3.2.6"
