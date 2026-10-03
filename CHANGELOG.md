@@ -6,6 +6,28 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) 
 
 ## [Unreleased]
 
+## [0.44.0] - 2026-10-03
+
+### Changed
+
+- **`@uluops/ops-sdk` 6.7.0 → 6.14.0 and `@uluops/sdk-core` 0.18.0 → 0.18.1 (both exact, moved together).**
+  - **What consumers see:**
+    - Issue reads accept domain issue types instead of throwing (6.13.0).
+    - Twelve response fields the SDK used to strip silently now come through (6.14.0, found by the ops-api strip guard, tracker `a6cc132a`).
+    - sdk-core 0.18.1 keeps server cause codes and details on 400/422/429 errors.
+  - **Why sdk-core moved too:** ops-sdk 6.14.0 exact-pins sdk-core 0.18.1. Leaving core on 0.18.0 would nest a second copy under ops-sdk.
+  - **One split remains, and it is tolerated by design:** `@uluops/registry-sdk` 0.54.0 still pins sdk-core 0.18.0. Core's error handling never uses `instanceof` across that seam (`isApiErrorLike`, `src/errors/index.ts`).
+  - **Why registry-sdk was not bumped:** 0.57.0 (on sdk-core 0.18.1) changes `X-Org-Slug` to definition writes only, which is a behaviour change for org-context reads and is left for its own review.
+
+### Security
+
+- **GHSA-866g-f22w-33x8 (`@ai-sdk/provider-utils` ≤ 4.0.32, uncontrolled resource consumption, high).**
+  - **What changed:** `@ai-sdk/google` 3.0.31 → 3.0.130, `@ai-sdk/openai` 3.0.33 → 3.0.124, `@ai-sdk/anthropic` 3.0.39 → 3.0.127 and `ai` 6.0.77 → 6.0.300. All stay in the same major and now resolve provider-utils 4.0.57.
+  - **Why now:** this failed the `npm audit` step of `prepublishOnly` on unchanged `main`, so no release was possible.
+  - **Rejected:** `npm audit fix --force`, which would have moved to `ai` 7 / `@ai-sdk/*` 4 (majors).
+- **`brace-expansion` 5.0.9 (via `glob` → `minimatch`):** in-range lockfile fix for two high-severity recursion DoS advisories. No manifest change.
+- **Verification:** the full `prepublishOnly` chain passes after a clean `npm ci` (lint, typecheck, 1,438 tests, the external-inputs audit and its control, `npm audit`, build).
+
 ## [0.43.6] - 2026-09-20
 
 ### Changed
