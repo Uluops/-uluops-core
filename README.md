@@ -733,6 +733,13 @@ const resolved = await catalog.resolve('sonnet', {
 // NOTE: `registered` is REQUIRED on ResolvedModel as of 0.41.0. Reading a ResolvedModel is
 // unaffected; if you CONSTRUCT one (test fixtures, adapters) you must add the field.
 
+// Model ids containing '/' (OpenRouter slugs) resolve against their catalog row as of 0.45.0
+// (registry-sdk 0.58.0 uses the registry's query-string lookup for them). Before 0.45.0 the
+// lookup always missed and such ids resolved with registered: false and default capabilities.
+const routed = await catalog.resolve('openrouter:anthropic/claude-haiku-4.5');
+// → { provider: 'openrouter', modelId: 'anthropic/claude-haiku-4.5', registered: true,
+//      contextWindow: 200000, capabilities: {...}, cost: {...}, ... }
+
 // Enumerate available models and aliases
 const aliases = await catalog.listAliases();
 const premiumModels = await catalog.listModels({ tier: 'premium' });
@@ -747,6 +754,13 @@ catalog.refresh();
 > cached, default-deny capabilities (structured output disabled), loud warn.
 > A cold CI runner survives a registry outage instead of failing before its
 > first LLM call.
+
+> **Route misses fail loudly (0.45.0+):** a registry 404 tagged `details.reason: 'route'`
+> means the lookup matched no registry endpoint, so the catalog was never asked. `resolve()`
+> throws `ConfigurationError` naming the input and the installed registry-sdk version, instead
+> of resolving the model as unregistered with default capabilities. In practice this means a
+> registry-sdk older than 0.58.0 asking for an id containing `/`. A 404 tagged `model` or
+> `alias`, or with no reason, still means "not in the catalog" and behaves as before.
 
 ### Decision Classification
 
@@ -995,7 +1009,7 @@ The SDK provides a structured error hierarchy:
 | Error | Thrown by | Description |
 |-------|----------|-------------|
 | `UluOpsError` | _(base class)_ | Base error class for all SDK errors. Use `UluOpsErrorCodes` for exhaustive code narrowing |
-| `ConfigurationError` | `UluOpsClient` constructor, `RegistryClient.resolve()`, `AIProvider.ensureProvider()` | Missing API key, invalid provider config, definition not found in registry, invalid definition format |
+| `ConfigurationError` | `UluOpsClient` constructor, `RegistryClient.resolve()`, `AIProvider.ensureProvider()`, `ModelCatalog.resolve()` (registry route miss, 0.45.0+) | Missing API key, invalid provider config, definition not found in registry, invalid definition format |
 | `ModelNotFoundError` | `ModelCatalog.resolve()` | Model alias not found in registry catalog |
 | `CapabilityError` | `ModelCatalog.resolve()` | Resolved model lacks a required capability (e.g. tools, vision, extendedThinking) |
 | `PreflightError` | `CommandExecutor` (preflight phase) | Preflight check failed — missing env var, file not found, command unavailable |

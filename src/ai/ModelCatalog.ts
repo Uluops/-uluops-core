@@ -148,6 +148,11 @@ const DEFAULT_CAPABILITIES: ModelCapabilities = {
  * exclusively on transport errors (never on 404 — an alias the registry says
  * doesn't exist still fails), never cached (registry recovery wins), and
  * resolves with DEFAULT_CAPABILITIES (default-deny structured output).
+ * A registry ROUTE miss (404 with `details.reason: 'route'`, raised as
+ * ConfigurationError since 0.45.0) counts as a transport failure here: the
+ * request reached no catalog endpoint, so for these aliases it falls back like
+ * an outage. That path is effectively unreachable today, since none of these
+ * aliases contains '/' and the path form for them is always routed.
  *
  * DECAY SURFACE (2026-07-10, cf. issue 70cb73e3): these are date-stamped
  * vendor IDs and are the fastest-decaying strings in the codebase. They only
@@ -193,6 +198,17 @@ export class ModelCatalog {
    *   `providerModelId`, tier, and the resolved capability set.
    * @throws {ModelNotFoundError} If alias/model cannot be resolved
    * @throws {CapabilityError} If model lacks required capabilities
+   * @throws {ConfigurationError} If the registry answers a route miss (404 with
+   *   `details.reason: 'route'`) — the lookup matched no registry endpoint, so the catalog was
+   *   never asked. That is a client/registry version mismatch, not an unregistered model; the
+   *   message names the input and the installed registry-sdk version.
+   * @example
+   * ```typescript
+   * await catalog.resolve('sonnet');                                  // alias
+   * await catalog.resolve('premium');                                 // tier
+   * await catalog.resolve('anthropic:claude-sonnet-4-6');             // explicit provider:modelId
+   * await catalog.resolve('openrouter:anthropic/claude-sonnet-4');    // id containing '/' (registry-sdk 0.58.0+)
+   * ```
    */
   async resolve(input: string, opts?: ResolveOptions): Promise<ResolvedModel> {
     // 1. Explicit provider:modelId

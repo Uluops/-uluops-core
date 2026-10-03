@@ -3074,7 +3074,10 @@ const tool = aiProvider.createProviderShellTool(provider, targetDir, timeoutMs);
 - `AgentResult` discriminated union types added to `types/agent.ts`
 - `PipelineHandle` class implementation added to `client/PipelineHandle.ts`
 
-<!-- Version comparison links -->
+<!-- Version comparison links. As of 2026-10-03 the remote carries NO v0.4x tags
+     (`git ls-remote --tags origin`), so the v0.42.0 link below already 404s and no compare refs
+     are added for 0.43.x–0.45.0: a link to a tag that was never pushed is worse than none. Add
+     them when release tagging resumes. -->
 [Unreleased]: https://github.com/Uluops/-uluops-core/compare/v0.42.0...HEAD
 [0.42.0]: https://github.com/Uluops/-uluops-core/compare/v0.35.0...v0.42.0
 
