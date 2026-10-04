@@ -6,6 +6,8 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) 
 
 ## [Unreleased]
 
+## [0.46.0] - 2026-10-04
+
 ### Added
 
 - **`ExecutionOptions.providerOptions` (`runAgent`).** Provider-specific request options, keyed
