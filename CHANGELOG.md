@@ -75,7 +75,7 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) 
   tool on any request.
 - **Every outcome of a Bash declaration is logged.** A shell offered logs at info (provider, start
   directory, no sandbox); a declaration the operator has not allowed logs at debug; bash allowed on
-  a provider with no shell tool in core (anything but `anthropic` and `openai`) warns that the agent
+  a provider with no shell tool in core (anything but `anthropic`, `openai` and, with the schema-fallback tool, `openrouter`) warns that the agent
   runs without a shell. The gate was silent both ways, which is how it stayed inert unnoticed.
 - **`allowedTools` entries are trimmed, and a non-array fails closed.** A programmatic `' bash'`
   now matches as the trimmed env path already did; a JavaScript caller passing a string (e.g.
@@ -88,7 +88,7 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) 
 - **Behaviour change for operators who already allow bash.** If you set `allowedTools` to include
   `bash` (or `ULUOPS_ALLOWED_TOOLS=bash`, including from a `.env` file the CLI loads), that setting
   had no effect until now: agents ran without a shell. From this release, an agent that declares
-  `Bash` and runs on `anthropic` or `openai` is given a shell, and runs model-generated commands
+  `Bash` and runs on `anthropic`, `openai` or `openrouter` (schema-fallback tool) is given a shell, and runs model-generated commands
   via `sh -c`. The commands **start** in the target directory but are not confined to it: they can
   reach anything the process user can. The grant is per client, not per agent: allowing bash allows
   it for every agent that declares it (98 v3 ADLs). The default is unchanged (bash denied when
