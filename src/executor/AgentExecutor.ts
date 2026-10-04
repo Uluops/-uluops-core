@@ -230,7 +230,10 @@ export class AgentExecutor {
   ) {
     const agentTools = runtime.interface?.tools;
     let additionalTools: ToolSet | undefined;
-    if (agentTools?.includes('bash') && this.isToolAllowed('bash')) {
+    // Case-insensitive: the corpus declares `Bash` (98 v3 ADLs) while this check and operators'
+    // allowedTools say `bash`. An exact match meant no corpus agent could ever be offered a shell,
+    // even after its tools reached the runtime (tracker 38ce9462).
+    if (agentTools?.some(t => sameTool(t, 'bash')) && this.isToolAllowed('bash')) {
       // Same precedence idiom as the budget resolution above (modelOverride wins) —
       // keeps the shell tool's provider in sync with the provider generate() will use.
       const modelInput = this.config.ai.modelOverride ?? context.model;
@@ -257,10 +260,10 @@ export class AgentExecutor {
   private isToolAllowed(tool: string): boolean {
     const allowed = this.config.allowedTools;
     if (allowed === undefined) {
-      // Safe default: bash requires explicit operator opt-in
-      return tool !== 'bash';
+      // Safe default: bash requires explicit operator opt-in — in any spelling.
+      return !sameTool(tool, 'bash');
     }
-    return allowed.includes(tool);
+    return allowed.some(a => sameTool(a, tool));
   }
 
   /**
@@ -919,4 +922,9 @@ export class AgentExecutor {
       + Math.max(0, usage.output_tokens)
       + Math.max(0, usage.cache_creation_input_tokens ?? 0);
   }
+}
+
+/** Tool names compare case-insensitively: ADL writes `Bash`, operators and core write `bash`. */
+function sameTool(a: unknown, b: string): boolean {
+  return typeof a === 'string' && a.toLowerCase() === b.toLowerCase();
 }

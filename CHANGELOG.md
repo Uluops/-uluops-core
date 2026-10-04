@@ -6,6 +6,30 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) 
 
 ## [Unreleased]
 
+### Fixed
+
+- **Agents that declare `Bash` are offered a shell when the operator allows it (tracker
+  `38ce9462`).** Since the gate landed (`611682e`, 2026-02-09) this never happened for a
+  registry-resolved agent, on any provider. Two defects stacked: `RegistryClient` built agent
+  runtimes from `prompt`, `defaults` and `config` only, so `runtime.interface.tools` — the one
+  field `AgentExecutor` reads to offer a shell — was always undefined; and the check was the exact
+  string `'bash'`, while the corpus declares `Bash` (98 v3 ADLs). Both runtime builders (registry
+  and local file) now carry `agent.interface.tools` onto the runtime (strings only; nothing else
+  from `interface`), and tool names compare case-insensitively in the agent's declaration and in
+  `allowedTools` / `ULUOPS_ALLOWED_TOOLS`. The executor's own bash tests passed throughout because
+  they hand-built the runtime; the new tests go through `RegistryClient.resolve` into
+  `AgentExecutor`. Found by the OpenRouter live check, where a bash-allowed run carried no shell
+  tool on any request.
+
+### Security
+
+- **Behaviour change for operators who already allow bash.** If you set `allowedTools` to include
+  `bash` (or `ULUOPS_ALLOWED_TOOLS=bash`), that setting had no effect until now: agents ran without
+  a shell. From this release, every agent that declares `Bash` runs model-generated commands via
+  `sh -c` in the target directory. The default is unchanged (bash denied when `allowedTools` is
+  unset; the CLI sets neither). If you enabled it, check it is still what you want, run it in a
+  sandbox, and pin the definitions you run (`expectedHash`).
+
 ## [0.45.0] - 2026-10-03
 
 ### Changed

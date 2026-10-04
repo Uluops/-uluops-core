@@ -560,6 +560,7 @@ export class RegistryClient {
               temperature: agent.defaults?.temperature,
             },
             config: this.buildAgentConfig(agent),
+            ...declaredInterface(agent),
           } as ResolvedDefinition['runtime'],
           promptHash,
           translatorVersion,
@@ -692,6 +693,7 @@ export class RegistryClient {
             temperature: agent.defaults?.temperature,
           },
           config: this.buildAgentConfig(agent),
+          ...declaredInterface(agent),
         } as ResolvedDefinition['runtime'],
         degradations,
       };
@@ -959,4 +961,22 @@ export class RegistryClient {
       minSubscription: (meta.minSubscription as DefinitionSummary['minSubscription']) ?? undefined,
     };
   }
+}
+
+/**
+ * The agent's declared tools, carried onto the runtime as `interface.tools` — the field
+ * AgentExecutor reads to decide whether to offer a shell (with the operator's allowedTools).
+ *
+ * Neither runtime builder set it before tracker 38ce9462, so from 611682e (2026-02-09) no
+ * registry-resolved agent was offered a shell on any provider; the executor's tests passed
+ * because they hand-built the runtime. Only `tools` is carried: the executor reads nothing else
+ * from `interface`, and copying the whole section would make every interface field look like
+ * runtime contract. Authored input (registry YAML or a local file): a non-array is ignored and
+ * non-string entries are dropped. Names are kept as written (`Bash` in the corpus); matching is
+ * case-insensitive in AgentExecutor.
+ */
+function declaredInterface(agent: AgentDefinition['agent']): { interface?: { tools: string[] } } {
+  const tools: unknown = agent.interface?.tools;
+  if (!Array.isArray(tools)) return {};
+  return { interface: { tools: tools.filter((t): t is string => typeof t === 'string') } };
 }

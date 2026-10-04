@@ -1168,7 +1168,7 @@ try {
 
 ### Tool Allowlist
 
-Agent definitions can request tools (e.g., `tools: ['bash']` in YAML), but the operator must explicitly permit them. This separates the trust boundary: **definition authors declare** what they need, **operators decide** what they permit.
+Agent definitions can request tools (`interface.tools` in the ADL, e.g. `[Read, Grep, Glob, Bash]`), but the operator must explicitly permit them. Tool names match case-insensitively on both sides. This separates the trust boundary: **definition authors declare** what they need, **operators decide** what they permit.
 
 By default, all tools except `bash` are allowed. The `bash` tool passes LLM-generated command strings to `sh -c`, granting full host OS access scoped to the working directory. Only enable it in sandboxed environments (containers, CI). **If you enable `bash` in CI, pin the definitions you run** (`expectedHash` — see [Integrity Verification](#integrity-verification)): with bash on, a mutated registry definition is author-controlled shell on your CI host, and the pin is what makes that substitution refuse to execute.
 

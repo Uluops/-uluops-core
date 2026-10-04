@@ -212,7 +212,8 @@ export interface UluOpsConfig {
    * precisely because this assumption is easy to make.
    *
    * When undefined, all tools EXCEPT 'bash' are allowed (safe default).
-   * Set explicitly to `['bash']` or `['bash', ...]` to permit shell access.
+   * Set explicitly to `['bash']` or `['bash', ...]` to permit shell access. Names match
+   * case-insensitively, on both sides: ADL declares `Bash`, `'bash'` and `'Bash'` here are the same.
    *
    * @default undefined (bash blocked, all other tools allowed)
    */
