@@ -577,6 +577,18 @@ describe('AgentExecutor', () => {
   });
 
   // OpenRouter plan 1e and S5: what a routed run took silently is now disclosed as info markers.
+  describe('empty-output warning names the right cause', () => {
+    it("a normal stop with no text does not blame maxSteps", async () => {
+      const warn = vi.fn();
+      const logger = { ...noopLogger, warn };
+      const executor = new AgentExecutor(baseConfig, mockAIProvider({ text: '', finishReason: 'stop' }), logger);
+      await executor.execute(makeValidatorDef(), { target: tmpDir });
+      const messages = warn.mock.calls.map(c => String(c[0]));
+      expect(messages.some(m => m.includes('finished (stop) without a final answer'))).toBe(true);
+      expect(messages.some(m => m.includes('maxSteps'))).toBe(false);
+    });
+  });
+
   describe('OpenRouter disclosure markers', () => {
     function bashDef(): ResolvedDefinition {
       return makeValidatorDef({

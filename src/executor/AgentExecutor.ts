@@ -301,7 +301,14 @@ export class AgentExecutor {
     // Full output is available in the AgentResult for callers who need it.
     this.logger.debug(`Raw output: ${rawText.length} chars, finishReason=${finishReason}`);
     if (rawText.length === 0) {
-      this.logger.warn('Empty output — model likely hit maxSteps while still calling tools');
+      // Only 'tool-calls' means the loop was cut at maxSteps (execute() turns that into
+      // MaxStepsExhaustedError). Any other finish is the model ending without a final answer;
+      // the old message blamed maxSteps for both, which sent the reader to the wrong knob. Seen
+      // live 2026-10-04: gpt-oss-120b via an OpenRouter upstream stopped after 4 steps with
+      // content null and only reasoning text.
+      this.logger.warn(finishReason === 'tool-calls'
+        ? 'Empty output — the tool loop hit maxSteps while the model was still calling tools'
+        : `Empty output — the model finished (${finishReason}) without a final answer; extraction will fail`);
     }
   }
 

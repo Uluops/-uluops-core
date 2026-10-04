@@ -81,6 +81,8 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) 
   now matches as the trimmed env path already did; a JavaScript caller passing a string (e.g.
   `'bash'`) gets a warning and no shell, where it would now have thrown from `execute()`.
 
+- **The empty-output warning names the right cause.** It blamed maxSteps for every empty answer; it now does so only when the loop was cut while the model was still calling tools (`finishReason: 'tool-calls'`), and otherwise says the model finished without a final answer.
+
 ### Security
 
 - **Behaviour change for operators who already allow bash.** If you set `allowedTools` to include
