@@ -215,9 +215,19 @@ describe('declared agent tools reach the runtime (38ce9462)', () => {
       return { debug: all(logger.debug), info: all(logger.info), warn: all(logger.warn) };
     }
 
-    it('offered: an info line says a shell was offered, without a sandbox', async () => {
-      const { info } = await runWith(['bash'], SHELL_TOOL);
-      expect(info.some(m => m.includes('Shell offered') && m.includes('no sandbox'))).toBe(true);
+    it('offered: the user sees a warning (printed without debug) that shell access is active', async () => {
+      const { warn } = await runWith(['bash'], SHELL_TOOL);
+      expect(warn.some(m => m.includes('Shell access is active') && m.includes('no sandbox'))).toBe(true);
+    });
+
+    it('the notice is a warning once per executor, then info (a pipeline says it once)', async () => {
+      const logger = { debug: vi.fn(), info: vi.fn(), warn: vi.fn(), error: vi.fn() };
+      const executor = new AgentExecutor({ ...baseConfig, allowedTools: ['bash'] }, mockAI(), logger);
+      await executor.execute(await resolveRemote(['Bash']), { target: tmpDir });
+      await executor.execute(await resolveRemote(['Bash']), { target: tmpDir });
+      const count = (fn: ReturnType<typeof vi.fn>) => fn.mock.calls.filter(c => String(c[0]).includes('Shell access is active')).length;
+      expect(count(logger.warn)).toBe(1);
+      expect(count(logger.info)).toBe(1);
     });
 
     it('allowed but the provider has no shell tool: a warning, not silence', async () => {
@@ -228,7 +238,7 @@ describe('declared agent tools reach the runtime (38ce9462)', () => {
     it('denied by the operator: a debug line names the setting', async () => {
       const { debug, info, warn } = await runWith(undefined, SHELL_TOOL);
       expect(debug.some(m => m.includes('ULUOPS_ALLOWED_TOOLS'))).toBe(true);
-      expect([...info, ...warn].some(m => m.includes('Shell offered') || m.includes('without a shell'))).toBe(false);
+      expect([...info, ...warn].some(m => m.includes('Shell access is active') || m.includes('without a shell'))).toBe(false);
     });
   });
 });

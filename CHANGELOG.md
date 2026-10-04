@@ -73,8 +73,9 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) 
   they hand-built the runtime; the new tests go through `RegistryClient.resolve` into
   `AgentExecutor`. Found by the OpenRouter live check, where a bash-allowed run carried no shell
   tool on any request.
-- **Every outcome of a Bash declaration is logged.** A shell offered logs at info (provider, start
-  directory, no sandbox); a declaration the operator has not allowed logs at debug; bash allowed on
+- **Every outcome of a Bash declaration is logged.** The first shell offered by a client prints a
+  warning (visible without `debug`) that shell access is active, with the provider, start directory,
+  no sandbox and the credential scrub; later offers in the same run log at info; a declaration the operator has not allowed logs at debug; bash allowed on
   a provider with no shell tool in core (anything but `anthropic`, `openai` and, with the schema-fallback tool, `openrouter`) warns that the agent
   runs without a shell. The gate was silent both ways, which is how it stayed inert unnoticed.
 - **`allowedTools` entries are trimmed, and a non-array fails closed.** A programmatic `' bash'`

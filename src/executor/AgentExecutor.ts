@@ -56,6 +56,8 @@ const MAX_RAW_OUTPUT_BYTES = 512 * 1024;
  */
 export class AgentExecutor {
   private outputExtractor = new OutputExtractor();
+  /** Whether this executor has already told the user a shell is active (see setupTools). */
+  private shellNoticeShown = false;
 
   constructor(
     private config: ResolvedConfig,
@@ -255,10 +257,21 @@ export class AgentExecutor {
       additionalTools = this.aiProvider.createProviderShellTool(resolvedModel.provider, input.target, shellTimeoutMs);
       shellSchemaFallback = additionalTools !== undefined && SHELL_SCHEMA_FALLBACK_PROVIDERS.has(resolvedModel.provider);
       if (additionalTools) {
-        this.logger.info(
-          `Shell offered (provider ${resolvedModel.provider}): model-issued commands run via sh -c, starting in ` +
-          `${input.target}, with no sandbox and with secret-class env vars removed.`,
-        );
+        // The bash grant is all-or-nothing per client (decided 2026-10-04: core runs on the user's
+        // machine or one they point it at, so the user is the operator). What the user gets instead
+        // of per-agent grants is a notice they can see: the FIRST shell offered by this executor is
+        // a warning, which prints without debug; later offers in the same run are info, so a
+        // multi-stage pipeline says it once.
+        const notice =
+          `Shell access is active: agents that declare Bash run model-generated commands via sh -c on this machine ` +
+          `(provider ${resolvedModel.provider}; starting in ${input.target}, not confined to it; no sandbox; ` +
+          `API keys and tokens removed from the environment). Enabled by allowedTools / ULUOPS_ALLOWED_TOOLS.`;
+        if (this.shellNoticeShown) {
+          this.logger.info(notice);
+        } else {
+          this.shellNoticeShown = true;
+          this.logger.warn(notice);
+        }
       } else {
         this.logger.warn(
           `Agent declares Bash and the operator allows it, but provider "${resolvedModel.provider}" has no shell ` +
