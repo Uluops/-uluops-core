@@ -183,6 +183,7 @@ export OPENROUTER_API_KEY=your_openrouter_key   # auto-detected like the keys ab
 ```
 
 ```typescript
+// `client` is the UluOpsClient from Quick Start.
 const result = await client.runAgent('code-validator', './src', {
   model: 'openrouter:deepseek/deepseek-v4-flash',
 });
@@ -190,9 +191,11 @@ const result = await client.runAgent('code-validator', './src', {
 
 > **Data governance.** Every file the agent reads, and every shell command's output, is sent to
 > OpenRouter and on to whichever upstream provider serves the request. Core sets no retention
-> constraint by default (the decision is open). For private code, pass one yourself:
-> `providerOptions: { openrouter: { provider: { data_collection: 'deny', zdr: true } } }`, or
-> pin upstreams with `provider.only`. Core keeps any `provider` fields you set.
+> constraint by default (the decision is open). For private code, pass one yourself in
+> `runAgent`'s options: `providerOptions: { openrouter: { provider: { data_collection: 'deny', zdr: true } } }`,
+> and pin upstreams with `provider.only` (e.g. `only: ['DekaLLM']`). Core keeps any `provider`
+> fields you set and adds its own `require_parameters`. `providerOptions` is a `runAgent` option
+> only: commands, workflows and pipelines do not take it yet.
 
 - **Pin 2.10.0.** The package's npm `latest` is 3.x, which targets `ai@7`; core runs `ai@6` and
   refuses a different major at load with an error naming both versions. Under strict pnpm
@@ -200,7 +203,8 @@ const result = await client.runAgent('code-validator', './src', {
   its own install location (the same as the other non-bundled providers).
 - **Catalog data.** OpenRouter slugs resolve against the registry catalog (core 0.45.0+), so a
   listed slug gets its real capabilities, context window and price. A slug the catalog does not
-  list runs on defaults and the run carries an info marker, `model.unregistered-defaults`.
+  list runs on defaults and the run carries an info marker, `model.unregistered-defaults`
+  (programmatic callers of `AIProvider.generate()` also get `modelRegistered: false` on the result).
 - **Routing guards.** Core always sends `provider.require_parameters: true` (route only to
   endpoints that support every parameter sent, the only capability guard for a routed model) and
   `usage.include: true`; caller options cannot turn either off. A model the catalog reports as

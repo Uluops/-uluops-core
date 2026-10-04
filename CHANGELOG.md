@@ -8,6 +8,16 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) 
 
 ### Added
 
+- **`ExecutionOptions.providerOptions` (`runAgent`).** Provider-specific request options, keyed
+  by provider, passed to the model call: OpenRouter routing and data governance
+  (`{ openrouter: { provider: { only: [...], data_collection: 'deny', zdr: true } } }`), or another
+  provider's options. Core's forced options still apply on top (OpenRouter
+  `provider.require_parameters`, `usage.include`). The README's data-governance advice depended on
+  it and, before this, was silently dropped: `runAgent` had no such option. A value that is not an
+  object of objects is dropped with a warning. Commands, workflows and pipelines do not take it
+  yet. Verified live: gpt-oss-120b pinned to one upstream sent the merged `provider` block on all
+  8 requests, was served there each time, and passed (it had failed on unpinned upstreams).
+- **A missing provider key names where to get one** (Anthropic, OpenAI, Google, OpenRouter).
 - **OpenRouter as a provider, experimental (OpenRouter plan v0.6.1, slices 1b and 1e).** Model
   strings `openrouter:<slug>` route through `@openrouter/ai-sdk-provider`, which the consumer
   installs at 2.10.0 (as with the other non-bundled providers). `OPENROUTER_API_KEY` is

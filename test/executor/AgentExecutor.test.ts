@@ -577,6 +577,34 @@ describe('AgentExecutor', () => {
   });
 
   // OpenRouter plan 1e and S5: what a routed run took silently is now disclosed as info markers.
+  describe('ExecutionOptions.providerOptions reaches the model call', () => {
+    const providerOptions = { openrouter: { provider: { data_collection: 'deny', zdr: true, only: ['DekaLLM'] } } };
+
+    it('is passed to generate() as given', async () => {
+      const ai = mockAIProvider();
+      await new AgentExecutor(baseConfig, ai, noopLogger).execute(makeValidatorDef(), { target: tmpDir }, { providerOptions });
+      const call = (ai.generate as ReturnType<typeof vi.fn>).mock.calls[0]![0] as Record<string, unknown>;
+      expect(call['providerOptions']).toEqual(providerOptions);
+    });
+
+    it('is absent from the call when the caller sets none', async () => {
+      const ai = mockAIProvider();
+      await new AgentExecutor(baseConfig, ai, noopLogger).execute(makeValidatorDef(), { target: tmpDir });
+      const call = (ai.generate as ReturnType<typeof vi.fn>).mock.calls[0]![0] as Record<string, unknown>;
+      expect('providerOptions' in call).toBe(false);
+    });
+
+    it('an unusable value is dropped with a warning, not sent', async () => {
+      const ai = mockAIProvider();
+      const warn = vi.fn();
+      await new AgentExecutor(baseConfig, ai, { ...noopLogger, warn })
+        .execute(makeValidatorDef(), { target: tmpDir }, { providerOptions: { openrouter: 'deny' } as never });
+      const call = (ai.generate as ReturnType<typeof vi.fn>).mock.calls[0]![0] as Record<string, unknown>;
+      expect('providerOptions' in call).toBe(false);
+      expect(warn.mock.calls.some(c => String(c[0]).includes('providerOptions'))).toBe(true);
+    });
+  });
+
   describe('empty-output warning names the right cause', () => {
     it("a normal stop with no text does not blame maxSteps", async () => {
       const warn = vi.fn();

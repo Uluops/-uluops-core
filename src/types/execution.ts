@@ -310,6 +310,19 @@ export interface ExecutionOptions {
   /** Model override: alias ('sonnet'), tier ('premium'), or 'provider:modelId' */
   model?: string;
 
+  /**
+   * Provider-specific request options, keyed by provider, passed to the model call — e.g.
+   * OpenRouter routing and data governance:
+   * `{ openrouter: { provider: { data_collection: 'deny', zdr: true, only: ['…'] } } }`.
+   *
+   * Merged under core's own per-provider options: core still applies what it forces (OpenRouter
+   * `provider.require_parameters` and `usage.include`), and a key you set where core only has a
+   * default (e.g. `reasoning`, Anthropic `thinking`) wins. A value that is not an object of
+   * objects is dropped with a warning. `runAgent` only for now: commands, workflows and
+   * pipelines do not take it.
+   */
+  providerOptions?: Record<string, Record<string, unknown>>;
+
   /** Per-run override for executing PDL stage steps (host shell access).
    *  Defaults to the config-level allowStageSteps (default false). */
   allowStageSteps?: boolean;

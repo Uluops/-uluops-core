@@ -331,13 +331,15 @@ export interface AIGenerateOptions {
  *
  * Wraps Vercel AI SDK v6 to provide:
  * - Registry-backed model alias resolution (sonnet → anthropic:claude-sonnet-4-5-20250929)
- * - Multi-provider support (Anthropic + OpenAI + Google bundled, others via dynamic import)
+ * - Multi-provider support (Anthropic + OpenAI + Google bundled, others via dynamic import;
+ *   OpenRouter, experimental, via `@openrouter/ai-sdk-provider` with a major-version install guard)
  * - Capability pre-flight checks (tools, vision, streaming, extendedThinking)
  * - Unified generation with automatic tool loops
  * - Automatic prompt caching for Anthropic system messages
  * - Extended thinking auto-enabled for capable Anthropic models
  * - Reasoning effort auto-set for capable OpenAI models
- * - Provider-defined tool support (Anthropic bash, OpenAI shell)
+ * - Provider-defined tool support (Anthropic bash, OpenAI shell), and a schema-fallback `bash`
+ *   function tool for providers without one (OpenRouter; SHELL_SCHEMA_FALLBACK_PROVIDERS)
  * - Error mapping to UluOps error types
  * - Usage metrics in UluOps format (including OpenAI reasoning + Google thinking tokens)
  */
@@ -362,12 +364,20 @@ export class AIProvider {
     openrouter: { package: '@openrouter/ai-sdk-provider', pin: '2.10.0' },
   };
 
-  /** npm package that provides `providerName`. */
+  /**
+   * npm package that provides `providerName`.
+   * @param providerName - Provider key, e.g. `'openrouter'`.
+   * @returns The override package (`@openrouter/ai-sdk-provider`), else `@ai-sdk/<providerName>`.
+   */
   static packageFor(providerName: string): string {
     return AIProvider.PACKAGE_NAME_OVERRIDES[providerName]?.package ?? `@ai-sdk/${providerName}`;
   }
 
-  /** The install command to print for `providerName`, pinned where core pins it. */
+  /**
+   * The install command to print for `providerName`, pinned where core pins it.
+   * @param providerName - Provider key, e.g. `'openrouter'`.
+   * @returns e.g. `npm install @openrouter/ai-sdk-provider@2.10.0`, or `npm install @ai-sdk/<name>` unpinned.
+   */
   static installHintFor(providerName: string): string {
     const override = AIProvider.PACKAGE_NAME_OVERRIDES[providerName];
     return override ? `npm install ${override.package}@${override.pin}` : `npm install @ai-sdk/${providerName}`;
@@ -376,6 +386,8 @@ export class AIProvider {
   /**
    * Installed version of a provider package, resolved the way the dynamic import resolves it,
    * or undefined if it cannot be read. A static seam so tests can stand in a version.
+   * @param packageName - npm package name, e.g. `@openrouter/ai-sdk-provider`.
+   * @returns The installed `version` string, or `undefined` when not installed or unreadable.
    */
   static readInstalledVersion(packageName: string): string | undefined {
     try {
@@ -1498,9 +1510,11 @@ export class AIProvider {
 
   private missingProviderError(providerName: string): ConfigurationError {
     const envVar = `${providerName.toUpperCase()}_API_KEY`;
+    const keyUrl = PROVIDER_KEY_URLS[providerName];
     return new ConfigurationError(
       `AI provider "${providerName}" is not configured. ` +
-      `Set the ${envVar} environment variable or add it to config.ai.providers: { ${providerName}: { apiKey: '...' } }`,
+      `Set the ${envVar} environment variable or add it to config.ai.providers: { ${providerName}: { apiKey: '...' } }` +
+      (keyUrl ? `. Get a key at ${keyUrl}` : ''),
     );
   }
 
@@ -2106,6 +2120,14 @@ function isAPICallError(error: unknown): error is APICallError {
 function isRetryError(error: unknown): error is RetryError {
   return RetryError.isInstance(error);
 }
+
+/** Where to get an API key, for the missing-provider-key error. Providers not listed get none. */
+const PROVIDER_KEY_URLS: Record<string, string> = {
+  anthropic: 'https://console.anthropic.com/settings/keys',
+  openai: 'https://platform.openai.com/api-keys',
+  google: 'https://aistudio.google.com/apikey',
+  openrouter: 'https://openrouter.ai/settings/keys',
+};
 
 /**
  * Providers that get the schema-fallback `bash` tool from `createProviderShellTool` rather than a

@@ -23,6 +23,7 @@ import { renderUpstreamSection } from './upstreamContext.js';
 import type { UsageMetrics } from '../types/ai.js';
 import type { Logger } from '@uluops/sdk-core';
 import { DEFAULT_PASS_THRESHOLD, DEFAULT_WARN_THRESHOLD, DEFAULT_MAX_STEPS, DEFAULT_MAX_TOKENS, DEFAULT_MODEL_ALIAS, DEFAULT_TEMPERATURE, EXTRACTION_CONFIDENCE_THRESHOLD, SHELL_COMMAND_TIMEOUT_MS, DEFAULT_REQUEST_TIMEOUT_MS, DEFAULT_CONTEXT_BUDGET } from '../constants.js';
+import type { ProviderOptions } from '@ai-sdk/provider-utils';
 
 /**
  * Maximum bytes retained from the LLM's raw text output on AgentResult.rawOutput.
@@ -134,6 +135,10 @@ export class AgentExecutor {
       // Absent this, cancelling stopped only the next stage from starting — the in-flight
       // provider call ran to completion and was billed in full.
       ...(options?.abortSignal ? { abortSignal: options.abortSignal } : {}),
+      // Caller's provider options (OpenRouter routing / data governance). Before this the field did
+      // not exist on ExecutionOptions, so the README's data-governance advice for runAgent was
+      // silently dropped (consumer-validate, 2026-10-04). Shape-checked: it is caller input.
+      ...this.callerProviderOptions(options?.providerOptions),
       contextBudget: effectiveBudget,
       // EXTERNAL-OK: forwarded to the AI SDK, which validates and clamps its own retry count.
       maxRetries: this.config.maxRetries,
@@ -285,6 +290,21 @@ export class AgentExecutor {
     const adapter = new ToolAdapter(toolHandler, additionalTools, budgetTracker);
 
     return { toolHandler, budgetTracker, adapter, shellSchemaFallback };
+  }
+
+  /**
+   * `{ providerOptions }` when the caller supplied an object of objects, else nothing (with a
+   * warning when something unusable was supplied, so a typo is not a silent no-op).
+   */
+  private callerProviderOptions(value: unknown): { providerOptions?: ProviderOptions } {
+    if (value === undefined) return {};
+    const isObject = (v: unknown): v is Record<string, unknown> =>
+      v !== null && typeof v === 'object' && !Array.isArray(v);
+    if (!isObject(value) || !Object.values(value).every(isObject)) {
+      this.logger.warn('providerOptions must be an object keyed by provider, each value an object; ignoring it.');
+      return {};
+    }
+    return { providerOptions: value as ProviderOptions };
   }
 
   /**

@@ -267,6 +267,8 @@ export interface ResolvedConfig {
    *  instance (not per process — see AIProvider.concurrencyLimiter). Always
    *  set after resolution. */
   maxConcurrency: number;
+  /** Resolved {@link UluOpsConfig.allowedTools} (config, else ULUOPS_ALLOWED_TOOLS, trimmed and
+   *  comma-split). Gates `bash` only; matched case-insensitively; undefined = bash denied. */
   allowedTools?: string[];
   /** Engine execution of PDL stage steps. Always resolved; default false. */
   allowStageSteps: boolean;
