@@ -211,6 +211,9 @@ export interface UluOpsConfig {
    * may inadvertently grant shell access. The safe default (bash blocked) exists
    * precisely because this assumption is easy to make.
    *
+   * Today the list gates exactly one tool, `bash`: the built-in read-only filesystem tools
+   * (read_file, list_files, search_content, …) are always available, whatever this says.
+   *
    * When undefined, all tools EXCEPT 'bash' are allowed (safe default).
    * Set explicitly to `['bash']` or `['bash', ...]` to permit shell access. Names match
    * case-insensitively, on both sides: ADL declares `Bash`, `'bash'` and `'Bash'` here are the same.

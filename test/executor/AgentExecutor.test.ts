@@ -533,6 +533,11 @@ describe('AgentExecutor', () => {
     // Regression guard for tracker b96b559a: the shell tool used to inherit
     // context.timeoutMs (the overall agent run budget), so a 300s agent budget
     // authorised a single 300s bash call instead of the intended 30s default.
+    // NOTE: this runtime is HAND-BUILT, not produced by RegistryClient. That shape is how
+    // tracker 38ce9462 hid for eight months: the real builder never set `interface`, and these
+    // tests stayed green. Coverage that the production path offers the shell (and that the
+    // default denies it) lives in test/registry/agentTools.test.ts; this file alone gives no
+    // signal on either.
     function makeBashValidatorDef(): ResolvedDefinition {
       return makeValidatorDef({
         runtime: {

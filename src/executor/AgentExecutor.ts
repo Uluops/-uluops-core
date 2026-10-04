@@ -233,7 +233,14 @@ export class AgentExecutor {
     // Case-insensitive: the corpus declares `Bash` (98 v3 ADLs) while this check and operators'
     // allowedTools say `bash`. An exact match meant no corpus agent could ever be offered a shell,
     // even after its tools reached the runtime (tracker 38ce9462).
-    if (agentTools?.some(t => sameTool(t, 'bash')) && this.isToolAllowed('bash')) {
+    //
+    // Every outcome of a Bash declaration is logged: the gate was silent in both directions, which
+    // is how it stayed inert for eight months, and how an operator's long-forgotten opt-in would
+    // otherwise come alive unannounced.
+    const declaresBash = agentTools?.some(t => sameTool(t, 'bash')) ?? false;
+    if (declaresBash && !this.isToolAllowed('bash')) {
+      this.logger.debug('Agent declares Bash; no shell offered — the operator has not allowed bash (allowedTools / ULUOPS_ALLOWED_TOOLS).');
+    } else if (declaresBash) {
       // Same precedence idiom as the budget resolution above (modelOverride wins) —
       // keeps the shell tool's provider in sync with the provider generate() will use.
       const modelInput = this.config.ai.modelOverride ?? context.model;
@@ -244,6 +251,17 @@ export class AgentExecutor {
       // records, reintroduced on the operator side of the same helper.
       const shellTimeoutMs = finitePositive(options?.shellTimeoutMs) ?? SHELL_COMMAND_TIMEOUT_MS;
       additionalTools = this.aiProvider.createProviderShellTool(resolvedModel.provider, input.target, shellTimeoutMs);
+      if (additionalTools) {
+        this.logger.info(
+          `Shell offered (provider ${resolvedModel.provider}): model-issued commands run via sh -c, starting in ` +
+          `${input.target}, with no sandbox and with secret-class env vars removed.`,
+        );
+      } else {
+        this.logger.warn(
+          `Agent declares Bash and the operator allows it, but provider "${resolvedModel.provider}" has no shell ` +
+          'tool in core — the agent runs without a shell.',
+        );
+      }
     }
 
     const toolHandler = new ToolHandler(input.target, this.logger);
@@ -258,10 +276,16 @@ export class AgentExecutor {
    * When allowedTools is undefined, all tools except 'bash' are allowed (safe default).
    */
   private isToolAllowed(tool: string): boolean {
-    const allowed = this.config.allowedTools;
+    const allowed: unknown = this.config.allowedTools;
     if (allowed === undefined) {
       // Safe default: bash requires explicit operator opt-in — in any spelling.
       return !sameTool(tool, 'bash');
+    }
+    // A JS caller can pass a non-array (e.g. the string 'bash'). Fail closed rather than throw
+    // from execute() or substring-match as the old `.includes` did.
+    if (!Array.isArray(allowed)) {
+      this.logger.warn(`allowedTools is not an array (${typeof allowed}); treating it as allowing nothing.`);
+      return false;
     }
     return allowed.some(a => sameTool(a, tool));
   }
@@ -924,7 +948,11 @@ export class AgentExecutor {
   }
 }
 
-/** Tool names compare case-insensitively: ADL writes `Bash`, operators and core write `bash`. */
+/**
+ * Tool names compare case-insensitively and ignore surrounding whitespace: ADL writes `Bash`,
+ * operators and core write `bash`, and a programmatic `' bash'` should mean what the trimmed env
+ * path (parseAllowedTools) already makes it mean. Exact otherwise: no prefix or fuzzy matching.
+ */
 function sameTool(a: unknown, b: string): boolean {
-  return typeof a === 'string' && a.toLowerCase() === b.toLowerCase();
+  return typeof a === 'string' && a.trim().toLowerCase() === b.trim().toLowerCase();
 }

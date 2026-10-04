@@ -20,15 +20,40 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) 
   they hand-built the runtime; the new tests go through `RegistryClient.resolve` into
   `AgentExecutor`. Found by the OpenRouter live check, where a bash-allowed run carried no shell
   tool on any request.
+- **Every outcome of a Bash declaration is logged.** A shell offered logs at info (provider, start
+  directory, no sandbox); a declaration the operator has not allowed logs at debug; bash allowed on
+  a provider with no shell tool in core (anything but `anthropic` and `openai`) warns that the agent
+  runs without a shell. The gate was silent both ways, which is how it stayed inert unnoticed.
+- **`allowedTools` entries are trimmed, and a non-array fails closed.** A programmatic `' bash'`
+  now matches as the trimmed env path already did; a JavaScript caller passing a string (e.g.
+  `'bash'`) gets a warning and no shell, where it would now have thrown from `execute()`.
 
 ### Security
 
 - **Behaviour change for operators who already allow bash.** If you set `allowedTools` to include
-  `bash` (or `ULUOPS_ALLOWED_TOOLS=bash`), that setting had no effect until now: agents ran without
-  a shell. From this release, every agent that declares `Bash` runs model-generated commands via
-  `sh -c` in the target directory. The default is unchanged (bash denied when `allowedTools` is
-  unset; the CLI sets neither). If you enabled it, check it is still what you want, run it in a
-  sandbox, and pin the definitions you run (`expectedHash`).
+  `bash` (or `ULUOPS_ALLOWED_TOOLS=bash`, including from a `.env` file the CLI loads), that setting
+  had no effect until now: agents ran without a shell. From this release, an agent that declares
+  `Bash` and runs on `anthropic` or `openai` is given a shell, and runs model-generated commands
+  via `sh -c`. The commands **start** in the target directory but are not confined to it: they can
+  reach anything the process user can. The grant is per client, not per agent: allowing bash allows
+  it for every agent that declares it (98 v3 ADLs). The default is unchanged (bash denied when
+  `allowedTools` is unset; the CLI sets neither). If you enabled it, check it is still what you
+  want, run it in a sandbox, and pin the definitions you run (`expectedHash` covers the YAML the
+  tool declaration comes from; `expectedPromptHash` alone does not).
+- **Tool names now match case-insensitively, which widens what an allowlist grants.** `Bash` or
+  `BASH` in `allowedTools` / `ULUOPS_ALLOWED_TOOLS` used to grant nothing and now grants a shell.
+  A Claude-Code-style list pasted into the env var (`Read, Grep, Bash`) is the likely way to hit
+  this. Matching is exact otherwise: no prefix or fuzzy matching.
+- **The agent shell no longer inherits operator credentials.** Model-issued commands ran with the
+  full `process.env` (`ANTHROPIC_API_KEY`, `OPENROUTER_API_KEY`, `ULUOPS_API_KEY`, any `*_TOKEN`),
+  so a prompt-injected `env` could put them in front of the model and the provider. They now run
+  with the same scrubbed environment PDL steps use (`src/utils/secretEnv.ts`, now shared): names
+  ending `_API_KEY`, `_TOKEN`, `_SECRET`, `_PASSWORD`, `_CREDENTIAL(S)` and the `AWS_`, `GOOGLE_`,
+  `AZURE_`, `ANTHROPIC_`, `OPENAI_` prefixes are removed. A command that needs one of these (an
+  authenticated `gh`, a private registry token) no longer sees it. Unreachable before this release,
+  since no registry-resolved agent was offered a shell.
+- **`allowedTools` gates bash only.** The docs implied an explicit list restricts the other tools;
+  it does not. The read-only filesystem tools are always available. Documented, not changed.
 
 ## [0.45.0] - 2026-10-03
 

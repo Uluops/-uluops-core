@@ -18,6 +18,7 @@ import * as os from 'node:os';
 import * as yaml from 'yaml';
 import { RegistryClient } from '../../src/registry/RegistryClient.js';
 import { AgentExecutor } from '../../src/executor/AgentExecutor.js';
+import { resolveConfig } from '../../src/client/UluOpsClient.js';
 import type { AIProvider } from '../../src/ai/AIProvider.js';
 import type { ResolvedConfig } from '../../src/types/config.js';
 import type { Logger } from '@uluops/sdk-core';
@@ -74,7 +75,9 @@ async function resolveRemote(tools: unknown) {
   return new RegistryClient(baseConfig, noopLogger).resolve('shell-agent', undefined, 'agent');
 }
 
-function mockAI(): AIProvider {
+const SHELL_TOOL = { bash: { description: 'stand-in provider shell tool', inputSchema: {}, execute: async () => '' } };
+
+function mockAI(shell: unknown = SHELL_TOOL): AIProvider {
   return {
     generate: vi.fn().mockResolvedValue({
       text: JSON.stringify({ decision: 'PASS', score: 90, maxScore: 100, categories: [] }),
@@ -85,16 +88,24 @@ function mockAI(): AIProvider {
       provider: 'anthropic', modelId: 'claude-sonnet-4-6', providerModelId: 'claude-sonnet-4-6', tier: 'premium',
       capabilities: { tools: true }, contextWindow: 200_000, registered: true, resolvedFrom: 'sonnet',
     }),
-    createProviderShellTool: vi.fn().mockReturnValue(undefined),
+    createProviderShellTool: vi.fn().mockReturnValue(shell ?? undefined), // null = provider has no shell tool
   } as unknown as AIProvider;
 }
 
-async function shellOffered(tools: unknown, allowedTools: string[] | undefined, target: string): Promise<boolean> {
+/** The tool names generate() was actually called with — the delivery, not just the factory call. */
+function toolsSentToModel(ai: AIProvider): string[] {
+  const call = (ai.generate as ReturnType<typeof vi.fn>).mock.calls[0]![0] as { tools?: Record<string, unknown> };
+  return Object.keys(call.tools ?? {});
+}
+
+async function shellOffered(tools: unknown, allowedTools: unknown, target: string): Promise<boolean> {
   const resolved = await resolveRemote(tools);
   const ai = mockAI();
-  const executor = new AgentExecutor({ ...baseConfig, ...(allowedTools ? { allowedTools } : {}) }, ai, noopLogger);
+  const config = { ...baseConfig, ...(allowedTools !== undefined ? { allowedTools } : {}) } as ResolvedConfig;
+  const executor = new AgentExecutor(config, ai, noopLogger);
   await executor.execute(resolved, { target });
-  return (ai.createProviderShellTool as ReturnType<typeof vi.fn>).mock.calls.length > 0;
+  // Delivery, not just the gate: the bash tool must be among the tools the model was given.
+  return toolsSentToModel(ai).includes('bash');
 }
 
 describe('declared agent tools reach the runtime (38ce9462)', () => {
@@ -117,7 +128,7 @@ describe('declared agent tools reach the runtime (38ce9462)', () => {
 
     it('local path: the declared tools are on runtime.interface.tools', async () => {
       await fs.writeFile(path.join(tmpDir, 'local-shell.agent.yaml'), agentYaml(['Read', 'Bash']));
-      mockRenderGet.mockRejectedValue(new Error('offline'));
+      mockRenderGet.mockRejectedValueOnce(new Error('offline'));
       const resolved = await new RegistryClient({ ...baseConfig, localDefinitions: tmpDir }, noopLogger)
         .resolve('local-shell', undefined, 'agent');
       expect((resolved.runtime as { interface?: { tools?: string[] } }).interface?.tools).toEqual(['Read', 'Bash']);
@@ -155,6 +166,69 @@ describe('declared agent tools reach the runtime (38ce9462)', () => {
 
     it('CONTROL — an agent that does not declare bash: not offered even when allowed', async () => {
       expect(await shellOffered(['Read', 'Grep'], ['bash'], tmpDir)).toBe(false);
+    });
+
+    it('local path: a local .agent.yaml declaring Bash reaches the model with a shell', async () => {
+      await fs.writeFile(path.join(tmpDir, 'local-shell.agent.yaml'), agentYaml(['Read', 'Bash']));
+      mockRenderGet.mockRejectedValueOnce(new Error('offline'));
+      const resolved = await new RegistryClient({ ...baseConfig, localDefinitions: tmpDir }, noopLogger)
+        .resolve('local-shell', undefined, 'agent');
+      const ai = mockAI();
+      await new AgentExecutor({ ...baseConfig, allowedTools: ['bash'] }, ai, noopLogger).execute(resolved, { target: tmpDir });
+      expect(toolsSentToModel(ai)).toContain('bash');
+    });
+
+    it('allowedTools entries are trimmed (a programmatic " bash " allows bash)', async () => {
+      expect(await shellOffered(['Bash'], [' bash '], tmpDir)).toBe(true);
+    });
+
+    it('a non-array allowedTools fails closed instead of throwing', async () => {
+      expect(await shellOffered(['Bash'], 'bash', tmpDir)).toBe(false);
+    });
+  });
+
+  describe('ULUOPS_ALLOWED_TOOLS reaches the same gate', () => {
+    it('a mixed-case, Claude-Code-style list ("Read, Grep, Bash") allows bash', () => {
+      const cfg = resolveConfig({ apiKey: 'ulr_test_00000000000000000000' }, { ULUOPS_ALLOWED_TOOLS: 'Read, Grep, Bash' });
+      expect(cfg.allowedTools).toEqual(['Read', 'Grep', 'Bash']);
+    });
+
+    it('end to end: the env-parsed list offers the shell', async () => {
+      const cfg = resolveConfig({ apiKey: 'ulr_test_00000000000000000000' }, { ULUOPS_ALLOWED_TOOLS: 'Read, Bash' });
+      expect(await shellOffered(['Bash'], cfg.allowedTools, tmpDir)).toBe(true);
+    });
+
+    it('CONTROL — unset or empty env leaves the default (bash denied)', async () => {
+      expect(resolveConfig({ apiKey: 'ulr_test_00000000000000000000' }, {}).allowedTools).toBeUndefined();
+      expect(resolveConfig({ apiKey: 'ulr_test_00000000000000000000' }, { ULUOPS_ALLOWED_TOOLS: '' }).allowedTools).toBeUndefined();
+      expect(await shellOffered(['Bash'], resolveConfig({ apiKey: 'ulr_test_00000000000000000000' }, {}).allowedTools, tmpDir)).toBe(false);
+    });
+  });
+
+  describe('every outcome of a Bash declaration is logged', () => {
+    async function runWith(allowedTools: string[] | undefined, shell: unknown) {
+      const logger = { debug: vi.fn(), info: vi.fn(), warn: vi.fn(), error: vi.fn() };
+      const resolved = await resolveRemote(['Bash']);
+      await new AgentExecutor({ ...baseConfig, ...(allowedTools ? { allowedTools } : {}) }, mockAI(shell), logger)
+        .execute(resolved, { target: tmpDir });
+      const all = (fn: ReturnType<typeof vi.fn>) => fn.mock.calls.map(c => String(c[0]));
+      return { debug: all(logger.debug), info: all(logger.info), warn: all(logger.warn) };
+    }
+
+    it('offered: an info line says a shell was offered, without a sandbox', async () => {
+      const { info } = await runWith(['bash'], SHELL_TOOL);
+      expect(info.some(m => m.includes('Shell offered') && m.includes('no sandbox'))).toBe(true);
+    });
+
+    it('allowed but the provider has no shell tool: a warning, not silence', async () => {
+      const { warn } = await runWith(['bash'], null);
+      expect(warn.some(m => m.includes('runs without a shell'))).toBe(true);
+    });
+
+    it('denied by the operator: a debug line names the setting', async () => {
+      const { debug, info, warn } = await runWith(undefined, SHELL_TOOL);
+      expect(debug.some(m => m.includes('ULUOPS_ALLOWED_TOOLS'))).toBe(true);
+      expect([...info, ...warn].some(m => m.includes('Shell offered') || m.includes('without a shell'))).toBe(false);
     });
   });
 });

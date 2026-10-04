@@ -28,6 +28,7 @@ import type { StepDefinition, StepResult } from '../types/pipeline.js';
 import type { ExecutionInput } from '../types/execution.js';
 import { checkRegexPatternSafety } from '../utils/regexSafety.js';
 import { clampModelBound, externalInt } from '../utils/externalValue.js';
+import { scrubSecretEnv } from '../utils/secretEnv.js';
 
 const execFileAsync = promisify(execFile);
 
@@ -44,23 +45,8 @@ const MAX_OUTPUT_CHARS = 8 * 1024;
 const MAX_STEP_RETRIES = 10;
 const MAX_RETRY_DELAY = 60_000;
 
-/** Secret-class env vars are scrubbed from the environment inherited by
- *  definition-authored step commands (defense-in-depth against exfil from
- *  registry-sourced pipelines; security review SEM-INC/M CWE-200). Steps do
- *  not receive operator credentials — a step that legitimately needs one is a
- *  capability question for a future PDL tier, not an inheritance default. */
-const SECRET_ENV_RE = /(_API_KEY|_TOKEN|_SECRET|_PASSWORD|_CREDENTIALS?)$|^(AWS_|GOOGLE_|AZURE_|ANTHROPIC_|OPENAI_)/;
-
 /** step.env may not override loader/interpreter hijack vectors or PATH. */
 const BLOCKED_STEP_ENV_RE = /^(LD_|DYLD_)|^(NODE_OPTIONS|PATH)$/;
-
-function scrubEnv(env: NodeJS.ProcessEnv): NodeJS.ProcessEnv {
-  const out: NodeJS.ProcessEnv = {};
-  for (const [k, v] of Object.entries(env)) {
-    if (!SECRET_ENV_RE.test(k)) out[k] = v;
-  }
-  return out;
-}
 
 function shellQuote(s: string): string {
   return "'" + s.replace(/'/g, "'\\''") + "'";
@@ -130,7 +116,9 @@ export class StepsExecutor {
   async execute(steps: StepDefinition[], input: ExecutionInput): Promise<StepResult[]> {
     const results: StepResult[] = [];
     const targetRoot = path.resolve(input.target);
-    const baseEnv = scrubEnv(process.env);
+    // Secret-class env vars are scrubbed (src/utils/secretEnv.ts, shared with the agent shell):
+    // steps do not receive operator credentials.
+    const baseEnv = scrubSecretEnv(process.env);
     let hardFailed = false;
 
     for (const step of steps) {

@@ -2,6 +2,7 @@ import { exec } from 'child_process';
 import { promisify } from 'util';
 import type { Logger } from '@uluops/sdk-core';
 import { clampModelBound } from '../utils/externalValue.js';
+import { scrubSecretEnv } from '../utils/secretEnv.js';
 
 const execAsync = promisify(exec);
 
@@ -59,11 +60,18 @@ interface OpenAIShellOutput {
 /**
  * Execute a shell command string via `exec()`.
  *
- * SECURITY NOTE: The bash tool is an opt-in feature gated by `agentTools: ['bash']` in the
- * agent YAML definition. When enabled, the LLM-generated command string is passed directly
- * to `exec()` (i.e., `sh -c <command>`), which grants the LLM full host OS access scoped
- * to `cwd`. There is no allowlist or OS-level sandbox. Only enable the bash tool in
- * isolated environments (containers, CI sandboxes). Never enable it for untrusted targets.
+ * SECURITY NOTE: The bash tool is offered only when the agent declares it (`interface.tools`,
+ * matched case-insensitively — the corpus writes `Bash`) AND the operator allows it
+ * (`allowedTools` / `ULUOPS_ALLOWED_TOOLS`; denied by default). The LLM-generated command string
+ * is passed directly to `exec()` (i.e., `sh -c <command>`). `cwd` is where it STARTS, not a
+ * boundary: the command can reach anything the process user can (`cd /`, `~/.ssh`). There is no
+ * allowlist or OS-level sandbox. Only enable the bash tool in isolated environments
+ * (containers, CI sandboxes). Never enable it for untrusted targets.
+ *
+ * ENVIRONMENT: the child inherits `process.env` minus secret-class variables
+ * (`scrubSecretEnv`, shared with PDL steps): operator API keys and tokens are not visible to
+ * model-issued commands. Until 2026-10-04 they were, unnoticed only because the shell was
+ * unreachable (tracker 38ce9462).
  *
  * AUDIT: Every invocation is logged (command string only, not output) for traceability.
  * Output is not logged because it may contain secrets read from the target project.
@@ -87,6 +95,7 @@ export async function runShellCommand(
   try {
     const { stdout, stderr } = await execAsync(command, {
       cwd,
+      env: scrubSecretEnv(process.env),
       timeout: timeoutMs,
       maxBuffer: 1024 * 1024, // 1MB
       ...(signal ? { signal } : {}),
