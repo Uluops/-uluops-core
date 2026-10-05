@@ -99,11 +99,16 @@ export class PipelineExecutor {
 
     // A provider 402 inside any stage stops the whole run (OpenRouter plan D13): AIProvider
     // looks up the signal it was handed in this module-internal registry. Same sequence as
-    // handle.cancel(), with the provider's message as the reason; a run that already finished
-    // or was cancelled is left alone.
+    // handle.cancel(), but the run ends `failed`, not `cancelled` (plan v0.6.3, Alex
+    // 2026-10-05): nobody chose to stop it, and `cancelled` made a credit outage read as a
+    // quiet, neutral non-failure to CI, gates and alerting (1d crew #107). wait() therefore
+    // throws a PipelineError whose message is the provider's text. A run that already
+    // finished, failed or was cancelled is left alone, and the trip says so.
     const runSignal = runOptions.abortSignal!;
     registerRunTrip(runSignal, (reason) => {
-      if (state.status === 'running') stopRun(state, controller, reason);
+      if (state.status !== 'running') return false;
+      stopRun(state, controller, 'failed', reason);
+      return true;
     });
 
     // Start execution in background, capturing errors into state
@@ -148,13 +153,13 @@ export class PipelineExecutor {
 
     try {
       for (let i = 0; i < def.pipeline.stages.length; i++) {
-        if (state.status === 'cancelled') {
+        if (stoppedNow(state)) {
           // Record what did not run, exactly as the gate-abort path does via skipRemaining.
           // A bare `break` left un-run stages ABSENT from stageResults[], so
           // computeStageMetrics reported `stagesSkipped: 0` for a 6-stage pipeline stopped
           // at stage 2, and buildResult computed a full-looking score over a partial run.
           // A consumer could not distinguish "cancelled at stage 2" from "had 2 stages".
-          this.skipRemaining(def.pipeline.stages, i, state, 'cancelled');
+          this.skipRemaining(def.pipeline.stages, i, state, stopLabel(state));
           break;
         }
 
@@ -239,13 +244,15 @@ export class PipelineExecutor {
         // nothing lost by not consulting it; the completed stage's own result is already
         // recorded above.
         //
-        // Read through `cancelledNow()`: `cancel()` mutates `state.status` from ANOTHER
+        // Read through `stoppedNow()`: `cancel()` and a credit trip mutate `state.status` from ANOTHER
         // task while this one is awaiting, and TypeScript's control-flow analysis cannot
         // see that. It narrows `state.status` at the top-of-loop check above and then
         // reports a direct comparison here as having no overlap — a compile error for the
         // one case this guard exists to catch.
-        if (cancelledNow(state)) {
-          this.skipRemaining(def.pipeline.stages, i + 1, state, 'cancelled');
+        // A credit trip (stopRun → `failed`) stops the run the same way: the remaining stages
+        // are skipped and the gate is not consulted, since the run has already failed.
+        if (stoppedNow(state)) {
+          this.skipRemaining(def.pipeline.stages, i + 1, state, stopLabel(state));
           break;
         }
 
@@ -276,11 +283,13 @@ export class PipelineExecutor {
       // to overwrite `cancelled` with `failed`, and wait() then THREW a PipelineError at a
       // user who had asked to stop. The user-initiated outcome wins over the fallout it
       // caused.
-      if (state.status === 'cancelled') {
-        this.logger.debug(`Stage threw after cancellation (reporting cancelled): ${formatErrorMessage(error)}`);
-      } else {
+      // The same holds for a credit trip: the run is already `failed` with the provider's
+      // text as its reason, and the stage's own throw is fallout that would replace it.
+      if (state.status === 'running') {
         state.status = 'failed';
         state.error = formatErrorMessage(error);
+      } else {
+        this.logger.debug(`Stage threw after the run was stopped (keeping ${state.status}): ${formatErrorMessage(error)}`);
       }
     }
   }
@@ -813,16 +822,21 @@ function isStepsStage(stage: StageDefinition): boolean {
 }
 
 /**
- * Whether a concurrent `cancel()` has flipped the run's status.
- *
- * The function boundary is load-bearing, not stylistic: inside `executeAsync`'s loop
- * TypeScript has already narrowed `state.status` at the top-of-loop cancellation check and
- * treats a later direct comparison as impossible. The mutation happens in another task
- * while this one awaits, which narrowing does not model.
+ * Whether the run was stopped mid-flight from another task: a user `cancel()` (`cancelled`) or
+ * a provider-credit trip (`failed`). Read through a function, not a direct comparison: the
+ * status is mutated from another task while this one awaits, which TypeScript's control-flow
+ * narrowing cannot see — it narrows at the top-of-loop check and then reports a later direct
+ * comparison as having no overlap, a compile error for the one case the guard exists for.
  */
-function cancelledNow(state: PipelineState): boolean {
-  return state.status === 'cancelled';
+function stoppedNow(state: PipelineState): boolean {
+  return state.status === 'cancelled' || state.status === 'failed';
 }
+
+/** The skip reason recorded on stages a stopped run never reached. */
+function stopLabel(state: PipelineState): string {
+  return state.status === 'cancelled' ? 'cancelled' : `run stopped: ${state.error ?? 'failed'}`;
+}
+
 
 /** PDL schema default: a gate without on_failure is an abort gate. Corpus
  *  audit (2026-07-10, udl/pdl/v1): every stage gate declares on_failure
@@ -841,8 +855,13 @@ function resolveOnFailure(gate: GateDefinition): 'abort' | 'warn' | 'skip' {
  * catch, and buildResult read to report `cancelled`, and aborting alone would surface as a
  * provider error. The abort carries no custom reason, exactly as before.
  */
-function stopRun(state: PipelineState, controller: AbortController, reason: string): void {
-  state.status = 'cancelled';
+function stopRun(
+  state: PipelineState,
+  controller: AbortController,
+  status: 'cancelled' | 'failed',
+  reason: string,
+): void {
+  state.status = status;
   state.error = reason;
   controller.abort();
 }
@@ -894,9 +913,8 @@ class PipelineHandle implements IPipelineHandle {
         {},
       );
     }
-    stopRun(this.state, this.controller, 'Pipeline cancelled by user');
+    stopRun(this.state, this.controller, 'cancelled', 'Pipeline cancelled by user');
   }
-
 
   private buildResult(): PipelineResult {
     const durationMs = Date.now() - this.state.startTime;

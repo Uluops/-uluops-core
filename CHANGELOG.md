@@ -24,13 +24,31 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) 
     header or in the body's `metadata.headers`); OpenRouter sends no `retry-after`, so
     `retryAfter` was always undefined. The message names `limit_source`. A reset already in the
     past gives no `retryAfter`, not 0.
-- **A provider 402 stops the whole pipeline run.** No retry fixes it, and every later stage and
-  in-flight sibling would spend a request to learn the same thing. The run reports `cancelled`
-  (not `failed`, so `wait()` does not throw), later stages are skipped, in-flight siblings are
-  aborted, and the stage that hit it carries the provider's text. Implemented through a
+- **A provider 402 stops and fails the whole pipeline run.** The same request will not succeed
+  on retry, and every later stage and in-flight sibling would spend a request to learn that.
+  Later stages are skipped, in-flight siblings are aborted, and the run ends `failed` (decision
+  `FAIL`): `wait()` and `runPipeline` throw a `PipelineError` whose message is the provider's
+  text, so CI, abort gates and alerting see a failure. (The plan first had the run end
+  `cancelled`; the review crew showed that made a credit outage read as a neutral, quiet cancel
+  with no reason anywhere on the result, and Alex chose `failed`.) Implemented through a
   module-internal registry keyed by the run's abort signal, which every executor hop already
   forwards as the same object; nothing is added to `ExecutionOptions`, `PipelineState` or any
-  exported type. `handle.cancel()` now shares that stop sequence and behaves exactly as before.
+  exported type. `handle.cancel()` shares the stop sequence and still ends `cancelled`.
+
+### Changed
+
+- **Handlers keyed on `SdkApiError` statuses will not see these errors.** A 402, a no-endpoint
+  404 and an unknown-slug 400 from the model provider used to arrive as `SdkApiError(402/404/400)`.
+  They are now `ProviderCreditError` (which keeps `statusCode: 402`), `CapabilityError` and
+  `ModelNotFoundError` (which carry no `statusCode`). A `catch` that tested
+  `isApiErrorLike(e) && e.statusCode === 404` for the routing 404 no longer matches it.
+  `CapabilityError` and `ModelNotFoundError` were thrown only before a run (catalog resolution);
+  they can now also arrive from a provider response mid-run, after other agents have billed.
+- **A 402 mid-run leaves the run's cost `unpriced`.** The completed requests of the agent that hit
+  it, and of siblings the stop aborted, are not carried across the throw (deferred: 2db41524).
+- **`RateLimitError.retryAfter` reads `X-RateLimit-Reset` only on the OpenRouter route** (where it
+  is epoch milliseconds); elsewhere it reads `retry-after` in seconds. A reset that gives no usable
+  time falls through to `retry-after`.
 
 ### Fixed
 

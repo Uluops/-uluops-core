@@ -221,11 +221,19 @@ const result = await client.runAgent('code-validator', './src', {
   with upstreams pinned (`provider.only`) and a target you would let that model run commands in.
 - **Errors.** Each OpenRouter failure arrives typed (core 0.48.0+):
   - **Out of credit (402)** is a `ProviderCreditError` carrying OpenRouter's `limitSource` and its
-    own text, which on a pre-flight refusal says how many tokens the balance affords. No retry
-    fixes it, so inside a pipeline it **stops the whole run**: later stages are skipped, in-flight
-    siblings are aborted, and the run reports `cancelled`, with the provider's text on the stage
-    that hit it. Outside a pipeline (`runAgent`, `runCommand`, `runWorkflow`), there is no run to
-    stop, and the call just rejects with the error.
+    own text. A **pre-flight** refusal ("can only afford N") means the balance cannot cover this
+    request's worst case (`maxTokens` × price): lowering `maxTokens` works, credit remains.
+    Otherwise the credit or the key's limit is spent. Inside a pipeline a 402 **stops the whole
+    run and fails it**: later stages are skipped, in-flight siblings are aborted, the run ends
+    `failed` (decision `FAIL`), and `wait()` / `runPipeline` throw a `PipelineError` whose message
+    is the provider's text. A user `cancel()` still ends `cancelled`.
+  - **Outside a pipeline** there is no run to stop. `runAgent` and single-agent commands reject
+    with `ProviderCreditError`. A multi-agent command or a workflow contains a failing agent the
+    way it contains any crash: the result carries a failing verdict and a crash recommendation
+    whose title includes the provider's text, and it throws only if every agent failed.
+  - **Spend on a 402 mid-run is not recorded.** The completed requests of an agent that hit the
+    402, and of siblings the stop aborted, are not carried across the throw, so the run's cost
+    reads `unpriced` (see [Cost](#cost)).
   - **No endpoint (404)** is a `CapabilityError` naming the routing step and every constraint the
     request carried: the parameters `require_parameters` holds endpoints to, any `provider.only` /
     `ignore` / `quantizations`, and for an allowed-providers miss, the providers that do serve

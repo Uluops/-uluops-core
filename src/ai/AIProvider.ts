@@ -2021,10 +2021,20 @@ export class AIProvider {
       // pre-flight refusal when max_tokens × price exceeds the balance). Not UluOps' entitlement
       // 402 (SubscriptionRequiredError). The provider's text is kept whole: on the pre-flight
       // case it is the only place that says "or fewer max_tokens".
+      // Two cases with different remedies (crew #107, P4/F16): a PRE-FLIGHT refusal ("can only
+      // afford N", "fewer max_tokens") means the balance cannot cover this request's worst case
+      // but credit remains, so lowering maxTokens works; anything else means the credit or the
+      // key's limit is spent. Either way the same request will not succeed on retry.
       const provider = resolved?.provider ?? 'unknown';
+      const preflight = /can only afford|fewer max_tokens/i.test(error.message);
+      const limit = limitSource ? ` (limit: ${limitSource})` : '';
       mapped = new ProviderCreditError(
-        `Out of credit with provider "${provider}" (HTTP 402). Add credit or raise the key's limit` +
-        `${limitSource ? ` (limit: ${limitSource})` : ''}; retrying will not help. Provider message: ${error.message}`,
+        preflight
+          ? `Provider "${provider}" refused the request before running it (HTTP 402): its worst case ` +
+            `(maxTokens × price) exceeds the remaining balance${limit}. Lower maxTokens or add credit; ` +
+            `the same request will not succeed on retry. Provider message: ${error.message}`
+          : `Out of credit with provider "${provider}" (HTTP 402)${limit}. Add credit or raise the key's limit; ` +
+            `the same request will not succeed on retry. Provider message: ${error.message}`,
         provider,
         limitSource,
       );
@@ -2032,7 +2042,7 @@ export class AIProvider {
       // OpenRouter sends no `retry-after`; its reset time is `X-RateLimit-Reset` (epoch ms), as a
       // response header or inside the body's `metadata.headers` (Phase 0). `limit_source` says
       // whose limit: OpenRouter's (key, free tier) or the upstream's.
-      const retryAfter = rateLimitRetryAfterSeconds(error.responseHeaders, meta);
+      const retryAfter = rateLimitRetryAfterSeconds(error.responseHeaders, meta, resolved?.provider === 'openrouter');
       mapped = new RateLimitError(
         `Rate limit exceeded (HTTP 429)${limitSource ? ` (limit: ${limitSource})` : ''}. ` +
         `${retryAfter !== undefined ? `Retry after ${retryAfter}s` : 'Back off and retry'}. Provider message: ${error.message}`,
@@ -2311,22 +2321,30 @@ function openRouterErrorMetadata(data: unknown): Record<string, unknown> {
 }
 
 /**
- * Seconds until a 429 resets, or undefined. OpenRouter sends `X-RateLimit-Reset` as epoch
- * MILLISECONDS (header, or `metadata.headers` in the body) and no `retry-after`; other providers
- * send `retry-after` in seconds. A reset already in the past is undefined, not 0 — "retry now"
- * is a claim the header does not make once it has gone stale.
+ * Seconds until a 429 resets, or undefined.
+ *
+ * OpenRouter sends `X-RateLimit-Reset` as epoch MILLISECONDS (a header, or `metadata.headers` in
+ * the body) and no `retry-after` (Phase 0). That reading is applied ONLY on the OpenRouter route:
+ * other providers use the same header name in other units (epoch seconds, a delta), which would
+ * compute as a past time (crew #107). Everything else reads `retry-after` in seconds.
+ *
+ * A reset that gives no usable time — absent, unparseable, or already past (including exactly
+ * now) — falls through to `retry-after` rather than hiding it, and ends undefined rather than 0:
+ * "retry now" is a claim a stale header does not make. Header and body are chosen by which one
+ * PARSES, not which is present, so an empty header does not mask the body's value.
  */
 function rateLimitRetryAfterSeconds(
   responseHeaders: Record<string, string> | undefined,
   meta: Record<string, unknown>,
+  openRouter: boolean,
 ): number | undefined {
   const header = (headers: Record<string, unknown>, name: string): unknown =>
     Object.entries(headers).find(([k]) => k.toLowerCase() === name)?.[1];
-  const reset = finitePositive(parseExternalNumber(header(responseHeaders ?? {}, 'x-ratelimit-reset')
-    ?? header(asPlainObject(meta['headers']), 'x-ratelimit-reset')));
-  if (reset !== undefined) {
-    const seconds = Math.ceil((reset - Date.now()) / 1000);
-    return seconds > 0 ? seconds : undefined;
+  if (openRouter) {
+    const reset = finitePositive(parseExternalNumber(header(responseHeaders ?? {}, 'x-ratelimit-reset')))
+      ?? finitePositive(parseExternalNumber(header(asPlainObject(meta['headers']), 'x-ratelimit-reset')));
+    const seconds = reset !== undefined ? Math.ceil((reset - Date.now()) / 1000) : undefined;
+    if (seconds !== undefined && seconds > 0) return seconds;
   }
   return finitePositive(parseExternalNumber(header(responseHeaders ?? {}, 'retry-after')));
 }

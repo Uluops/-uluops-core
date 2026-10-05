@@ -403,6 +403,16 @@ describe('1d: typed OpenRouter errors', () => {
     expect(mapped.message).toContain('or fewer max_tokens');
   });
 
+  it('a pre-flight 402 leads with lowering maxTokens; an exhausted one with adding credit', () => {
+    const pre = new APICallError({ message: 'You requested up to 100000 tokens, but can only afford 83666.', url: 'u', requestBodyValues: body, statusCode: 402 });
+    const spent = new APICallError({ message: 'Insufficient credits', url: 'u', requestBodyValues: body, statusCode: 402 });
+    const preMsg = map(pre, model()).message;
+    const spentMsg = map(spent, model()).message;
+    expect(preMsg).toMatch(/^Provider "openrouter" refused the request before running it.*Lower maxTokens/);
+    expect(preMsg).not.toContain('Out of credit');
+    expect(spentMsg).toMatch(/^Out of credit with provider "openrouter".*Add credit/);
+  });
+
   it('a 429 reads retryAfter from X-RateLimit-Reset (epoch ms) and names the limit source', () => {
     const resetMs = Date.now() + 42_000;
     const e = new APICallError({
@@ -423,6 +433,33 @@ describe('1d: typed OpenRouter errors', () => {
       data: { error: { code: 429, message: 'x', metadata: { headers: { 'X-RateLimit-Reset': String(Date.now() + 10_000) } } } },
     });
     expect((map(e, model()) as RateLimitError).retryAfter).toBeGreaterThan(0);
+  });
+
+  // Crew #107 (test-architect boundary, logic L1, auditor, P10/F9).
+  it('a reset at exactly now gives no retryAfter', () => {
+    const e = new APICallError({ message: 'x', url: 'u', requestBodyValues: body, statusCode: 429,
+      responseHeaders: { 'x-ratelimit-reset': String(Date.now()) } });
+    expect((map(e, model()) as RateLimitError).retryAfter).toBeUndefined();
+  });
+
+  it('a stale reset falls through to a valid retry-after instead of hiding it', () => {
+    const e = new APICallError({ message: 'x', url: 'u', requestBodyValues: body, statusCode: 429,
+      responseHeaders: { 'x-ratelimit-reset': String(Date.now() - 5_000), 'retry-after': '7' } });
+    expect((map(e, model()) as RateLimitError).retryAfter).toBe(7);
+  });
+
+  it('an empty reset header does not mask the body value', () => {
+    const e = new APICallError({ message: 'x', url: 'u', requestBodyValues: body, statusCode: 429,
+      responseHeaders: { 'x-ratelimit-reset': '' },
+      data: { error: { code: 429, message: 'x', metadata: { headers: { 'X-RateLimit-Reset': String(Date.now() + 20_000) } } } } });
+    expect((map(e, model()) as RateLimitError).retryAfter).toBeGreaterThan(10);
+  });
+
+  it('x-ratelimit-reset is read as epoch ms only on the OpenRouter route', () => {
+    // Another provider's same-named header may be epoch seconds or a delta; only retry-after counts there.
+    const e = new APICallError({ message: 'x', url: 'u', requestBodyValues: {}, statusCode: 429,
+      responseHeaders: { 'x-ratelimit-reset': String(Date.now() + 42_000), 'retry-after': '3' } });
+    expect((map(e, model({ provider: 'mistral', modelId: 'm' })) as RateLimitError).retryAfter).toBe(3);
   });
 
   it('a reset already in the past gives no retryAfter rather than "retry now"', () => {

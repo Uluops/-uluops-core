@@ -14,10 +14,13 @@
  * error instead of cancelling — degraded, never wrong. WeakMap, so a run that is never
  * unregistered still cannot pin its signal in memory.
  */
-const trips = new WeakMap<AbortSignal, (reason: string) => void>();
+const trips = new WeakMap<AbortSignal, (reason: string) => boolean>();
 
-/** Register a run's stop function under its signal. Called by PipelineExecutor.start(). */
-export function registerRunTrip(signal: AbortSignal, trip: (reason: string) => void): void {
+/**
+ * Register a run's stop function under its signal. Called by PipelineExecutor.start(). The
+ * function returns whether it stopped the run: false when the run had already ended.
+ */
+export function registerRunTrip(signal: AbortSignal, trip: (reason: string) => boolean): void {
   trips.set(signal, trip);
 }
 
@@ -27,12 +30,12 @@ export function unregisterRunTrip(signal: AbortSignal): void {
 }
 
 /**
- * Stop the run that owns `signal`, if one is registered. Returns whether a run was stopped, so
- * the caller can say so; a standalone agent (no pipeline) has no registration and is untouched.
+ * Stop the run that owns `signal`, if one is registered and still running. Returns whether
+ * THIS call stopped it: false for a standalone agent (no registration), and false for a run that
+ * had already ended — a second concurrent 402, or one landing after a user cancel — so the
+ * caller never reports a stop it did not cause.
  */
 export function tripRunFor(signal: AbortSignal | undefined, reason: string): boolean {
   const trip = signal ? trips.get(signal) : undefined;
-  if (!trip) return false;
-  trip(reason);
-  return true;
+  return trip ? trip(reason) : false;
 }
