@@ -455,6 +455,13 @@ describe('1d: typed OpenRouter errors', () => {
     expect((map(e, model()) as RateLimitError).retryAfter).toBeGreaterThan(10);
   });
 
+  it('a stale header reset does not hide a fresh body reset (re-check L3)', () => {
+    const e = new APICallError({ message: 'x', url: 'u', requestBodyValues: body, statusCode: 429,
+      responseHeaders: { 'x-ratelimit-reset': String(Date.now() - 5_000) },
+      data: { error: { code: 429, message: 'x', metadata: { headers: { 'X-RateLimit-Reset': String(Date.now() + 20_000) } } } } });
+    expect((map(e, model()) as RateLimitError).retryAfter).toBeGreaterThan(10);
+  });
+
   it('x-ratelimit-reset is read as epoch ms only on the OpenRouter route', () => {
     // Another provider's same-named header may be epoch seconds or a delta; only retry-after counts there.
     const e = new APICallError({ message: 'x', url: 'u', requestBodyValues: {}, statusCode: 429,

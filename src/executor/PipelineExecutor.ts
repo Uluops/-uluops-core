@@ -289,7 +289,7 @@ export class PipelineExecutor {
         state.status = 'failed';
         state.error = formatErrorMessage(error);
       } else {
-        this.logger.debug(`Stage threw after the run was stopped (keeping ${state.status}): ${formatErrorMessage(error)}`);
+        this.logger.warn(`Stage threw after the run was stopped (keeping ${state.status}): ${formatErrorMessage(error)}`);
       }
     }
   }
@@ -823,7 +823,15 @@ function isStepsStage(stage: StageDefinition): boolean {
 
 /**
  * Whether the run was stopped mid-flight from another task: a user `cancel()` (`cancelled`) or
- * a provider-credit trip (`failed`). Read through a function, not a direct comparison: the
+ * a provider-credit trip (`failed`).
+ *
+ * INVARIANT this relies on (1d re-check L2): inside the stage loop, the trip is the ONLY writer
+ * of `failed`. The gate-abort branch writes `failed` and `break`s in the same block; the catch
+ * and `execution.catch` run after the loop. A new writer of `failed` inside the loop that does
+ * not break would be read here as a credit stop and its remaining stages skipped under that
+ * label — give it its own break, or key this on a dedicated flag.
+ *
+ * Read through a function, not a direct comparison: the
  * status is mutated from another task while this one awaits, which TypeScript's control-flow
  * narrowing cannot see — it narrows at the top-of-loop check and then reports a later direct
  * comparison as having no overlap, a compile error for the one case the guard exists for.
@@ -832,9 +840,13 @@ function stoppedNow(state: PipelineState): boolean {
   return state.status === 'cancelled' || state.status === 'failed';
 }
 
-/** The skip reason recorded on stages a stopped run never reached. */
+/**
+ * The skip reason recorded on stages a stopped run never reached: a short token, like the gate
+ * and cancel reasons. The provider's full text lives once on `state.error` (and so on the
+ * thrown PipelineError), not copied into every skipped stage (1d re-check L1).
+ */
 function stopLabel(state: PipelineState): string {
-  return state.status === 'cancelled' ? 'cancelled' : `run stopped: ${state.error ?? 'failed'}`;
+  return state.status === 'cancelled' ? 'cancelled' : 'run stopped (provider credit)';
 }
 
 

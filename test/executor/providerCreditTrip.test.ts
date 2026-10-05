@@ -113,7 +113,7 @@ describe('provider 402 stops a pipeline run (D13, ending failed)', () => {
     expect(partial.status).toBe('failed');
     expect(partial.decisionCategory).toBe('negative');
     expect(partial.stages[1]!.status).toBe('skipped');
-    expect(partial.stages[1]!.skipReason).toContain('can only afford 83666');
+    expect(partial.stages[1]!.skipReason).toBe('run stopped (provider credit)');
     expect(seen.siblingAborted).toBe(true);
     expect(seen.laterStarted).toBe(false);
   });

@@ -2330,8 +2330,9 @@ function openRouterErrorMetadata(data: unknown): Record<string, unknown> {
  *
  * A reset that gives no usable time — absent, unparseable, or already past (including exactly
  * now) — falls through to `retry-after` rather than hiding it, and ends undefined rather than 0:
- * "retry now" is a claim a stale header does not make. Header and body are chosen by which one
- * PARSES, not which is present, so an empty header does not mask the body's value.
+ * "retry now" is a claim a stale header does not make. Header and body are each converted and
+ * the first that gives a future reset wins, so neither an empty nor a stale header masks the
+ * body's value.
  */
 function rateLimitRetryAfterSeconds(
   responseHeaders: Record<string, string> | undefined,
@@ -2341,10 +2342,16 @@ function rateLimitRetryAfterSeconds(
   const header = (headers: Record<string, unknown>, name: string): unknown =>
     Object.entries(headers).find(([k]) => k.toLowerCase() === name)?.[1];
   if (openRouter) {
-    const reset = finitePositive(parseExternalNumber(header(responseHeaders ?? {}, 'x-ratelimit-reset')))
-      ?? finitePositive(parseExternalNumber(header(asPlainObject(meta['headers']), 'x-ratelimit-reset')));
-    const seconds = reset !== undefined ? Math.ceil((reset - Date.now()) / 1000) : undefined;
-    if (seconds !== undefined && seconds > 0) return seconds;
+    // Each source converted on its own and the first FUTURE reset taken: a stale header value
+    // must not hide a fresh one in the body (1d re-check L3).
+    const secondsUntil = (raw: unknown): number | undefined => {
+      const reset = finitePositive(parseExternalNumber(raw));
+      const seconds = reset !== undefined ? Math.ceil((reset - Date.now()) / 1000) : undefined;
+      return seconds !== undefined && seconds > 0 ? seconds : undefined;
+    };
+    const fromReset = secondsUntil(header(responseHeaders ?? {}, 'x-ratelimit-reset'))
+      ?? secondsUntil(header(asPlainObject(meta['headers']), 'x-ratelimit-reset'));
+    if (fromReset !== undefined) return fromReset;
   }
   return finitePositive(parseExternalNumber(header(responseHeaders ?? {}, 'retry-after')));
 }
