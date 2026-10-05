@@ -220,7 +220,11 @@ export class ConfigurationError extends UluOpsError {
   }
 }
 
-/** Thrown when a model alias cannot be resolved via the registry model catalog. */
+/**
+ * Thrown when a model cannot be found: an alias the registry model catalog cannot resolve
+ * (before a run), or — since 0.48.0 — a slug the provider itself rejects mid-run (OpenRouter's
+ * 400 "is not a valid model ID"), possibly after other agents in the run have already billed.
+ */
 export class ModelNotFoundError extends UluOpsError {
   readonly code = 'MODEL_NOT_FOUND' as const;
 
@@ -230,13 +234,53 @@ export class ModelNotFoundError extends UluOpsError {
   }
 }
 
-/** Thrown when a resolved model lacks a required capability (e.g. tools, vision, extendedThinking). */
+/**
+ * Thrown when a resolved model lacks a required capability (e.g. tools, vision, extendedThinking)
+ * before a run, or — since 0.48.0 — when no provider endpoint can serve the request as sent
+ * (OpenRouter's no-endpoint 404), mid-run. Carries no `statusCode`: a handler keyed on
+ * `SdkApiError` status 404 does not see the routing case.
+ */
 export class CapabilityError extends UluOpsError {
   readonly code = 'CAPABILITY_ERROR' as const;
 
   constructor(message: string, options?: ErrorOptions) {
     super(message, options);
     this.name = 'CapabilityError';
+  }
+}
+
+/**
+ * Thrown when a model provider refuses a request for lack of credit (HTTP 402) — today,
+ * OpenRouter: the key's credit is exhausted, its limit is reached, or the request's worst case
+ * (`max_tokens` × price) exceeds the remaining balance, which OpenRouter checks BEFORE running
+ * ("You requested up to 100000 tokens, but can only afford 83666"; Phase 0).
+ *
+ * Distinct from {@link SubscriptionRequiredError}, which is UluOps' own entitlement 402. This
+ * one is the provider's, and no retry fixes it, so a pipeline run that hits it is stopped as
+ * `cancelled` with this message as its reason (OpenRouter plan D13): later stages and in-flight
+ * siblings would otherwise each spend a request to learn the same thing.
+ *
+ * The message carries everything a reader needs, because a crash placeholder keeps only the
+ * message: the provider, the status, whose limit (`limitSource`), and the provider's own text.
+ */
+export class ProviderCreditError extends UluOpsError {
+  readonly code = 'PROVIDER_CREDIT' as const;
+  readonly statusCode = 402 as const;
+
+  constructor(
+    message: string,
+    /** Provider that refused the request, e.g. `'openrouter'`. */
+    readonly provider: string,
+    /** OpenRouter's `metadata.limit_source` (e.g. `'openrouter_key_limit'`), when it sent one. */
+    readonly limitSource?: string,
+    options?: ErrorOptions,
+  ) {
+    super(message, options);
+    this.name = 'ProviderCreditError';
+  }
+
+  override toJSON(): Record<string, unknown> {
+    return { ...super.toJSON(), provider: this.provider, statusCode: this.statusCode, limitSource: this.limitSource };
   }
 }
 

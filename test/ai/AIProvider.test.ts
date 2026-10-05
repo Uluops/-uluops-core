@@ -1,5 +1,6 @@
 import { describe, it, expect, vi, beforeEach } from 'vitest';
 import { crashMetrics } from '../../src/utils/crashMetrics.js';
+import { registerRunTrip, unregisterRunTrip } from '../../src/utils/runTrip.js';
 import { AIProvider } from '../../src/ai/AIProvider.js';
 import { TokenBudgetTracker } from '../../src/ai/TokenBudgetTracker.js';
 import type { ModelCatalog, ResolvedModel } from '../../src/ai/ModelCatalog.js';
@@ -15,6 +16,7 @@ import {
   CancelledError,
   SdkApiError,
   ConfigurationError,
+  ProviderCreditError,
 } from '../../src/errors/index.js';
 
 const noopLogger: Logger = { debug() {}, info() {}, warn() {}, error() {} };
@@ -3274,5 +3276,68 @@ describe('AIProvider — billed cost per step (OpenRouter 1c)', () => {
     expect(metrics.costBasis).toBe('unpriced');
     expect(metrics.costUsdTotal).toBeUndefined();
     expect(metrics.costUsdBilled).toBeUndefined();
+  });
+});
+
+/**
+ * Slice 1d (D13): a provider 402 through the real generate() → handleGenerateError path.
+ * NEGATIVE CONTROL: against 0.47.0 it rejects with a generic SdkApiError(402) and trips nothing.
+ */
+describe('AIProvider — provider 402 (OpenRouter 1d)', () => {
+  beforeEach(async () => {
+    vi.clearAllMocks();
+    const { generateText } = await import('ai');
+    vi.mocked(generateText).mockReset();
+  });
+
+  const reject402 = async () => {
+    const { generateText } = await import('ai');
+    vi.mocked(generateText).mockRejectedValueOnce(new APICallError({
+      message: 'You requested up to 100000 tokens, but can only afford 83666.', url: 'u', requestBodyValues: {}, statusCode: 402,
+      data: { error: { code: 402, message: 'x', metadata: { limit_source: 'openrouter_key_limit' } } },
+    }) as never);
+  };
+
+  it('a standalone run rejects with ProviderCreditError', async () => {
+    await reject402();
+    const err = await new AIProvider(mockConfig, mockCatalog(), noopLogger)
+      .generate({ model: 'sonnet', system: 's', prompt: 'p' })
+      .then(() => null, (e: unknown) => e);
+    expect(err).toBeInstanceOf(ProviderCreditError);
+    expect((err as Error).message).toContain('can only afford 83666');
+  });
+
+  it('trips the run registered under the caller signal, with the 402 message as the reason', async () => {
+    await reject402();
+    const signal = new AbortController().signal;
+    const trip = vi.fn();
+    registerRunTrip(signal, trip);
+    try {
+      await new AIProvider(mockConfig, mockCatalog(), noopLogger)
+        .generate({ model: 'sonnet', system: 's', prompt: 'p', abortSignal: signal })
+        .catch(() => undefined);
+    } finally {
+      unregisterRunTrip(signal);
+    }
+    expect(trip).toHaveBeenCalledTimes(1);
+    expect(trip.mock.calls[0]![0]).toContain('can only afford 83666');
+  });
+
+  it('any other error trips nothing', async () => {
+    const { generateText } = await import('ai');
+    vi.mocked(generateText).mockRejectedValueOnce(new APICallError({
+      message: 'server error', url: 'u', requestBodyValues: {}, statusCode: 500, isRetryable: false,
+    }) as never);
+    const signal = new AbortController().signal;
+    const trip = vi.fn();
+    registerRunTrip(signal, trip);
+    try {
+      await new AIProvider(mockConfig, mockCatalog(), noopLogger)
+        .generate({ model: 'sonnet', system: 's', prompt: 'p', abortSignal: signal })
+        .catch(() => undefined);
+    } finally {
+      unregisterRunTrip(signal);
+    }
+    expect(trip).not.toHaveBeenCalled();
   });
 });

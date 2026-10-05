@@ -6,6 +6,58 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) 
 
 ## [Unreleased]
 
+### Added
+
+- **Typed OpenRouter errors (OpenRouter plan v0.6.2, slice 1d; D13).** Each was a plain
+  `SdkApiError` carrying a diagnostic message:
+  - **402 → `ProviderCreditError`** (new; code `PROVIDER_CREDIT`, added to `UluOpsErrorCodes`),
+    with `provider`, `statusCode: 402` and OpenRouter's `limitSource`. The message keeps the
+    provider's text whole: OpenRouter refuses **pre-flight** when `max_tokens` × price exceeds the
+    balance ("can only afford 83666"), and that text is the only place that says to lower
+    `max_tokens`.
+  - **No-endpoint 404 → `CapabilityError`**, naming every routing constraint the request carried,
+    read from the request body: the parameters `require_parameters` enforces, any
+    `provider.only`/`ignore`/`quantizations`, and for an allowed-providers miss, the providers that
+    do serve the model.
+  - **Unknown slug (400 "is not a valid model ID") → `ModelNotFoundError`** naming the slug.
+  - **429 → `RateLimitError` with `retryAfter`** (seconds) from `X-RateLimit-Reset` (epoch ms, as a
+    header or in the body's `metadata.headers`); OpenRouter sends no `retry-after`, so
+    `retryAfter` was always undefined. The message names `limit_source`. A reset already in the
+    past gives no `retryAfter`, not 0.
+- **A provider 402 stops and fails the whole pipeline run.** The same request will not succeed
+  on retry, and every later stage and in-flight sibling would spend a request to learn that.
+  Later stages are skipped, in-flight siblings are aborted, and the run ends `failed` (decision
+  `FAIL`): `wait()` and `runPipeline` throw a `PipelineError` whose message is the provider's
+  text, so CI, abort gates and alerting see a failure. (The plan first had the run end
+  `cancelled`; the review crew showed that made a credit outage read as a neutral, quiet cancel
+  with no reason anywhere on the result, and Alex chose `failed`.) Implemented through a
+  module-internal registry keyed by the run's abort signal, which every executor hop already
+  forwards as the same object; nothing is added to `ExecutionOptions`, `PipelineState` or any
+  exported type. `handle.cancel()` shares the stop sequence and still ends `cancelled`.
+
+### Changed
+
+- **Handlers keyed on `SdkApiError` statuses will not see these errors.** A 402, a no-endpoint
+  404 and an unknown-slug 400 from the model provider used to arrive as `SdkApiError(402/404/400)`.
+  They are now `ProviderCreditError` (which keeps `statusCode: 402`), `CapabilityError` and
+  `ModelNotFoundError` (which carry no `statusCode`). A `catch` that tested
+  `isApiErrorLike(e) && e.statusCode === 404` for the routing 404 no longer matches it.
+  `CapabilityError` and `ModelNotFoundError` were thrown only before a run (catalog resolution);
+  they can now also arrive from a provider response mid-run, after other agents have billed.
+- **A 402 mid-run leaves the run's cost `unpriced`.** The completed requests of the agent that hit
+  it, and of siblings the stop aborted, are not carried across the throw (deferred: 2db41524).
+- **`RateLimitError.retryAfter` reads `X-RateLimit-Reset` only on the OpenRouter route** (where it
+  is epoch milliseconds); elsewhere it reads `retry-after` in seconds. A reset that gives no usable
+  time falls through to `retry-after`.
+
+### Fixed
+
+- **An unknown provider name is reported as unknown.** `ensureProvider` checked credentials
+  before the name, so a typo such as `--model openrouer:x` said "Set the OPENROUER_API_KEY
+  environment variable" — a fix for a provider that does not exist — and the list of valid
+  providers was unreachable. The name is now checked first (found by the CLI's dx-validator,
+  run #26).
+
 ## [0.47.0] - 2026-10-04
 
 ### Added

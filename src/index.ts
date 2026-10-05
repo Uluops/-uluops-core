@@ -195,6 +195,7 @@ export {
   ConfigurationError,
   ModelNotFoundError,
   CapabilityError,
+  ProviderCreditError,
   SubmissionError,
   SubmissionErrorCodes,
   type SubmissionErrorCode,
