@@ -18,8 +18,9 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) 
     BYOK adds `costDetails.upstreamInferenceCost` only when the step's raw usage says
     `is_byok: true`; on a normal request upstream equals cost (Phase 0), so adding it always
     would double the bill, so under BYOK the figure is spend across both invoices, not
-    OpenRouter's alone. The BYOK branch is verified against the provider's code path but has not
-    been observed on a live BYOK response. `undefined` unless every step reported a cost —
+    OpenRouter's alone. Verified live (2026-10-05, `openai/gpt-6-luna` pinned to OpenAI with an
+    OpenAI key on the OpenRouter account): every step reported `is_byok: true` with `cost: 0`, and
+    `costUsdBilled` equalled the movement of the key's usage plus BYOK counters to 2e-16. `undefined` unless every step reported a cost —
     never a partial sum.
   - `costUsdTotal`: per agent the bill, else the estimate; per parent the sum of children.
   - `costBasis`: `'billed' | 'estimated' | 'mixed' | 'unpriced' | 'none'`, exported as
