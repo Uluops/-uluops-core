@@ -916,9 +916,15 @@ export class SubmissionClient {
     // reconciling a SPECIFIC run's spend against the tracker sees nothing on that run's
     // own output — only on whichever run happened to be first. The gap this exists to
     // announce is per-run money; the signal now matches it.
-    if (metrics.costUsd !== undefined) {
+    //
+    // The predicate covers EVERY cost field (OpenRouter plan S6f). It tested `costUsd` alone,
+    // so a run priced only by the provider's bill — an unregistered OpenRouter model, which
+    // has no estimate — would have dropped billed cost with no warning at all.
+    const shown = metrics.costUsdTotal ?? metrics.costUsd ?? metrics.costUsdBilled;
+    if (shown !== undefined) {
       this.logger.warn(
-        `Computed cost ($${metrics.costUsd.toFixed(4)} on this run) is NOT submitted to the `
+        `Computed cost ($${shown.toFixed(4)} on this run`
+        + `${metrics.costBasis ? `, ${metrics.costBasis}` : ''}) is NOT submitted to the `
         + `tracker: @uluops/ops-sdk's wire type carries no cost field. Token counts are sent `
         + `and are accurate, but cost is not derivable from them alone — input_tokens is `
         + `cache-exclusive, so a consumer re-deriving spend from tokens will undercount. `

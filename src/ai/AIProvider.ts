@@ -42,7 +42,7 @@ import {
 } from '../errors/index.js';
 import type { ModelCapabilities } from '@uluops/registry-sdk';
 import type { Logger } from '@uluops/sdk-core';
-import { usableBudget, resolveRequestTimeoutMs, finitePositive } from '../utils/externalValue.js';
+import { usableBudget, resolveRequestTimeoutMs, finitePositive, finiteNonNegative } from '../utils/externalValue.js';
 
 /**
  * What `mapUsage` accepts — DERIVED from the AI SDK's own `LanguageModelUsage`
@@ -113,6 +113,12 @@ interface StepTotals {
   sawCacheWrite: boolean;
   sawReasoning: boolean;
   /**
+   * Provider-billed USD summed over the steps that reported one, and how many did. The
+   * billed figure is complete only when `billedSteps === steps`; see `billedUsdOf`.
+   */
+  billedUsd: number;
+  billedSteps: number;
+  /**
    * Last step's provider metadata and accumulated warnings, so the error path can build
    * its result through the SAME extraction the success path uses. Without these,
    * buildFallbackResult called mapUsage with one of three arguments: all four provider
@@ -162,6 +168,40 @@ function formatCallWarnings(warnings: readonly CallWarning[] | undefined): strin
   );
 }
 
+/**
+ * One step's provider-billed cost in USD, or `undefined` when the step did not report one
+ * (OpenRouter plan S6b, D3).
+ *
+ * Only OpenRouter reports a billed figure today: `providerMetadata.openrouter.usage.cost`,
+ * per REQUEST. In AI SDK 6 `result.providerMetadata` is the LAST step's, so reading it once
+ * would record the final call's cost as the run's; callers sum this per step instead.
+ *
+ * BYOK: `costDetails.upstreamInferenceCost` is added ONLY when the step's raw usage says
+ * `is_byok: true`. On a normal request upstream equals `cost` (Phase 0: both 0.000002658,
+ * `is_byok: false`), so adding it unconditionally doubles the bill. `is_byok` lives in the
+ * raw usage (`step.usage.raw`), not in `providerMetadata`, so both are read. A BYOK step
+ * whose upstream figure is missing is incomplete, not cheaper: `undefined`.
+ */
+function stepBilledUsd(stepMetadata: unknown, stepUsage: unknown): number | undefined {
+  const field = (obj: unknown, key: string): unknown =>
+    obj && typeof obj === 'object' ? (obj as Record<string, unknown>)[key] : undefined;
+  const usage = field(field(stepMetadata, 'openrouter'), 'usage');
+  const cost = finiteNonNegative(field(usage, 'cost'));
+  if (cost === undefined) return undefined;
+  if (field(field(stepUsage, 'raw'), 'is_byok') !== true) return cost;
+  const upstream = finiteNonNegative(field(field(usage, 'costDetails'), 'upstreamInferenceCost'));
+  return upstream === undefined ? undefined : cost + upstream;
+}
+
+/**
+ * The billed total of a run's steps: the sum when EVERY step reported a cost, else
+ * `undefined` — never a partial sum, which would understate money spent while looking
+ * complete. Zero steps is `undefined` too: nothing was reported.
+ */
+function billedUsdOf(t: Pick<StepTotals, 'steps' | 'billedSteps' | 'billedUsd'>): number | undefined {
+  return t.steps > 0 && t.billedSteps === t.steps ? t.billedUsd : undefined;
+}
+
 function emptyStepTotals(): StepTotals {
   return {
     // FABRICATION-OK: accumulator SEEDS. Presence is carried by the sawUsage/sawNoCache/sawCacheRead/
@@ -175,6 +215,8 @@ function emptyStepTotals(): StepTotals {
     // FABRICATION-OK: accumulator seed, gated by sawReasoning (see above).
     reasoningTokens: 0, sawUsage: false,
     sawNoCache: false, sawCacheRead: false, sawCacheWrite: false, sawReasoning: false,
+    // FABRICATION-OK: accumulator seed; completeness is billedSteps === steps, never the sum.
+    billedUsd: 0, billedSteps: 0,
     warnings: [],
   };
 }
@@ -239,6 +281,13 @@ export interface AIGenerateResult<TOutput = unknown> {
    * A real computed 0 (zero-usage result on a priced model) is meaningful.
    */
   costUsd?: number;
+
+  /**
+   * Provider-billed cost in USD summed over every step (OpenRouter only today). Undefined
+   * unless EVERY step reported one; see `stepBilledUsd`. Kept apart from `costUsd` so the
+   * estimate and the bill can be reconciled.
+   */
+  costUsdBilled?: number;
 
   /**
    * Providers whose usage metadata arrived in an unrecognized shape (issue
@@ -701,6 +750,14 @@ export class AIProvider {
         }
         if (step.warnings?.length) stepTotals.warnings.push(...step.warnings);
 
+        // EXTERNAL-OK: passes the SDK step's metadata and usage objects through; every numeric read
+        // inside stepBilledUsd goes through finiteNonNegative.
+        const billed = stepBilledUsd(step.providerMetadata, step.usage);
+        if (billed !== undefined) {
+          stepTotals.billedSteps += 1;
+          stepTotals.billedUsd += billed;
+        }
+
         // ABSENT IS NOT ZERO. Each pool records whether it was REPORTED separately from
         // its value, because `?? 0` below cannot tell "the provider said zero" from "the
         // provider said nothing" — and stepTotalsToUsage's consumer branches on exactly
@@ -849,6 +906,18 @@ export class AIProvider {
       steps: result.steps.length,
       finishReason: result.finishReason,
       costUsd: this.computeCostUsd(usage, resolved.cost),
+      // Summed over result.steps, not read off result.providerMetadata (the LAST step's).
+      // EXTERNAL-OK: as in onStepFinish — each step's objects go to stepBilledUsd, whose numeric
+      // reads are all finiteNonNegative.
+      costUsdBilled: billedUsdOf(result.steps.reduce(
+        (t, step) => {
+          // EXTERNAL-OK: see above; the objects are passed through, not read as numbers here.
+          const billed = stepBilledUsd(step.providerMetadata, step.usage);
+          return billed === undefined ? t : { ...t, billedSteps: t.billedSteps + 1, billedUsd: t.billedUsd + billed };
+        },
+        // EXTERNAL-OK: an array length, the denominator of the every-step rule; no money read here.
+        { steps: result.steps.length, billedSteps: 0, billedUsd: 0 },
+      )),
       // `result.output` is a THROWING GETTER, not a property: it raises
       // NoOutputGeneratedError unless the SDK resolved an output, and the SDK only
       // resolves one when the LAST step finished with 'stop'
@@ -919,6 +988,11 @@ export class AIProvider {
       steps: stepTotals.steps,
       finishReason,
       costUsd: stepTotals.sawUsage ? this.computeCostUsd(usage, resolved.cost) : undefined,
+      // The fallback is reached only after the SDK's loop finished (structured output failed
+      // to parse), so every step's onStepFinish has run and there is no in-flight step whose
+      // cost is unknowable. The completeness rule still applies: one unreported step and
+      // the billed figure is undefined.
+      costUsdBilled: billedUsdOf(stepTotals),
       ...(usageShapeDrift.length > 0 ? { usageShapeDrift } : {}),
       ...(providerWarnings.length > 0 ? { providerWarnings } : {}),
     };
@@ -1675,6 +1749,18 @@ export class AIProvider {
     openrouter: ['usage'],
   };
 
+  /**
+   * Keys INSIDE a depended-on block that a reader depends on, where the outer key surviving
+   * says nothing. OpenRouter's billed cost is `usage.cost`: if a provider release renamed it,
+   * `usage` would survive, the check above would pass, and every run would fall back to the
+   * estimate with `costBasis: 'estimated'` — a silent downgrade that reads as a normal run
+   * (e3536a74). `cost` is depended on because `usage.include` is forced on (S4), so a block
+   * without it is drift, not a provider that chose not to report.
+   */
+  private static readonly DEPENDED_ON_INNER_USAGE_KEYS: Record<string, Record<string, readonly string[]>> = {
+    openrouter: { usage: ['cost'] },
+  };
+
   /** Providers already warned about this process — drift is chronic once present; one warn is signal, per-run warns are noise. */
   private readonly driftWarned = new Set<string>();
 
@@ -1764,14 +1850,24 @@ export class AIProvider {
       const dependedOn = AIProvider.DEPENDED_ON_USAGE_KEYS[provider] ?? [];
       const missingDependedOn = dependedOn.length > 0 && !dependedOn.some(k => keys.includes(k));
       const noOverlap = dependedOn.length === 0 && !keys.some(k => recognized.includes(k));
-      if (!missingDependedOn && !noOverlap) continue;
+      // Inner keys are checked only when their outer block is present: an absent outer key
+      // is already reported above as missingDependedOn.
+      const missingInner = Object.entries(AIProvider.DEPENDED_ON_INNER_USAGE_KEYS[provider] ?? {})
+        .flatMap(([outer, inner]) => {
+          const block = (meta as Record<string, unknown>)[outer];
+          if (!block || typeof block !== 'object') return [];
+          return inner.filter(k => !(k in block)).map(k => `${outer}.${k}`);
+        });
+      if (!missingDependedOn && !noOverlap && missingInner.length === 0) continue;
 
       drifted.push(provider);
       if (!this.driftWarned.has(provider)) {
         this.driftWarned.add(provider);
         const detail = missingDependedOn
           ? `none of the fields its extract tier reads are present (expected one of: ${dependedOn.join(', ')})`
-          : 'its shape is unrecognized';
+          : missingInner.length > 0
+            ? `fields it depends on are missing (${missingInner.join(', ')}); billed cost falls back to the estimate`
+            : 'its shape is unrecognized';
         this.logger.warn(
           `Provider metadata for "${provider}" — ${detail} (keys: ${keys.slice(0, 8).join(', ')}) — ` +
           `token/cache/thinking metrics for this provider may silently read zero. ` +
@@ -1836,8 +1932,9 @@ export class AIProvider {
   // A FALLBACK, unreachable on 2.10.0: the provider fills the SDK-standard
   // inputTokenDetails.cacheReadTokens (Phase 0), which mapUsage reads first, so `??=` below never
   // assigns. It is kept so a provider release that stops filling the standard field degrades to
-  // this block instead of to zero. The drift check covers only the outer `usage` key; inner keys
-  // (`cost`, `promptTokensDetails`) become depended-on in slice 1c, which extends it.
+  // this block instead of to zero. The drift check covers the outer `usage` key and, since slice
+  // 1c, `usage.cost` (DEPENDED_ON_INNER_USAGE_KEYS). `promptTokensDetails` is NOT depended on: the
+  // provider omits it on uncached requests, so its absence is not news.
   private extractOpenRouterUsage(base: UsageMetrics, providerMetadata?: Record<string, unknown>): void {
     const block = providerMetadata?.['openrouter'];
     if (!block || typeof block !== 'object') return;

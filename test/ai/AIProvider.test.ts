@@ -3123,3 +3123,104 @@ describe('AIProvider — unified reasoning is clamped and zero-preserving', () =
     expect(result.usage.reasoning_tokens).toBe(400);
   });
 });
+
+/**
+ * Billed cost summed per step — OpenRouter plan S6b/S6d (slice 1c).
+ *
+ * The provider reports `providerMetadata.openrouter.usage.cost` per REQUEST, and
+ * `result.providerMetadata` is the LAST step's. Every case here fails against 0.46.0, which
+ * has no `costUsdBilled` at all; the two-step case additionally names the wrong answer a
+ * read-once implementation would give (0.02).
+ */
+describe('AIProvider — billed cost per step (OpenRouter 1c)', () => {
+  beforeEach(async () => {
+    vi.clearAllMocks();
+    const { generateText } = await import('ai');
+    vi.mocked(generateText).mockReset();
+  });
+
+  const orStep = (cost: number | undefined, extra: { isByok?: boolean; upstream?: number } = {}) => ({
+    finishReason: 'tool-calls', text: '', toolCalls: [],
+    usage: { inputTokens: 10, outputTokens: 5, raw: { is_byok: extra.isByok ?? false } },
+    providerMetadata: {
+      openrouter: {
+        provider: 'DeepInfra',
+        usage: {
+          promptTokens: 10, completionTokens: 5, totalTokens: 15,
+          ...(cost !== undefined ? { cost } : {}),
+          ...(extra.upstream !== undefined ? { costDetails: { upstreamInferenceCost: extra.upstream } } : {}),
+        },
+      },
+    },
+  });
+
+  const run = async (steps: unknown[]) => {
+    const { generateText } = await import('ai');
+    vi.mocked(generateText).mockImplementationOnce((async (o: unknown) => {
+      const g = o as { onStepFinish?: (s: unknown) => void };
+      for (const s of steps) g.onStepFinish?.(s);
+      const last = steps[steps.length - 1] as { providerMetadata?: unknown } | undefined;
+      return {
+        text: 'done', finishReason: 'stop', steps,
+        usage: { inputTokens: 10, outputTokens: 5 },
+        totalUsage: { inputTokens: 10 * steps.length, outputTokens: 5 * steps.length },
+        providerMetadata: last?.providerMetadata,
+      };
+    }) as never);
+    return new AIProvider(mockConfig, mockCatalog(), noopLogger).generate({ model: 'sonnet', system: 's', prompt: 'p' });
+  };
+
+  it('sums cost over steps: 0.01 + 0.02 = 0.03, not the last step’s 0.02', async () => {
+    const result = await run([orStep(0.01), orStep(0.02)]);
+    expect(result.costUsdBilled).toBeCloseTo(0.03, 12);
+    expect(result.costUsdBilled).not.toBe(0.02);
+  });
+
+  it('adds upstreamInferenceCost only when raw usage says is_byok', async () => {
+    const byok = await run([orStep(0.001, { isByok: true, upstream: 0.04 })]);
+    expect(byok.costUsdBilled).toBeCloseTo(0.041, 12);
+  });
+
+  it('a normal request (is_byok false, upstream == cost) is NOT doubled', async () => {
+    // Phase 0 measured both at 0.000002658 with is_byok false.
+    const normal = await run([orStep(0.000002658, { isByok: false, upstream: 0.000002658 })]);
+    expect(normal.costUsdBilled).toBe(0.000002658);
+  });
+
+  it('a BYOK step with no upstream figure is incomplete, not cheaper', async () => {
+    const result = await run([orStep(0.001, { isByok: true })]);
+    expect(result.costUsdBilled).toBeUndefined();
+  });
+
+  it('one step without a cost leaves the billed figure undefined, never a partial sum', async () => {
+    const result = await run([orStep(0.01), orStep(undefined)]);
+    expect(result.costUsdBilled).toBeUndefined();
+    expect(result.costUsdBilled).not.toBe(0.01);
+  });
+
+  it('a provider that reports no bill (anthropic) has no billed figure', async () => {
+    const result = await run([{ finishReason: 'stop', text: '', toolCalls: [], usage: { inputTokens: 1, outputTokens: 1 }, providerMetadata: { anthropic: {} } }]);
+    expect(result.costUsdBilled).toBeUndefined();
+  });
+
+  it('the structured-output fallback sums the same steps, under the same completeness rule', async () => {
+    const { generateText } = await import('ai');
+    const fallback = (steps: unknown[]) => {
+      vi.mocked(generateText).mockImplementationOnce((async (o: unknown) => {
+        const g = o as { onStepFinish?: (s: unknown) => void };
+        for (const s of steps) g.onStepFinish?.(s);
+        throw new NoObjectGeneratedError({ message: 'no object', text: '', finishReason: 'stop' } as never);
+      }) as never);
+      const catalog = mockCatalog({
+        resolve: vi.fn().mockResolvedValue(makeResolvedModel({
+          capabilities: { tools: true, vision: true, streaming: true, extendedThinking: false, structuredOutput: true } as never,
+        })),
+      } as never);
+      return new AIProvider(mockConfig, catalog, noopLogger).generate({
+        model: 'sonnet', system: 's', prompt: 'p', output: { type: 'output-object', schema: {} } as never,
+      });
+    };
+    expect((await fallback([orStep(0.01), orStep(0.02)])).costUsdBilled).toBeCloseTo(0.03, 12);
+    expect((await fallback([orStep(0.01), orStep(undefined)])).costUsdBilled).toBeUndefined();
+  });
+});

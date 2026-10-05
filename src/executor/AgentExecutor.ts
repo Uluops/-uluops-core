@@ -24,6 +24,7 @@ import type { UsageMetrics } from '../types/ai.js';
 import type { Logger } from '@uluops/sdk-core';
 import { DEFAULT_PASS_THRESHOLD, DEFAULT_WARN_THRESHOLD, DEFAULT_MAX_STEPS, DEFAULT_MAX_TOKENS, DEFAULT_MODEL_ALIAS, DEFAULT_TEMPERATURE, EXTRACTION_CONFIDENCE_THRESHOLD, SHELL_COMMAND_TIMEOUT_MS, DEFAULT_REQUEST_TIMEOUT_MS, DEFAULT_CONTEXT_BUDGET } from '../constants.js';
 import type { ProviderOptions } from '@ai-sdk/provider-utils';
+import { agentCost } from '../utils/costRollup.js';
 
 /**
  * Maximum bytes retained from the LLM's raw text output on AgentResult.rawOutput.
@@ -432,8 +433,10 @@ export class AgentExecutor {
       harness: 'uluops-core',
       toolCallCount: result.toolCallCount,
       // A COPY, not a computation — pricing lives on the ResolvedModel, which
-      // is only in hand at the AIProvider seam (spec v0.6.0 Phase 1b).
-      costUsd: result.costUsd,
+      // is only in hand at the AIProvider seam (spec v0.6.0 Phase 1b). The billed figure
+      // and the per-agent total/basis ride with it (OpenRouter plan S6c); copying only
+      // costUsd here is how a billed figure would die one level above where it was read.
+      ...agentCost(result.costUsd, result.costUsdBilled),
     };
   }
 

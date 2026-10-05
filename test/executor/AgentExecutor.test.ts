@@ -265,6 +265,19 @@ describe('AgentExecutor', () => {
       expect(result.recommendations[0]!.lineNumber).toBe(10);
     });
 
+    // OpenRouter plan S6c (slice 1c). Against 0.46.0 AgentExecutor copies costUsd alone and
+    // drops costUsdBilled one level above where AIProvider read it.
+    it('carries the billed figure, total and basis onto the agent metrics', async () => {
+      const ai = mockAIProvider({ costUsd: 0.05, costUsdBilled: 0.04 });
+      const result = await new AgentExecutor(baseConfig, ai, noopLogger).execute(makeValidatorDef(), { target: tmpDir });
+      expect(result.metrics).toMatchObject({ costUsd: 0.05, costUsdBilled: 0.04, costUsdTotal: 0.04, costBasis: 'billed' });
+    });
+
+    it('an unpriced agent is labelled unpriced, not left unlabelled', async () => {
+      const result = await new AgentExecutor(baseConfig, mockAIProvider(), noopLogger).execute(makeValidatorDef(), { target: tmpDir });
+      expect(result.metrics.costBasis).toBe('unpriced');
+    });
+
     it('computes metrics from AI SDK usage', async () => {
       const ai = mockAIProvider();
       const executor = new AgentExecutor(baseConfig, ai, noopLogger);
@@ -956,6 +969,18 @@ describe('AgentExecutor', () => {
       expect(metrics.inputTokens).toBe(MOCK_INPUT_TOKENS);
       expect(metrics.costUsd).toBe(0.42);
       expect(metrics.model).not.toBe('unknown');
+    });
+
+    // OpenRouter plan S6c (slice 1c): a step-ceiling child with a billed figure rolls up as
+    // billed with its real cost, not 'unpriced'. Against 0.46.0 AgentExecutor drops
+    // costUsdBilled, so billedMetrics carries no bill and no basis.
+    it('carries the billed figure and basis through MaxStepsExhaustedError', async () => {
+      const ai = mockAIProvider({ text: '', finishReason: 'tool-calls', steps: 50, costUsd: 0.42, costUsdBilled: 0.4 });
+      const executor = new AgentExecutor(baseConfig, ai, noopLogger);
+      const error = await executor.execute(makeValidatorDef(), { target: tmpDir })
+        .then(() => null, (e: unknown) => e);
+      const metrics = crashMetrics(error);
+      expect(metrics).toMatchObject({ costUsd: 0.42, costUsdBilled: 0.4, costUsdTotal: 0.4, costBasis: 'billed' });
     });
 
     it('does NOT throw on empty output when the model finished normally', async () => {

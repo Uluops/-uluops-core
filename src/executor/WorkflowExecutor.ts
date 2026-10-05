@@ -5,7 +5,7 @@ import type { CommandExecutor } from './CommandExecutor.js';
 import type { RegistryClient } from '../registry/RegistryClient.js';
 import type { ResolvedDefinition } from '../types/registry.js';
 import type { WorkflowDefinition, WorkflowResult, PhaseResult, PhaseDefinition, WorkflowDecision } from '../types/workflow.js';
-import type { CommandResult, CommandMetrics } from '../types/command.js';
+import type { CommandResult } from '../types/command.js';
 import type { AgentResult } from '../types/agent.js';
 import type { ExecutionInput, Recommendation } from '../types/execution.js';
 import { WorkflowError, ConfigurationError } from '../errors/index.js';
@@ -13,7 +13,7 @@ import { formatErrorMessage } from '../utils/formatError.js';
 import { DEFAULT_GATE_THRESHOLD } from '../constants.js';
 import { aggregateScores } from '../utils/aggregateScores.js';
 import { sumTokenMetrics } from '../utils/sumTokenMetrics.js';
-import { sumCostUsd } from '../utils/sumCostUsd.js';
+import { rollupCost, type CostFields } from '../utils/costRollup.js';
 import { crashMetrics } from '../utils/crashMetrics.js';
 import { topoGroupLevels } from '../utils/topoSort.js';
 import { parseRef } from '../utils/parseRef.js';
@@ -197,10 +197,10 @@ export class WorkflowExecutor {
         // command-less blocked phase an explicitly unpriced child and the roll-up degrades
         // to undefined — the worst-child polarity sumCostUsd's contract mandates. Skipped
         // phases still contribute nothing.
-        costUsd: sumCostUsd(phaseResults.flatMap((p): Array<Pick<CommandMetrics, 'costUsd'>> =>
+        ...rollupCost(phaseResults.flatMap((p): CostFields[] =>
           p.commands.length > 0
             ? p.commands.map(c => c.metrics)
-            : p.decision === 'blocked' ? [{ costUsd: undefined }] : [],
+            : p.decision === 'blocked' ? [{ costUsd: undefined, costBasis: 'unpriced' }] : [],
         )),
         durationMs,
         model: 'mixed',
@@ -225,6 +225,9 @@ export class WorkflowExecutor {
             totalEffectiveTokens: c.metrics.totalEffectiveTokens,
             durationMs: c.metrics.durationMs,
             costUsd: c.metrics.costUsd,
+            costUsdBilled: c.metrics.costUsdBilled,
+            costUsdTotal: c.metrics.costUsdTotal,
+            costBasis: c.metrics.costBasis,
           })),
         ),
       },
@@ -908,7 +911,7 @@ export class WorkflowExecutor {
       score: aggregateScores(phases.map(p => ({ key: p.id, score: p.score }))),
       metrics: {
         ...sumTokenMetrics(commandMetrics),
-        costUsd: sumCostUsd(commandMetrics),
+        ...rollupCost(commandMetrics),
         durationMs,
         model: 'mixed',
       } as WorkflowResult['metrics'],

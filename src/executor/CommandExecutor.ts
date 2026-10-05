@@ -10,7 +10,7 @@ import { ExecutionError } from '../errors/index.js';
 import type { Logger } from '@uluops/sdk-core';
 import { parseRef } from '../utils/parseRef.js';
 import { sumTokenMetrics } from '../utils/sumTokenMetrics.js';
-import { sumCostUsd } from '../utils/sumCostUsd.js';
+import { rollupCost } from '../utils/costRollup.js';
 import { DEFAULT_PASS_THRESHOLD, DEFAULT_WARN_THRESHOLD } from '../constants.js';
 import { mapCategory } from './mapCategory.js';
 import { resolveDecisionCategory, type DecisionCategory } from './classifyDecision.js';
@@ -413,7 +413,9 @@ export class CommandExecutor {
       // Cost does NOT ride sumTokenMetrics: ANY unpriced child => undefined
       // (see sumCostUsd polarity doc). This site is the SOURCE of the
       // per-command costUsd the workflow summary reads (census D3).
-      costUsd: sumCostUsd(results.map(r => r.metrics)),
+      // costUsd keeps sumCostUsd's worst-child rollup inside rollupCost; the billed
+      // figure, total and basis roll up beside it (OpenRouter plan S6c).
+      ...rollupCost(results.map(r => r.metrics)),
       durationMs,
       model: 'mixed',
       toolCalls: totalToolCalls,

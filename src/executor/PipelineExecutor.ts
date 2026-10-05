@@ -8,13 +8,13 @@ import type { PipelineDefinition, StageDefinition, GateDefinition, PipelineResul
 import { StepsExecutor } from './StepsExecutor.js';
 import { evaluateConditionExpr } from './conditions.js';
 import { buildUpstreamContext } from './upstreamContext.js';
-import type { ExecutionInput, ExecutionMetrics, ExecutionOptions, UpstreamStageContext } from '../types/execution.js';
+import type { ExecutionInput, ExecutionOptions, UpstreamStageContext } from '../types/execution.js';
 import type { AgentResult } from '../types/agent.js';
 import { PipelineError } from '../errors/index.js';
 import { parseRef } from '../utils/parseRef.js';
 import { formatErrorMessage } from '../utils/formatError.js';
 import { sumTokenMetrics } from '../utils/sumTokenMetrics.js';
-import { sumCostUsd } from '../utils/sumCostUsd.js';
+import { rollupCost, type CostFields } from '../utils/costRollup.js';
 import { resolveDecisionCategory } from './classifyDecision.js';
 import { worstExtractionConfidence } from '../utils/worstExtractionConfidence.js';
 import { aggregateScores } from '../utils/aggregateScores.js';
@@ -394,7 +394,7 @@ export class PipelineExecutor {
         durationMs: stageDurationMs,
         metrics: {
           ...sumTokenMetrics(agentResults.map(r => r.metrics)),
-          costUsd: sumCostUsd(agentResults.map(r => r.metrics)),
+          ...rollupCost(agentResults.map(r => r.metrics)),
           durationMs: stageDurationMs,
           model: 'mixed',
       // FABRICATION-OK: summing a count of events; see CommandExecutor.
@@ -636,7 +636,10 @@ export class PipelineExecutor {
           // LLM work that cannot be priced (unpriced model, crash with unreported usage).
           // FABRICATION-OK: see above — a steps stage genuinely cost $0. Absent here would poison every
       // mixed pipeline rollup to undefined forever.
-          costUsd: 0 },
+          costUsd: 0,
+          // NEUTRAL in rollupCost: billed agents plus this stage stay 'billed', not 'mixed'.
+          // FABRICATION-OK: a real $0 for a stage that runs no LLM by construction (see above).
+          costUsdTotal: 0, costBasis: 'none' },
       },
       durationMs,
     };
@@ -927,7 +930,7 @@ class PipelineHandle implements IPipelineHandle {
       recommendations,
       metrics: {
         ...sumTokenMetrics(this.rollupTokenChildren()),
-        costUsd: sumCostUsd(this.rollupCostChildren()),
+        ...rollupCost(this.rollupCostChildren()),
         durationMs,
         model: 'mixed',
         ...this.computeStageMetrics(),
@@ -962,11 +965,11 @@ class PipelineHandle implements IPipelineHandle {
    * the roll-up degrades to undefined — worst-child discipline. `skipped` still
    * contributes nothing, which is correct: nothing ran, so there is nothing unknown.
    */
-  private rollupCostChildren(): ReadonlyArray<Pick<ExecutionMetrics, 'costUsd'>> {
-    const children: Array<Pick<ExecutionMetrics, 'costUsd'>> = [];
+  private rollupCostChildren(): ReadonlyArray<CostFields> {
+    const children: CostFields[] = [];
     for (const s of this.state.stageResults) {
       if (s.result?.metrics) children.push(s.result.metrics);
-      else if (s.status === 'failed') children.push({ costUsd: undefined });
+      else if (s.status === 'failed') children.push({ costUsd: undefined, costBasis: 'unpriced' });
     }
     return children;
   }

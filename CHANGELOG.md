@@ -6,6 +6,38 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) 
 
 ## [Unreleased]
 
+### Added
+
+- **Billed cost, a best-available total, and its basis (OpenRouter plan v0.6.1, slice 1c; D3).**
+  Three fields join `costUsd` on `ExecutionMetrics`, `AIGenerateResult` (`costUsdBilled` only)
+  and the workflow per-command summary, at every result level:
+  - `costUsdBilled`: OpenRouter's `usage.cost` summed **per step**. `result.providerMetadata` is
+    the last step's, so reading it once would record the final request's cost as the run's.
+    BYOK adds `costDetails.upstreamInferenceCost` only when the step's raw usage says
+    `is_byok: true`; on a normal request upstream equals cost (Phase 0), so adding it always
+    would double the bill. `undefined` unless every step reported a cost — never a partial sum.
+  - `costUsdTotal`: per agent the bill, else the estimate; per parent the sum of children.
+  - `costBasis`: `'billed' | 'estimated' | 'mixed' | 'unpriced' | 'none'`, exported as
+    `CostBasis`. `'none'` (a steps stage, an empty or all-skipped composition) is neutral in a
+    rollup; `'unpriced'` dominates and leaves no total.
+  One rollup (`src/utils/costRollup.ts`) replaces the six `sumCostUsd` call sites in the
+  command, workflow and pipeline executors, so the four fields cannot drift apart between them.
+  A step-ceiling (`MaxStepsExhaustedError`) child keeps its billed figure and basis.
+- **Usage-shape drift now covers `openrouter.usage.cost`** (e3536a74). The outer `usage` key
+  surviving no longer masks a renamed cost field, which would have silently downgraded every run
+  to `costBasis: 'estimated'`.
+
+### Changed
+
+- **`costUsd` keeps its meaning** — the registry estimate, worst-child rollup — and is never
+  replaced by the bill; reconcile the two side by side. **Cost is still in-process only (D9):**
+  no cost field is on the Tracker wire.
+- **The un-submitted-cost warning fires on any cost field**, not only `costUsd`. A run priced only
+  by OpenRouter's bill (an uncatalogued slug has no estimate) previously dropped its cost with no
+  warning. The message now prints `costUsdTotal` and its basis.
+- **The structured-output fallback result carries a billed figure** under the same every-step
+  rule. It is reached only after the SDK's loop finished, so no request was in flight.
+
 ## [0.46.0] - 2026-10-04
 
 ### Added

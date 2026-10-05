@@ -1068,6 +1068,18 @@ describe('SubmissionClient — un-submittable cost is announced, not dropped (sh
     await client.submit(makeSubmission({ result }));
     expect(costWarnings()).toHaveLength(0);
   });
+
+  // OpenRouter plan S6f (slice 1c). An unregistered OpenRouter model has a bill and no
+  // estimate. Against 0.46.0 the predicate tests costUsd alone and this is silent.
+  it('warns when a run carries only a billed cost', async () => {
+    const client = new SubmissionClient(baseConfig, testLogger);
+    const result = makeResult();
+    delete (result.metrics as { costUsd?: number }).costUsd;
+    Object.assign(result.metrics, { costUsdBilled: 0.03, costUsdTotal: 0.03, costBasis: 'billed' });
+    await client.submit(makeSubmission({ result }));
+    expect(costWarnings()).toHaveLength(1);
+    expect(costWarnings()[0]).toContain('billed');
+  });
 });
 
 describe('SubmissionClient — egress guards against the pinned ops-sdk wire validator (ship run #95, code-auditor)', () => {

@@ -62,6 +62,7 @@ export type {
   UpstreamStageContext,
   ExecutionResult,
   ExecutionMetrics,
+  CostBasis,
   ExecutionOptions,
   Recommendation,
   TrackingError,

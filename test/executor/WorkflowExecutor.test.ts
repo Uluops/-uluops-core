@@ -1736,6 +1736,40 @@ describe('WorkflowExecutor — cost roll-up degrades to unknown on a blocked pha
     expect(result.phases.some(p => p.decision === 'blocked')).toBe(false);
     expect(result.metrics.costUsd).toBeCloseTo(0.5, 10);
   });
+
+  // OpenRouter plan S6c (slice 1c). Against 0.46.0 the workflow and its per-command summary
+  // carry costUsd only.
+  it('rolls the billed figure up and carries it on the per-command summary', async () => {
+    const billedMetrics = {
+      inputTokens: 1, outputTokens: 1, totalEffectiveTokens: 2, durationMs: 1, model: 'openrouter:x', toolCalls: 0,
+      costUsdBilled: 0.02, costUsdTotal: 0.02, costBasis: 'billed',
+    };
+    const cmdExec = {
+      execute: vi.fn().mockImplementation((resolved: ResolvedDefinition) =>
+        Promise.resolve(makeCommandResult({ name: resolved.name, metrics: billedMetrics as never }))),
+    } as unknown as CommandExecutor;
+
+    const result = await new WorkflowExecutor(cmdExec, makeRegistry())
+      .execute(twoPhaseDef(), { target: '/tmp/test' });
+
+    expect(result.metrics.costBasis).toBe('billed');
+    expect(result.metrics.costUsdBilled).toBeCloseTo(0.04, 12);
+    expect(result.metrics.costUsdTotal).toBeCloseTo(0.04, 12);
+    expect(result.metrics.commands[0]).toMatchObject({ costUsdBilled: 0.02, costUsdTotal: 0.02, costBasis: 'billed' });
+  });
+
+  it('a blocked phase makes the workflow unpriced', async () => {
+    const cmdExec = {
+      execute: vi.fn().mockImplementation((resolved: ResolvedDefinition) =>
+        resolved.name === 'code-validator'
+          ? Promise.resolve(makeCommandResult({ name: resolved.name, metrics: pricedMetrics(0.25) as never }))
+          : Promise.reject(new Error('phase blew up after its commands billed'))),
+    } as unknown as CommandExecutor;
+    const result = await new WorkflowExecutor(cmdExec, makeRegistry())
+      .execute(twoPhaseDef(), { target: '/tmp/test' });
+    expect(result.metrics.costBasis).toBe('unpriced');
+    expect(result.metrics.costUsdTotal).toBeUndefined();
+  });
 });
 
 /**

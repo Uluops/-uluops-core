@@ -190,6 +190,18 @@ describe('S6a: OpenRouter usage', () => {
     expect(internals(provider).detectUsageShapeDrift(openrouterMeta)).toEqual([]);
   });
 
+  // e3536a74 / slice 1c: the billed figure depends on `usage.cost`, an INNER key. Against
+  // 0.46.0 this returns [] — the outer `usage` survives and satisfies the check — and every
+  // run silently falls back to the estimate.
+  it('reports drift when usage survives but usage.cost does not', () => {
+    const warn = vi.fn();
+    const provider = new AIProvider(config, catalog, { ...noopLogger, warn });
+    const { cost: _cost, ...usageWithoutCost } = (openrouterMeta.openrouter as { usage: Record<string, unknown> }).usage;
+    const meta = { openrouter: { ...openrouterMeta.openrouter, usage: usageWithoutCost } };
+    expect(internals(provider).detectUsageShapeDrift(meta)).toEqual(['openrouter']);
+    expect(warn.mock.calls[0]![0]).toContain('usage.cost');
+  });
+
   it('keeps input_tokens cache-exclusive', () => {
     const usage = internals(new AIProvider(config, catalog, noopLogger)).mapUsage(
       { inputTokens: 1564, outputTokens: 178, inputTokenDetails: { noCacheTokens: 284, cacheReadTokens: 1280, cacheWriteTokens: 0 }, outputTokenDetails: { reasoningTokens: 50 } },

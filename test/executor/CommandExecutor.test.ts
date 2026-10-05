@@ -273,6 +273,30 @@ describe('CommandExecutor', () => {
     });
   });
 
+  // OpenRouter plan S6c (slice 1c): the billed figure, total and basis roll up beside costUsd.
+  // Against 0.46.0 the command carries costUsd only, so every assertion below is undefined.
+  describe('four-field cost rollup (OpenRouter 1c)', () => {
+    it('carries costUsdBilled, costUsdTotal and costBasis up from billed agents', async () => {
+      const m = (costUsdBilled: number) => ({
+        inputTokens: 1, outputTokens: 1, totalEffectiveTokens: 2, durationMs: 1, model: 'openrouter:x',
+        costUsdBilled, costUsdTotal: costUsdBilled, costBasis: 'billed' as const,
+      });
+      const executor = new CommandExecutor(makeAgentExecutor([
+        makeValidatorResult({ name: 'agent-a', metrics: m(0.01) }),
+        makeValidatorResult({ name: 'agent-b', metrics: m(0.02) }),
+      ]), makeRegistry());
+      const result = await executor.execute(
+        makeCommandDef({ agents: ['agent-a@1.0.0', 'agent-b@1.0.0'] }),
+        { target: '/tmp/test' },
+      );
+      expect(result.metrics.costBasis).toBe('billed');
+      expect(result.metrics.costUsdBilled).toBeCloseTo(0.03, 12);
+      expect(result.metrics.costUsdTotal).toBeCloseTo(0.03, 12);
+      // The estimate stays pure: no agent had one.
+      expect(result.metrics.costUsd).toBeUndefined();
+    });
+  });
+
   describe('threshold boundary conditions', () => {
     it('PASS at exact pass threshold (score=75)', async () => {
       const results = [
