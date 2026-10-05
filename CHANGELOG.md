@@ -6,6 +6,40 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) 
 
 ## [Unreleased]
 
+### Added
+
+- **Typed OpenRouter errors (OpenRouter plan v0.6.2, slice 1d; D13).** Each was a plain
+  `SdkApiError` carrying a diagnostic message:
+  - **402 → `ProviderCreditError`** (new; code `PROVIDER_CREDIT`, added to `UluOpsErrorCodes`),
+    with `provider`, `statusCode: 402` and OpenRouter's `limitSource`. The message keeps the
+    provider's text whole: OpenRouter refuses **pre-flight** when `max_tokens` × price exceeds the
+    balance ("can only afford 83666"), and that text is the only place that says to lower
+    `max_tokens`.
+  - **No-endpoint 404 → `CapabilityError`**, naming every routing constraint the request carried,
+    read from the request body: the parameters `require_parameters` enforces, any
+    `provider.only`/`ignore`/`quantizations`, and for an allowed-providers miss, the providers that
+    do serve the model.
+  - **Unknown slug (400 "is not a valid model ID") → `ModelNotFoundError`** naming the slug.
+  - **429 → `RateLimitError` with `retryAfter`** (seconds) from `X-RateLimit-Reset` (epoch ms, as a
+    header or in the body's `metadata.headers`); OpenRouter sends no `retry-after`, so
+    `retryAfter` was always undefined. The message names `limit_source`. A reset already in the
+    past gives no `retryAfter`, not 0.
+- **A provider 402 stops the whole pipeline run.** No retry fixes it, and every later stage and
+  in-flight sibling would spend a request to learn the same thing. The run reports `cancelled`
+  (not `failed`, so `wait()` does not throw), later stages are skipped, in-flight siblings are
+  aborted, and the stage that hit it carries the provider's text. Implemented through a
+  module-internal registry keyed by the run's abort signal, which every executor hop already
+  forwards as the same object; nothing is added to `ExecutionOptions`, `PipelineState` or any
+  exported type. `handle.cancel()` now shares that stop sequence and behaves exactly as before.
+
+### Fixed
+
+- **An unknown provider name is reported as unknown.** `ensureProvider` checked credentials
+  before the name, so a typo such as `--model openrouer:x` said "Set the OPENROUER_API_KEY
+  environment variable" — a fix for a provider that does not exist — and the list of valid
+  providers was unreachable. The name is now checked first (found by the CLI's dx-validator,
+  run #26).
+
 ## [0.47.0] - 2026-10-04
 
 ### Added

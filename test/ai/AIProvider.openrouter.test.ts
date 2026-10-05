@@ -10,7 +10,7 @@ import { describe, it, expect, vi, afterEach } from 'vitest';
 import { APICallError } from 'ai';
 import { AIProvider, SHELL_SCHEMA_FALLBACK_PROVIDERS } from '../../src/ai/AIProvider.js';
 import { resolveAIConfig } from '../../src/client/UluOpsClient.js';
-import { ConfigurationError } from '../../src/errors/index.js';
+import { ConfigurationError, CapabilityError, ModelNotFoundError, ProviderCreditError, RateLimitError } from '../../src/errors/index.js';
 import type { ModelCatalog, ResolvedModel } from '../../src/ai/ModelCatalog.js';
 import type { ResolvedConfig } from '../../src/types/config.js';
 import type { UsageMetrics } from '../../src/types/ai.js';
@@ -341,5 +341,114 @@ describe('OpenRouter error shapes', () => {
   it('a plain 404 on a registered model still says the catalog is stale', () => {
     const plain = new APICallError({ message: 'not found', url: 'u', requestBodyValues: {}, statusCode: 404 });
     expect(map(plain, model({ registered: true })).message).toContain('STALE');
+  });
+});
+
+/**
+ * Slice 1d — typed OpenRouter errors, from the exact Phase 0 bodies
+ * (traces/phase0-spike-findings.md, Errors). NEGATIVE CONTROL: against 0.47.0 each of these
+ * comes back as a generic SdkApiError / RateLimitError without the asserted type or field.
+ */
+describe('1d: typed OpenRouter errors', () => {
+  const map = (e: APICallError, r?: ResolvedModel) => internals(new AIProvider(config, catalog, noopLogger)).mapAPICallError(e, r);
+  const body = {
+    model: 'deepseek/deepseek-v4-flash', messages: [], tools: [{ type: 'function' }], tool_choice: 'auto', max_tokens: 16000,
+    provider: { require_parameters: true },
+  };
+
+  it('a no-endpoint 404 (Filter by Parameters) is a CapabilityError naming every parameter require_parameters holds endpoints to', () => {
+    const e = new APICallError({
+      message: 'No endpoints found that support the requested parameters', url: 'u', requestBodyValues: body, statusCode: 404,
+      data: { error: { code: 404, message: 'No endpoints found', metadata: { failed_routing_step: 'Filter by Parameters', routing_funnel: [] } } },
+    });
+    const mapped = map(e, model({ registered: true }));
+    expect(mapped).toBeInstanceOf(CapabilityError);
+    expect(mapped.message).toContain('provider.require_parameters');
+    expect(mapped.message).toContain('tools, tool_choice, max_tokens');
+  });
+
+  it('a pinned `only` miss (Filter by Allowed Providers) names the pin and the providers that do serve the model', () => {
+    const e = new APICallError({
+      message: 'No endpoints found', url: 'u', statusCode: 404,
+      requestBodyValues: { ...body, provider: { require_parameters: true, only: ['DekaLLM'] } },
+      data: { error: { code: 404, message: 'No endpoints found', metadata: {
+        failed_routing_step: 'Filter by Allowed Providers', requested_providers: ['DekaLLM'], available_providers: ['DeepInfra', 'Relace'],
+      } } },
+    });
+    const mapped = map(e, model({ registered: true }));
+    expect(mapped).toBeInstanceOf(CapabilityError);
+    expect(mapped.message).toContain('provider.only = [DekaLLM]');
+    expect(mapped.message).toContain('available for this model [DeepInfra, Relace]');
+  });
+
+  it('an unknown slug (400 "is not a valid model ID") is a ModelNotFoundError naming the slug', () => {
+    const e = new APICallError({
+      message: 'deepseek/no-such-model is not a valid model ID', url: 'u', requestBodyValues: body, statusCode: 400,
+    });
+    const mapped = map(e, model({ modelId: 'deepseek/no-such-model', registered: false }));
+    expect(mapped).toBeInstanceOf(ModelNotFoundError);
+    expect(mapped.message).toContain('"deepseek/no-such-model"');
+  });
+
+  it('a pre-flight 402 is a ProviderCreditError that keeps the provider text and the limit source', () => {
+    const e = new APICallError({
+      message: 'This request requires more credits, or fewer max_tokens. You requested up to 100000 tokens, but can only afford 83666.',
+      url: 'u', requestBodyValues: body, statusCode: 402,
+      data: { error: { code: 402, message: 'requires more credits', metadata: { limit_source: 'openrouter_key_limit', remedy_hint: 'add credits' } } },
+    });
+    const mapped = map(e, model());
+    expect(mapped).toBeInstanceOf(ProviderCreditError);
+    expect((mapped as ProviderCreditError).limitSource).toBe('openrouter_key_limit');
+    expect(mapped.message).toContain('can only afford 83666');
+    expect(mapped.message).toContain('or fewer max_tokens');
+  });
+
+  it('a 429 reads retryAfter from X-RateLimit-Reset (epoch ms) and names the limit source', () => {
+    const resetMs = Date.now() + 42_000;
+    const e = new APICallError({
+      message: 'Rate limit exceeded: free-models-per-min', url: 'u', requestBodyValues: body, statusCode: 429,
+      responseHeaders: { 'x-ratelimit-reset': String(resetMs) },
+      data: { error: { code: 429, message: 'Rate limit exceeded', metadata: { limit_source: 'openrouter_free_tier_per_minute' } } },
+    });
+    const mapped = map(e, model()) as RateLimitError;
+    expect(mapped).toBeInstanceOf(RateLimitError);
+    expect(mapped.retryAfter).toBeGreaterThan(30);
+    expect(mapped.retryAfter).toBeLessThanOrEqual(42);
+    expect(mapped.message).toContain('openrouter_free_tier_per_minute');
+  });
+
+  it('a 429 whose reset is only in the body metadata.headers still yields retryAfter', () => {
+    const e = new APICallError({
+      message: 'Rate limit exceeded', url: 'u', requestBodyValues: body, statusCode: 429,
+      data: { error: { code: 429, message: 'x', metadata: { headers: { 'X-RateLimit-Reset': String(Date.now() + 10_000) } } } },
+    });
+    expect((map(e, model()) as RateLimitError).retryAfter).toBeGreaterThan(0);
+  });
+
+  it('a reset already in the past gives no retryAfter rather than "retry now"', () => {
+    const e = new APICallError({
+      message: 'x', url: 'u', requestBodyValues: body, statusCode: 429,
+      responseHeaders: { 'x-ratelimit-reset': String(Date.now() - 5_000) },
+    });
+    expect((map(e, model()) as RateLimitError).retryAfter).toBeUndefined();
+  });
+});
+
+describe('1d: an unknown provider name is reported as unknown, not unconfigured', () => {
+  // NEGATIVE CONTROL: against 0.47.0 this says 'AI provider "openrouer" is not configured.
+  // Set the OPENROUER_API_KEY environment variable' — a fix for a provider that does not exist.
+  it('lists the valid providers and invents no API key variable', async () => {
+    const provider = new AIProvider(config, catalog, noopLogger);
+    const err = await provider.ensureProvider('openrouer').then(() => null, (e: unknown) => e as Error);
+    expect(err).toBeInstanceOf(ConfigurationError);
+    expect(err!.message).toContain('Unknown AI provider: "openrouer"');
+    expect(err!.message).toContain('openrouter');
+    expect(err!.message).not.toContain('OPENROUER_API_KEY');
+  });
+
+  it('a known but unconfigured provider still names its key variable', async () => {
+    const provider = new AIProvider(config, catalog, noopLogger);
+    const err = await provider.ensureProvider('mistral').then(() => null, (e: unknown) => e as Error);
+    expect(err!.message).toContain('MISTRAL_API_KEY');
   });
 });

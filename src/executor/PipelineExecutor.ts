@@ -21,6 +21,7 @@ import { aggregateScores } from '../utils/aggregateScores.js';
 import { crashPlaceholder, CRASH_PLACEHOLDER_VERSION } from '../utils/crashPlaceholder.js';
 import { verifiedNothingExecuted } from '../utils/executionEvidence.js';
 import type { Logger } from '@uluops/sdk-core';
+import { registerRunTrip, unregisterRunTrip } from '../utils/runTrip.js';
 
 /**
  * Executes pipelines with multi-stage orchestration and async support.
@@ -96,6 +97,15 @@ export class PipelineExecutor {
         : controller.signal,
     };
 
+    // A provider 402 inside any stage stops the whole run (OpenRouter plan D13): AIProvider
+    // looks up the signal it was handed in this module-internal registry. Same sequence as
+    // handle.cancel(), with the provider's message as the reason; a run that already finished
+    // or was cancelled is left alone.
+    const runSignal = runOptions.abortSignal!;
+    registerRunTrip(runSignal, (reason) => {
+      if (state.status === 'running') stopRun(state, controller, reason);
+    });
+
     // Start execution in background, capturing errors into state
     const execution = this.executeAsync(resolved, input, state, runOptions);
     execution.catch((error) => {
@@ -104,6 +114,9 @@ export class PipelineExecutor {
         state.error = formatErrorMessage(error);
       }
     });
+    // Both arms, not .finally(): a .finally() promise re-rejects and would be unhandled.
+    const unregister = () => unregisterRunTrip(runSignal);
+    execution.then(unregister, unregister);
 
     return new PipelineHandle(pipelineId, state, execution, controller);
   }
@@ -819,6 +832,22 @@ function resolveOnFailure(gate: GateDefinition): 'abort' | 'warn' | 'skip' {
 }
 
 /**
+ * Stop a run: the ONE sequence shared by `handle.cancel()` and a provider-credit trip (D13).
+ *
+ * Abort the in-flight provider call, not just the loop between stages. Until cancel() aborted,
+ * it set a flag that executeAsync only read at stage boundaries, so the agent currently talking
+ * to the model ran to completion and was billed in full — a cancel stopped the NEXT stage from
+ * starting and nothing that cost money. The status flag is set first: it is what the loop, the
+ * catch, and buildResult read to report `cancelled`, and aborting alone would surface as a
+ * provider error. The abort carries no custom reason, exactly as before.
+ */
+function stopRun(state: PipelineState, controller: AbortController, reason: string): void {
+  state.status = 'cancelled';
+  state.error = reason;
+  controller.abort();
+}
+
+/**
  * Handle for monitoring and controlling an async pipeline execution
  */
 class PipelineHandle implements IPipelineHandle {
@@ -865,19 +894,9 @@ class PipelineHandle implements IPipelineHandle {
         {},
       );
     }
-    this.state.status = 'cancelled';
-    this.state.error = 'Pipeline cancelled by user';
-    // Abort the in-flight provider call, not just the loop between stages.
-    //
-    // Until now cancel() set a flag that executeAsync only read at stage boundaries, so
-    // the agent currently talking to the model ran to completion and was billed in full —
-    // a cancel stopped the NEXT stage from starting and nothing that cost money. On a
-    // long analyst run that is the entire expense of the stage the user was trying to
-    // stop. The status flag is still set first: it is what the loop, the catch, and
-    // buildResult read to report `cancelled`, and aborting alone would surface as a
-    // provider error.
-    this.controller.abort();
+    stopRun(this.state, this.controller, 'Pipeline cancelled by user');
   }
+
 
   private buildResult(): PipelineResult {
     const durationMs = Date.now() - this.state.startTime;

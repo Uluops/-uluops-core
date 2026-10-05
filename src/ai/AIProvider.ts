@@ -39,10 +39,14 @@ import {
   TimeoutError,
   CancelledError,
   ConfigurationError,
+  CapabilityError,
+  ModelNotFoundError,
+  ProviderCreditError,
 } from '../errors/index.js';
+import { tripRunFor } from '../utils/runTrip.js';
 import type { ModelCapabilities } from '@uluops/registry-sdk';
 import type { Logger } from '@uluops/sdk-core';
-import { usableBudget, resolveRequestTimeoutMs, finitePositive, finiteNonNegative } from '../utils/externalValue.js';
+import { usableBudget, resolveRequestTimeoutMs, finitePositive, finiteNonNegative, parseExternalNumber } from '../utils/externalValue.js';
 
 /**
  * What `mapUsage` accepts — DERIVED from the AI SDK's own `LanguageModelUsage`
@@ -1042,7 +1046,16 @@ export class AIProvider {
         error.finishReason ?? 'error',
       );
     }
-    throw this.mapError(error, timeoutMs, resolved, callerSignal);
+    const mapped = this.mapError(error, timeoutMs, resolved, callerSignal);
+    // A provider 402 stops the whole pipeline run, not just this agent (OpenRouter plan D13):
+    // no retry fixes it, and every later stage and in-flight sibling would spend a request to
+    // learn the same thing. Looked up by the CALLER's signal — the object every executor hop
+    // forwards — not the timeout-merged one. A standalone run has no registration; it just
+    // throws the typed error.
+    if (mapped instanceof ProviderCreditError && tripRunFor(callerSignal, mapped.message)) {
+      this.logger.warn(`Provider credit refused (HTTP 402); the pipeline run was stopped: ${mapped.message}`);
+    }
+    throw mapped;
   }
 
   /**
@@ -1506,16 +1519,20 @@ export class AIProvider {
   async ensureProvider(providerName: string): Promise<void> {
     if (this.providers.has(providerName)) return;
 
-    const creds = this.config.ai.providers[providerName];
-    if (!creds) {
-      throw this.missingProviderError(providerName);
-    }
-
+    // The NAME is checked before credentials. In the other order every unknown name — a typo
+    // like `openrouer:` — fell into the missing-credentials branch, which invents a fix for a
+    // provider that does not exist ("Set the OPENROUER_API_KEY environment variable"), and the
+    // list of valid providers below was unreachable (CLI dx-validator run #26).
     if (!this.validProviders.has(providerName)) {
       throw new ConfigurationError(
         `Unknown AI provider: "${providerName}". ` +
         `Valid providers: ${[...this.validProviders].join(', ')}`,
       );
+    }
+
+    const creds = this.config.ai.providers[providerName];
+    if (!creds) {
+      throw this.missingProviderError(providerName);
     }
 
     const pinned = AIProvider.PACKAGE_NAME_OVERRIDES[providerName];
@@ -1995,11 +2012,31 @@ export class AIProvider {
       ? bodyCode
       : error.statusCode ?? 0;
     const routingStep = routingFailureStep(error.data);
+    const meta = openRouterErrorMetadata(error.data);
+    const limitSource = typeof meta['limit_source'] === 'string' ? meta['limit_source'] : undefined;
     let mapped: Error;
 
-    if (status === 429) {
+    if (status === 402) {
+      // A provider's own credit refusal (OpenRouter: exhausted credit, a key limit, or a
+      // pre-flight refusal when max_tokens × price exceeds the balance). Not UluOps' entitlement
+      // 402 (SubscriptionRequiredError). The provider's text is kept whole: on the pre-flight
+      // case it is the only place that says "or fewer max_tokens".
+      const provider = resolved?.provider ?? 'unknown';
+      mapped = new ProviderCreditError(
+        `Out of credit with provider "${provider}" (HTTP 402). Add credit or raise the key's limit` +
+        `${limitSource ? ` (limit: ${limitSource})` : ''}; retrying will not help. Provider message: ${error.message}`,
+        provider,
+        limitSource,
+      );
+    } else if (status === 429) {
+      // OpenRouter sends no `retry-after`; its reset time is `X-RateLimit-Reset` (epoch ms), as a
+      // response header or inside the body's `metadata.headers` (Phase 0). `limit_source` says
+      // whose limit: OpenRouter's (key, free tier) or the upstream's.
+      const retryAfter = rateLimitRetryAfterSeconds(error.responseHeaders, meta);
       mapped = new RateLimitError(
-        `Rate limit exceeded (HTTP 429). Back off and retry. Provider message: ${error.message}`,
+        `Rate limit exceeded (HTTP 429)${limitSource ? ` (limit: ${limitSource})` : ''}. ` +
+        `${retryAfter !== undefined ? `Retry after ${retryAfter}s` : 'Back off and retry'}. Provider message: ${error.message}`,
+        retryAfter,
       );
     } else if (status === 401) {
       mapped = new UnauthorizedError(
@@ -2013,12 +2050,14 @@ export class AIProvider {
       // OpenRouter's "no endpoint" 404: the model exists, but no upstream endpoint passed a routing
       // filter (core forces provider.require_parameters, so tools or structured output can empty
       // the set). Not a catalog problem: the stale-catalog diagnosis below would mislead.
+      // Typed (1d): a CapabilityError, since no endpoint can serve the request as sent. The
+      // message names EVERY constraint the request carried, read from the request body itself
+      // rather than from what core meant to send, so a caller's own provider block is included.
       const modelRef = resolved ? `${resolved.provider}:${resolved.modelId}` : 'the requested model';
-      mapped = new SdkApiError(
-        404,
+      mapped = new CapabilityError(
         `No provider endpoint for ${modelRef} accepted the request (routing step "${routingStep}"). The model ` +
-        `exists; none of its endpoints supports every parameter sent (tools, structured output, reasoning), or ` +
-        `the provider filters exclude them all. Provider message: ${error.message}`,
+        `exists; the routing constraints sent left no endpoint: ${describeRoutingConstraints(error.requestBodyValues, meta)}. ` +
+        `Provider message: ${error.message}`,
       );
     } else if (status === 404) {
       // A provider 404 has two unrelated causes that are indistinguishable
@@ -2036,6 +2075,12 @@ export class AIProvider {
       mapped = new SdkApiError(
         404,
         `Provider returned HTTP 404 for ${modelRef}. ${diagnosis} Provider message: ${error.message}`,
+      );
+    } else if (status === 400 && resolved?.provider === 'openrouter' && /is not a valid model ID/i.test(error.message)) {
+      // OpenRouter answers an unknown slug with 400, not 404 (Phase 0).
+      mapped = new ModelNotFoundError(
+        `OpenRouter does not recognize the model "${resolved.modelId}" (HTTP 400). Check the slug against ` +
+        `https://openrouter.ai/models or \`ulu models list --provider openrouter\`. Provider message: ${error.message}`,
       );
     } else if (status === 400 && resolved && !resolved.registered && /context|token/i.test(error.message)) {
       // 1e (OpenRouter plan): an unregistered model's context budget is the operator's or the
@@ -2255,8 +2300,61 @@ function asPlainObject(value: unknown): Record<string, unknown> {
  * (`{error: {metadata}}`) or the in-body error object itself (`{metadata}`).
  */
 function routingFailureStep(data: unknown): string | undefined {
-  const body = asPlainObject(data);
-  const err = asPlainObject(body['error'] ?? body);
-  const step = asPlainObject(err['metadata'])['failed_routing_step'];
+  const step = openRouterErrorMetadata(data)['failed_routing_step'];
   return typeof step === 'string' && step !== '' ? step : undefined;
+}
+
+/** OpenRouter's `error.metadata`, from either shape `data` arrives in (see routingFailureStep). */
+function openRouterErrorMetadata(data: unknown): Record<string, unknown> {
+  const body = asPlainObject(data);
+  return asPlainObject(asPlainObject(body['error'] ?? body)['metadata']);
+}
+
+/**
+ * Seconds until a 429 resets, or undefined. OpenRouter sends `X-RateLimit-Reset` as epoch
+ * MILLISECONDS (header, or `metadata.headers` in the body) and no `retry-after`; other providers
+ * send `retry-after` in seconds. A reset already in the past is undefined, not 0 — "retry now"
+ * is a claim the header does not make once it has gone stale.
+ */
+function rateLimitRetryAfterSeconds(
+  responseHeaders: Record<string, string> | undefined,
+  meta: Record<string, unknown>,
+): number | undefined {
+  const header = (headers: Record<string, unknown>, name: string): unknown =>
+    Object.entries(headers).find(([k]) => k.toLowerCase() === name)?.[1];
+  const reset = finitePositive(parseExternalNumber(header(responseHeaders ?? {}, 'x-ratelimit-reset')
+    ?? header(asPlainObject(meta['headers']), 'x-ratelimit-reset')));
+  if (reset !== undefined) {
+    const seconds = Math.ceil((reset - Date.now()) / 1000);
+    return seconds > 0 ? seconds : undefined;
+  }
+  return finitePositive(parseExternalNumber(header(responseHeaders ?? {}, 'retry-after')));
+}
+
+/**
+ * The routing constraints a request carried, for a no-endpoint 404: the parameters OpenRouter's
+ * `require_parameters` holds every endpoint to, and any provider filter (`only`, `ignore`,
+ * `quantizations`). For an allowed-providers miss, the lists OpenRouter returns.
+ */
+function describeRoutingConstraints(requestBodyValues: unknown, meta: Record<string, unknown>): string {
+  const body = asPlainObject(requestBodyValues);
+  const provider = asPlainObject(body['provider']);
+  const NOT_PARAMETERS = new Set(['model', 'models', 'messages', 'prompt', 'stream', 'stream_options', 'usage', 'provider', 'transforms', 'route', 'user', 'plugins']);
+  const params = Object.keys(body).filter(k => !NOT_PARAMETERS.has(k) && body[k] !== undefined);
+  const parts: string[] = [];
+  if (provider['require_parameters'] === true) {
+    parts.push(`provider.require_parameters (every endpoint must support: ${params.length > 0 ? params.join(', ') : 'none listed'})`);
+  }
+  for (const key of ['only', 'ignore', 'quantizations'] as const) {
+    if (Array.isArray(provider[key]) && provider[key].length > 0) {
+      parts.push(`provider.${key} = [${(provider[key] as unknown[]).join(', ')}]`);
+    }
+  }
+  const list = (v: unknown) => (Array.isArray(v) ? v.join(', ') : undefined);
+  const requested = list(meta['requested_providers']);
+  const available = list(meta['available_providers']);
+  if (requested !== undefined || available !== undefined) {
+    parts.push(`requested providers [${requested ?? '?'}], available for this model [${available ?? '?'}]`);
+  }
+  return parts.length > 0 ? parts.join('; ') : 'none recorded on the request';
 }
