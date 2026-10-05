@@ -6,6 +6,8 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) 
 
 ## [Unreleased]
 
+## [0.48.0] - 2026-10-05
+
 ### Added
 
 - **Typed OpenRouter errors (OpenRouter plan v0.6.2, slice 1d; D13).** Each was a plain
