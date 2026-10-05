@@ -24,7 +24,7 @@ import type { ExecutionOptions } from '../../src/types/execution.js';
 import type { ResolvedDefinition } from '../../src/types/registry.js';
 import type { WorkflowDefinition } from '../../src/types/workflow.js';
 import type { PipelineDefinition } from '../../src/types/pipeline.js';
-import { makeCommandResult, makeRegistry } from './fixtures.js';
+import { makeAgentDef, makeCommandResult, makeRegistry } from './fixtures.js';
 
 const noopLogger = { debug() {}, info() {}, warn() {}, error() {} };
 const CREDIT = 'Out of credit with provider "openrouter" (HTTP 402). Provider message: can only afford 83666';
@@ -180,7 +180,7 @@ describe('provider 402 in an inline-agents stage', () => {
       }),
     } as unknown as AgentExecutor;
     const cmdExec = { execute: vi.fn().mockImplementation(async () => { seen.laterStarted = true; return makeCommandResult(); }) } as unknown as CommandExecutor;
-    const registry = makeRegistry({ pricey: { ...workflowDef(), type: 'agent', name: 'pricey' }, steady: { ...workflowDef(), type: 'agent', name: 'steady' } });
+    const registry = makeRegistry({ pricey: makeAgentDef('pricey'), steady: makeAgentDef('steady') });
     const executor = new PipelineExecutor(new WorkflowExecutor(cmdExec, registry), cmdExec, agentExec, registry, noopLogger);
     const def = pipelineDef();
     (def.definition as unknown as PipelineDefinition).pipeline.stages = [
