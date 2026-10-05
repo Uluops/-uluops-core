@@ -6,6 +6,8 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) 
 
 ## [Unreleased]
 
+## [0.47.0] - 2026-10-04
+
 ### Added
 
 - **Billed cost, a best-available total, and its basis (OpenRouter plan v0.6.1, slice 1c; D3).**
