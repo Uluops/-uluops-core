@@ -1,4 +1,4 @@
-import type { ExecutionResult, ExecutionMetrics, Domain } from './execution.js';
+import type { ExecutionResult, ExecutionMetrics, Domain, CostBasis } from './execution.js';
 import type { CommandResult } from './command.js';
 
 /**
@@ -141,6 +141,9 @@ export interface CommandMetricsSummary {
   totalEffectiveTokens?: number;
   durationMs: number;
   costUsd?: number;
+  costUsdBilled?: number;
+  costUsdTotal?: number;
+  costBasis?: CostBasis;
 }
 
 /**

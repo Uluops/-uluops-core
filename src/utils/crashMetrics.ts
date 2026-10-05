@@ -1,5 +1,6 @@
 import type { ExecutionMetrics } from '../types/execution.js';
 import { hasBilledMetrics } from '../errors/index.js';
+import { agentCost } from './costRollup.js';
 
 /**
  * Build the `metrics` for a child whose execution ended in a thrown error.
@@ -29,7 +30,11 @@ export function crashMetrics(error: unknown, extra?: Partial<ExecutionMetrics>):
   // package where real money survives a crash, so a false negative here silently zeroes
   // the most expensive run class the engine produces.
   if (hasBilledMetrics(error)) {
-    return { ...error.billedMetrics, ...extra };
+    // The billed figure, total and basis ride along with costUsd (OpenRouter plan S6c). The
+    // basis is re-derived by the per-agent rule rather than trusted, so a payload built
+    // before these fields existed still rolls up as what it is, not as 'unpriced'.
+    const m = error.billedMetrics;
+    return { ...m, ...agentCost(m.costUsd, m.costUsdBilled), ...extra };
   }
   return {
     // FABRICATION-OK: the documented "nothing is known" branch. Tokens report a bounded 0
@@ -50,6 +55,9 @@ export function crashMetrics(error: unknown, extra?: Partial<ExecutionMetrics>):
     // FABRICATION-OK: floor for a caller that genuinely holds no duration.
     durationMs: 0,
     model: 'unknown',
+    // Named, not merely implied by an absent costUsd: a parent rollup that met an unlabelled
+    // child would classify it the same way, but the claim belongs where it is known.
+    costBasis: 'unpriced',
     ...extra,
   };
 }

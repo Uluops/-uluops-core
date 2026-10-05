@@ -1068,6 +1068,36 @@ describe('SubmissionClient — un-submittable cost is announced, not dropped (sh
     await client.submit(makeSubmission({ result }));
     expect(costWarnings()).toHaveLength(0);
   });
+
+  // OpenRouter plan S6f (slice 1c). An unregistered OpenRouter model has a bill and no
+  // estimate. Against 0.46.0 the predicate tests costUsd alone and this is silent.
+  it('warns when a run carries only a billed cost', async () => {
+    const client = new SubmissionClient(baseConfig, testLogger);
+    const result = makeResult();
+    delete (result.metrics as { costUsd?: number }).costUsd;
+    Object.assign(result.metrics, { costUsdBilled: 0.03, costUsdTotal: 0.03, costBasis: 'billed' });
+    await client.submit(makeSubmission({ result }));
+    expect(costWarnings()).toHaveLength(1);
+    expect(costWarnings()[0]).toContain('billed');
+  });
+
+  // 1c crew (code-auditor F4, anxiety-reader F4/F9). NEGATIVE CONTROL: both fail against 5d373c8.
+  it("does not warn for costBasis 'none' — no model was called, nothing is dropped", async () => {
+    const client = new SubmissionClient(baseConfig, testLogger);
+    const result = makeResult();
+    delete (result.metrics as { costUsd?: number }).costUsd;
+    Object.assign(result.metrics, { costUsdTotal: 0, costBasis: 'none' });
+    await client.submit(makeSubmission({ result }));
+    expect(costWarnings()).toHaveLength(0);
+  });
+
+  it('prints a real per-request OpenRouter cost, not $0.0000', async () => {
+    const client = new SubmissionClient(baseConfig, testLogger);
+    const result = makeResult();
+    Object.assign(result.metrics, { costUsdBilled: 0.000002658, costUsdTotal: 0.000002658, costBasis: 'billed' });
+    await client.submit(makeSubmission({ result }));
+    expect(costWarnings()[0]).toContain('$0.000003');
+  });
 });
 
 describe('SubmissionClient — egress guards against the pinned ops-sdk wire validator (ship run #95, code-auditor)', () => {

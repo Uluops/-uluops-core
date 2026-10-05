@@ -1,7 +1,7 @@
 {
   "counts": {
     "public-api-arg": 30,
-    "ai-sdk-response": 33,
+    "ai-sdk-response": 37,
     "dynamic-import": 1,
     "service-response": 27,
     "process-env": 19,
@@ -12,13 +12,16 @@
   },
   "fingerprints": [
     "src/ai/AIProvider.ts|ai-sdk-response|(sum, step) => sum + (step.toolCalls?.length ?? 0),",
+    "src/ai/AIProvider.ts|ai-sdk-response|(t, step) => addStepBill(t, stepBilledUsd(step.providerMetadata, step.usage)),",
     "src/ai/AIProvider.ts|ai-sdk-response|`Complete: ${result.steps.length} steps, ${toolCallCount} tool calls, finish=${result.finishReason}`,",
+    "src/ai/AIProvider.ts|ai-sdk-response|addStepBill(stepTotals, stepBilledUsd(step.providerMetadata, step.usage));",
     "src/ai/AIProvider.ts|ai-sdk-response|const contextSize = safeTokenCount(lastStep.usage.inputTokens);",
     "src/ai/AIProvider.ts|ai-sdk-response|const providerWarnings = formatCallWarnings(result.warnings);",
     "src/ai/AIProvider.ts|ai-sdk-response|const toolCallCount = result.steps.reduce(",
     "src/ai/AIProvider.ts|ai-sdk-response|const toolNames = step.toolCalls?.map(tc => tc.toolName) ?? [];",
     "src/ai/AIProvider.ts|ai-sdk-response|const usage = step.usage;",
     "src/ai/AIProvider.ts|ai-sdk-response|const usage = this.mapUsage(result.totalUsage ?? result.usage, result.providerMetadata, resolved.provider, resolved.modelId);",
+    "src/ai/AIProvider.ts|ai-sdk-response|costUsdBilled: billedUsdOf(result.steps.reduce(",
     "src/ai/AIProvider.ts|ai-sdk-response|finishReason: result.finishReason,",
     "src/ai/AIProvider.ts|ai-sdk-response|if (lastStep.usage.inputTokens === undefined) {",
     "src/ai/AIProvider.ts|ai-sdk-response|if (step.providerMetadata) {",
@@ -29,6 +32,7 @@
     "src/ai/AIProvider.ts|ai-sdk-response|stepTotals.toolCalls += step.toolCalls?.length ?? 0;",
     "src/ai/AIProvider.ts|ai-sdk-response|steps: result.steps.length,",
     "src/ai/AIProvider.ts|ai-sdk-response|structuredOutput: useStructuredOutput && result.finishReason === 'stop'",
+    "src/ai/AIProvider.ts|ai-sdk-response|{ steps: result.steps.length, billedSteps: 0, billedUsd: 0 },",
     "src/ai/AIProvider.ts|dynamic-import|const mod = await import(AIProvider.packageFor(providerName)) as Record<string, unknown>;",
     "src/ai/AIProvider.ts|public-api-arg|?? usableBudget(this.config.contextBudget)",
     "src/ai/AIProvider.ts|public-api-arg|abortSignal: mergeAbortSignals(options, this.config.timeout),",

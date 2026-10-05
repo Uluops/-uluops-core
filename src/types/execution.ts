@@ -299,9 +299,47 @@ export interface ExecutionMetrics {
   /** Number of LLM tool calls made during execution (agent-level) */
   toolCallCount?: number;
 
-  /** Estimated cost in USD */
+  /**
+   * Estimated cost in USD: usage priced at the registry's rates. Meaning unchanged by the
+   * OpenRouter cost work; it stays a pure estimate so it can be reconciled against
+   * `costUsdBilled`. Rolls up worst-child (`sumCostUsd`).
+   */
   costUsd?: number;
+
+  /**
+   * Provider-reported billed amount in USD, summed over every step (today only OpenRouter
+   * reports one: `providerMetadata.openrouter.usage.cost`). `undefined` unless EVERY step
+   * reported a cost — a partial sum would understate money spent while looking complete.
+   * Under BYOK it adds the upstream provider's charge (`costDetails.upstreamInferenceCost`),
+   * so it is total spend across OpenRouter and the upstream key, not OpenRouter's invoice.
+   * It sums the requests the AI SDK KEPT: an attempt the SDK retried leaves no step and is
+   * invisible here, so the figure can understate a run that hit retries.
+   * Rolls up worst-child. In-process only: no wire field carries it (D9).
+   */
+  costUsdBilled?: number;
+
+  /**
+   * Best-available total in USD (D3). Per agent: `costUsdBilled` when complete, else
+   * `costUsd`. Per parent: the sum of children's totals. `undefined` only when some
+   * child could not be priced at all (`costBasis: 'unpriced'`). Read `costBasis` to learn
+   * what it is made of.
+   */
+  costUsdTotal?: number;
+
+  /** What `costUsdTotal` is made of. See {@link CostBasis}. */
+  costBasis?: CostBasis;
 }
+
+/**
+ * What a `costUsdTotal` is made of (OpenRouter plan S6c, D3):
+ * - `'billed'` — every priced child reported a provider-billed figure;
+ * - `'estimated'` — every priced child is a registry-rate estimate;
+ * - `'mixed'` — some of each;
+ * - `'unpriced'` — at least one child has no figure of either kind, so there is no total;
+ * - `'none'` — no model was called (a steps stage, an empty or all-skipped composition);
+ *   the total is a real 0.
+ */
+export type CostBasis = 'billed' | 'estimated' | 'mixed' | 'unpriced' | 'none';
 
 /**
  * Call-time execution options for direct agent runs

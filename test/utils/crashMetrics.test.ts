@@ -78,3 +78,19 @@ describe('crashMetrics', () => {
     expect(m.inputTokens).toBe(0);
   });
 });
+
+/**
+ * crashMetrics' two cost-basis lines (1c crew: test-architect mutants 7 and 8 survived
+ * the full suite). NEGATIVE CONTROL: each test fails with its line removed.
+ */
+describe('crashMetrics — cost basis on both branches', () => {
+  it("the nothing-known branch is labelled 'unpriced', not left for a parent to guess", () => {
+    expect(crashMetrics(new Error('boom')).costBasis).toBe('unpriced');
+  });
+
+  it('a billedMetrics payload predating the cost fields is classified, not passed through bare', () => {
+    const legacy = { inputTokens: 10, outputTokens: 5, totalEffectiveTokens: 15, durationMs: 1, model: 'm', costUsd: 0.4, costUsdBilled: 0.3 };
+    expect(crashMetrics(new MaxStepsExhaustedError('exhausted', 50, 'tool-calls', legacy)))
+      .toMatchObject({ costUsd: 0.4, costUsdBilled: 0.3, costUsdTotal: 0.3, costBasis: 'billed' });
+  });
+});

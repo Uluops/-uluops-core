@@ -223,8 +223,11 @@ const result = await client.runAgent('code-validator', './src', {
   unknown slug's 400 is passed through. OpenRouter's no-endpoint 404 names the routing step that
   emptied the endpoint set (not a stale catalog), and an error OpenRouter returns inside an HTTP
   200 body maps by its own code.
-- **Not yet:** OpenRouter's billed cost (only the registry estimate is reported), typed errors
-  for OpenRouter's credit (402) and no-endpoint responses (today a plain `SdkApiError` with a
+- **Cost.** OpenRouter's billed amount is summed per request into `costUsdBilled`, and
+  `costUsdTotal` prefers it over the registry estimate (see [Cost](#cost)). On a BYOK request the
+  upstream provider's charge is added; on a normal one it is not, since OpenRouter reports the same
+  figure twice there.
+- **Not yet:** typed errors for OpenRouter's credit (402) and no-endpoint responses (today a plain `SdkApiError` with a
   diagnostic message), and route tagging in the Tracker. A
   routed run is recorded under its `openrouter:<slug>` model string.
 
@@ -585,6 +588,40 @@ if (warned?.length) {
   console.warn('Provider warnings:', warned.map((m) => m.detail));
 }
 ```
+
+### Cost
+
+Every result level (agent, command, workflow, pipeline, stage) carries four cost fields:
+
+| Field | Meaning |
+|---|---|
+| `costUsd` | The registry **estimate**: usage priced at the catalog's rates. `undefined` when any child's model is unpriced. |
+| `costUsdBilled` | The **billed** amount, summed over every request. Only OpenRouter reports one today. On a BYOK request it is OpenRouter's charge **plus** the upstream provider's charge to your own key — total spend across both invoices, not OpenRouter's invoice alone. `undefined` unless every request reported it. |
+| `costUsdTotal` | The **best available** total: per agent the bill if there is one, else the estimate; per parent the sum of children's totals. `undefined` only when some child has neither. |
+| `costBasis` | What `costUsdTotal` is made of: `'billed'`, `'estimated'`, `'mixed'`, `'unpriced'` (no total), or `'none'` (no model was called, e.g. a steps stage; the total is a real 0). |
+
+```typescript
+const { costUsdTotal, costBasis } = result.metrics;
+// Six decimals: a single OpenRouter request can bill $0.000003, which toFixed(4) shows as $0.0000.
+console.log(costUsdTotal === undefined ? 'cost unknown' : `$${costUsdTotal.toFixed(6)} (${costBasis})`);
+```
+
+Read `costUsdTotal` for spend, and `costUsd` and `costUsdBilled` side by side to reconcile the
+estimate against the bill. Reconcile against an invoice only when `costBasis` is `'billed'`: a
+`'mixed'` total adds bills to estimates. Limits worth knowing:
+
+- **Cost is in-process only.** The Tracker wire format has no cost field, so none of the four is
+  submitted with a run; the client logs a warning on each run that carries one.
+- **A failed or cancelled agent has no cost figure at all.** The in-flight request's cost is
+  unknowable and the completed requests' totals are not carried across the throw, so the agent
+  reads `'unpriced'` and every parent above it does too (no total). Money was spent; core cannot
+  say how much. The exception is an agent stopped by the step ceiling
+  (`MaxStepsExhaustedError`), whose requests all completed: it keeps its real cost and basis.
+- **A structured-output fallback is not a failure.** When structured output cannot be parsed and
+  the run falls back to text extraction, every request has already completed, so it keeps its
+  billed figure under the same every-request rule.
+- **SDK retries are invisible.** A request the AI SDK retried is billed but never reported to
+  core, so both figures can understate a run that hit retries.
 
 ### Integrity Verification
 

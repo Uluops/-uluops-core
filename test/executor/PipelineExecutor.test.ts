@@ -1788,6 +1788,41 @@ describe('PipelineExecutor — cost roll-up degrades to unknown on a crashed sta
     expect(result.metrics.costUsd).toBeCloseTo(0.25, 10);
     expect(result.metrics.costUsd).not.toBeUndefined();
   });
+
+  // OpenRouter plan S6c (slice 1c). A steps stage is NEUTRAL ('none'), so billed work plus
+  // a steps stage stays 'billed'. Against 0.46.0 there is no basis at all, and a naive
+  // lattice that treated the steps stage's $0 as an estimate would say 'mixed'.
+  it('billed stages plus a steps stage roll up as billed, not mixed', async () => {
+    const billedStage = makeCommandResult({ metrics: {
+      inputTokens: 500, outputTokens: 200, totalEffectiveTokens: 750, durationMs: 1000,
+      model: 'openrouter:deepseek/deepseek-v4-flash',
+      costUsdBilled: 0.03, costUsdTotal: 0.03, costBasis: 'billed',
+    } as never });
+    const executor = new PipelineExecutor(
+      makeWorkflowExecutor(), makeCommandExecutor([billedStage]), agentExec, makeRegistry(), noopLogger,
+    );
+    const result = await executor.execute(makePipelineDef({
+      stages: [
+        { id: 'pre', name: 'Pre', type: 'steps', steps: [{ name: 'noop', command: 'true' }] },
+        { id: 'stage-1', name: 'Stage 1', type: 'command', ref: 'cmd-a@1.0.0' },
+      ],
+    }), { target: '/tmp/test' });
+
+    expect(result.stages.every(s => s.status === 'completed')).toBe(true);
+    expect((result.stages[0]!.result as CommandResult).metrics.costBasis).toBe('none');
+    expect(result.metrics.costBasis).toBe('billed');
+    expect(result.metrics.costUsdBilled).toBeCloseTo(0.03, 12);
+    expect(result.metrics.costUsdTotal).toBeCloseTo(0.03, 12);
+  });
+
+  it('a crashed stage makes the pipeline unpriced, with no total', async () => {
+    const executor = new PipelineExecutor(
+      makeWorkflowExecutor(), executorWithFailingSecondStage(), agentExec, makeRegistry(), noopLogger,
+    );
+    const result = await executor.execute(twoStageDef(), { target: '/tmp/test' });
+    expect(result.metrics.costBasis).toBe('unpriced');
+    expect(result.metrics.costUsdTotal).toBeUndefined();
+  });
 });
 
 /**
