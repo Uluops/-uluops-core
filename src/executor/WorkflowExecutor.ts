@@ -166,7 +166,10 @@ export class WorkflowExecutor {
         : phaseResults;
       throw new WorkflowError(
         `Workflow failed: ${formatErrorMessage(error)}`,
-        { partialResult: this.buildPartialResult(def, recovered, allRecommendations, startTime, resolved.hash) },
+        // `carried.length === 0`: the failing phase left nothing to recover, so whether it
+        // billed is UNKNOWN — not "nothing ran". The rollup is told, so it cannot present the
+        // surviving phases' sum as the total under a 'billed'/'estimated' label (1c crew F1).
+        { partialResult: this.buildPartialResult(def, recovered, allRecommendations, startTime, resolved.hash, carried.length === 0) },
       );
     }
 
@@ -890,6 +893,7 @@ export class WorkflowExecutor {
     recommendations: Recommendation[],
     startTime: number,
     hash: string,
+    failedPhaseUnaccounted = false,
   ): Partial<WorkflowResult> {
     const durationMs = Date.now() - startTime;
     // Carry what the completed phases actually billed. This previously returned phases
@@ -899,8 +903,19 @@ export class WorkflowExecutor {
     // release added terminated here.
     //
     // Same roll-up shape as the success path, including its deliberate polarity split:
-    // tokens coalesce, cost degrades to undefined if any child is unpriced.
+    // tokens coalesce, cost degrades to undefined if any child is unpriced. The cost children
+    // follow the success path's blocked-phase rule too: a blocked phase with no commands is
+    // an UNPRICED child, never silently absent. This said "same shape" while omitting that
+    // rule, so a partial sum went out labelled 'billed' (1c crew: code-auditor F1, logic L2).
     const commandMetrics = phases.flatMap(p => p.commands.map(c => c.metrics));
+    const costChildren: CostFields[] = [
+      ...phases.flatMap((p): CostFields[] =>
+        p.commands.length > 0
+          ? p.commands.map(c => c.metrics)
+          : p.decision === 'blocked' ? [{ costUsd: undefined, costBasis: 'unpriced' }] : [],
+      ),
+      ...(failedPhaseUnaccounted ? [{ costUsd: undefined, costBasis: 'unpriced' as const }] : []),
+    ];
     return {
       type: 'workflow',
       name: def.workflow.interface.name,
@@ -911,7 +926,7 @@ export class WorkflowExecutor {
       score: aggregateScores(phases.map(p => ({ key: p.id, score: p.score }))),
       metrics: {
         ...sumTokenMetrics(commandMetrics),
-        ...rollupCost(commandMetrics),
+        ...rollupCost(costChildren),
         durationMs,
         model: 'mixed',
       } as WorkflowResult['metrics'],

@@ -12,9 +12,9 @@
   },
   "fingerprints": [
     "src/ai/AIProvider.ts|ai-sdk-response|(sum, step) => sum + (step.toolCalls?.length ?? 0),",
+    "src/ai/AIProvider.ts|ai-sdk-response|(t, step) => addStepBill(t, stepBilledUsd(step.providerMetadata, step.usage)),",
     "src/ai/AIProvider.ts|ai-sdk-response|`Complete: ${result.steps.length} steps, ${toolCallCount} tool calls, finish=${result.finishReason}`,",
-    "src/ai/AIProvider.ts|ai-sdk-response|const billed = stepBilledUsd(step.providerMetadata, step.usage);",
-    "src/ai/AIProvider.ts|ai-sdk-response|const billed = stepBilledUsd(step.providerMetadata, step.usage);#2",
+    "src/ai/AIProvider.ts|ai-sdk-response|addStepBill(stepTotals, stepBilledUsd(step.providerMetadata, step.usage));",
     "src/ai/AIProvider.ts|ai-sdk-response|const contextSize = safeTokenCount(lastStep.usage.inputTokens);",
     "src/ai/AIProvider.ts|ai-sdk-response|const providerWarnings = formatCallWarnings(result.warnings);",
     "src/ai/AIProvider.ts|ai-sdk-response|const toolCallCount = result.steps.reduce(",

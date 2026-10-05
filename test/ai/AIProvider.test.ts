@@ -1,4 +1,5 @@
 import { describe, it, expect, vi, beforeEach } from 'vitest';
+import { crashMetrics } from '../../src/utils/crashMetrics.js';
 import { AIProvider } from '../../src/ai/AIProvider.js';
 import { TokenBudgetTracker } from '../../src/ai/TokenBudgetTracker.js';
 import type { ModelCatalog, ResolvedModel } from '../../src/ai/ModelCatalog.js';
@@ -3222,5 +3223,56 @@ describe('AIProvider — billed cost per step (OpenRouter 1c)', () => {
     };
     expect((await fallback([orStep(0.01), orStep(0.02)])).costUsdBilled).toBeCloseTo(0.03, 12);
     expect((await fallback([orStep(0.01), orStep(undefined)])).costUsdBilled).toBeUndefined();
+  });
+
+  // 1c crew, code-auditor F2. The SDK's notify() swallows a throw from onStepFinish. When the
+  // step counter sat below the logger call, a throwing logger dropped step 2 from BOTH counts,
+  // so the every-step rule saw 1 of 1 and passed 0.01 as the complete bill.
+  // NEGATIVE CONTROL: fails against 5d373c8 with costUsdBilled 0.01.
+  it('a step whose callback throws still counts, so its missing bill cannot pass as complete', async () => {
+    const { generateText } = await import('ai');
+    vi.mocked(generateText).mockImplementationOnce((async (o: unknown) => {
+      const g = o as { onStepFinish?: (s: unknown) => void };
+      for (const s of [orStep(0.01), orStep(0.02)]) {
+        try { g.onStepFinish?.(s); } catch { /* the SDK's notify() swallows callback throws */ }
+      }
+      throw new NoObjectGeneratedError({ message: 'no object', text: '', finishReason: 'stop' } as never);
+    }) as never);
+    const throwingLogger = { ...noopLogger, info: (m: string) => { if (m.startsWith('Step 2')) throw new Error('logger down'); } };
+    const catalog = mockCatalog({
+      resolve: vi.fn().mockResolvedValue(makeResolvedModel({
+        capabilities: { tools: true, vision: true, streaming: true, extendedThinking: false, structuredOutput: true } as never,
+      })),
+    } as never);
+    const result = await new AIProvider(mockConfig, catalog, throwingLogger).generate({
+      model: 'sonnet', system: 's', prompt: 'p', output: { type: 'output-object', schema: {} } as never,
+    });
+    expect(result.steps).toBe(2);
+    expect(result.costUsdBilled).toBeUndefined();
+    expect(result.costUsdBilled).not.toBe(0.01);
+  });
+
+  // Checklist step 6, the cancel half of "a failed or cancelled run leaves costUsdBilled
+  // undefined" (test-architect: the one checklist NC 5d373c8 did not ship). A cancel after
+  // one billed step must not surface that step's 0.01 as the run's bill anywhere: generate()
+  // rejects, and the error carries no billed metrics, so the crash path reads 'unpriced'.
+  it('a run cancelled after one billed step surfaces no partial bill', async () => {
+    const { generateText } = await import('ai');
+    const controller = new AbortController();
+    vi.mocked(generateText).mockImplementationOnce((async (o: unknown) => {
+      const g = o as { onStepFinish?: (s: unknown) => void };
+      g.onStepFinish?.(orStep(0.01));
+      controller.abort();
+      throw Object.assign(new Error('This operation was aborted'), { name: 'AbortError' });
+    }) as never);
+    const error = await new AIProvider(mockConfig, mockCatalog(), noopLogger)
+      .generate({ model: 'sonnet', system: 's', prompt: 'p', abortSignal: controller.signal })
+      .then(() => null, (e: unknown) => e);
+    expect(error).not.toBeNull();
+    expect(error).not.toHaveProperty('billedMetrics');
+    const metrics = crashMetrics(error);
+    expect(metrics.costBasis).toBe('unpriced');
+    expect(metrics.costUsdTotal).toBeUndefined();
+    expect(metrics.costUsdBilled).toBeUndefined();
   });
 });

@@ -28,9 +28,27 @@ export function agentCost(costUsd: number | undefined, costUsdBilled: number | u
  * `costUsd`) is classified by the per-agent rule rather than trusted to be absent-means-none:
  * an unlabelled child with no figure is UNPRICED, never free. `'none'` is only ever an
  * explicit claim made at a construction site that knows no model ran.
+ *
+ * An explicit label is trusted only where the child's own figures support it (1c crew,
+ * logic-error-detector L1). Every construction site in core produces consistent fields, but
+ * the label is the one thing a parent cannot check later: a `'billed'` child with no billed
+ * figure would make its parent `'billed'` with `costUsdBilled: undefined`, and a `'none'`
+ * child carrying a cost would vanish from the total while `sumCostUsd` still counted it.
+ * `'unpriced'` is always trusted — it can only make a parent more conservative.
  */
 function basisOf(c: CostFields): CostBasis {
-  return c.costBasis ?? agentCost(c.costUsd, c.costUsdBilled).costBasis!;
+  const derived = agentCost(c.costUsd, c.costUsdBilled).costBasis!;
+  switch (c.costBasis) {
+    case undefined: return derived;
+    case 'unpriced': return 'unpriced';
+    case 'billed': return finite(c.costUsdBilled) ? 'billed' : derived;
+    case 'none': {
+      const carriesCost = [c.costUsd, c.costUsdBilled, c.costUsdTotal].some(v => v !== undefined && v !== 0);
+      return carriesCost ? derived : 'none';
+    }
+    case 'estimated': return finite(c.costUsdTotal ?? c.costUsd) ? 'estimated' : 'unpriced';
+    case 'mixed': return finite(c.costUsdTotal) ? 'mixed' : 'unpriced';
+  }
 }
 
 /**

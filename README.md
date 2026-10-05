@@ -596,23 +596,30 @@ Every result level (agent, command, workflow, pipeline, stage) carries four cost
 | Field | Meaning |
 |---|---|
 | `costUsd` | The registry **estimate**: usage priced at the catalog's rates. `undefined` when any child's model is unpriced. |
-| `costUsdBilled` | The provider's **billed** amount, summed over every request. Only OpenRouter reports one today. `undefined` unless every request reported it. |
+| `costUsdBilled` | The **billed** amount, summed over every request. Only OpenRouter reports one today. On a BYOK request it is OpenRouter's charge **plus** the upstream provider's charge to your own key — total spend across both invoices, not OpenRouter's invoice alone. `undefined` unless every request reported it. |
 | `costUsdTotal` | The **best available** total: per agent the bill if there is one, else the estimate; per parent the sum of children's totals. `undefined` only when some child has neither. |
 | `costBasis` | What `costUsdTotal` is made of: `'billed'`, `'estimated'`, `'mixed'`, `'unpriced'` (no total), or `'none'` (no model was called, e.g. a steps stage; the total is a real 0). |
 
 ```typescript
 const { costUsdTotal, costBasis } = result.metrics;
-console.log(costUsdTotal === undefined ? 'cost unknown' : `$${costUsdTotal.toFixed(4)} (${costBasis})`);
+// Six decimals: a single OpenRouter request can bill $0.000003, which toFixed(4) shows as $0.0000.
+console.log(costUsdTotal === undefined ? 'cost unknown' : `$${costUsdTotal.toFixed(6)} (${costBasis})`);
 ```
 
 Read `costUsdTotal` for spend, and `costUsd` and `costUsdBilled` side by side to reconcile the
-estimate against the bill. Limits worth knowing:
+estimate against the bill. Reconcile against an invoice only when `costBasis` is `'billed'`: a
+`'mixed'` total adds bills to estimates. Limits worth knowing:
 
 - **Cost is in-process only.** The Tracker wire format has no cost field, so none of the four is
   submitted with a run; the client logs a warning on each run that carries one.
-- **A failed or cancelled run has no billed figure.** The in-flight request's cost is unknowable,
-  so its total falls back to the estimate of the requests that completed, and its basis reads
-  `'estimated'` like a complete one. The run's status is what tells you it is partial.
+- **A failed or cancelled agent has no cost figure at all.** The in-flight request's cost is
+  unknowable and the completed requests' totals are not carried across the throw, so the agent
+  reads `'unpriced'` and every parent above it does too (no total). Money was spent; core cannot
+  say how much. The exception is an agent stopped by the step ceiling
+  (`MaxStepsExhaustedError`), whose requests all completed: it keeps its real cost and basis.
+- **A structured-output fallback is not a failure.** When structured output cannot be parsed and
+  the run falls back to text extraction, every request has already completed, so it keeps its
+  billed figure under the same every-request rule.
 - **SDK retries are invisible.** A request the AI SDK retried is billed but never reported to
   core, so both figures can understate a run that hit retries.
 

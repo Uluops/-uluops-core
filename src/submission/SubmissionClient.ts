@@ -920,10 +920,15 @@ export class SubmissionClient {
     // The predicate covers EVERY cost field (OpenRouter plan S6f). It tested `costUsd` alone,
     // so a run priced only by the provider's bill — an unregistered OpenRouter model, which
     // has no estimate — would have dropped billed cost with no warning at all.
+    //
+    // Skipped for `costBasis: 'none'`: no model was called, so the $0 total is not a cost
+    // that the wire drops, and warning about it is noise (1c crew). Six decimals, not four:
+    // an OpenRouter request can bill $0.000003 (Phase 0), which `toFixed(4)` printed as a
+    // reassuring $0.0000.
     const shown = metrics.costUsdTotal ?? metrics.costUsd ?? metrics.costUsdBilled;
-    if (shown !== undefined) {
+    if (shown !== undefined && metrics.costBasis !== 'none') {
       this.logger.warn(
-        `Computed cost ($${shown.toFixed(4)} on this run`
+        `Computed cost ($${shown.toFixed(6)} on this run`
         + `${metrics.costBasis ? `, ${metrics.costBasis}` : ''}) is NOT submitted to the `
         + `tracker: @uluops/ops-sdk's wire type carries no cost field. Token counts are sent `
         + `and are accurate, but cost is not derivable from them alone — input_tokens is `

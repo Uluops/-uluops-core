@@ -2199,3 +2199,46 @@ describe('WorkflowExecutor — max_parallel Infinity is unusable, not a usable c
     expect(warnings.some(w => w.includes('max_parallel'))).toBe(false);
   });
 });
+
+/**
+ * The thrown-workflow partial result must not label a partial cost as complete (slice 1c
+ * crew: code-auditor F1 / logic-error-detector L2). buildPartialResult rolled up commands
+ * only, omitting the success path's blocked-phase rule, so a blocked phase with no commands
+ * — whose spend is unknown — vanished and the survivors' sum went out as 'estimated'.
+ *
+ * Driven through the private method: every phase crash inside executePhase is carried as a
+ * placeholder, so the empty-carried throw is not reachable through execute() in a fixture.
+ * NEGATIVE CONTROL: both tests fail against 5d373c8, which reports costBasis 'estimated'
+ * and costUsdTotal 0.25.
+ */
+describe('WorkflowExecutor — thrown-workflow partial cost is never a partial sum', () => {
+  type Partial = { metrics: { costBasis?: string; costUsdTotal?: number } };
+  const build = (phases: unknown[], unaccounted?: boolean) =>
+    (new WorkflowExecutor(makeCommandExecutor(), makeRegistry()) as unknown as {
+      buildPartialResult(d: unknown, p: unknown[], r: unknown[], s: number, h: string, u?: boolean): Partial;
+    }).buildPartialResult(makeWorkflowDef().definition, phases, [], Date.now(), 'h', unaccounted);
+  const priced = {
+    id: 'good', name: 'Good', decision: 'passed', gateThreshold: 0, score: 90, durationMs: 1,
+    commands: [makeCommandResult({ metrics: {
+      inputTokens: 1, outputTokens: 1, totalEffectiveTokens: 2, durationMs: 1, model: 'm', toolCalls: 0,
+      costUsd: 0.25, costUsdTotal: 0.25, costBasis: 'estimated',
+    } as never })],
+  };
+
+  it('a blocked phase with no commands makes the partial result unpriced', () => {
+    const blocked = { id: 'bad', name: 'Bad', decision: 'blocked', commands: [], gateThreshold: 0, score: null, durationMs: 1 };
+    const partial = build([priced, blocked]);
+    expect(partial.metrics.costBasis).toBe('unpriced');
+    expect(partial.metrics.costUsdTotal).toBeUndefined();
+  });
+
+  it('a throw that carried no commands makes the partial result unpriced', () => {
+    const partial = build([priced], true);
+    expect(partial.metrics.costBasis).toBe('unpriced');
+    expect(partial.metrics.costUsdTotal).not.toBe(0.25);
+  });
+
+  it('control: completed phases alone keep their basis and total', () => {
+    expect(build([priced]).metrics).toMatchObject({ costBasis: 'estimated', costUsdTotal: 0.25 });
+  });
+});

@@ -202,6 +202,20 @@ function billedUsdOf(t: Pick<StepTotals, 'steps' | 'billedSteps' | 'billedUsd'>)
   return t.steps > 0 && t.billedSteps === t.steps ? t.billedUsd : undefined;
 }
 
+/**
+ * Fold one step's bill into a running tally. The ONE accumulation rule, shared by both paths
+ * (1c crew, code-validator): the success path folds over `result.steps`, the SDK's own list,
+ * which a throwing callback cannot thin; the fallback path has no such list and folds inside
+ * onStepFinish. Two sources by necessity, one rule by construction.
+ */
+function addStepBill<T extends Pick<StepTotals, 'billedSteps' | 'billedUsd'>>(t: T, billed: number | undefined): T {
+  if (billed !== undefined) {
+    t.billedSteps += 1;
+    t.billedUsd += billed;
+  }
+  return t;
+}
+
 function emptyStepTotals(): StepTotals {
   return {
     // FABRICATION-OK: accumulator SEEDS. Presence is carried by the sawUsage/sawNoCache/sawCacheRead/
@@ -701,6 +715,11 @@ export class AIProvider {
       ...(prepareStep ? { prepareStep } : {}),
       ...(useStructuredOutput ? { output: Output.object(options.output!) } : {}),
       onStepFinish: (step) => {
+        // FIRST, before anything that can throw. The SDK's notify() swallows a callback's
+        // throw, so a logger or budget-tracker throw below this line would drop the step
+        // from `steps` and `billedSteps` TOGETHER — and billedUsdOf's every-step rule would
+        // then pass a partial sum as complete (1c crew: code-auditor F2).
+        stepTotals.steps += 1;
         stepCount++;
         // EXTERNAL-OK: reads a COUNT or an enum off the SDK result, not a priced quantity. An array length and a
     // finishReason string carry no money and no threshold.
@@ -734,7 +753,6 @@ export class AIProvider {
           budgetTracker.update(safeTokenCount(usage.inputTokens), safeTokenCount(usage.outputTokens));
         }
         // Accumulate real totals so an error path can still report them (see StepTotals).
-        stepTotals.steps += 1;
         // FABRICATION-OK: an absent toolCalls ARRAY means the step made no tool calls —
         // absence and zero genuinely coincide for a list length, unlike a provider count.
         // EXTERNAL-OK: reads a COUNT or an enum off the SDK result, not a priced quantity. An array length and a
@@ -752,11 +770,7 @@ export class AIProvider {
 
         // EXTERNAL-OK: passes the SDK step's metadata and usage objects through; every numeric read
         // inside stepBilledUsd goes through finiteNonNegative.
-        const billed = stepBilledUsd(step.providerMetadata, step.usage);
-        if (billed !== undefined) {
-          stepTotals.billedSteps += 1;
-          stepTotals.billedUsd += billed;
-        }
+        addStepBill(stepTotals, stepBilledUsd(step.providerMetadata, step.usage));
 
         // ABSENT IS NOT ZERO. Each pool records whether it was REPORTED separately from
         // its value, because `?? 0` below cannot tell "the provider said zero" from "the
@@ -910,11 +924,8 @@ export class AIProvider {
       // EXTERNAL-OK: as in onStepFinish — each step's objects go to stepBilledUsd, whose numeric
       // reads are all finiteNonNegative.
       costUsdBilled: billedUsdOf(result.steps.reduce(
-        (t, step) => {
-          // EXTERNAL-OK: see above; the objects are passed through, not read as numbers here.
-          const billed = stepBilledUsd(step.providerMetadata, step.usage);
-          return billed === undefined ? t : { ...t, billedSteps: t.billedSteps + 1, billedUsd: t.billedUsd + billed };
-        },
+        // EXTERNAL-OK: see above; the objects are passed through, not read as numbers here.
+        (t, step) => addStepBill(t, stepBilledUsd(step.providerMetadata, step.usage)),
         // EXTERNAL-OK: an array length, the denominator of the every-step rule; no money read here.
         { steps: result.steps.length, billedSteps: 0, billedUsd: 0 },
       )),

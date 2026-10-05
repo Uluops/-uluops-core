@@ -86,3 +86,31 @@ describe('rollupCost — the lattice', () => {
     expect(rollupCost([{ costUsdTotal: Number.NaN, costBasis: 'estimated' }]).costBasis).toBe('unpriced');
   });
 });
+
+/**
+ * An explicit label is trusted only where the child's figures support it (1c crew:
+ * logic-error-detector L1). The first case also kills test-architect's surviving mutant:
+ * drop "unpriced dominates" and an unpriced child carrying a finite total slipped through.
+ * NEGATIVE CONTROL: the second and third fail against 5d373c8. The first passes there (the
+ * dominance disjunct existed) and exists to fail when that disjunct is removed.
+ */
+describe('rollupCost — explicit labels are checked, not trusted', () => {
+  it('an unpriced label dominates even when the child carries a finite total', () => {
+    expect(rollupCost([billed(0.01), { costUsdTotal: 0.5, costBasis: 'unpriced' }]).costBasis).toBe('unpriced');
+  });
+
+  it("a 'billed' label with no billed figure is re-derived, so the parent is not 'billed' with no bill", () => {
+    const r = rollupCost([{ costUsd: 0.05, costUsdTotal: 0.05, costBasis: 'billed' }]);
+    expect(r.costBasis).toBe('estimated');
+  });
+
+  it("a 'none' label carrying a cost is not neutral", () => {
+    const r = rollupCost([billed(0.01), { costUsd: 0.2, costUsdTotal: 0.2, costBasis: 'none' }]);
+    expect(r.costBasis).toBe('mixed');
+    expect(r.costUsdTotal).toBeCloseTo(0.21, 12);
+  });
+
+  it('control: a consistent none child stays neutral', () => {
+    expect(rollupCost([billed(0.01), stepsStage()]).costBasis).toBe('billed');
+  });
+});

@@ -15,11 +15,15 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) 
     the last step's, so reading it once would record the final request's cost as the run's.
     BYOK adds `costDetails.upstreamInferenceCost` only when the step's raw usage says
     `is_byok: true`; on a normal request upstream equals cost (Phase 0), so adding it always
-    would double the bill. `undefined` unless every step reported a cost — never a partial sum.
+    would double the bill, so under BYOK the figure is spend across both invoices, not
+    OpenRouter's alone. The BYOK branch is verified against the provider's code path but has not
+    been observed on a live BYOK response. `undefined` unless every step reported a cost —
+    never a partial sum.
   - `costUsdTotal`: per agent the bill, else the estimate; per parent the sum of children.
   - `costBasis`: `'billed' | 'estimated' | 'mixed' | 'unpriced' | 'none'`, exported as
     `CostBasis`. `'none'` (a steps stage, an empty or all-skipped composition) is neutral in a
-    rollup; `'unpriced'` dominates and leaves no total.
+    rollup; `'unpriced'` dominates and leaves no total. An explicit label is trusted only where
+    the child's own figures support it.
   One rollup (`src/utils/costRollup.ts`) replaces the six `sumCostUsd` call sites in the
   command, workflow and pipeline executors, so the four fields cannot drift apart between them.
   A step-ceiling (`MaxStepsExhaustedError`) child keeps its billed figure and basis.
@@ -34,9 +38,22 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) 
   no cost field is on the Tracker wire.
 - **The un-submitted-cost warning fires on any cost field**, not only `costUsd`. A run priced only
   by OpenRouter's bill (an uncatalogued slug has no estimate) previously dropped its cost with no
-  warning. The message now prints `costUsdTotal` and its basis.
+  warning. The message now prints `costUsdTotal` to six decimals (a request can bill $0.000003)
+  with its basis, and is skipped for `costBasis: 'none'`, where no model was called.
 - **The structured-output fallback result carries a billed figure** under the same every-step
   rule. It is reached only after the SDK's loop finished, so no request was in flight.
+
+### Fixed
+
+- **A workflow that throws no longer reports a partial cost as complete.** The error path's
+  `partialResult` rollup omitted the success path's blocked-phase rule, and dropped a failing
+  phase that carried no commands, so the survivors' sum went out labelled `'billed'` or
+  `'estimated'`. Both now contribute an unpriced child. (Before 1c the same gap understated
+  `costUsd`; 1c's basis label would have vouched for it.)
+- **The fallback path's every-step rule cannot be satisfied by a dropped step.** The step counter
+  is now the first statement of `onStepFinish`; the AI SDK swallows a throw from that callback,
+  so a throwing logger used to drop a step from both counts at once — and, before 1c, from the
+  fallback's token totals.
 
 ## [0.46.0] - 2026-10-04
 

@@ -310,6 +310,10 @@ export interface ExecutionMetrics {
    * Provider-reported billed amount in USD, summed over every step (today only OpenRouter
    * reports one: `providerMetadata.openrouter.usage.cost`). `undefined` unless EVERY step
    * reported a cost — a partial sum would understate money spent while looking complete.
+   * Under BYOK it adds the upstream provider's charge (`costDetails.upstreamInferenceCost`),
+   * so it is total spend across OpenRouter and the upstream key, not OpenRouter's invoice.
+   * It sums the requests the AI SDK KEPT: an attempt the SDK retried leaves no step and is
+   * invisible here, so the figure can understate a run that hit retries.
    * Rolls up worst-child. In-process only: no wire field carries it (D9).
    */
   costUsdBilled?: number;
