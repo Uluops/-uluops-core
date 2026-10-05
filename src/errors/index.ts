@@ -220,7 +220,11 @@ export class ConfigurationError extends UluOpsError {
   }
 }
 
-/** Thrown when a model alias cannot be resolved via the registry model catalog. */
+/**
+ * Thrown when a model cannot be found: an alias the registry model catalog cannot resolve
+ * (before a run), or — since 0.48.0 — a slug the provider itself rejects mid-run (OpenRouter's
+ * 400 "is not a valid model ID"), possibly after other agents in the run have already billed.
+ */
 export class ModelNotFoundError extends UluOpsError {
   readonly code = 'MODEL_NOT_FOUND' as const;
 
@@ -230,7 +234,12 @@ export class ModelNotFoundError extends UluOpsError {
   }
 }
 
-/** Thrown when a resolved model lacks a required capability (e.g. tools, vision, extendedThinking). */
+/**
+ * Thrown when a resolved model lacks a required capability (e.g. tools, vision, extendedThinking)
+ * before a run, or — since 0.48.0 — when no provider endpoint can serve the request as sent
+ * (OpenRouter's no-endpoint 404), mid-run. Carries no `statusCode`: a handler keyed on
+ * `SdkApiError` status 404 does not see the routing case.
+ */
 export class CapabilityError extends UluOpsError {
   readonly code = 'CAPABILITY_ERROR' as const;
 
