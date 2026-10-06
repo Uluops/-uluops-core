@@ -23,6 +23,11 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) 
   `[{ code: 'execution.run-stopped', … }]` on any command, stage or workflow it writes `ABORTED`,
   and `execution.run-stopped-partial` (severity `degraded`) on a command that kept a real failure
   over a panel a stop cut short — so a parent that later softens that failure still sees the stop.
+  **`execution.child-crashed` is stamped on any command, stage or workflow with a real crash
+  inside, whether or not a run stop happened** — so an ordinary unstopped `FAIL` driven by a crashed
+  agent now carries a marker it did not carry in 0.49.0. It lets a parent tell a crash-derived
+  negative from a score-derived one; consumers that treat any `degradationMarkers` entry as "this
+  run was stopped" must filter by `code`.
 
 ### Changed
 
@@ -56,6 +61,16 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) 
     throwing "All agents failed". Pinned by a composed test over 300 real-executor workflows ×
     {explicit stop, deadline}: a stopped workflow and its phase are `BLOCK`/`'blocked'` exactly
     when something crashed, otherwise `ABORTED`/`'aborted'`.
+  - **"Finished keeps verdict"** (Alex 2026-10-06) bounds that rule: it applies only to the parts a
+    stop **reached**. A workflow phase that finished before the stop keeps its own verdict, its gate
+    and warn postures included. So a stopped workflow is `BLOCK` if a stopped phase holds a real
+    crash **or** a finished phase is `'blocked'`, and otherwise `ABORTED`. A finished `'warned'`
+    phase does not make it `HOLD`. A crash inside a finished phase that `on_fail: warn` softened to
+    `'warned'` does not make it `BLOCK`. This is what a pipeline already did with finished stages,
+    so the same phases now get the same verdict whether they sit in one workflow or are split
+    across pipeline stages. Pinned by an enumerated test over 48 layouts × {explicit
+    stop, deadline}, checked against an oracle computed independently of both executors. A phase
+    authored with no steps, blocked by its fail-closed gate, is no longer counted as a crash.
   - The `'aborted'` phase decision, declared but produced by no code until now, is produced for a
     phase a stop cut short and reads **neutral** — the workflow aggregate's dead `aborted → BLOCK`
     reading is gone. Submission no longer drops `'aborted'` phases: their completed commands are
@@ -65,7 +80,10 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) 
     siblings returns the crash's `FAIL` instead of throwing with an overstated crash count.
   - A pipeline ref stage whose single agent was stopped is a **completed** stage holding an
     `ABORTED` record, not a `failed` stage counted in `stagesFailed`; the agent now reaches
-    submission. Calling a single-agent command directly still rejects with `CancelledError`.
+    submission. Calling a single-agent command directly still rejects with `CancelledError`. Under
+    a caller **deadline** the same stage is likewise **completed**, holding the crash record marked
+    `execution.deadline` (counted in `stagesFailed` through its negative record), rather than a bare
+    `failed` stage that dropped the record and the mark.
   - A workflow whose scored work sat only in stopped phases reports `score: null`, not 0.
   - Phases a stop kept from starting — queued behind `max_parallel`, or in later levels — are not
     dispatched and are recorded `'aborted'` (or `'blocked'` under a caller deadline), no longer

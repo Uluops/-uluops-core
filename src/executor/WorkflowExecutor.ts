@@ -772,11 +772,18 @@ export class WorkflowExecutor {
     // `aborted` was read here as BLOCK while no code produced it; it is now produced for a phase
     // stopped mid-run and means "no verdict", not a failure (aborted-agent-recording OD-3). Not
     // remappable through aggregation.decision, which has SHIP/HOLD/BLOCK keys only.
-    // "Crash decides" (OD-12) at the workflow: a stop anywhere means no quality verdict — BLOCK if
-    // anything in any phase really crashed (a deadline counts), else ABORTED. A posture-softened
-    // `warned` phase does not make a stopped workflow HOLD.
+    // "Crash decides" (OD-12) applies only to the phases a stop REACHED; a phase that FINISHED before
+    // the stop keeps its own verdict, gates and warn postures included ("finished keeps verdict",
+    // OD-14, Alex 2026-10-06). So a stopped workflow is BLOCK iff a stopped phase holds a real crash
+    // (a deadline counts) or a finished phase is `blocked`; otherwise ABORTED — a finished `warned`
+    // phase does not make it HOLD, and a crash inside a finished phase whose gate passed does not
+    // make it BLOCK. Why: the same phases must get the same verdict whether they sit in one workflow
+    // or are split across pipeline stages, and a finished stage already keeps its verdict there.
     if (anyStop) {
-      if (phases.some(phaseCrashInside)) {
+      const negative = phases.some(p => phaseStopReached(p)
+        ? phaseCrashInside(p)
+        : p.decision === 'blocked');
+      if (negative) {
         decision = config?.decision?.BLOCK ?? 'BLOCK';
         decisionCategory = 'negative';
       } else {
@@ -1045,6 +1052,9 @@ function phaseStopReached(p: PhaseResult): boolean {
  */
 function phaseCrashInside(p: PhaseResult): boolean {
   if (p.commands.some(crashInside)) return true;
-  if (p.decision === 'blocked' && p.commands.length === 0) return true;
+  // A command-less blocked phase crashed only if it THREW (`error` set) or a deadline kept it from
+  // starting. A phase authored with no steps is blocked by its fail-closed gate, not by a crash
+  // (run #113 D1).
+  if (p.decision === 'blocked' && p.commands.length === 0 && (p.error !== undefined || p.stoppedBeforeStart === true)) return true;
   return false;
 }

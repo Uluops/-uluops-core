@@ -216,8 +216,9 @@ export function toCommandRecord(agentRecord: AgentResult): CommandResult {
     maxScore: agentRecord.maxScore,
     recommendations: agentRecord.recommendations,
     durationMs: agentRecord.durationMs,
-    // Only the run-stopped mark — the field's single meaning on a command (second re-check L3).
-    degradationMarkers: agentRecord.degradationMarkers?.filter(m => m.code === RUN_STOPPED_CODE),
+    // Only the stop marks — run-stopped, and a caller deadline's crash mark (run #113 L1) — the
+    // field's meaning on a command (second re-check L3); stopVerdict reads both.
+    degradationMarkers: agentRecord.degradationMarkers?.filter(m => m.code === RUN_STOPPED_CODE || m.code === 'execution.deadline'),
     // FABRICATION-OK: defaults UNDER the spread, as in stepCrashPlaceholder; a count of events.
     metrics: { toolCallCount: 0, toolCalls: 0, ...agentRecord.metrics },
   } as CommandResult;

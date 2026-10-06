@@ -8,6 +8,12 @@
  *   otherwise ABORTED / neutral. Score thresholds, lens caps and warn postures do not apply to
  *   it: they judge finished work, and a stopped panel is not finished.
  *
+ *   Bounded by "finished keeps verdict" (OD-14, Alex 2026-10-06): the rule judges only the parts a
+ *   stop REACHED. A workflow phase or pipeline stage that finished before the stop keeps its own
+ *   verdict, so a stopped workflow is negative if a stopped phase crashed OR a finished phase is
+ *   blocked (WorkflowExecutor.aggregate), exactly as a pipeline treats finished stages. A command's
+ *   panel is one unit: a stop that reached any agent reached the panel.
+ *
  * Containers are told what happened inside by core-stamped degradation markers, never by decision
  * strings (a model may print "ABORTED" or "FAIL" for any reason):
  *   - RUN_STOPPED_CODE     — an aborted placeholder, or a container this rule wrote ABORTED.

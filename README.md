@@ -877,9 +877,13 @@ const stoppedStages = result.stages.filter(s => s.result && isStoppedResult(s.re
 workflow, that container gives no quality verdict: it is negative (`FAIL`, phase `'blocked'`,
 `BLOCK`) if anything inside really crashed — a caller deadline's agents count as crashes — and
 otherwise `ABORTED` / `neutral` (phase `'aborted'`). Score thresholds, lens caps and warn postures
-(`on_fail`, `on_failure: warn`) judge finished work and do not apply to a stopped container. At the
-pipeline, a stage that really failed before a user `cancel()` makes the decision `FAIL`; a cancel
-with no failure reads `CANCELLED`. Use `stopReached(result)` to ask whether a stop touched a result
+(`on_fail`, `on_failure: warn`) judge finished work and do not apply to a stopped container.
+**Finished work keeps its verdict:** the rule covers only the parts a stop reached. A workflow
+phase that finished before the stop keeps its own verdict, so a stopped workflow is `BLOCK` if a
+stopped phase crashed or a finished phase is `'blocked'`, and otherwise `ABORTED`. A pipeline
+treats finished stages the same way: a stage that really failed before a user `cancel()` makes the
+decision `FAIL`, and a cancel with no failure reads `CANCELLED`. So the same phases get the same
+verdict as one workflow or as separate pipeline stages. Use `stopReached(result)` to ask whether a stop touched a result
 or anything inside it. With `sum`, 90 plus a stopped agent under a 150 threshold is `ABORTED`, not `FAIL`. A panel whose agents were *all* stopped returns rather than throwing, and
 a pipeline stage whose single agent was stopped is a completed stage holding an `ABORTED` record.
 Genuine crashes — a timeout, a caller deadline, and the agent that received the 402 — keep the

@@ -19,7 +19,7 @@ import { resolveDecisionCategory } from './classifyDecision.js';
 import { worstExtractionConfidence } from '../utils/worstExtractionConfidence.js';
 import { aggregateScores } from '../utils/aggregateScores.js';
 import { crashPlaceholder, abortedPlaceholder, isStoppedResult, toCommandRecord, withDeadlineMark, ABORTED_DECISION, CRASH_PLACEHOLDER_VERSION } from '../utils/crashPlaceholder.js';
-import { isRunStopAbort, isDeadlineSignal, rejectionKind } from '../utils/runStop.js';
+import { isDeadlineSignal, rejectionKind } from '../utils/runStop.js';
 import { stopVerdict, crashInside, containerMarkers } from '../utils/stopVerdict.js';
 import { verifiedNothingExecuted } from '../utils/executionEvidence.js';
 import type { Logger } from '@uluops/sdk-core';
@@ -351,8 +351,16 @@ export class PipelineExecutor {
       // holding an ABORTED record, like an inline-agents stage, not as a failed stage — a throw
       // here counted in stagesFailed and the agent vanished from submission (Alex 2026-10-05,
       // crew #110 F4).
-      if (isRunStopAbort(error, options?.abortSignal)) {
-        const record = abortedPlaceholder(stage.ref ?? stage.id, error, { startedAt: startTime });
+      // Under a caller DEADLINE the same rejection is a crash (OD-9), and it is recorded the same
+      // way — a completed stage holding the deadline-marked crash record — so the agent reaches
+      // submission and the stage FAILs through its negative record (run #113 L1). A plain failed
+      // stage dropped the record and the deadline mark with it.
+      const kind = rejectionKind(error, options?.abortSignal);
+      if (kind === 'stopped' || kind === 'deadline') {
+        const ref = stage.ref ?? stage.id;
+        const record = kind === 'stopped'
+          ? abortedPlaceholder(ref, error, { startedAt: startTime })
+          : withDeadlineMark(crashPlaceholder(ref, error, { startedAt: startTime }));
         return {
           id: stage.id,
           name: stage.name,
