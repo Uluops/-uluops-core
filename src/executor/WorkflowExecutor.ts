@@ -1,7 +1,8 @@
 import type { AgentExecutor } from './AgentExecutor.js';
 import { externalInt, finiteNonNegative } from '../utils/externalValue.js';
-import { CRASH_PLACEHOLDER_VERSION, abortedPlaceholder, containsRunStop, toCommandRecord, runStoppedMarker, ABORTED_DECISION } from '../utils/crashPlaceholder.js';
-import { isRunStopAbort, isDeadlineSignal } from '../utils/runStop.js';
+import { CRASH_PLACEHOLDER_VERSION, abortedPlaceholder, toCommandRecord, withDeadlineMark, ABORTED_DECISION } from '../utils/crashPlaceholder.js';
+import { isDeadlineSignal, rejectionKind } from '../utils/runStop.js';
+import { stopVerdict, stopReached, crashInside, containerMarkers } from '../utils/stopVerdict.js';
 import type { CommandExecutor } from './CommandExecutor.js';
 import type { RegistryClient } from '../registry/RegistryClient.js';
 import type { ResolvedDefinition } from '../types/registry.js';
@@ -198,8 +199,13 @@ export class WorkflowExecutor {
       score: aggregated.score,
       // Keyed on the category, not the decision string: aggregation.decision.BLOCK may be remapped
       // to any word, including "ABORTED" (second re-check L1).
-      ...(aggregated.decisionCategory === 'neutral' && phaseResults.some(p => p.decision === 'aborted')
-        ? { degradationMarkers: [runStoppedMarker()] } : {}),
+      ...(() => {
+        const m = containerMarkers(
+          aggregated.anyStop ? (aggregated.decisionCategory === 'negative' ? 'negative' : 'aborted') : undefined,
+          aggregated.anyCrash,
+        );
+        return m ? { degradationMarkers: m } : {};
+      })(),
       extractionConfidence: worstExtractionConfidence(phaseResults.flatMap(p => p.commands)),
       phases: phaseResults,
       recommendations: this.deduplicateRecommendations(allRecommendations),
@@ -227,7 +233,7 @@ export class WorkflowExecutor {
           if (p.decision !== 'skipped' && p.decision !== 'aborted' && !p.stoppedBeforeStart) acc.phasesExecuted++;
           if (p.decision === 'passed') acc.phasesPassed++;
           if (p.decision === 'warned') acc.phasesWarned++;
-          if (p.decision === 'blocked') acc.phasesBlocked++;
+          if (p.decision === 'blocked' && !p.stoppedBeforeStart) acc.phasesBlocked++;
           if (p.decision === 'skipped') acc.phasesSkipped++;
           if (p.decision === 'aborted') acc.phasesAborted++;
           return acc;
@@ -320,7 +326,7 @@ export class WorkflowExecutor {
       // A phase a stop kept from starting is not a gate outcome: `on_failure` neither rewrites it
       // (a deadline must not read as the quality verdict `warned`/HOLD) nor triggers stop/abort —
       // the run is already stopped (crew #110 second re-check M1).
-      if (phaseResult.decision === 'blocked' && !phaseResult.stoppedBeforeStart) {
+      if (phaseResult.decision === 'blocked' && !phaseStopReached(phaseResult)) {
         switch (onFailure) {
           case 'stop':
             behavior = 'stop';
@@ -329,10 +335,7 @@ export class WorkflowExecutor {
             behavior = 'abort';
             break;
           case 'warn':
-            // Softening a blocked phase to `warned` makes it a conditional, and aborted outranks
-            // conditional: a softened phase that also holds a stopped step is `aborted`, or the
-            // stop vanishes into HOLD (found by the composed invariant test, not by review).
-            phaseResult.decision = phaseResult.commands.some(containsRunStop) ? 'aborted' : 'warned';
+            phaseResult.decision = 'warned';
             break;
           case 'continue':
           default:
@@ -470,24 +473,25 @@ export class WorkflowExecutor {
     if (phase.parallel) {
       const startedAt = stepRefs.map(() => Date.now());
       // Classified at rejection time — see CommandExecutor.executeParallel (crew #110 F5).
-      const stopped = stepRefs.map(() => false);
+      const kinds = stepRefs.map((): 'stopped' | 'deadline' | 'crash' => 'crash');
       const settled = await Promise.allSettled(
         stepRefs.map((step, j) => {
           startedAt[j] = Date.now();
           return this.executeStep(step.type, step.ref, input, control)
-            .catch((error: unknown) => { stopped[j] = isRunStopAbort(error, signal); throw error; });
+            .catch((error: unknown) => { kinds[j] = rejectionKind(error, signal); throw error; });
         }),
       );
       for (let j = 0; j < settled.length; j++) {
         const outcome = settled[j]!;
         if (outcome.status === 'fulfilled') {
           commandResults.push(outcome.value);
-        } else if (stopped[j]) {
+        } else if (kinds[j] === 'stopped') {
           commandResults.push(toCommandRecord(abortedPlaceholder(stepRefs[j]!.ref, outcome.reason, { startedAt: startedAt[j] })));
         } else {
           const errorMsg = outcome.reason instanceof Error ? outcome.reason.message : String(outcome.reason);
           errors.push(errorMsg);
-          commandResults.push(this.stepCrashPlaceholder(stepRefs[j]!.ref, outcome.reason));
+          const crash = this.stepCrashPlaceholder(stepRefs[j]!.ref, outcome.reason);
+          commandResults.push(kinds[j] === 'deadline' ? withDeadlineMark(crash) : crash);
         }
       }
 
@@ -503,11 +507,13 @@ export class WorkflowExecutor {
         try {
           commandResults.push(await this.executeStep(step.type, step.ref, input, control));
         } catch (error) {
-          if (isRunStopAbort(error, signal)) {
+          const kind = rejectionKind(error, signal);
+          if (kind === 'stopped') {
             commandResults.push(toCommandRecord(abortedPlaceholder(step.ref, error, { startedAt })));
           } else {
             errors.push(error instanceof Error ? error.message : String(error));
-            commandResults.push(this.stepCrashPlaceholder(step.ref, error));
+            const crash = this.stepCrashPlaceholder(step.ref, error);
+            commandResults.push(kind === 'deadline' ? withDeadlineMark(crash) : crash);
           }
           break;
         }
@@ -519,7 +525,9 @@ export class WorkflowExecutor {
     // phase happened to dispatch. A phase where SOME steps succeeded keeps their billed
     // work and fails through the gate; a phase where none did still throws, so
     // single-step phases behave exactly as before.
-    if (errors.length > 0 && commandResults.length === errors.length) {
+    // Not when a stop reached a step (a deadline crash): the phase returns its stop verdict
+    // instead of throwing, so the stop stays visible to the workflow (see CommandExecutor).
+    if (errors.length > 0 && commandResults.length === errors.length && !commandResults.some(stopReached)) {
       throw new WorkflowError(
         `All steps in phase "${phase.name}" failed: ${errors.join('; ')}`,
         { partialResult: commandResults },
@@ -550,22 +558,12 @@ export class WorkflowExecutor {
         commandResults.some(r => r.score != null && resolveDecisionCategory(r, this.warnUnclassified) === 'negative')) {
       decision = 'warned';
     }
-    // negative > aborted > conditional > positive (aborted-agent-recording §6, OD-3), with
-    // NEGATIVE MEANING CATEGORICAL — the CommandExecutor.aggregateResults twin, same rule at every
-    // container (Alex 2026-10-05, crew #110 F1). A phase holding a stopped step has no verdict —
-    // the 'aborted' phase decision, read neutral by aggregate() — unless a step ITSELF resolved
-    // negative. A gate verdict over the completed part of the panel (a score under threshold, under
-    // on_fail block or warn alike) is not evidence and does not keep `blocked`.
-    //
-    // The kept verdict must itself be `blocked` (second re-check H1/M1): a negative step softened
-    // to `warned` by on_fail: warn or the lens cap is a conditional, which aborted outranks — the
-    // same rule the workflow aggregate applies when on_failure: warn rewrites blocked → warned, so
-    // both layers rank a softened negative the same way.
-    if (commandResults.some(containsRunStop) &&
-        !(decision === 'blocked' &&
-          commandResults.some(r => resolveDecisionCategory(r, this.warnUnclassified) === 'negative'))) {
-      decision = 'aborted';
-    }
+    // "Crash decides" (utils/stopVerdict.ts, OD-12): once a stop reached any step, the gate, the
+    // scoreless guard and the lens cap above do not stand. `blocked` if anything inside really
+    // crashed (a deadline's steps count), else 'aborted' — no on_fail softening either way.
+    const verdict = stopVerdict(commandResults);
+    if (verdict === 'aborted') decision = 'aborted';
+    if (verdict === 'negative') decision = 'blocked';
 
     return {
       id: phase.id,
@@ -731,10 +729,11 @@ export class WorkflowExecutor {
   private aggregate(
     config: WorkflowDefinition['workflow']['aggregation'],
     phases: PhaseResult[],
-  ): { decision: WorkflowDecision; decisionCategory: DecisionCategory; score: number | null } {
+  ): { decision: WorkflowDecision; decisionCategory: DecisionCategory; score: number | null; anyStop: boolean; anyCrash: boolean } {
     const scorable = phases.filter(
-      p => p.decision !== 'skipped' && p.decision !== 'aborted',
+      p => p.decision !== 'skipped' && p.decision !== 'aborted' && !p.stoppedBeforeStart,
     );
+    const anyStop = phases.some(phaseStopReached);
     const method = config?.score?.method ?? 'weighted_average';
 
     // `scorable` excludes skipped and aborted phases, so an EMPTY scorable array means no
@@ -752,7 +751,7 @@ export class WorkflowExecutor {
     // aggregateScores' empty-input 0 exists so an all-skipped run BLOCKs, and a stopped run is
     // ABORTED, not BLOCK — there the 0 would read as a measured worst score beside a phase that
     // really scored.
-    const score = scorable.length === 0 && phases.some(p => p.decision === 'aborted')
+    const score = scorable.length === 0 && anyStop
       ? null
       : aggregateScores(
         scorable.map(p => ({ key: p.id, score: p.score })),
@@ -762,7 +761,6 @@ export class WorkflowExecutor {
 
     const hasBlocked = phases.some(p => p.decision === 'blocked');
     const hasWarned = phases.some(p => p.decision === 'warned');
-    const hasAborted = phases.some(p => p.decision === 'aborted');
 
     // The category is derived from the phase outcomes, not the decision string —
     // WDL aggregation.decision config can remap SHIP/HOLD/BLOCK to arbitrary
@@ -774,12 +772,20 @@ export class WorkflowExecutor {
     // `aborted` was read here as BLOCK while no code produced it; it is now produced for a phase
     // stopped mid-run and means "no verdict", not a failure (aborted-agent-recording OD-3). Not
     // remappable through aggregation.decision, which has SHIP/HOLD/BLOCK keys only.
-    if (hasBlocked) {
+    // "Crash decides" (OD-12) at the workflow: a stop anywhere means no quality verdict — BLOCK if
+    // anything in any phase really crashed (a deadline counts), else ABORTED. A posture-softened
+    // `warned` phase does not make a stopped workflow HOLD.
+    if (anyStop) {
+      if (phases.some(phaseCrashInside)) {
+        decision = config?.decision?.BLOCK ?? 'BLOCK';
+        decisionCategory = 'negative';
+      } else {
+        decision = ABORTED_DECISION;
+        decisionCategory = 'neutral';
+      }
+    } else if (hasBlocked) {
       decision = config?.decision?.BLOCK ?? 'BLOCK';
       decisionCategory = 'negative';
-    } else if (hasAborted) {
-      decision = ABORTED_DECISION;
-      decisionCategory = 'neutral';
     } else if (hasWarned) {
       decision = config?.decision?.HOLD ?? 'HOLD';
       decisionCategory = 'conditional';
@@ -788,7 +794,7 @@ export class WorkflowExecutor {
       decisionCategory = 'positive';
     }
 
-    return { decision, decisionCategory, score };
+    return { decision, decisionCategory, score, anyStop, anyCrash: phases.some(phaseCrashInside) };
   }
 
   /**
@@ -1002,7 +1008,7 @@ export class WorkflowExecutor {
       ...phases.flatMap((p): CostFields[] =>
         p.commands.length > 0
           ? p.commands.map(c => c.metrics)
-          : p.decision === 'blocked' ? [{ costUsd: undefined, costBasis: 'unpriced' }] : [],
+          : p.decision === 'blocked' && !p.stoppedBeforeStart ? [{ costUsd: undefined, costBasis: 'unpriced' }] : [],
       ),
       ...(failedPhaseUnaccounted ? [{ costUsd: undefined, costBasis: 'unpriced' as const }] : []),
     ];
@@ -1024,3 +1030,21 @@ export class WorkflowExecutor {
   }
 }
 
+/**
+ * A run stop reached this phase: it was kept from starting, written 'aborted', or holds a step a
+ * stop reached (an aborted step, a stopped/partial container, a deadline crash).
+ */
+function phaseStopReached(p: PhaseResult): boolean {
+  return p.stoppedBeforeStart === true || p.decision === 'aborted' || p.commands.some(stopReached);
+}
+
+/**
+ * Something in this phase really crashed: a crashed step or a container with a crash inside, a
+ * phase that threw with nothing to carry (blocked, no commands, not a stop), or a phase a caller
+ * DEADLINE kept from starting (a deadline is a crash, OD-9).
+ */
+function phaseCrashInside(p: PhaseResult): boolean {
+  if (p.commands.some(crashInside)) return true;
+  if (p.decision === 'blocked' && p.commands.length === 0) return true;
+  return false;
+}

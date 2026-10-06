@@ -46,3 +46,13 @@ export function isRunStopAbort(reason: unknown, runSignal: AbortSignal | undefin
     && typeof reason === 'object' && reason !== null
     && (reason as { code?: unknown }).code === 'CANCELLED';
 }
+
+/**
+ * What a rejection was, classified AT REJECTION TIME: a stop of this run (→ aborted placeholder),
+ * a caller DEADLINE (→ crash placeholder carrying the deadline mark, OD-9), or any other crash.
+ */
+export function rejectionKind(reason: unknown, runSignal: AbortSignal | undefined): 'stopped' | 'deadline' | 'crash' {
+  if (isRunStopAbort(reason, runSignal)) return 'stopped';
+  const cancelled = typeof reason === 'object' && reason !== null && (reason as { code?: unknown }).code === 'CANCELLED';
+  return cancelled && isDeadlineSignal(runSignal) ? 'deadline' : 'crash';
+}

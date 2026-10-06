@@ -427,13 +427,13 @@ describe('fold: workflow phase precedence matches the command rule', () => {
     }
   });
 
-  // Second re-check M1: a crash softened to `warned` by on_fail: warn is a conditional; aborted
-  // outranks it — the same ranking the workflow layer applies to on_failure: warn. NC: against
-  // 3381f4f this phase was `warned` and the workflow HOLD.
-  it('a crash beside a stopped step under on_fail warn is aborted (softened negative is conditional)', async () => {
+  // OD-12 "crash decides": a crash beside a stopped step makes the phase `blocked` — postures
+  // (on_fail: warn) do not apply to a stopped phase. NC: against 3381f4f this phase was `warned`
+  // and the workflow HOLD; against 1fab201 it was `aborted` and the crash vanished (auditor F1).
+  it('a crash beside a stopped step under on_fail warn is blocked: crash decides', async () => {
     const r = await run(wf([{ id: 'p', name: 'P', commands: ['b', 'w'], parallel: true, gate: { threshold: 0, aggregate: 'average', on_fail: 'warn' } }]), { b: 'boom', w: 'wait' });
-    expect(r.phases[0]!.decision).toBe('aborted');
-    expect(r.decision).toBe('ABORTED');
+    expect(r.phases[0]!.decision).toBe('blocked');
+    expect(r.decision).toBe('BLOCK');
   });
 
   // Guard (test-architect #1). MC: swap hasBlocked/hasAborted in aggregate() → ABORTED.
@@ -791,16 +791,52 @@ describe('invariant: a stopped workflow never reads SHIP or HOLD', () => {
       checked++;
       if (anyWait) {
         stoppedRuns++;
-        // A deadline is a failure (OD-9): never SHIP and never the neutral ABORTED. Its in-flight
-        // agents are CRASHES, and a crash beside passing work can already read HOLD through the
-        // existing rules (on_failure: warn; the scored-negative cap on a FAIL command that still
-        // averages 90) — the same verdict an agent's own timeout gets. That is crash semantics,
-        // not a stop leaking, so HOLD is not what this invariant polices for deadlines.
-        const forbidden = mode === 'deadline' ? ['SHIP', 'ABORTED'] : ['SHIP', 'HOLD'];
-        expect(forbidden, `${mode}: ${x},${y},${z} on_fail=${on_fail} on_failure=${on_failure}`).not.toContain(r.decision);
+        // OD-12 "crash decides", stated exactly: a stopped workflow is BLOCK iff something really
+        // crashed (a deadline's in-flight agents count), else ABORTED. Never SHIP or HOLD, and a
+        // deadline is never the neutral ABORTED. (An all-steps-crashed phase may throw; that is a
+        // crash outcome too.)
+        const crashed = mode === 'deadline' || [x, y, z].includes('boom');
+        const label = `${mode}: ${x},${y},${z} on_fail=${on_fail} on_failure=${on_failure}`;
+        if (crashed) expect(['BLOCK', 'THREW:WorkflowError'], label).toContain(r.decision);
+        else expect(r.decision, label).toBe('ABORTED');
+        // The same rule at the PHASE a consumer reads: no posture, no gate verdict survives a stop.
+        const phase = (r as { phases?: Array<{ decision: string }> }).phases?.[0];
+        if (phase) expect(phase.decision, `phase ${label}`).toBe(crashed ? 'blocked' : 'aborted');
       }
     }
     expect(checked).toBe(300);
     expect(stoppedRuns).toBeGreaterThan(100); // the property was actually exercised
+  });
+});
+
+describe('OD-13: a real failure beats a later user cancel at the pipeline', () => {
+  // NC: against 1fab201 this reads CANCELLED — the status short-circuit ranked the cancel above a
+  // stage that had already really FAILED.
+  it('a stage FAILs, the run continues, then cancel(): decision FAIL, status still cancelled', async () => {
+    const agentExec = {
+      execute: vi.fn().mockImplementation(async (r: ResolvedDefinition, _i: unknown, o?: ExecutionOptions) =>
+        r.name === 'bad' ? makeValidatorResult({ name: 'bad', score: 20, decision: 'FAIL', decisionCategory: 'negative' })
+          : untilAborted(o?.abortSignal, makeValidatorResult({ name: r.name }))),
+    } as unknown as AgentExecutor;
+    const exec = pipelineExecutor(agentExec, ['bad', 'slow']);
+    const d = inlinePipeline([]);
+    (d.definition as unknown as PipelineDefinition).pipeline.stages = [
+      { id: 's1', name: 'S1', type: 'agents', agents: [{ ref: 'bad' }] },
+      { id: 's2', name: 'S2', type: 'agents', agents: [{ ref: 'slow' }] },
+    ] as never;
+    const handle = await exec.start(d, { target: '/tmp' });
+    await new Promise(r => setTimeout(r, 10));
+    await handle.cancel();
+    const result = await handle.wait();
+    expect(result.status).toBe('cancelled');
+    expect(result.decision).toBe('FAIL');
+  });
+
+  it('control: a cancel with no failure is still CANCELLED', async () => {
+    const exec = pipelineExecutor(agentExecutor({ a: 'wait' }), ['a']);
+    const handle = await exec.start(inlinePipeline(['a']), { target: '/tmp' });
+    await new Promise(r => setTimeout(r, 5));
+    await handle.cancel();
+    expect((await handle.wait()).decision).toBe('CANCELLED');
   });
 });

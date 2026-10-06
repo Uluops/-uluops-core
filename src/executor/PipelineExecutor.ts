@@ -18,8 +18,9 @@ import { rollupCost, type CostFields } from '../utils/costRollup.js';
 import { resolveDecisionCategory } from './classifyDecision.js';
 import { worstExtractionConfidence } from '../utils/worstExtractionConfidence.js';
 import { aggregateScores } from '../utils/aggregateScores.js';
-import { crashPlaceholder, abortedPlaceholder, isAbortedRecord, isStoppedResult, toCommandRecord, runStoppedMarker, ABORTED_DECISION, CRASH_PLACEHOLDER_VERSION } from '../utils/crashPlaceholder.js';
-import { isRunStopAbort, isDeadlineSignal } from '../utils/runStop.js';
+import { crashPlaceholder, abortedPlaceholder, isStoppedResult, toCommandRecord, withDeadlineMark, ABORTED_DECISION, CRASH_PLACEHOLDER_VERSION } from '../utils/crashPlaceholder.js';
+import { isRunStopAbort, isDeadlineSignal, rejectionKind } from '../utils/runStop.js';
+import { stopVerdict, crashInside, containerMarkers } from '../utils/stopVerdict.js';
 import { verifiedNothingExecuted } from '../utils/executionEvidence.js';
 import type { Logger } from '@uluops/sdk-core';
 import { registerRunTrip, unregisterRunTrip } from '../utils/runTrip.js';
@@ -420,9 +421,13 @@ export class PipelineExecutor {
     // passing (tracker run #55, SEM-INC/H). AgentExecutor stamps decisionCategory
     // from the definition's vocabulary; crashed agents fall back via classifyDecision.
     const stageFailed = agentResults.some(r => resolveDecisionCategory(r) === 'negative');
-    // negative > aborted > positive (aborted-agent-recording §6): a stage whose completed agents
-    // passed and whose others were stopped has no verdict, not a PASS.
-    const stageAborted = !stageFailed && agentResults.some(isAbortedRecord);
+    // "Crash decides" (utils/stopVerdict.ts, OD-12): once a stop reached any agent, the stage is
+    // FAIL if anything inside really crashed, else ABORTED — a lens's own negative over a stopped
+    // panel does not keep FAIL.
+    const verdict = stopVerdict(agentResults);
+    const stageNegative = verdict === undefined ? stageFailed : verdict === 'negative';
+    const stageAborted = verdict === 'aborted';
+    const markers = containerMarkers(verdict, agentResults.some(crashInside));
 
     const stageDurationMs = Date.now() - startTime;
 
@@ -445,8 +450,8 @@ export class PipelineExecutor {
         version: CRASH_PLACEHOLDER_VERSION,
         definitionHash: '',
         agentType: 'analyst',
-        decision: stageFailed ? 'FAIL' : stageAborted ? ABORTED_DECISION : 'PASS',
-        decisionCategory: stageFailed ? 'negative' as const : stageAborted ? 'neutral' as const : 'positive' as const,
+        decision: stageNegative ? 'FAIL' : stageAborted ? ABORTED_DECISION : 'PASS',
+        decisionCategory: stageNegative ? 'negative' as const : stageAborted ? 'neutral' as const : 'positive' as const,
         // KEEP: avgScore is a real average over child agents; maxScore 100 is its scale,
         // not a fabrication. An all-scoreless stage now reports `null` rather than a
         // fabricated 0 (the residual zero routed to composition-aggregation-spec, closed
@@ -465,7 +470,7 @@ export class PipelineExecutor {
       // FABRICATION-OK: summing a count of events; see CommandExecutor.
           toolCalls: agentResults.reduce((sum, r) => sum + (r.metrics.toolCallCount ?? 0), 0),
         },
-        ...(stageAborted ? { degradationMarkers: [runStoppedMarker()] } : {}),
+        ...(markers ? { degradationMarkers: markers } : {}),
       },
       agentResults,
       durationMs: stageDurationMs,
@@ -588,7 +593,7 @@ export class PipelineExecutor {
     // number nobody measured, in the field that says how much work was done.
     const dispatchStart = dispatched.map(() => Date.now());
     // Classified at rejection time — see CommandExecutor.executeParallel (crew #110 F5).
-    const stopped = dispatched.map(() => false);
+    const kinds = dispatched.map((): 'stopped' | 'deadline' | 'crash' => 'crash');
     const settled = await Promise.allSettled(
       dispatched.map(async (a, idx) => {
         dispatchStart[idx] = Date.now();
@@ -597,7 +602,7 @@ export class PipelineExecutor {
           const resolved = await this.registry.resolve(name, version, 'agent');
           return await this.agentExecutor.execute(resolved, input, options);
         } catch (error) {
-          stopped[idx] = isRunStopAbort(error, options?.abortSignal);
+          kinds[idx] = rejectionKind(error, options?.abortSignal);
           throw error;
         }
       }),
@@ -617,9 +622,12 @@ export class PipelineExecutor {
         // An agent stopped by a stop of THIS run is not a crash (aborted-agent-recording §4):
         // it gets the aborted twin — no recommendation, neutral, not completed.
         const ref = dispatched[i]?.ref ?? 'unknown';
-        results.push(stopped[i]
-          ? abortedPlaceholder(ref, outcome.reason, { startedAt: dispatchStart[i] })
-          : crashPlaceholder(ref, outcome.reason, { startedAt: dispatchStart[i] }));
+        const kind = kinds[i]!;
+        if (kind === 'stopped') results.push(abortedPlaceholder(ref, outcome.reason, { startedAt: dispatchStart[i] }));
+        else {
+          const crash = crashPlaceholder(ref, outcome.reason, { startedAt: dispatchStart[i] });
+          results.push(kind === 'deadline' ? withDeadlineMark(crash) : crash);
+        }
       }
     }
     return results;
@@ -1114,9 +1122,6 @@ class PipelineHandle implements IPipelineHandle {
   }
 
   private computeDecision(): string {
-    if (this.state.status === 'cancelled') return 'CANCELLED';
-    if (this.state.status === 'failed') return 'FAIL';
-
     // Thrown-error stages have status='failed' but no result.decision.
     // resolveDecisionCategory prefers the stage result's propagated decisionCategory
     // (vocabulary-resolved at the producing executor) over raw-string classification,
@@ -1124,6 +1129,11 @@ class PipelineHandle implements IPipelineHandle {
     const hasFailures = this.state.stageResults.some(s =>
       s.status === 'failed' || resolveDecisionCategory(s.result) === 'negative',
     );
+    // A real failure wins over a user cancel (Alex 2026-10-05, OD-13), as at every level below:
+    // a run that FAILED a stage and was then cancelled reads FAIL. Status stays `cancelled` and
+    // wait() still resolves — only the decision word changes.
+    if (this.state.status === 'cancelled') return hasFailures ? 'FAIL' : 'CANCELLED';
+    if (this.state.status === 'failed') return 'FAIL';
     if (hasFailures) return 'FAIL';
 
     // A stage holding an aborted record means the run was stopped, whatever the status says.

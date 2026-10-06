@@ -15,8 +15,9 @@ import { DEFAULT_PASS_THRESHOLD, DEFAULT_WARN_THRESHOLD } from '../constants.js'
 import { mapCategory } from './mapCategory.js';
 import { resolveDecisionCategory, type DecisionCategory } from './classifyDecision.js';
 import { aggregateScores, type AggregationMethod } from '../utils/aggregateScores.js';
-import { crashPlaceholder, abortedPlaceholder, isAbortedRecord, runStoppedMarker, runStoppedPartialMarker, ABORTED_DECISION, CRASH_PLACEHOLDER_VERSION } from '../utils/crashPlaceholder.js';
-import { isRunStopAbort } from '../utils/runStop.js';
+import { crashPlaceholder, abortedPlaceholder, withDeadlineMark, ABORTED_DECISION } from '../utils/crashPlaceholder.js';
+import { rejectionKind } from '../utils/runStop.js';
+import { stopVerdict, crashInside, isCrashRecord, stopReached, containerMarkers } from '../utils/stopVerdict.js';
 import { worstExtractionConfidence } from '../utils/worstExtractionConfidence.js';
 
 /**
@@ -162,15 +163,15 @@ export class CommandExecutor {
    * the unhardened twin was the common path. Extracting the shape is the fix — two call
    * sites that must agree are two chances to disagree.
    */
-  private crashPlaceholder(ref: string, reason: unknown, startedAt: number | undefined, stopped: boolean): AgentResult {
+  private crashPlaceholder(ref: string, reason: unknown, startedAt: number | undefined, kind: 'stopped' | 'deadline' | 'crash'): AgentResult {
     // Delegates to the shared factories in utils. This method's own docstring said "two call
     // sites that must agree are two chances to disagree" — and there were three; the third
     // had drifted on decisionCategory, priority, severity and failure code. Kept as a thin
     // wrapper so the existing call sites read unchanged. An agent stopped by a stop of THIS
     // run is not a crash (aborted-agent-recording spec §4): it gets the aborted twin.
-    return stopped
-      ? abortedPlaceholder(ref, reason, { startedAt })
-      : crashPlaceholder(ref, reason, { startedAt });
+    if (kind === 'stopped') return abortedPlaceholder(ref, reason, { startedAt });
+    const crash = crashPlaceholder(ref, reason, { startedAt });
+    return kind === 'deadline' ? withDeadlineMark(crash) : crash;
   }
 
   /**
@@ -194,7 +195,7 @@ export class CommandExecutor {
       try {
         results.push(await fn(ref));
       } catch (error) {
-        results.push(this.crashPlaceholder(ref, error, startedAt, isRunStopAbort(error, signal)));
+        results.push(this.crashPlaceholder(ref, error, startedAt, rejectionKind(error, signal)));
         // Fail-fast: stop dispatching, keep everything already billed. Also right for an abort:
         // the run is stopped, so nothing after it should be dispatched.
         break;
@@ -220,10 +221,10 @@ export class CommandExecutor {
     const startedAt = refs.map(() => Date.now());
     // Classified AT REJECTION TIME (crew #110 F5): after allSettled the signal is aborted for
     // every child of a stopped run, including one that had rejected earlier for its own reasons.
-    const stopped = refs.map(() => false);
+    const kinds = refs.map((): 'stopped' | 'deadline' | 'crash' => 'crash');
     const settled = await Promise.allSettled(refs.map((ref, i) => {
       startedAt[i] = Date.now();
-      return fn(ref).catch((error: unknown) => { stopped[i] = isRunStopAbort(error, signal); throw error; });
+      return fn(ref).catch((error: unknown) => { kinds[i] = rejectionKind(error, signal); throw error; });
     }));
     const results: AgentResult[] = [];
 
@@ -232,7 +233,7 @@ export class CommandExecutor {
       if (outcome.status === 'fulfilled') {
         results.push(outcome.value);
       } else {
-        results.push(this.crashPlaceholder(refs[i]!, outcome.reason, startedAt[i], stopped[i]!));
+        results.push(this.crashPlaceholder(refs[i]!, outcome.reason, startedAt[i], kinds[i]!));
       }
     }
 
@@ -262,7 +263,11 @@ export class CommandExecutor {
     // Aborted placeholders carry the same version but are not crashes: an all-aborted panel
     // broke nothing and returns ABORTED (spec OD-4); one crash + the rest aborted returns FAIL
     // with the crash's recommendation instead of overstating the crash count.
-    const crashed = results.filter(r => r.version === CRASH_PLACEHOLDER_VERSION && !isAbortedRecord(r));
+    // A panel a stop reached (incl. a deadline, whose agents are crashes) RETURNS its stop verdict
+    // rather than throwing: the throw would carry no stop mark upward, and a parent posture would
+    // then soften a deadline into HOLD (found by the composed invariant, deadline mode).
+    if (results.some(stopReached)) return;
+    const crashed = results.filter(isCrashRecord);
     if (results.length > 0 && crashed.length === results.length) {
       const detail = crashed
         .flatMap(r => r.recommendations?.map(rec => rec.title) ?? [])
@@ -416,26 +421,13 @@ export class CommandExecutor {
       decisionCategory = failed ? 'negative' : partial ? 'conditional' : 'positive';
     }
 
-    // negative > aborted > conditional > positive (spec §6), where NEGATIVE MEANS CATEGORICAL: a
-    // child that itself resolved negative (a failing verdict, a crash). An aborted child resolves
-    // neutral, so it influences neither branch above, and a verdict computed over the completed
-    // part of the panel is not evidence: with `sum`, 90 + a stopped agent read FAIL against a
-    // 150 threshold that the full panel would have passed (crew #110 F1). So a threshold verdict
-    // over a stopped panel becomes ABORTED; only a child's own failure keeps the container's
-    // verdict (Alex 2026-10-05). Score is unchanged: aborted children are null and excluded.
-    //
-    // A kept verdict must itself be NEGATIVE (second re-check H1): a categorical negative softened
-    // to a conditional — a passing-score lens capped at WARN — is a conditional, and aborted
-    // outranks conditional. Keeping that WARN hid the stop from every container above: the phase
-    // saw a plain WARN, read `passed`, and the workflow read SHIP.
-    if (results.some(isAbortedRecord) &&
-        !(decisionCategory === 'negative' &&
-          results.some(r => resolveDecisionCategory(r, this.warnUnclassified) === 'negative'))) {
-      decision = ABORTED_DECISION;
-      decisionCategory = 'neutral';
-    }
-    const stopped = decision === ABORTED_DECISION;
-    const stoppedInside = !stopped && results.some(isAbortedRecord);
+    // "Crash decides" (utils/stopVerdict.ts, Alex 2026-10-05 OD-12): once a run stop reached any
+    // child, the computed verdict above does not stand — thresholds and the lens cap judge
+    // finished work. Negative if anything inside really crashed, else ABORTED. Score unchanged.
+    const verdict = stopVerdict(results);
+    if (verdict === 'aborted') { decision = ABORTED_DECISION; decisionCategory = 'neutral'; }
+    if (verdict === 'negative') { decision = score !== undefined ? 'FAIL' : 'FAILED'; decisionCategory = 'negative'; }
+    const markers = containerMarkers(verdict, results.some(crashInside));
 
     // Aggregate metrics
     // FABRICATION-OK: summing a count of events; see the wrapAgentResult waiver.
@@ -469,8 +461,7 @@ export class CommandExecutor {
       recommendations,
       durationMs,
       metrics,
-      ...(stopped ? { degradationMarkers: [runStoppedMarker()] }
-        : stoppedInside ? { degradationMarkers: [runStoppedPartialMarker()] } : {}),
+      ...(markers ? { degradationMarkers: markers } : {}),
     };
   }
 }

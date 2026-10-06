@@ -873,14 +873,14 @@ const stoppedAgents = result.stages.flatMap(s => s.agentResults ?? []).filter(is
 const stoppedStages = result.stages.filter(s => s.result && isStoppedResult(s.result));
 ```
 
-Containers apply **negative > aborted > conditional > positive** at every level: a command, stage,
-workflow phase or workflow keeps its verdict over a stop only when that verdict is itself negative
-*and* a child really failed or crashed. Otherwise a stop anywhere inside makes it `ABORTED` /
-`neutral` (phase decision `'aborted'`). A failure softened to a warning — a lens capped at `WARN`,
-`on_fail: warn`, `on_failure: warn` — counts as a conditional, which a stop outranks, so an
-explicitly stopped workflow never reads `SHIP` or `HOLD`. A verdict computed only from the score of the agents that finished is **not**
-evidence and does not count as negative: with `sum`, 90 plus a stopped agent under a 150 threshold
-is `ABORTED`, not `FAIL`. A panel whose agents were *all* stopped returns rather than throwing, and
+**Crash decides.** Once a run stop has reached anything inside a command, stage, workflow phase or
+workflow, that container gives no quality verdict: it is negative (`FAIL`, phase `'blocked'`,
+`BLOCK`) if anything inside really crashed — a caller deadline's agents count as crashes — and
+otherwise `ABORTED` / `neutral` (phase `'aborted'`). Score thresholds, lens caps and warn postures
+(`on_fail`, `on_failure: warn`) judge finished work and do not apply to a stopped container. At the
+pipeline, a stage that really failed before a user `cancel()` makes the decision `FAIL`; a cancel
+with no failure reads `CANCELLED`. Use `stopReached(result)` to ask whether a stop touched a result
+or anything inside it. With `sum`, 90 plus a stopped agent under a 150 threshold is `ABORTED`, not `FAIL`. A panel whose agents were *all* stopped returns rather than throwing, and
 a pipeline stage whose single agent was stopped is a completed stage holding an `ABORTED` record.
 Genuine crashes — a timeout, a caller deadline, and the agent that received the 402 — keep the
 critical crash placeholder. Phases a stop kept from starting are recorded `'aborted'`

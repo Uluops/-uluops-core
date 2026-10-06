@@ -184,6 +184,9 @@ export { isApiErrorLike, type ApiErrorLike } from './errors/index.js';
 // with decision ABORTED, neutral, no recommendation — not as a crash (aborted-agent-recording).
 // Exported so consumers test a predicate instead of string-matching a decision.
 export { ABORTED_DECISION, isAbortedRecord, isStoppedResult } from './utils/crashPlaceholder.js';
+// Did a run stop (explicit or a deadline) reach this result or anything inside it — including a
+// container that kept a FAIL because something inside crashed (aborted-agent-recording OD-12).
+export { stopReached } from './utils/stopVerdict.js';
 
 export {
   UluOpsError,

@@ -122,9 +122,11 @@ export interface CommandResult extends ExecutionResult {
   metrics: CommandMetrics;
 
   /**
-   * Set by core only on a command a run stop left without a verdict: an aggregate written ABORTED,
-   * or the command-shaped form of an aborted placeholder. Carries `execution.run-stopped`, the
-   * structural mark `isStoppedResult` keys on — never the decision string, which a model can emit
+   * Core-stamped marks of what happened INSIDE this command (utils/stopVerdict.ts):
+   * `execution.run-stopped` (a stop left it without a verdict — what `isStoppedResult` keys on),
+   * `execution.run-stopped-partial` (a stop reached it and something inside crashed, so it is
+   * FAIL), `execution.child-crashed` (a real crash inside), `execution.deadline` (a crash record a
+   * caller deadline produced). Never inferred from the decision string, which a model can emit
    * freely. Not a general channel: an agent's own markers (`budget.*`, `context.*`) are not lifted
    * onto a command.
    */

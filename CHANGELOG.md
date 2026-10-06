@@ -13,6 +13,8 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) 
   with the predicate rather than string-matching the decision. `isAbortedRecord` also checks the
   synthesized version, so a real definition that uses `ABORTED` as its own vocabulary word (none
   does today) is never mistaken for a stopped placeholder.
+- **`stopReached(result)`**: did a run stop (explicit or a deadline) reach this result or anything
+  inside it — including a container that kept `FAIL` because something inside crashed.
 - **`isStoppedResult(result)`** for command, stage and workflow results that core aggregated to
   `ABORTED`. They carry their real version, so `isAbortedRecord` returns false for them. It keys on
   a marker core stamps, not on the decision string: a model can output `decision: "ABORTED"`, and
@@ -40,15 +42,20 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) 
   `'aborted'` phase decision was already declared; `WorkflowDecision` is an open string), but:
   - `decision` on agent, command, stage, phase and workflow results can now be `ABORTED` /
     `'aborted'` with `decisionCategory: 'neutral'` where it was `FAIL` / `'blocked'` / `BLOCK` /
-    `negative`. Containers apply **negative > aborted > conditional > positive** at every level:
-    a container keeps its verdict over a stop only when that verdict is itself negative AND a
-    child really failed or crashed (Alex 2026-10-05). Otherwise a stop anywhere inside makes it
-    `ABORTED`. A threshold verdict over the agents that finished is not evidence — `sum` of 90 plus
-    a stopped agent under a 150 pass threshold is `ABORTED`, not `FAIL`. A failure *softened* to a
-    conditional — a passing-score lens capped at `WARN`, a phase `on_fail: warn`, a workflow
-    `on_failure: warn` rewrite — is a conditional, and aborted outranks it. Pinned by a composed
-    invariant test over 300 real-executor workflows: an explicitly stopped workflow never reads
-    `SHIP` or `HOLD`; a deadline-stopped one never reads `SHIP` or `ABORTED`.
+    `negative`. **"Crash decides"** (Alex 2026-10-05) at every level — command, stage, workflow
+    phase, workflow: once a run stop reached anything inside a container, it gives no quality
+    verdict. It is negative (`FAIL`/`FAILED`/`'blocked'`/`BLOCK`) if anything inside really
+    crashed — a caller deadline's agents count as crashes — and otherwise `ABORTED`. Score
+    thresholds, lens caps and warn postures (`on_fail`, `on_failure: warn`) do not apply to a
+    stopped container: they judge finished work. So `sum` of 90 plus a stopped agent under a 150
+    pass threshold is `ABORTED`, not `FAIL`; a lens negative beside a stopped agent is `ABORTED`; a
+    crash beside a stopped agent is `FAIL` even under `on_fail: warn`. Containers tell their
+    parents what happened inside through core-stamped `degradationMarkers` (`execution.run-stopped`,
+    `execution.run-stopped-partial`, `execution.child-crashed`, `execution.deadline`), never
+    through the decision string. A panel a stop reached returns its stop verdict instead of
+    throwing "All agents failed". Pinned by a composed test over 300 real-executor workflows ×
+    {explicit stop, deadline}: a stopped workflow and its phase are `BLOCK`/`'blocked'` exactly
+    when something crashed, otherwise `ABORTED`/`'aborted'`.
   - The `'aborted'` phase decision, declared but produced by no code until now, is produced for a
     phase a stop cut short and reads **neutral** — the workflow aggregate's dead `aborted → BLOCK`
     reading is gone. Submission no longer drops `'aborted'` phases: their completed commands are
@@ -85,6 +92,9 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) 
   recording them as neutral non-verdicts would hide exactly those.
   Separately, a stage holding an `ABORTED` record makes the pipeline decision `CANCELLED`, so a
   stop that somehow did not reach the run status still cannot report `PASS`.
+- **A real stage failure beats a later user cancel at the pipeline** (Alex 2026-10-05): a run that
+  FAILED a stage, continued, and was then cancelled reads decision `FAIL` (status stays
+  `cancelled`, `wait()` still resolves). A cancel with no failure still reads `CANCELLED`.
 
 ### Fixed
 
