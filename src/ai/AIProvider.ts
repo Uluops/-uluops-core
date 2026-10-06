@@ -1211,29 +1211,6 @@ export class AIProvider {
    *   thinks, as buildAnthropicOptions auto-enables thinking on the direct route. A caller's own
    *   `reasoning` block wins.
    */
-  /**
-   * D7 fold (perverse-outcome P1): 'allow' must not be silent. The easiest fix for a deny-induced
-   * no-endpoint error is a process-wide `OPENROUTER_DATA_COLLECTION=allow`, which then covers every
-   * later run in every repo. The first allowed request of this provider warns (prints without
-   * debug) and names the lever; later ones are debug, so a pipeline says it once.
-   */
-  private noticeDataCollectionAllow(source: 'request' | 'config' | 'env' | 'default' | undefined): void {
-    const lever = source === 'request' ? "this request's providerOptions.openrouter.provider.data_collection"
-      : source === 'env' ? 'the OPENROUTER_DATA_COLLECTION environment variable'
-      : source === 'config' ? 'ai.openRouterDataCollection in the client config'
-      : 'the client configuration';
-    const notice = `OpenRouter data_collection is 'allow' (set by ${lever}): requests may go to upstream providers ` +
-      `that retain or train on what the agent reads, target code included.`;
-    if (this.dataCollectionNoticeShown) {
-      this.logger.debug(notice);
-    } else {
-      this.dataCollectionNoticeShown = true;
-      this.logger.warn(notice);
-    }
-  }
-
-  private dataCollectionNoticeShown = false;
-
   private buildOpenRouterOptions(resolved: ResolvedModel, userOptions?: ProviderOptions): ProviderOptions {
     const user = (userOptions?.['openrouter'] as Record<string, unknown> | undefined) ?? {};
     const orOpts: Record<string, unknown> = { ...user };
@@ -1241,12 +1218,14 @@ export class AIProvider {
     // spreading a string yields index keys, and the forced flags must land on a real object.
     // `data_collection` (D7): the caller's per-request value if set, else the configured default,
     // else 'deny' — so target code goes only to upstreams that do not retain or train on it unless
-    // someone opted in. A malformed per-request value is 'deny', not the configured value. Placed
-    // after the spread so a malformed caller value is replaced, not sent. The trailing 'deny' is
-    // reachable only for an AIProvider built without resolveAIConfig (tests, embedders).
+    // someone opted in. A malformed per-request value is 'deny', not the configured value; a blank or
+    // null one is unset. Placed after the spread so a malformed caller value is replaced, not sent.
     const userProvider = asPlainObject(user['provider']);
     const perRequest = firstDataCollection(userProvider['data_collection']);
-    const dataCollection = perRequest?.value ?? this.config.ai.openRouterDataCollection ?? 'deny';
+    // The resolved layer goes through the same seam: an AIProvider built without resolveAIConfig
+    // (embedders, untyped JS) must not send a blank or malformed value verbatim (re-check #2).
+    const configured = firstDataCollection(this.config.ai.openRouterDataCollection);
+    const dataCollection = perRequest?.value ?? configured?.value ?? 'deny';
     if (dataCollection === 'allow') this.noticeDataCollectionAllow(perRequest !== undefined ? 'request' : this.config.ai.openRouterDataCollectionSource);
     orOpts['provider'] = {
       ...userProvider,
@@ -1264,6 +1243,33 @@ export class AIProvider {
     }
     return { ...userOptions, openrouter: orOpts } as ProviderOptions;
   }
+
+  /**
+   * D7 fold (perverse-outcome P1): 'allow' must not be silent. The easiest fix for a deny-induced
+   * no-endpoint error is a process-wide `OPENROUTER_DATA_COLLECTION=allow`, which then covers every
+   * later run in every repo. The first allowed request FROM EACH LEVER warns (prints without debug)
+   * and names it; repeats from the same lever are debug, so a pipeline says it once. Per lever, not
+   * per provider (re-check #2): a shared flag let a per-request allow consume the warning a later
+   * environment allow should have printed. The lever is marked only after warn returns, so a logger
+   * that throws once does not demote the notice for good.
+   */
+  private noticeDataCollectionAllow(source: 'request' | 'config' | 'env' | 'default' | undefined): void {
+    const key = source ?? 'default';
+    const lever = key === 'request' ? "this request's providerOptions.openrouter.provider.data_collection"
+      : key === 'env' ? 'the OPENROUTER_DATA_COLLECTION environment variable'
+      : key === 'config' ? 'ai.openRouterDataCollection in the client config'
+      : 'the client configuration';
+    const notice = `OpenRouter data_collection is 'allow' (set by ${lever}): requests may go to upstream providers ` +
+      `that retain or train on what the agent reads, target code included.`;
+    if (this.dataCollectionNoticeShown.has(key)) {
+      this.logger.debug(notice);
+    } else {
+      this.logger.warn(notice);
+      this.dataCollectionNoticeShown.add(key);
+    }
+  }
+
+  private readonly dataCollectionNoticeShown = new Set<string>();
 
   private buildProviderOptions(
     resolved: ResolvedModel,
@@ -2417,8 +2423,9 @@ function describeRoutingConstraints(requestBodyValues: unknown, meta: Record<str
     // Live 2026-10-05: a deny miss is failed_routing_step "Filter by Data Policy". Name the opt-in
     // per request first — the narrow lever — so the fix is not a process-wide allow (D7 fold P1/P2).
     parts.push(
-      "provider.data_collection = 'deny' (core's default: only upstreams that do not retain or train on " +
-      "prompts; to allow one run, pass providerOptions.openrouter.provider.data_collection: 'allow', or set " +
+      "provider.data_collection = 'deny' (only upstreams that do not retain or train on prompts are eligible; " +
+      'to allow one run, pass ' +
+      "providerOptions.openrouter.provider.data_collection: 'allow', or set " +
       'ai.openRouterDataCollection / OPENROUTER_DATA_COLLECTION, which applies to every run)',
     );
   }

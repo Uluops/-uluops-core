@@ -542,6 +542,12 @@ describe('D7: data_collection defaults to deny', () => {
     expect(opts({}, { provider: { data_collection: 'allow' } }).data_collection).toBe('allow');
   });
 
+  // Re-check #2 (logic, L). NEGATIVE CONTROL: e1f1f70 sent '' verbatim for a hand-built config.
+  it('a blank or malformed configured value on a hand-built AIProvider is deny, not sent verbatim', () => {
+    expect(opts({ openRouterDataCollection: '' as never }).data_collection).toBe('deny');
+    expect(opts({ openRouterDataCollection: 'yes' as never }).data_collection).toBe('deny');
+  });
+
   it('a malformed per-request value is replaced, not sent', () => {
     expect(opts({}, { provider: { data_collection: 'sometimes' } }).data_collection).toBe('deny');
   });
@@ -588,6 +594,29 @@ describe('D7: allow-in-effect notice', () => {
 
   it('names the per-request lever when the request set it', () => {
     expect(run({}, { provider: { data_collection: 'allow' } }).warn[0]).toContain("this request's providerOptions");
+  });
+
+  // Re-check #2 (logic, M). NEGATIVE CONTROL: e1f1f70 shared one flag, so the env allow got debug only.
+  it('a per-request allow does not consume the warning an env allow should print', () => {
+    const warn = vi.fn();
+    const p = internals(new AIProvider(
+      { ...config, ai: { ...config.ai, openRouterDataCollection: 'allow', openRouterDataCollectionSource: 'env' } }, catalog, { ...noopLogger, warn }));
+    p.buildProviderOptions(model(), { openrouter: { provider: { data_collection: 'allow' } } } as never);
+    p.buildProviderOptions(model());
+    const msgs = warn.mock.calls.map(c => String(c[0]));
+    expect(msgs).toHaveLength(2);
+    expect(msgs[1]).toContain('OPENROUTER_DATA_COLLECTION');
+  });
+
+  // Re-check #2 (auditor, L). NEGATIVE CONTROL: e1f1f70 set the flag first, so the retry was debug.
+  it('a logger that throws once does not demote the warning for good', () => {
+    let calls = 0;
+    const warn = vi.fn(() => { if (calls++ === 0) throw new Error('logger down'); });
+    const p = internals(new AIProvider(
+      { ...config, ai: { ...config.ai, openRouterDataCollection: 'allow', openRouterDataCollectionSource: 'config' } }, catalog, { ...noopLogger, warn }));
+    expect(() => p.buildProviderOptions(model())).toThrow('logger down');
+    p.buildProviderOptions(model());
+    expect(warn).toHaveBeenCalledTimes(2);
   });
 
   it('says nothing under deny', () => {

@@ -59,10 +59,10 @@ export interface AIConfig {
    * Defaults to `'deny'` (OpenRouter plan D7, Alex 2026-10-05): only upstreams that do not collect
    * data are eligible. Set `'allow'` to opt back in to the wider pool. Also read from the
    * `OPENROUTER_DATA_COLLECTION` environment variable; this field wins over the variable, and a
-   * per-request `providerOptions.openrouter.provider.data_collection` wins over both. A value
-   * other than `'allow'`/`'deny'` at any of these layers means `'deny'`; it does not fall through to
-   * the next layer. While `'allow'` is in effect, the first OpenRouter request of each client logs a
-   * warning naming where it came from.
+   * per-request `providerOptions.openrouter.provider.data_collection` wins over both. At every
+   * layer, `undefined`, `null` and a blank string mean unset (the next layer decides); any other
+   * value than `'allow'`/`'deny'` means `'deny'` and does not fall through. While `'allow'` is in
+   * effect, the first OpenRouter request it applies to from each lever logs a warning naming it.
    *
    * This is a preference, not a lock: a more specific layer can always override a less specific
    * one. To ENFORCE deny for an account, use OpenRouter's account privacy settings

@@ -202,9 +202,10 @@ const result = await client.runAgent('code-validator', './src', {
 > workflows, pipelines and the CLI take no `providerOptions`; for them the levers are
 > `ai.openRouterDataCollection: 'allow'` in the client config or `OPENROUTER_DATA_COLLECTION=allow`
 > in the environment, and both apply to **every** run that client or shell makes. While `allow` is
-> in effect, the first OpenRouter request of each client logs a warning naming which lever set it.
-> Per request beats config, config beats the environment. A value other than `allow`/`deny` means
-> `deny` at whichever layer set it — it does not fall through to a lower layer's `allow`.
+> in effect, the first OpenRouter request it applies to from each lever logs a warning naming that
+> lever. Per request beats config, config beats the environment. At every layer an empty or null
+> value means unset; any other value than `allow`/`deny` means `deny` at that layer — it does not
+> fall through to a lower layer's `allow`.
 >
 > These levers are a preference, not a lock: a more specific one always overrides a less specific
 > one, so an environment `deny` cannot stop an embedding app's `allow`. To **enforce** deny, use

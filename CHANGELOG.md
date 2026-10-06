@@ -18,9 +18,9 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) 
   `CapabilityError`, whose message names `provider.data_collection = 'deny'` and the per-request
   opt-in before the process-wide ones.
 - **`allow` is not silent.** While `data_collection: 'allow'` is in effect, the first OpenRouter
-  request of each `AIProvider` logs a warning naming the lever that set it (this request's
-  `providerOptions`, `ai.openRouterDataCollection`, or `OPENROUTER_DATA_COLLECTION`); later
-  requests log at debug. Without it, a one-off `allow` exported in a shell to get past one model
+  request it applies to from each lever logs a warning naming that lever (this request's
+  `providerOptions`, `ai.openRouterDataCollection`, or `OPENROUTER_DATA_COLLECTION`); repeats
+  from the same lever log at debug. Without it, a one-off `allow` exported in a shell to get past one model
   would cover every later run in every repo with nothing in the output to show it.
 
 ### Fixed
@@ -36,7 +36,7 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) 
   `providerOptions.openrouter.provider.data_collection`, then the config field, then the
   environment, then `'deny'`. The first layer that sets a value decides, and any value other
   than `allow`/`deny` there — including a misspelling — is `'deny'`; it does not fall through to a
-  lower layer's `allow`. A blank environment variable reads as unset. The environment variable
+  lower layer's `allow`. At every layer, `null` or a blank string reads as unset. The environment variable
   reaches commands, workflows, pipelines and the CLI, which take no `providerOptions`. These are
   preferences, not a lock (a more specific layer always wins); the OpenRouter account privacy
   setting is the enforced ceiling. `'deny'` is a data-policy flag, not zero retention (`zdr`).
