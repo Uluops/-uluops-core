@@ -88,3 +88,72 @@ export function crashPlaceholder(
     metrics,
   };
 }
+
+/**
+ * The decision an agent stopped by a run stop carries (aborted-agent-recording spec, OD-1).
+ *
+ * Cause-neutral — it covers a user `cancel()`, a provider-credit trip and a consumer
+ * `abortSignal` alike — and outside the core decision register, so every classifier reads it
+ * `neutral`. Not `CANCELLED` (the pipeline-level word for a user stop; a credit-stopped run is
+ * `failed`), not `SKIPPED` (never started, and hides possible spend), not `FAIL` (the agent did
+ * nothing wrong — the whole point).
+ */
+export const ABORTED_DECISION = 'ABORTED';
+
+/**
+ * The record for "this agent was dispatched and the run was stopped before it finished".
+ *
+ * The twin of {@link crashPlaceholder}, in the same file so the count of synthesized shapes stays
+ * visible in one place. Every field that is not about the abort is the crash factory's, for the
+ * crash factory's reasons — including the `agentType` fabrication documented above. What differs:
+ *
+ * - `decision` `ABORTED`, `decisionCategory` `neutral`: no verdict, not a failure.
+ * - **No recommendation**, so no tracker issue. Three innocent siblings of a 402 used to file
+ *   three critical "Agent X failed: Execution was cancelled by the caller" issues, recurring on
+ *   every stopped run and teaching the reader to bulk-dismiss the title shape real crashes share.
+ * - `summary` is cause-free on purpose: the cause is stated once, on the run (`PipelineResult.status`
+ *   for a cancel; the `PipelineError` message and the originator's own crash record for a 402).
+ * - A `critical` `execution.run-stopped` marker and `completeness: 'failed'` (OD-6): a coverage
+ *   reduction always emits a marker, and an absent completeness reads "complete".
+ * - Metrics as a crash with no billed usage: `costBasis: 'unpriced'`, `costUsd` absent. The spend of
+ *   a request aborted mid-stream is unknown, not zero (deferred 2db41524).
+ *
+ * Only {@link isRunStopAbort}-matched rejections reach this factory; everything else is a crash.
+ */
+export function abortedPlaceholder(
+  ref: string,
+  reason: unknown,
+  opts?: { startedAt?: number; agentType?: AgentType },
+): AgentResult {
+  const metrics = crashMetrics(
+    reason,
+    opts?.startedAt !== undefined ? { durationMs: Date.now() - opts.startedAt } : undefined,
+  );
+  return {
+    type: 'agent',
+    name: ref,
+    version: CRASH_PLACEHOLDER_VERSION,
+    definitionHash: '',
+    agentType: opts?.agentType ?? 'validator',
+    decision: ABORTED_DECISION,
+    decisionCategory: 'neutral',
+    score: null,
+    maxScore: null,
+    recommendations: [],
+    summary: 'Not completed: the run was stopped before this agent finished.',
+    durationMs: metrics.durationMs,
+    metrics,
+    degradationMarkers: [{ code: 'execution.run-stopped', phase: 'execution', severity: 'critical' }],
+    completeness: 'failed',
+  };
+}
+
+/**
+ * True for a record built by {@link abortedPlaceholder}. Keyed on the synthesized version AND the
+ * decision, so a real definition that happened to use `ABORTED` as its own vocabulary word (none
+ * does today) is never mistaken for a stopped placeholder. Exported so consumers test a predicate
+ * rather than string-matching a decision.
+ */
+export function isAbortedRecord(r: { decision: string; version: string }): boolean {
+  return r.decision === ABORTED_DECISION && r.version === CRASH_PLACEHOLDER_VERSION;
+}

@@ -1,6 +1,7 @@
 import type { AgentExecutor } from './AgentExecutor.js';
 import { externalInt, finiteNonNegative } from '../utils/externalValue.js';
-import { CRASH_PLACEHOLDER_VERSION } from '../utils/crashPlaceholder.js';
+import { CRASH_PLACEHOLDER_VERSION, abortedPlaceholder, isAbortedRecord, ABORTED_DECISION } from '../utils/crashPlaceholder.js';
+import { isRunStopAbort } from '../utils/runStop.js';
 import type { CommandExecutor } from './CommandExecutor.js';
 import type { RegistryClient } from '../registry/RegistryClient.js';
 import type { ResolvedDefinition } from '../types/registry.js';
@@ -433,14 +434,25 @@ export class WorkflowExecutor {
       ...(phase.agentRefs ?? []).map(ref => ({ type: 'agent' as const, ref })),
     ];
 
+    // An agent stopped by a stop of THIS run is not a crash (aborted-agent-recording §4): it
+    // becomes an aborted step and is NOT pushed into `errors`, so "every step failed" below keeps
+    // meaning every step CRASHED. Per-step start times, as CommandExecutor captures them, so an
+    // aborted step reports how long it ran rather than crashMetrics' 0 ms floor.
+    const signal = control?.abortSignal;
     if (phase.parallel) {
+      const startedAt = stepRefs.map(() => Date.now());
       const settled = await Promise.allSettled(
-        stepRefs.map(step => this.executeStep(step.type, step.ref, input, control)),
+        stepRefs.map((step, j) => {
+          startedAt[j] = Date.now();
+          return this.executeStep(step.type, step.ref, input, control);
+        }),
       );
       for (let j = 0; j < settled.length; j++) {
         const outcome = settled[j]!;
         if (outcome.status === 'fulfilled') {
           commandResults.push(outcome.value);
+        } else if (isRunStopAbort(outcome.reason, signal)) {
+          commandResults.push(toStepRecord(abortedPlaceholder(stepRefs[j]!.ref, outcome.reason, { startedAt: startedAt[j] })));
         } else {
           const errorMsg = outcome.reason instanceof Error ? outcome.reason.message : String(outcome.reason);
           errors.push(errorMsg);
@@ -456,11 +468,16 @@ export class WorkflowExecutor {
       // createBlockedPhase's `commands: []` — which then compounded the fabricated-score
       // defect in that same object. Two branches of one method, one hardened.
       for (const step of stepRefs) {
+        const startedAt = Date.now();
         try {
           commandResults.push(await this.executeStep(step.type, step.ref, input, control));
         } catch (error) {
-          errors.push(error instanceof Error ? error.message : String(error));
-          commandResults.push(this.stepCrashPlaceholder(step.ref, error));
+          if (isRunStopAbort(error, signal)) {
+            commandResults.push(toStepRecord(abortedPlaceholder(step.ref, error, { startedAt })));
+          } else {
+            errors.push(error instanceof Error ? error.message : String(error));
+            commandResults.push(this.stepCrashPlaceholder(step.ref, error));
+          }
           break;
         }
       }
@@ -483,7 +500,7 @@ export class WorkflowExecutor {
       phase.gate?.aggregate ?? 'average',
     );
 
-    let decision = this.evaluateGate(aggregateScore, phase.gate);
+    let decision: PhaseResult['decision'] = this.evaluateGate(aggregateScore, phase.gate);
     // Scoreless children have no channel into the score gate: aggregatePhaseScore
     // drops them, and an all-scoreless phase yields score null → evaluateGate
     // passes unconditionally. Mirror CommandExecutor.aggregateResults — a
@@ -501,6 +518,15 @@ export class WorkflowExecutor {
     if (decision === 'passed' &&
         commandResults.some(r => r.score != null && resolveDecisionCategory(r, this.warnUnclassified) === 'negative')) {
       decision = 'warned';
+    }
+    // negative > aborted > conditional > positive (aborted-agent-recording §6, OD-3). A phase
+    // holding a stopped step and no negative child has no verdict: the declared-but-never-written
+    // 'aborted' phase decision, read neutral by aggregate(). A negative child observed before the
+    // stop keeps the phase's own verdict (blocked, or warned under on_fail: warn).
+    if (decision !== 'blocked' &&
+        commandResults.some(isStoppedStep) &&
+        !commandResults.some(r => resolveDecisionCategory(r, this.warnUnclassified) === 'negative')) {
+      decision = 'aborted';
     }
 
     return {
@@ -701,9 +727,15 @@ export class WorkflowExecutor {
     // PipelineExecutor.computeDecision for workflow-ref stages).
     let decision: WorkflowDecision;
     let decisionCategory: DecisionCategory;
-    if (hasBlocked || hasAborted) {
+    // `aborted` was read here as BLOCK while no code produced it; it is now produced for a phase
+    // stopped mid-run and means "no verdict", not a failure (aborted-agent-recording OD-3). Not
+    // remappable through aggregation.decision, which has SHIP/HOLD/BLOCK keys only.
+    if (hasBlocked) {
       decision = config?.decision?.BLOCK ?? 'BLOCK';
       decisionCategory = 'negative';
+    } else if (hasAborted) {
+      decision = ABORTED_DECISION;
+      decisionCategory = 'neutral';
     } else if (hasWarned) {
       decision = config?.decision?.HOLD ?? 'HOLD';
       decisionCategory = 'conditional';
@@ -932,4 +964,36 @@ export class WorkflowExecutor {
       } as WorkflowResult['metrics'],
     };
   }
+}
+
+/**
+ * A step the run stop cut short: an aborted placeholder (a step whose agent was stopped), or a
+ * multi-agent command that itself aggregated to ABORTED (`CommandExecutor.aggregateResults` — that
+ * result carries the command's real version, so `isAbortedRecord` alone would miss it).
+ */
+function isStoppedStep(r: CommandResult): boolean {
+  return isAbortedRecord(r) || (r.decision === ABORTED_DECISION && r.decisionCategory === 'neutral');
+}
+
+/**
+ * The workflow-step form of an aborted agent record — DERIVED from `abortedPlaceholder`, not hand
+ * built, so the aborted shape has exactly one construction across all five synthesis sites
+ * (`stepCrashPlaceholder` is the drifted fourth crash shape this spec declines to repeat).
+ */
+function toStepRecord(agentRecord: AgentResult): CommandResult {
+  return {
+    type: 'command',
+    name: agentRecord.name,
+    version: agentRecord.version,
+    definitionHash: agentRecord.definitionHash,
+    agentType: agentRecord.agentType,
+    decision: agentRecord.decision,
+    decisionCategory: agentRecord.decisionCategory,
+    score: agentRecord.score,
+    maxScore: agentRecord.maxScore,
+    recommendations: agentRecord.recommendations,
+    durationMs: agentRecord.durationMs,
+    // FABRICATION-OK: defaults UNDER the spread, as in stepCrashPlaceholder; a count of events.
+    metrics: { toolCallCount: 0, toolCalls: 0, ...agentRecord.metrics },
+  } as CommandResult;
 }

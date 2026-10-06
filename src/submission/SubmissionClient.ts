@@ -626,6 +626,10 @@ export class SubmissionClient {
         for (const stage of (result as PipelineResult).stages) {
           if (stage.agentResults) {
             for (const agent of stage.agentResults) {
+              // A synthesized record (crash or aborted placeholder) has no analysis to extract and
+              // must never become the run-level summary — first in a stage, it used to win the
+              // "first summary" race below (aborted-agent-recording §5.2).
+              if (agent.version === CRASH_PLACEHOLDER_VERSION) continue;
               const analysis = this.analysisExtractor.extract(agent, submission.resolvedDefinition);
               if (analysis.records.length > 0) allRecords.push(...analysis.records);
               // Use the first agent's summary as the run-level summary
@@ -759,7 +763,10 @@ export class SubmissionClient {
     const agents: ReturnType<typeof this.resultToAgent>[] = [];
 
     for (const phase of result.phases) {
-      if (phase.decision === 'skipped' || phase.decision === 'aborted') continue;
+      // `aborted` phases are NOT skipped any more: since aborted-agent-recording that decision is
+      // produced for a phase the run stop cut short — its completed commands are real billed work
+      // and its aborted steps are real not-completed records. `skipped` never ran.
+      if (phase.decision === 'skipped') continue;
       for (const cmd of phase.commands) {
         agents.push(this.commandToAgent(cmd));
       }

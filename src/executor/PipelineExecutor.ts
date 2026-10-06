@@ -18,7 +18,8 @@ import { rollupCost, type CostFields } from '../utils/costRollup.js';
 import { resolveDecisionCategory } from './classifyDecision.js';
 import { worstExtractionConfidence } from '../utils/worstExtractionConfidence.js';
 import { aggregateScores } from '../utils/aggregateScores.js';
-import { crashPlaceholder, CRASH_PLACEHOLDER_VERSION } from '../utils/crashPlaceholder.js';
+import { crashPlaceholder, abortedPlaceholder, isAbortedRecord, ABORTED_DECISION, CRASH_PLACEHOLDER_VERSION } from '../utils/crashPlaceholder.js';
+import { isRunStopAbort } from '../utils/runStop.js';
 import { verifiedNothingExecuted } from '../utils/executionEvidence.js';
 import type { Logger } from '@uluops/sdk-core';
 import { registerRunTrip, unregisterRunTrip } from '../utils/runTrip.js';
@@ -111,6 +112,18 @@ export class PipelineExecutor {
       return true;
     });
 
+    // A caller-supplied signal stops the run, not just the provider calls (aborted-agent-recording
+    // OD-7). Before, it aborted in-flight calls through the merged signal while `state.status`
+    // stayed `running`: later stages were dispatched against an already-aborted signal and the run
+    // ended `completed`. Same sequence and status as handle.cancel() — the caller chose to stop.
+    // An already-aborted signal fires no event, so it is checked up front.
+    const callerSignal = options?.abortSignal;
+    const onCallerAbort = () => {
+      if (state.status === 'running') stopRun(state, controller, 'cancelled', 'Pipeline cancelled by caller signal');
+    };
+    if (callerSignal?.aborted) onCallerAbort();
+    else callerSignal?.addEventListener('abort', onCallerAbort, { once: true });
+
     // Start execution in background, capturing errors into state
     const execution = this.executeAsync(resolved, input, state, runOptions);
     execution.catch((error) => {
@@ -120,7 +133,10 @@ export class PipelineExecutor {
       }
     });
     // Both arms, not .finally(): a .finally() promise re-rejects and would be unhandled.
-    const unregister = () => unregisterRunTrip(runSignal);
+    const unregister = () => {
+      unregisterRunTrip(runSignal);
+      callerSignal?.removeEventListener('abort', onCallerAbort);
+    };
     execution.then(unregister, unregister);
 
     return new PipelineHandle(pipelineId, state, execution, controller);
@@ -380,6 +396,9 @@ export class PipelineExecutor {
     // passing (tracker run #55, SEM-INC/H). AgentExecutor stamps decisionCategory
     // from the definition's vocabulary; crashed agents fall back via classifyDecision.
     const stageFailed = agentResults.some(r => resolveDecisionCategory(r) === 'negative');
+    // negative > aborted > positive (aborted-agent-recording §6): a stage whose completed agents
+    // passed and whose others were stopped has no verdict, not a PASS.
+    const stageAborted = !stageFailed && agentResults.some(isAbortedRecord);
 
     const stageDurationMs = Date.now() - startTime;
 
@@ -402,8 +421,8 @@ export class PipelineExecutor {
         version: CRASH_PLACEHOLDER_VERSION,
         definitionHash: '',
         agentType: 'analyst',
-        decision: stageFailed ? 'FAIL' : 'PASS',
-        decisionCategory: stageFailed ? 'negative' as const : 'positive' as const,
+        decision: stageFailed ? 'FAIL' : stageAborted ? ABORTED_DECISION : 'PASS',
+        decisionCategory: stageFailed ? 'negative' as const : stageAborted ? 'neutral' as const : 'positive' as const,
         // KEEP: avgScore is a real average over child agents; maxScore 100 is its scale,
         // not a fabrication. An all-scoreless stage now reports `null` rather than a
         // fabricated 0 (the residual zero routed to composition-aggregation-spec, closed
@@ -563,11 +582,12 @@ export class PipelineExecutor {
         // severity 'high' and PRA-FRA/H where the other two stamp 'critical' and
         // PRA-FRA/C. The same crash reached the tracker at two different severities
         // depending on which executor dispatched it.
-        results.push(crashPlaceholder(
-          dispatched[i]?.ref ?? 'unknown',
-          outcome.reason,
-          { startedAt: dispatchStart[i] },
-        ));
+        // An agent stopped by a stop of THIS run is not a crash (aborted-agent-recording §4):
+        // it gets the aborted twin — no recommendation, neutral, not completed.
+        const ref = dispatched[i]?.ref ?? 'unknown';
+        results.push(isRunStopAbort(outcome.reason, options?.abortSignal)
+          ? abortedPlaceholder(ref, outcome.reason, { startedAt: dispatchStart[i] })
+          : crashPlaceholder(ref, outcome.reason, { startedAt: dispatchStart[i] }));
       }
     }
     return results;
@@ -1057,6 +1077,11 @@ class PipelineHandle implements IPipelineHandle {
       s.status === 'failed' || resolveDecisionCategory(s.result) === 'negative',
     );
     if (hasFailures) return 'FAIL';
+
+    // A stage holding an aborted record means the run was stopped, whatever the status says.
+    // Defence in depth beside the caller-signal listener in start() (OD-7): without it, a run whose
+    // stop did not reach `state.status` and whose completed agents passed would report PASS.
+    if (this.state.stageResults.some(s => s.result?.decision === ABORTED_DECISION)) return 'CANCELLED';
 
     const hasWarnings = this.state.stageResults.some(s =>
       resolveDecisionCategory(s.result) === 'conditional',

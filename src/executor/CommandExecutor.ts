@@ -15,7 +15,8 @@ import { DEFAULT_PASS_THRESHOLD, DEFAULT_WARN_THRESHOLD } from '../constants.js'
 import { mapCategory } from './mapCategory.js';
 import { resolveDecisionCategory, type DecisionCategory } from './classifyDecision.js';
 import { aggregateScores, type AggregationMethod } from '../utils/aggregateScores.js';
-import { crashPlaceholder, CRASH_PLACEHOLDER_VERSION } from '../utils/crashPlaceholder.js';
+import { crashPlaceholder, abortedPlaceholder, isAbortedRecord, ABORTED_DECISION, CRASH_PLACEHOLDER_VERSION } from '../utils/crashPlaceholder.js';
+import { isRunStopAbort } from '../utils/runStop.js';
 import { worstExtractionConfidence } from '../utils/worstExtractionConfidence.js';
 
 /**
@@ -130,9 +131,9 @@ export class CommandExecutor {
     let agentResults: AgentResult[];
 
     if (def.command.execution.sequential === false) {
-      agentResults = await this.executeParallel(agentRefs, executeAgent);
+      agentResults = await this.executeParallel(agentRefs, executeAgent, overrides?.abortSignal);
     } else {
-      agentResults = await this.executeSequentially(agentRefs, executeAgent);
+      agentResults = await this.executeSequentially(agentRefs, executeAgent, overrides?.abortSignal);
     }
 
     // Governs BOTH dispatch modes — see assertNotAllCrashed.
@@ -159,12 +160,15 @@ export class CommandExecutor {
    * the unhardened twin was the common path. Extracting the shape is the fix — two call
    * sites that must agree are two chances to disagree.
    */
-  private crashPlaceholder(ref: string, reason: unknown, startedAt?: number): AgentResult {
-    // Delegates to the shared factory in utils. This method's own docstring said "two call
+  private crashPlaceholder(ref: string, reason: unknown, startedAt: number | undefined, signal: AbortSignal | undefined): AgentResult {
+    // Delegates to the shared factories in utils. This method's own docstring said "two call
     // sites that must agree are two chances to disagree" — and there were three; the third
     // had drifted on decisionCategory, priority, severity and failure code. Kept as a thin
-    // wrapper so the existing call sites read unchanged.
-    return crashPlaceholder(ref, reason, { startedAt });
+    // wrapper so the existing call sites read unchanged. An agent stopped by a stop of THIS
+    // run is not a crash (aborted-agent-recording spec §4): it gets the aborted twin.
+    return isRunStopAbort(reason, signal)
+      ? abortedPlaceholder(ref, reason, { startedAt })
+      : crashPlaceholder(ref, reason, { startedAt });
   }
 
   /**
@@ -180,6 +184,7 @@ export class CommandExecutor {
   private async executeSequentially(
     refs: string[],
     fn: (ref: string) => Promise<AgentResult>,
+    signal: AbortSignal | undefined,
   ): Promise<AgentResult[]> {
     const results: AgentResult[] = [];
     for (const ref of refs) {
@@ -187,8 +192,9 @@ export class CommandExecutor {
       try {
         results.push(await fn(ref));
       } catch (error) {
-        results.push(this.crashPlaceholder(ref, error, startedAt));
-        // Fail-fast: stop dispatching, keep everything already billed.
+        results.push(this.crashPlaceholder(ref, error, startedAt, signal));
+        // Fail-fast: stop dispatching, keep everything already billed. Also right for an abort:
+        // the run is stopped, so nothing after it should be dispatched.
         break;
       }
     }
@@ -207,6 +213,7 @@ export class CommandExecutor {
   private async executeParallel(
     refs: string[],
     fn: (ref: string) => Promise<AgentResult>,
+    signal: AbortSignal | undefined,
   ): Promise<AgentResult[]> {
     const startedAt = refs.map(() => Date.now());
     const settled = await Promise.allSettled(refs.map((ref, i) => {
@@ -214,17 +221,13 @@ export class CommandExecutor {
       return fn(ref);
     }));
     const results: AgentResult[] = [];
-    const agentErrors: string[] = [];
 
     for (let i = 0; i < settled.length; i++) {
       const outcome = settled[i]!;
       if (outcome.status === 'fulfilled') {
         results.push(outcome.value);
       } else {
-        const ref = refs[i]!;
-        const msg = outcome.reason instanceof Error ? outcome.reason.message : String(outcome.reason);
-        agentErrors.push(`Agent ${ref} failed: ${msg}`);
-        results.push(this.crashPlaceholder(ref, outcome.reason, startedAt[i]));
+        results.push(this.crashPlaceholder(refs[i]!, outcome.reason, startedAt[i], signal));
       }
     }
 
@@ -251,7 +254,10 @@ export class CommandExecutor {
     // of genuinely scoreless agents (explorer/generator class) returning a negative
     // decision produces, and until ship run #94 such a panel was thrown away as
     // "All agents failed" — a completed, billed run reported as a crash.
-    const crashed = results.filter(r => r.version === CRASH_PLACEHOLDER_VERSION);
+    // Aborted placeholders carry the same version but are not crashes: an all-aborted panel
+    // broke nothing and returns ABORTED (spec OD-4); one crash + the rest aborted returns FAIL
+    // with the crash's recommendation instead of overstating the crash count.
+    const crashed = results.filter(r => r.version === CRASH_PLACEHOLDER_VERSION && !isAbortedRecord(r));
     if (results.length > 0 && crashed.length === results.length) {
       const detail = crashed
         .flatMap(r => r.recommendations?.map(rec => rec.title) ?? [])
@@ -403,6 +409,16 @@ export class CommandExecutor {
       const partial = results.some(r => resolveDecisionCategory(r, this.warnUnclassified) === 'conditional');
       decision = failed ? 'FAILED' : partial ? 'PARTIAL' : 'COMPLETE';
       decisionCategory = failed ? 'negative' : partial ? 'conditional' : 'positive';
+    }
+
+    // negative > aborted > conditional > positive (spec §6). An aborted child resolves neutral, so
+    // it influences neither branch above: a panel whose completed agents passed and whose others
+    // were stopped would read PASS / COMPLETE — an unqualified verdict over an incomplete panel.
+    // A failure observed before the stop is evidence and keeps the negative verdict. Score is
+    // unchanged: aborted children are null and already excluded from the aggregate.
+    if (decisionCategory !== 'negative' && results.some(isAbortedRecord)) {
+      decision = ABORTED_DECISION;
+      decisionCategory = 'neutral';
     }
 
     // Aggregate metrics

@@ -6,6 +6,60 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) 
 
 ## [Unreleased]
 
+### Added
+
+- **`ABORTED_DECISION` and `isAbortedRecord(result)`**, exported from the package entry. An agent
+  stopped by a stop of its run is now recorded with decision `ABORTED` (see Changed); test for it
+  with the predicate rather than string-matching the decision. `isAbortedRecord` also checks the
+  synthesized version, so a real definition that uses `ABORTED` as its own vocabulary word (none
+  does today) is never mistaken for a stopped placeholder.
+
+### Changed
+
+- **An agent stopped by a run stop is recorded as NOT COMPLETED, not as a crash**
+  (aborted-agent-recording spec v0.2.0, decided by Alex 2026-10-05). A user `cancel()`, a
+  provider-credit trip (0.48.0) or a caller `abortSignal` used to turn every in-flight sibling into
+  a crash placeholder: decision `FAIL`, category `negative`, and one critical "Agent X failed:
+  Execution was cancelled by the caller" recommendation each — three innocent agents reported as
+  broken beside the one that received the 402, and, once submitted, tracker issues that recurred on
+  every stopped run. Now such an agent carries decision `ABORTED`, `decisionCategory: 'neutral'`,
+  `score: null`, **no recommendation**, `summary: 'Not completed: …'`, a critical
+  `execution.run-stopped` marker and `completeness: 'failed'`. The match is exact: the rejection's
+  `code` is `CANCELLED` **and** the run's signal is aborted. A timeout, the 402 originator, a
+  max-steps exhaustion, or a `CancelledError` while the run is still live keep the crash record.
+- **Semantics without signature — read this if you count failures.** No type changed (the
+  `'aborted'` phase decision was already declared; `WorkflowDecision` is an open string), but:
+  - `decision` on agent, command, stage, phase and workflow results can now be `ABORTED` /
+    `'aborted'` with `decisionCategory: 'neutral'` where it was `FAIL` / `'blocked'` / `BLOCK` /
+    `negative`. Containers apply **negative > aborted > conditional > positive**: a real failure
+    keeps its verdict; otherwise a stopped child makes the container `ABORTED`, never a `PASS`,
+    `COMPLETE` or `SHIP` over an incomplete panel.
+  - The `'aborted'` phase decision, declared but produced by no code until now, is produced for a
+    phase a stop cut short and reads **neutral** — the workflow aggregate's dead `aborted → BLOCK`
+    reading is gone. Submission no longer drops `'aborted'` phases: their completed commands are
+    real billed work.
+  - A multi-agent command or workflow phase whose agents were **all** stopped returns `ABORTED`
+    instead of throwing `ExecutionError` / `WorkflowError("All … failed")`; one crash plus stopped
+    siblings returns the crash's `FAIL` instead of throwing with an overstated crash count.
+  - Consumers that counted `FAIL`s or "Agent … failed" recommendations to detect an unfinished run
+    must read `PipelineResult.status` or `isAbortedRecord` instead. A credit-stopped run is
+    unchanged at the run level: still `failed`, `wait()` still throws.
+- **A caller-supplied `abortSignal` now stops a pipeline run** (spec OD-7). It used to abort
+  in-flight provider calls through the merged signal while the run stayed `running`, so later
+  stages were dispatched against an already-aborted signal and the run ended `completed`. It now
+  stops the run exactly as `handle.cancel()` does: status `cancelled`, decision `CANCELLED`, later
+  stages skipped. A signal already aborted when the run starts stops it before the first stage.
+  Separately, a stage holding an `ABORTED` record makes the pipeline decision `CANCELLED`, so a
+  stop that somehow did not reach the run status still cannot report `PASS`.
+
+### Fixed
+
+- **A synthesized placeholder could become a pipeline run's analysis summary.** Submission took
+  the first summary any stage agent produced, placeholders included; a crashed or stopped agent
+  first in a stage won (observed in the negative control: the run summary's decision was
+  `ABORTED`). Placeholders are now skipped when collecting analysis.
+- `CommandExecutor.executeParallel` built an error-message array it never read; removed.
+
 ## [0.49.0] - 2026-10-05
 
 ### Added

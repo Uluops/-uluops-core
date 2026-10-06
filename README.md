@@ -243,7 +243,10 @@ const result = await client.runAgent('code-validator', './src', {
     Otherwise the credit or the key's limit is spent. Inside a pipeline a 402 **stops the whole
     run and fails it**: later stages are skipped, in-flight siblings are aborted, the run ends
     `failed` (decision `FAIL`), and `wait()` / `runPipeline` throw a `PipelineError` whose message
-    is the provider's text. A user `cancel()` still ends `cancelled`.
+    is the provider's text. A user `cancel()` still ends `cancelled`. Only the agent that
+    received the 402 keeps a failing record (one critical recommendation carrying the provider's
+    text); the siblings the stop aborted are recorded `ABORTED` — see
+    [Stopped agents](#stopped-agents-aborted).
   - **Outside a pipeline** there is no run to stop. `runAgent` and single-agent commands reject
     with `ProviderCreditError`. A multi-agent command or a workflow contains a failing agent the
     way it contains any crash: the result carries a failing verdict and a crash recommendation
@@ -485,8 +488,9 @@ await handle.cancel();
 Pass your own `abortSignal` on `ExecutionOptions` to tie a run to a lifetime you already
 have (an inbound request, a parent job). It is **merged** with the pipeline's own signal,
 not replaced, so `handle.cancel()` keeps working on the same run. A run stopped by either
-signal raises `CancelledError` — never `TimeoutError`, which would name a duration nobody
-measured.
+signal ends the run `cancelled` — never `TimeoutError`, which would name a duration nobody
+measured. (Until 0.50.0 your own signal aborted the provider calls but left the run `running`,
+so later stages were dispatched against a dead signal and the run could end `completed`.)
 
 ### Convenience Methods
 
@@ -837,9 +841,34 @@ await commandExecutor.execute(resolved, input, { abortSignal: controller.signal 
 // Workflow: an optional third argument
 await workflowExecutor.execute(resolved, input, { abortSignal: controller.signal });
 
-// Aborting raises CancelledError from whichever agent was in flight.
+// A single-agent command and runAgent reject with CancelledError. A multi-agent command, a
+// workflow and a pipeline RETURN, recording each stopped agent as ABORTED (see below).
 controller.abort();
 ```
+
+#### Stopped agents (`ABORTED`)
+
+An agent stopped by a stop of its run — `handle.cancel()`, a provider-credit trip, or an
+`abortSignal` you supplied — is **not completed**, not crashed. Since 0.50.0 it is recorded with
+decision `ABORTED`, `decisionCategory: 'neutral'`, `score: null`, **no recommendation** (so no
+tracker issue), a cause-free `summary` (`Not completed: …`), a critical `execution.run-stopped`
+degradation marker and `completeness: 'failed'`. Its cost is `unpriced`: the spend of a request
+aborted mid-stream is unknown. The cause is stated once, on the run: `status: 'cancelled'` for a
+cancel, the thrown `PipelineError` (and the originator's own crash record) for a 402.
+
+Test for it with the exported predicate rather than the string:
+
+```typescript
+import { isAbortedRecord, ABORTED_DECISION } from '@uluops/core';
+const stopped = result.stages.flatMap(s => s.agentResults ?? []).filter(isAbortedRecord);
+```
+
+Containers apply **negative > aborted > conditional > positive**: a command, stage, workflow phase
+or workflow with a real failure keeps its negative verdict; otherwise any stopped child makes it
+`ABORTED` / `neutral` (phase decision `'aborted'`), never a `PASS`, `COMPLETE` or `SHIP` over an
+incomplete panel. A panel whose agents were *all* stopped returns rather than throwing. Genuine
+crashes — including a timeout, and the agent that received the 402 — keep the critical crash
+placeholder.
 
 ### Model Resolution
 
@@ -931,6 +960,7 @@ if (category === 'negative') {
 - A **scored** child whose decision resolves `negative` but whose score passes (a lens verdict like `DISORDERED@82`) caps the aggregate at `WARN`/`conditional` — never an unqualified `PASS`, never a hard `FAIL`.
 - An **all-scoreless** panel (every child a generator/executor) aggregates to `null`, not `0` — no agent scored, so there is no score to report, and a `null` is fail-open at a threshold gate. A definition that asks for nothing is different: an authored-empty phase (`commands: []`) or workflow (`phases: []`) scores `0` and blocks, so a gate cannot pass unexamined.
 - A **crashed** parallel agent synthesizes a negative placeholder and fails the command — a gate that couldn't run its full panel doesn't emit an unqualified positive. Survivors' scores are preserved; the crash surfaces as a critical recommendation.
+- An agent **stopped** by a run stop (cancel, credit trip, caller signal) is recorded `ABORTED` instead — neutral, no recommendation — and makes the aggregate `ABORTED`/`neutral` unless a real failure is also present ([Stopped agents](#stopped-agents-aborted)).
 
 ## Configuration
 
