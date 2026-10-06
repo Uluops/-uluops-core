@@ -16,6 +16,12 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) 
   served only by data-collecting upstreams now fails with the typed no-endpoint
   `CapabilityError`, which names `data_collection` among the constraints.
 
+### Fixed
+
+- **`ProviderCreditError`'s JSDoc and the README error table said a 402 stops the run as
+  `cancelled`.** 0.48.0 shipped the revised behaviour (the run ends `failed`, `wait()` throws) but
+  these two places kept the earlier wording.
+
 ### Added
 
 - **`ai.openRouterDataCollection: 'allow' | 'deny'`** (and the `OPENROUTER_DATA_COLLECTION`
