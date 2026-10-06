@@ -1,5 +1,6 @@
 import type { AgentResult } from '../types/agent.js';
 import type { CommandResult } from '../types/command.js';
+import type { DegradationMarker } from '../types/degradation.js';
 import type { AgentType } from '../types/execution.js';
 import { crashMetrics } from './crashMetrics.js';
 
@@ -102,6 +103,18 @@ export function crashPlaceholder(
 export const ABORTED_DECISION = 'ABORTED';
 
 /**
+ * The structural mark of "a run stop left this without a verdict". Core stamps it on every aborted
+ * placeholder and on every container it writes ABORTED; only core produces this code (agent
+ * markers are core-assigned too: budget.*, context.*, tools.*, model.*). `isStoppedResult` keys on
+ * it, not on the decision string — a model can output `decision: "ABORTED"` for any reason
+ * (crew #110 re-check M1).
+ */
+export const RUN_STOPPED_CODE = 'execution.run-stopped';
+export function runStoppedMarker(): DegradationMarker {
+  return { code: RUN_STOPPED_CODE, phase: 'execution', severity: 'critical' };
+}
+
+/**
  * The record for "this agent was dispatched and the run was stopped before it finished".
  *
  * The twin of {@link crashPlaceholder}, in the same file so the count of synthesized shapes stays
@@ -144,7 +157,7 @@ export function abortedPlaceholder(
     summary: 'Not completed: the run was stopped before this agent finished.',
     durationMs: metrics.durationMs,
     metrics,
-    degradationMarkers: [{ code: 'execution.run-stopped', phase: 'execution', severity: 'critical' }],
+    degradationMarkers: [runStoppedMarker()],
     completeness: 'failed',
   };
 }
@@ -162,15 +175,17 @@ export function isAbortedRecord(r: { decision: string; version: string }): boole
 /**
  * True for ANY result a run stop left without a verdict: an aborted placeholder
  * ({@link isAbortedRecord}), or a container — a multi-agent command, a stage, a workflow — that
- * aggregated to ABORTED. Containers carry their real version, so `isAbortedRecord` alone misses
- * them (crew #110 F3). Use this one on command, stage and workflow results; `isAbortedRecord` on
- * agent records when you need to know it was synthesized.
- *
- * Limit, stated: a container check is necessarily decision-based, so a real definition whose own
- * vocabulary emitted a neutral `ABORTED` would match. None does today (corpus census, spec §2.5).
+ * core aggregated to ABORTED. Containers carry their real version, so `isAbortedRecord` alone
+ * misses them (crew #110 F3). Keyed on the {@link RUN_STOPPED_CODE} marker core stamps, NOT on
+ * the decision string: a real agent whose model output says "ABORTED" is not a stopped run
+ * (re-check M1). Use this one on command, stage and workflow results.
  */
-export function isStoppedResult(r: { decision: string; version: string; decisionCategory?: string }): boolean {
-  return isAbortedRecord(r) || (r.decision === ABORTED_DECISION && r.decisionCategory === 'neutral');
+export function isStoppedResult(r: {
+  decision: string;
+  version: string;
+  degradationMarkers?: ReadonlyArray<{ code: string }>;
+}): boolean {
+  return isAbortedRecord(r) || (r.degradationMarkers?.some(m => m.code === RUN_STOPPED_CODE) ?? false);
 }
 
 /**
@@ -191,6 +206,7 @@ export function toCommandRecord(agentRecord: AgentResult): CommandResult {
     maxScore: agentRecord.maxScore,
     recommendations: agentRecord.recommendations,
     durationMs: agentRecord.durationMs,
+    degradationMarkers: agentRecord.degradationMarkers,
     // FABRICATION-OK: defaults UNDER the spread, as in stepCrashPlaceholder; a count of events.
     metrics: { toolCallCount: 0, toolCalls: 0, ...agentRecord.metrics },
   } as CommandResult;

@@ -1,7 +1,7 @@
 import type { AgentExecutor } from './AgentExecutor.js';
 import { externalInt, finiteNonNegative } from '../utils/externalValue.js';
-import { CRASH_PLACEHOLDER_VERSION, abortedPlaceholder, isStoppedResult, toCommandRecord, ABORTED_DECISION } from '../utils/crashPlaceholder.js';
-import { isRunStopAbort } from '../utils/runStop.js';
+import { CRASH_PLACEHOLDER_VERSION, abortedPlaceholder, isStoppedResult, toCommandRecord, runStoppedMarker, ABORTED_DECISION } from '../utils/crashPlaceholder.js';
+import { isRunStopAbort, isDeadlineSignal } from '../utils/runStop.js';
 import type { CommandExecutor } from './CommandExecutor.js';
 import type { RegistryClient } from '../registry/RegistryClient.js';
 import type { ResolvedDefinition } from '../types/registry.js';
@@ -126,9 +126,15 @@ export class WorkflowExecutor {
         //
         // PipelineExecutor got this guard (`cancelledNow`) and WorkflowExecutor did not —
         // the same defect one layer down, which is the shape this arc keeps finding. The
-        // remaining levels are recorded SKIPPED, not blocked: nothing was asked of them.
+        // remaining levels are recorded STOPPED, not blocked by a crash: nothing was asked of them.
+        // Not `skipped` (crew #110 re-check H1): aggregate() reads skipped as "no evidence", so a
+        // stop landing between levels vanished from the verdict and a stopped workflow read SHIP.
         if (control?.abortSignal?.aborted) {
-          this.skipLevel(level, phaseResults, completedPhases);
+          for (const phase of level) {
+            const p = this.createStoppedPhase(phase, control.abortSignal);
+            phaseResults.push(p);
+            completedPhases.set(phase.id, p);
+          }
           continue;
         }
         if (stopped || aborted) {
@@ -188,6 +194,8 @@ export class WorkflowExecutor {
       decision: aggregated.decision,
       decisionCategory: aggregated.decisionCategory,
       score: aggregated.score,
+      ...(aggregated.decision === ABORTED_DECISION && phaseResults.some(p => p.decision === 'aborted')
+        ? { degradationMarkers: [runStoppedMarker()] } : {}),
       extractionConfidence: worstExtractionConfidence(phaseResults.flatMap(p => p.commands)),
       phases: phaseResults,
       recommendations: this.deduplicateRecommendations(allRecommendations),
@@ -407,10 +415,11 @@ export class WorkflowExecutor {
       while (nextIndex < phases.length) {
         const idx = nextIndex++;
         const phase = phases[idx]!;
-        // A phase still queued behind max_parallel when the run stops never started: skipped, not
-        // dispatched and recorded as stopped (crew #110 F6).
+        // A phase still queued behind max_parallel when the run stops is not dispatched (crew #110
+        // F6), and is recorded STOPPED, not skipped — a skipped phase is "no evidence" to
+        // aggregate(), which let a stopped workflow read SHIP (re-check H1).
         if (control?.abortSignal?.aborted) {
-          results[idx] = this.createSkippedPhase(phase);
+          results[idx] = this.createStoppedPhase(phase, control.abortSignal);
           continue;
         }
         try {
@@ -855,6 +864,16 @@ export class WorkflowExecutor {
       durationMs: carried.reduce((sum, c) => sum + (c.metrics.durationMs || 0), 0),
       ...(error ? { error: formatErrorMessage(error) } : {}),
     };
+  }
+
+  /**
+   * A phase the run stop kept from starting. An explicit stop: `'aborted'` — no verdict, read
+   * neutral, so the workflow is ABORTED rather than SHIP. A caller DEADLINE: `'blocked'` — a
+   * deadline is a timeout, a failure (OD-9). Either way nothing ran: no commands, null score,
+   * 0 ms.
+   */
+  private createStoppedPhase(phase: PhaseDefinition, signal: AbortSignal): PhaseResult {
+    return { ...this.createSkippedPhase(phase), decision: isDeadlineSignal(signal) ? 'blocked' : 'aborted' };
   }
 
   private createSkippedPhase(phase: PhaseDefinition): PhaseResult {

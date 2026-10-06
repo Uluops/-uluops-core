@@ -18,7 +18,7 @@ import { rollupCost, type CostFields } from '../utils/costRollup.js';
 import { resolveDecisionCategory } from './classifyDecision.js';
 import { worstExtractionConfidence } from '../utils/worstExtractionConfidence.js';
 import { aggregateScores } from '../utils/aggregateScores.js';
-import { crashPlaceholder, abortedPlaceholder, isAbortedRecord, isStoppedResult, toCommandRecord, ABORTED_DECISION, CRASH_PLACEHOLDER_VERSION } from '../utils/crashPlaceholder.js';
+import { crashPlaceholder, abortedPlaceholder, isAbortedRecord, isStoppedResult, toCommandRecord, runStoppedMarker, ABORTED_DECISION, CRASH_PLACEHOLDER_VERSION } from '../utils/crashPlaceholder.js';
 import { isRunStopAbort, isDeadlineSignal } from '../utils/runStop.js';
 import { verifiedNothingExecuted } from '../utils/executionEvidence.js';
 import type { Logger } from '@uluops/sdk-core';
@@ -465,6 +465,7 @@ export class PipelineExecutor {
       // FABRICATION-OK: summing a count of events; see CommandExecutor.
           toolCalls: agentResults.reduce((sum, r) => sum + (r.metrics.toolCallCount ?? 0), 0),
         },
+        ...(stageAborted ? { degradationMarkers: [runStoppedMarker()] } : {}),
       },
       agentResults,
       durationMs: stageDurationMs,
@@ -943,11 +944,16 @@ class PipelineHandle implements IPipelineHandle {
   private execution: Promise<void>;
   private controller: AbortController;
 
+  /** True once the execution promise has settled — status alone is set before a stopped run unwinds. */
+  private settled = false;
+
   constructor(executionId: string, state: PipelineState, execution: Promise<void>, controller: AbortController) {
     this.executionId = executionId;
     this.state = state;
     this.execution = execution;
     this.controller = controller;
+    const markSettled = () => { this.settled = true; };
+    execution.then(markSettled, markSettled);
   }
 
   async status(): Promise<PipelineResult> {
@@ -975,10 +981,12 @@ class PipelineHandle implements IPipelineHandle {
   }
 
   async cancel(): Promise<void> {
-    // Already cancelled — by an earlier cancel() or by the caller's own abortSignal (OD-7) — is a
-    // no-op, not an error: teardown code that both aborts its signal and calls cancel() must not
-    // get a rejection the pre-OD-7 run never produced (crew #110 F3).
-    if (this.state.status === 'cancelled') return;
+    // A run already STOPPED — by an earlier cancel(), the caller's own abortSignal (OD-7), a caller
+    // deadline or a credit trip — and still unwinding is a no-op, not an "already complete"
+    // rejection: it is not complete, and teardown code that both aborts its signal and calls
+    // cancel() must not get a rejection the pre-OD-7 run never produced (crew #110 F3, re-check
+    // M2). A run that has SETTLED still rejects, as before.
+    if (this.state.status === 'cancelled' || (stoppedNow(this.state) && !this.settled)) return;
     if (this.isComplete()) {
       throw new PipelineError(
         `Pipeline ${this.executionId} is already complete (status: ${this.state.status})`,

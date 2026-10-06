@@ -13,8 +13,12 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) 
   with the predicate rather than string-matching the decision. `isAbortedRecord` also checks the
   synthesized version, so a real definition that uses `ABORTED` as its own vocabulary word (none
   does today) is never mistaken for a stopped placeholder.
-- **`isStoppedResult(result)`** for command, stage and workflow results that aggregated to
-  `ABORTED`. They carry their real version, so `isAbortedRecord` returns false for them.
+- **`isStoppedResult(result)`** for command, stage and workflow results that core aggregated to
+  `ABORTED`. They carry their real version, so `isAbortedRecord` returns false for them. It keys on
+  a marker core stamps, not on the decision string: a model can output `decision: "ABORTED"`, and
+  that is not a stopped run.
+- **`degradationMarkers?` on `CommandResult` and `WorkflowResult`** (optional, additive). Core sets
+  `[{ code: 'execution.run-stopped', … }]` on any command, stage or workflow it writes `ABORTED`.
 
 ### Changed
 
@@ -51,7 +55,10 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) 
     `ABORTED` record, not a `failed` stage counted in `stagesFailed`; the agent now reaches
     submission. Calling a single-agent command directly still rejects with `CancelledError`.
   - A workflow whose scored work sat only in stopped phases reports `score: null`, not 0.
-  - A phase still queued behind `max_parallel` when the run stops is `skipped`, not dispatched.
+  - Phases a stop kept from starting — queued behind `max_parallel`, or in later levels — are not
+    dispatched and are recorded `'aborted'` (or `'blocked'` under a caller deadline), no longer
+    `'skipped'`. A skipped phase is "no evidence" to the workflow verdict, so a stop that landed
+    between phases used to leave a stopped workflow reading **`SHIP`**.
   - Consumers that counted `FAIL`s or "Agent … failed" recommendations to detect an unfinished run
     must read `PipelineResult.status` or `isAbortedRecord` instead. A credit-stopped run is
     unchanged at the run level: still `failed`, `wait()` still throws.
@@ -59,7 +66,9 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) 
   in-flight provider calls through the merged signal while the run stayed `running`, so later
   stages were dispatched against an already-aborted signal and the run ended `completed`. It now
   stops the run exactly as `handle.cancel()` does: status `cancelled`, decision `CANCELLED`, later
-  stages skipped, and a later `cancel()` is a no-op rather than an "already complete" rejection. A
+  stages skipped. A `cancel()` on any stopped run that is still unwinding (cancel, caller abort,
+  deadline, credit trip) is a no-op rather than an "already complete" rejection; on a settled run
+  it still rejects. A
   signal already aborted when the run starts stops it before the first stage. **A deadline signal
   (`AbortSignal.timeout`, abort reason `TimeoutError`) is a timeout, not a stop** (Alex
   2026-10-05): the run ends `failed`, `wait()` throws a `PipelineError` naming the deadline, later

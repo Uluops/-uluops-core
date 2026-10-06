@@ -450,8 +450,8 @@ describe('fold: workflow phase precedence matches the command rule', () => {
     expect(r.score).toBeNull();
   });
 
-  // crew #110 F6. NC: against 911115f the queued phase is dispatched and recorded aborted.
-  it('a phase queued behind max_parallel when the run stops is skipped, not dispatched', async () => {
+  // crew #110 F6 + re-check H1. NC: against 911115f the queued phase is dispatched.
+  it('a phase queued behind max_parallel when the run stops is recorded aborted, not dispatched', async () => {
     const exec = stepExec({ w1: 'wait', q: 'pass' });
     const c = new AbortController();
     setTimeout(() => c.abort(), 5);
@@ -459,7 +459,8 @@ describe('fold: workflow phase precedence matches the command rule', () => {
       { id: 'first', name: 'First', commands: ['w1'], parallel: true },
       { id: 'queued', name: 'Queued', commands: ['q'], parallel: true },
     ], { max_parallel: 1 }), { target: '/tmp' }, { abortSignal: c.signal });
-    expect(r.phases.find(p => p.id === 'queued')!.decision).toBe('skipped');
+    expect(r.phases.find(p => p.id === 'queued')!.decision).toBe('aborted');
+    expect(r.phases.find(p => p.id === 'queued')!.commands).toEqual([]);
     expect((exec.execute as ReturnType<typeof vi.fn>).mock.calls.map(c => (c[0] as ResolvedDefinition).name)).not.toContain('q');
   });
 
@@ -575,8 +576,79 @@ describe('isStoppedResult (crew #110 F3)', () => {
   it('matches a placeholder and a real-versioned container that aggregated to ABORTED', async () => {
     const { isStoppedResult } = await import('../../src/index.js');
     expect(isStoppedResult(abortedPlaceholder('x', new CancelledError('x')))).toBe(true);
-    expect(isStoppedResult({ decision: 'ABORTED', decisionCategory: 'neutral', version: '1.0.0' })).toBe(true);
-    expect(isStoppedResult({ decision: 'ABORTED', decisionCategory: 'negative', version: '1.0.0' })).toBe(false);
-    expect(isStoppedResult({ decision: 'PASS', decisionCategory: 'positive', version: '1.0.0' })).toBe(false);
+    expect(isStoppedResult({ decision: 'ABORTED', version: '1.0.0', degradationMarkers: [{ code: 'execution.run-stopped' }] })).toBe(true);
+    // Re-check M1: a model can output "ABORTED"; without core's marker it is not a stopped run.
+    expect(isStoppedResult({ decision: 'ABORTED', version: '1.0.0' })).toBe(false);
+    expect(isStoppedResult({ decision: 'PASS', version: '1.0.0', degradationMarkers: [{ code: 'budget.forced-wrap-up' }] })).toBe(false);
+  });
+});
+
+describe('fold re-check (H1, M1, M2)', () => {
+  function stepsWf(phases: unknown[], extra: Record<string, unknown> = {}): ResolvedDefinition {
+    const d = workflowDef([], true);
+    const w = (d.definition as unknown as { workflow: { orchestration: Record<string, unknown> } }).workflow;
+    w.orchestration = { ...w.orchestration, phases, ...extra };
+    return d;
+  }
+
+  // H1. NC: against 03cbb39 this reads SHIP — the queued phase was `skipped`, "no evidence".
+  it('a stop between phases never yields SHIP', async () => {
+    const cmdExec = {
+      execute: vi.fn().mockImplementation(async (r: ResolvedDefinition) => {
+        if (r.name === 'first') { controller.abort(); return makeCommandResult({ name: 'first', score: 90 }); }
+        return makeCommandResult({ name: r.name, score: 90 });
+      }),
+    } as unknown as CommandExecutor;
+    const controller = new AbortController();
+    const r = await new WorkflowExecutor(cmdExec, makeRegistry(), undefined, noopLogger).execute(stepsWf([
+      { id: 'a', name: 'A', commands: ['first'], parallel: true },
+      { id: 'b', name: 'B', commands: ['queued'], parallel: true },
+    ], { max_parallel: 1 }), { target: '/tmp' }, { abortSignal: controller.signal });
+    expect(r.phases.map(p => p.decision)).toEqual(['passed', 'aborted']);
+    expect(r.decision).toBe('ABORTED');
+    expect(r.degradationMarkers?.map(m => m.code)).toEqual(['execution.run-stopped']);
+  });
+
+  it('under a caller deadline, phases the stop kept from starting are blocked, not aborted', async () => {
+    const cmdExec = { execute: vi.fn().mockImplementation(async (r: ResolvedDefinition) => makeCommandResult({ name: r.name, score: 90 })) } as unknown as CommandExecutor;
+    const d = AbortSignal.timeout(1);
+    await new Promise(r => setTimeout(r, 10));
+    const r = await new WorkflowExecutor(cmdExec, makeRegistry(), undefined, noopLogger).execute(
+      stepsWf([{ id: 'a', name: 'A', commands: ['x'], parallel: true }]), { target: '/tmp' }, { abortSignal: d });
+    expect(r.phases[0]!.decision).toBe('blocked');
+    expect(r.decision).toBe('BLOCK');
+  });
+
+  // M1. NC: against 03cbb39 a model-emitted ABORTED (neutral, real version) made the phase
+  // `aborted` and the workflow score null in a run nobody stopped.
+  it('a real step whose model said "ABORTED" in an unstopped run is not a stopped step', async () => {
+    const cmdExec = { execute: vi.fn().mockResolvedValue(makeCommandResult({ name: 'odd', score: 80, decision: 'ABORTED', decisionCategory: 'neutral' })) } as unknown as CommandExecutor;
+    const r = await new WorkflowExecutor(cmdExec, makeRegistry(), undefined, noopLogger).execute(
+      stepsWf([{ id: 'a', name: 'A', commands: ['odd'], parallel: true, gate: { threshold: 50, aggregate: 'average', on_fail: 'block' } }]), { target: '/tmp' });
+    expect(r.phases[0]!.decision).toBe('passed');
+    expect(r.score).toBe(80);
+  });
+
+  // M2. NC: against 03cbb39 cancel() rejects "already complete (status: failed)" mid-unwind.
+  it('cancel() after a caller deadline, while the run is unwinding, is a no-op', async () => {
+    // The agent takes 60 ms to unwind after the abort, so cancel() at 20 ms lands mid-unwind.
+    const slowUnwind = {
+      execute: vi.fn().mockImplementation((_r: unknown, _i: unknown, o?: ExecutionOptions) => new Promise((_res, rej) => {
+        o?.abortSignal?.addEventListener('abort', () => setTimeout(() => rej(new CancelledError('x')), 60), { once: true });
+      })),
+    } as unknown as AgentExecutor;
+    const exec = pipelineExecutor(slowUnwind, ['waits']);
+    const handle = await exec.start(inlinePipeline(['waits']), { target: '/tmp' }, { abortSignal: AbortSignal.timeout(5) });
+    await new Promise(r => setTimeout(r, 20));
+    expect(handle.isComplete()).toBe(true); // status is already `failed` — the reason the old guard misfired
+    await expect(handle.cancel()).resolves.toBeUndefined();
+    await settle(handle.wait());
+    // A SETTLED run still rejects, as before.
+    await expect(handle.cancel()).rejects.toThrow(/already complete/);
+  });
+
+  it('a stopped multi-agent command and stage carry the run-stopped marker', async () => {
+    const { result } = await runCommand({ a: 'pass', b: 'wait' }, ['a@1', 'b@1'], false);
+    expect(result!.degradationMarkers?.map(m => m.code)).toEqual(['execution.run-stopped']);
   });
 });

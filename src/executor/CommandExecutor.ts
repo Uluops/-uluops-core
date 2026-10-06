@@ -15,7 +15,7 @@ import { DEFAULT_PASS_THRESHOLD, DEFAULT_WARN_THRESHOLD } from '../constants.js'
 import { mapCategory } from './mapCategory.js';
 import { resolveDecisionCategory, type DecisionCategory } from './classifyDecision.js';
 import { aggregateScores, type AggregationMethod } from '../utils/aggregateScores.js';
-import { crashPlaceholder, abortedPlaceholder, isAbortedRecord, ABORTED_DECISION, CRASH_PLACEHOLDER_VERSION } from '../utils/crashPlaceholder.js';
+import { crashPlaceholder, abortedPlaceholder, isAbortedRecord, runStoppedMarker, ABORTED_DECISION, CRASH_PLACEHOLDER_VERSION } from '../utils/crashPlaceholder.js';
 import { isRunStopAbort } from '../utils/runStop.js';
 import { worstExtractionConfidence } from '../utils/worstExtractionConfidence.js';
 
@@ -428,6 +428,7 @@ export class CommandExecutor {
       decision = ABORTED_DECISION;
       decisionCategory = 'neutral';
     }
+    const stopped = decision === ABORTED_DECISION;
 
     // Aggregate metrics
     // FABRICATION-OK: summing a count of events; see the wrapAgentResult waiver.
@@ -461,6 +462,7 @@ export class CommandExecutor {
       recommendations,
       durationMs,
       metrics,
+      ...(stopped ? { degradationMarkers: [runStoppedMarker()] } : {}),
     };
   }
 }

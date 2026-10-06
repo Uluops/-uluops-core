@@ -1,5 +1,6 @@
 import type { ExecutionResult, ExecutionMetrics, Domain, CostBasis } from './execution.js';
 import type { CommandResult } from './command.js';
+import type { DegradationMarker } from './degradation.js';
 
 /**
  * Workflow definition - multi-phase command orchestration
@@ -97,6 +98,9 @@ export interface WorkflowResult extends ExecutionResult {
 
   /** Workflow-specific metrics */
   metrics: WorkflowMetrics;
+
+  /** Set by core when a run stop left the workflow without a verdict; see CommandResult. */
+  degradationMarkers?: DegradationMarker[];
 }
 
 /**

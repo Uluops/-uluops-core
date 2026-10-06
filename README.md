@@ -489,7 +489,7 @@ Pass your own `abortSignal` on `ExecutionOptions` to tie a run to a lifetime you
 have (an inbound request, a parent job). It is **merged** with the pipeline's own signal,
 not replaced, so `handle.cancel()` keeps working on the same run. An explicit `abort()` of your
 signal stops the run exactly like `cancel()` — status `cancelled`, later stages skipped — and a
-later `cancel()` is a no-op. A **deadline** is different: if your signal is
+`cancel()` while any stopped run is still unwinding is a no-op. A **deadline** is different: if your signal is
 `AbortSignal.timeout(ms)` (its abort reason is a `TimeoutError`), the run ends **`failed`**,
 `wait()` throws a `PipelineError` naming the deadline, and the agents still in flight are
 recorded as crashes — the slow agent is the likeliest broken one, so a deadline is never filed
@@ -862,8 +862,10 @@ aborted mid-stream is unknown. The cause is stated once, on the run: `status: 'c
 cancel, the thrown `PipelineError` (and the originator's own crash record) for a 402.
 
 Test for it with the exported predicates rather than the string. `isAbortedRecord` is true for
-a synthesized agent record; `isStoppedResult` also matches a command, stage or workflow that
-aggregated to `ABORTED` (those carry their real version):
+a synthesized agent record; `isStoppedResult` also matches a command, stage or workflow that core
+aggregated to `ABORTED` (those carry their real version, plus an `execution.run-stopped` entry in
+`degradationMarkers` — the predicate keys on that, because a model can output the word `ABORTED`
+itself):
 
 ```typescript
 import { isAbortedRecord, isStoppedResult } from '@uluops/core';
@@ -879,8 +881,9 @@ evidence and does not count as negative: with `sum`, 90 plus a stopped agent und
 is `ABORTED`, not `FAIL`. A panel whose agents were *all* stopped returns rather than throwing, and
 a pipeline stage whose single agent was stopped is a completed stage holding an `ABORTED` record.
 Genuine crashes — a timeout, a caller deadline, and the agent that received the 402 — keep the
-critical crash placeholder. A workflow whose only scored work sat in stopped phases reports
-`score: null`.
+critical crash placeholder. Phases a stop kept from starting are recorded `'aborted'`
+(`'blocked'` under a deadline), never `'skipped'`, so a stopped workflow can never read `SHIP`. A
+workflow whose only scored work sat in stopped phases reports `score: null`.
 
 **Known gap (tracked separately):** the tracker reads a finding absent from a run as resolved.
 A stopped run is missing its stopped agents' findings, and nothing on the wire yet says those

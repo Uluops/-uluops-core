@@ -1,4 +1,5 @@
 import type { ExecutionResult, ExecutionMetrics, Domain, AgentType } from './execution.js';
+import type { DegradationMarker } from './degradation.js';
 
 /**
  * Command definition - Agent(s) + execution context
@@ -119,6 +120,13 @@ export interface CommandResult extends ExecutionResult {
 
   /** Command-specific metrics */
   metrics: CommandMetrics;
+
+  /**
+   * Set by core when a run stop left this command without a verdict (`execution.run-stopped`).
+   * The structural mark `isStoppedResult` keys on — never the decision string, which a model can
+   * emit freely.
+   */
+  degradationMarkers?: DegradationMarker[];
 }
 
 /**
