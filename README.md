@@ -193,18 +193,25 @@ const result = await client.runAgent('code-validator', './src', {
 > OpenRouter and on to whichever upstream provider serves the request. OpenRouter itself retains
 > no prompts unless you opt in to its prompt logging; the upstreams differ. **Since 0.49.0 core
 > sends `provider.data_collection: 'deny'` by default**, so only upstreams that do not retain or
-> train on your data are eligible. Fewer endpoints qualify; when none does, the run fails with a
-> `CapabilityError` that names `data_collection` among the routing constraints.
+> train on your data are eligible. Fewer endpoints qualify; when none does (OpenRouter's routing
+> step "Filter by Data Policy" — typical of `:free` models), the run fails with a `CapabilityError`
+> that names `provider.data_collection = 'deny'` and how to opt in.
 >
-> To opt back in to the wider pool, set `ai.openRouterDataCollection: 'allow'` in the client config
-> or `OPENROUTER_DATA_COLLECTION=allow` in the environment (this reaches commands, workflows,
-> pipelines and the CLI), or per request in `runAgent`'s options:
-> `providerOptions: { openrouter: { provider: { data_collection: 'allow' } } }`. Per request beats
-> config, config beats the environment, and any value other than `allow`/`deny` falls back to
-> `deny`. For the strictest routing add `zdr: true` (zero-retention endpoints only) and pin
-> upstreams with `provider.only`. Core keeps any `provider` fields you set and adds its own
-> `require_parameters`. Your OpenRouter account's privacy settings
-> (openrouter.ai/settings/privacy) apply on top of all of this.
+> To opt in for one run, pass it per request in `runAgent`'s options:
+> `providerOptions: { openrouter: { provider: { data_collection: 'allow' } } }`. Commands,
+> workflows, pipelines and the CLI take no `providerOptions`; for them the levers are
+> `ai.openRouterDataCollection: 'allow'` in the client config or `OPENROUTER_DATA_COLLECTION=allow`
+> in the environment, and both apply to **every** run that client or shell makes. While `allow` is
+> in effect, the first OpenRouter request of each client logs a warning naming which lever set it.
+> Per request beats config, config beats the environment. A value other than `allow`/`deny` means
+> `deny` at whichever layer set it — it does not fall through to a lower layer's `allow`.
+>
+> These levers are a preference, not a lock: a more specific one always overrides a less specific
+> one, so an environment `deny` cannot stop an embedding app's `allow`. To **enforce** deny, use
+> your OpenRouter account's privacy settings (openrouter.ai/settings/privacy), which apply on top of
+> all of this. `deny` is OpenRouter's per-provider data-policy flag, not zero data retention: for
+> the strictest routing add `zdr: true` (zero-retention endpoints only) and pin upstreams with
+> `provider.only`. Core keeps any `provider` fields you set and adds its own `require_parameters`.
 
 - **Pin 2.10.0.** The package's npm `latest` is 3.x, which targets `ai@7`; core runs `ai@6` and
   refuses a different major at load with an error naming both versions. Under strict pnpm

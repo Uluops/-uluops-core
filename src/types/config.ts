@@ -59,10 +59,15 @@ export interface AIConfig {
    * Defaults to `'deny'` (OpenRouter plan D7, Alex 2026-10-05): only upstreams that do not collect
    * data are eligible. Set `'allow'` to opt back in to the wider pool. Also read from the
    * `OPENROUTER_DATA_COLLECTION` environment variable; this field wins over the variable, and a
-   * per-request `providerOptions.openrouter.provider.data_collection` wins over both. Any value
-   * other than `'allow'`/`'deny'` is ignored, falling back to `'deny'`.
+   * per-request `providerOptions.openrouter.provider.data_collection` wins over both. A value
+   * other than `'allow'`/`'deny'` at any of these layers means `'deny'`; it does not fall through to
+   * the next layer. While `'allow'` is in effect, the first OpenRouter request of each client logs a
+   * warning naming where it came from.
    *
-   * Your OpenRouter account's privacy settings still apply on top of this.
+   * This is a preference, not a lock: a more specific layer can always override a less specific
+   * one. To ENFORCE deny for an account, use OpenRouter's account privacy settings
+   * (openrouter.ai/settings/privacy), which apply on top of this. `'deny'` is OpenRouter's
+   * per-provider data-policy flag, not zero data retention; add `zdr: true` for that.
    * @default 'deny'
    */
   openRouterDataCollection?: 'allow' | 'deny';
@@ -78,6 +83,8 @@ export interface ResolvedAIConfig {
   additionalProviders?: string[];
   /** OpenRouter's `provider.data_collection` default; see {@link AIConfig.openRouterDataCollection}. Absent reads as `'deny'`. */
   openRouterDataCollection?: 'allow' | 'deny';
+  /** Which layer set {@link openRouterDataCollection}; named by the allow-in-effect warning. */
+  openRouterDataCollectionSource?: 'config' | 'env' | 'default';
 }
 
 /**
