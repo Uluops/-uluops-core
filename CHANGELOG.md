@@ -18,7 +18,9 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) 
   a marker core stamps, not on the decision string: a model can output `decision: "ABORTED"`, and
   that is not a stopped run.
 - **`degradationMarkers?` on `CommandResult` and `WorkflowResult`** (optional, additive). Core sets
-  `[{ code: 'execution.run-stopped', … }]` on any command, stage or workflow it writes `ABORTED`.
+  `[{ code: 'execution.run-stopped', … }]` on any command, stage or workflow it writes `ABORTED`,
+  and `execution.run-stopped-partial` (severity `degraded`) on a command that kept a real failure
+  over a panel a stop cut short — so a parent that later softens that failure still sees the stop.
 
 ### Changed
 
@@ -38,12 +40,15 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) 
   `'aborted'` phase decision was already declared; `WorkflowDecision` is an open string), but:
   - `decision` on agent, command, stage, phase and workflow results can now be `ABORTED` /
     `'aborted'` with `decisionCategory: 'neutral'` where it was `FAIL` / `'blocked'` / `BLOCK` /
-    `negative`. Containers apply **negative > aborted > conditional > positive**, where negative
-    means a child that itself failed or crashed (Alex 2026-10-05): such a child keeps the
-    container's verdict; otherwise a stopped child makes it `ABORTED`. A threshold verdict over
-    the agents that finished is not evidence — `sum` of 90 plus a stopped agent under a 150 pass
-    threshold is `ABORTED`, not `FAIL`, and a phase's score gate over a stopped panel no longer
-    `blocked`s it.
+    `negative`. Containers apply **negative > aborted > conditional > positive** at every level:
+    a container keeps its verdict over a stop only when that verdict is itself negative AND a
+    child really failed or crashed (Alex 2026-10-05). Otherwise a stop anywhere inside makes it
+    `ABORTED`. A threshold verdict over the agents that finished is not evidence — `sum` of 90 plus
+    a stopped agent under a 150 pass threshold is `ABORTED`, not `FAIL`. A failure *softened* to a
+    conditional — a passing-score lens capped at `WARN`, a phase `on_fail: warn`, a workflow
+    `on_failure: warn` rewrite — is a conditional, and aborted outranks it. Pinned by a composed
+    invariant test over 300 real-executor workflows: an explicitly stopped workflow never reads
+    `SHIP` or `HOLD`; a deadline-stopped one never reads `SHIP` or `ABORTED`.
   - The `'aborted'` phase decision, declared but produced by no code until now, is produced for a
     phase a stop cut short and reads **neutral** — the workflow aggregate's dead `aborted → BLOCK`
     reading is gone. Submission no longer drops `'aborted'` phases: their completed commands are
@@ -57,8 +62,11 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) 
   - A workflow whose scored work sat only in stopped phases reports `score: null`, not 0.
   - Phases a stop kept from starting — queued behind `max_parallel`, or in later levels — are not
     dispatched and are recorded `'aborted'` (or `'blocked'` under a caller deadline), no longer
-    `'skipped'`. A skipped phase is "no evidence" to the workflow verdict, so a stop that landed
-    between phases used to leave a stopped workflow reading **`SHIP`**.
+    `'skipped'`, with `stoppedBeforeStart: true` (new optional `PhaseResult` field). A skipped
+    phase is "no evidence" to the workflow verdict, so a stop that landed between phases used to
+    leave a stopped workflow reading **`SHIP`**. Such a phase is not counted in `phasesExecuted`,
+    adds no cost, and is never rewritten by `on_failure` (a deadline does not read as `HOLD`).
+    Phases that `skip_if` or an unmet dependency would have skipped are still `skipped`.
   - Consumers that counted `FAIL`s or "Agent … failed" recommendations to detect an unfinished run
     must read `PipelineResult.status` or `isAbortedRecord` instead. A credit-stopped run is
     unchanged at the run level: still `failed`, `wait()` still throws.
@@ -66,9 +74,9 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) 
   in-flight provider calls through the merged signal while the run stayed `running`, so later
   stages were dispatched against an already-aborted signal and the run ended `completed`. It now
   stops the run exactly as `handle.cancel()` does: status `cancelled`, decision `CANCELLED`, later
-  stages skipped. A `cancel()` on any stopped run that is still unwinding (cancel, caller abort,
-  deadline, credit trip) is a no-op rather than an "already complete" rejection; on a settled run
-  it still rejects. A
+  stages skipped. A `cancel()` on a cancelled run, or on any stopped run that is still unwinding
+  (caller abort, deadline, credit trip), is a no-op rather than an "already complete" rejection; on
+  a run that has settled `completed` or `failed` it still rejects. A
   signal already aborted when the run starts stops it before the first stage. **A deadline signal
   (`AbortSignal.timeout`, abort reason `TimeoutError`) is a timeout, not a stop** (Alex
   2026-10-05): the run ends `failed`, `wait()` throws a `PipelineError` naming the deadline, later

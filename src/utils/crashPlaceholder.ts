@@ -115,6 +115,22 @@ export function runStoppedMarker(): DegradationMarker {
 }
 
 /**
+ * A container that KEPT a negative verdict (a real failure) over a panel a run stop cut short.
+ * Not "no verdict" — the failure stands — but a parent that softens that failure (on_failure: warn
+ * → `warned`) must still know a stop happened inside, or the stop vanishes into HOLD. Severity
+ * `degraded`: coverage was reduced, the verdict was not lost.
+ */
+export const RUN_STOPPED_PARTIAL_CODE = 'execution.run-stopped-partial';
+export function runStoppedPartialMarker(): DegradationMarker {
+  return { code: RUN_STOPPED_PARTIAL_CODE, phase: 'execution', severity: 'degraded' };
+}
+
+/** True when a run stop reached this result or anything inside it (no verdict, or a kept failure). */
+export function containsRunStop(r: Parameters<typeof isStoppedResult>[0]): boolean {
+  return isStoppedResult(r) || (r.degradationMarkers?.some(m => m.code === RUN_STOPPED_PARTIAL_CODE) ?? false);
+}
+
+/**
  * The record for "this agent was dispatched and the run was stopped before it finished".
  *
  * The twin of {@link crashPlaceholder}, in the same file so the count of synthesized shapes stays
@@ -206,7 +222,8 @@ export function toCommandRecord(agentRecord: AgentResult): CommandResult {
     maxScore: agentRecord.maxScore,
     recommendations: agentRecord.recommendations,
     durationMs: agentRecord.durationMs,
-    degradationMarkers: agentRecord.degradationMarkers,
+    // Only the run-stopped mark — the field's single meaning on a command (second re-check L3).
+    degradationMarkers: agentRecord.degradationMarkers?.filter(m => m.code === RUN_STOPPED_CODE),
     // FABRICATION-OK: defaults UNDER the spread, as in stepCrashPlaceholder; a count of events.
     metrics: { toolCallCount: 0, toolCalls: 0, ...agentRecord.metrics },
   } as CommandResult;

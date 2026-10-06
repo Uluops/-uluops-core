@@ -1,6 +1,6 @@
 import type { AgentExecutor } from './AgentExecutor.js';
 import { externalInt, finiteNonNegative } from '../utils/externalValue.js';
-import { CRASH_PLACEHOLDER_VERSION, abortedPlaceholder, isStoppedResult, toCommandRecord, runStoppedMarker, ABORTED_DECISION } from '../utils/crashPlaceholder.js';
+import { CRASH_PLACEHOLDER_VERSION, abortedPlaceholder, containsRunStop, toCommandRecord, runStoppedMarker, ABORTED_DECISION } from '../utils/crashPlaceholder.js';
 import { isRunStopAbort, isDeadlineSignal } from '../utils/runStop.js';
 import type { CommandExecutor } from './CommandExecutor.js';
 import type { RegistryClient } from '../registry/RegistryClient.js';
@@ -129,8 +129,10 @@ export class WorkflowExecutor {
         // remaining levels are recorded STOPPED, not blocked by a crash: nothing was asked of them.
         // Not `skipped` (crew #110 re-check H1): aggregate() reads skipped as "no evidence", so a
         // stop landing between levels vanished from the verdict and a stopped workflow read SHIP.
+        // Eligibility first (second re-check L1): a phase skip_if or an unmet dependency would have
+        // skipped is still `skipped`; only phases that WOULD have run are recorded stopped.
         if (control?.abortSignal?.aborted) {
-          for (const phase of level) {
+          for (const phase of this.filterEligible(level, input, phaseResults, completedPhases)) {
             const p = this.createStoppedPhase(phase, control.abortSignal);
             phaseResults.push(p);
             completedPhases.set(phase.id, p);
@@ -194,7 +196,9 @@ export class WorkflowExecutor {
       decision: aggregated.decision,
       decisionCategory: aggregated.decisionCategory,
       score: aggregated.score,
-      ...(aggregated.decision === ABORTED_DECISION && phaseResults.some(p => p.decision === 'aborted')
+      // Keyed on the category, not the decision string: aggregation.decision.BLOCK may be remapped
+      // to any word, including "ABORTED" (second re-check L1).
+      ...(aggregated.decisionCategory === 'neutral' && phaseResults.some(p => p.decision === 'aborted')
         ? { degradationMarkers: [runStoppedMarker()] } : {}),
       extractionConfidence: worstExtractionConfidence(phaseResults.flatMap(p => p.commands)),
       phases: phaseResults,
@@ -213,12 +217,14 @@ export class WorkflowExecutor {
         ...rollupCost(phaseResults.flatMap((p): CostFields[] =>
           p.commands.length > 0
             ? p.commands.map(c => c.metrics)
-            : p.decision === 'blocked' ? [{ costUsd: undefined, costBasis: 'unpriced' }] : [],
+            // A phase a stop kept from starting billed nothing, so it adds no unpriced child
+            // (crew #110 second re-check M2).
+            : p.decision === 'blocked' && !p.stoppedBeforeStart ? [{ costUsd: undefined, costBasis: 'unpriced' }] : [],
         )),
         durationMs,
         model: 'mixed',
         ...phaseResults.reduce((acc, p) => {
-          if (p.decision !== 'skipped' && p.decision !== 'aborted') acc.phasesExecuted++;
+          if (p.decision !== 'skipped' && p.decision !== 'aborted' && !p.stoppedBeforeStart) acc.phasesExecuted++;
           if (p.decision === 'passed') acc.phasesPassed++;
           if (p.decision === 'warned') acc.phasesWarned++;
           if (p.decision === 'blocked') acc.phasesBlocked++;
@@ -311,7 +317,10 @@ export class WorkflowExecutor {
         allRecommendations.push(...cmd.recommendations);
       }
 
-      if (phaseResult.decision === 'blocked') {
+      // A phase a stop kept from starting is not a gate outcome: `on_failure` neither rewrites it
+      // (a deadline must not read as the quality verdict `warned`/HOLD) nor triggers stop/abort —
+      // the run is already stopped (crew #110 second re-check M1).
+      if (phaseResult.decision === 'blocked' && !phaseResult.stoppedBeforeStart) {
         switch (onFailure) {
           case 'stop':
             behavior = 'stop';
@@ -320,7 +329,10 @@ export class WorkflowExecutor {
             behavior = 'abort';
             break;
           case 'warn':
-            phaseResult.decision = 'warned';
+            // Softening a blocked phase to `warned` makes it a conditional, and aborted outranks
+            // conditional: a softened phase that also holds a stopped step is `aborted`, or the
+            // stop vanishes into HOLD (found by the composed invariant test, not by review).
+            phaseResult.decision = phaseResult.commands.some(containsRunStop) ? 'aborted' : 'warned';
             break;
           case 'continue':
           default:
@@ -544,8 +556,14 @@ export class WorkflowExecutor {
     // the 'aborted' phase decision, read neutral by aggregate() — unless a step ITSELF resolved
     // negative. A gate verdict over the completed part of the panel (a score under threshold, under
     // on_fail block or warn alike) is not evidence and does not keep `blocked`.
-    if (commandResults.some(isStoppedResult) &&
-        !commandResults.some(r => resolveDecisionCategory(r, this.warnUnclassified) === 'negative')) {
+    //
+    // The kept verdict must itself be `blocked` (second re-check H1/M1): a negative step softened
+    // to `warned` by on_fail: warn or the lens cap is a conditional, which aborted outranks — the
+    // same rule the workflow aggregate applies when on_failure: warn rewrites blocked → warned, so
+    // both layers rank a softened negative the same way.
+    if (commandResults.some(containsRunStop) &&
+        !(decision === 'blocked' &&
+          commandResults.some(r => resolveDecisionCategory(r, this.warnUnclassified) === 'negative'))) {
       decision = 'aborted';
     }
 
@@ -873,7 +891,11 @@ export class WorkflowExecutor {
    * 0 ms.
    */
   private createStoppedPhase(phase: PhaseDefinition, signal: AbortSignal): PhaseResult {
-    return { ...this.createSkippedPhase(phase), decision: isDeadlineSignal(signal) ? 'blocked' : 'aborted' };
+    return {
+      ...this.createSkippedPhase(phase),
+      decision: isDeadlineSignal(signal) ? 'blocked' : 'aborted',
+      stoppedBeforeStart: true,
+    };
   }
 
   private createSkippedPhase(phase: PhaseDefinition): PhaseResult {

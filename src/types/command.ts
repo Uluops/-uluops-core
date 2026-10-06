@@ -122,9 +122,11 @@ export interface CommandResult extends ExecutionResult {
   metrics: CommandMetrics;
 
   /**
-   * Set by core when a run stop left this command without a verdict (`execution.run-stopped`).
-   * The structural mark `isStoppedResult` keys on — never the decision string, which a model can
-   * emit freely.
+   * Set by core only on a command a run stop left without a verdict: an aggregate written ABORTED,
+   * or the command-shaped form of an aborted placeholder. Carries `execution.run-stopped`, the
+   * structural mark `isStoppedResult` keys on — never the decision string, which a model can emit
+   * freely. Not a general channel: an agent's own markers (`budget.*`, `context.*`) are not lifted
+   * onto a command.
    */
   degradationMarkers?: DegradationMarker[];
 }

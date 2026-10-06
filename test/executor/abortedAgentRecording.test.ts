@@ -379,9 +379,9 @@ describe('fold: negative means categorical (Alex, crew #110 F1)', () => {
     expect(result).toMatchObject({ decision: 'ABORTED', decisionCategory: 'neutral', score: 90 });
   });
 
-  // Guard: a scored child that ITSELF resolved negative (a lens DISORDERED@82) keeps the verdict.
-  // MC: drop the categorical-negative clause → ABORTED.
-  it('a scored lens negative beside a stopped agent keeps the command WARN', async () => {
+  // Second re-check H1: a lens negative capped to WARN is a CONDITIONAL verdict, which aborted
+  // outranks. NC: against 3381f4f the command kept WARN, which hid the stop from the phase above.
+  it('a scored lens negative beside a stopped agent makes the command ABORTED, not WARN', async () => {
     const lens = makeValidatorResult({ name: 'lens', decision: 'DISORDERED', decisionCategory: 'negative', score: 82, recommendations: [] });
     const agentExec = {
       execute: vi.fn().mockImplementation(async (r: ResolvedDefinition, _i: unknown, o?: ExecutionOptions) =>
@@ -391,7 +391,7 @@ describe('fold: negative means categorical (Alex, crew #110 F1)', () => {
     setTimeout(() => c.abort(), 5);
     const result = await new CommandExecutor(agentExec, makeRegistry())
       .execute(commandDef(['lens@1', 'b@1'], false), { target: '/tmp' }, { abortSignal: c.signal });
-    expect(result.decision).toBe('WARN');
+    expect(result.decision).toBe('ABORTED');
   });
 });
 
@@ -427,10 +427,13 @@ describe('fold: workflow phase precedence matches the command rule', () => {
     }
   });
 
-  // Guard (test-architect #2): a real crash under on_fail warn keeps `warned`, not `aborted`.
-  it('a crash beside a stopped step under on_fail warn stays warned', async () => {
+  // Second re-check M1: a crash softened to `warned` by on_fail: warn is a conditional; aborted
+  // outranks it — the same ranking the workflow layer applies to on_failure: warn. NC: against
+  // 3381f4f this phase was `warned` and the workflow HOLD.
+  it('a crash beside a stopped step under on_fail warn is aborted (softened negative is conditional)', async () => {
     const r = await run(wf([{ id: 'p', name: 'P', commands: ['b', 'w'], parallel: true, gate: { threshold: 0, aggregate: 'average', on_fail: 'warn' } }]), { b: 'boom', w: 'wait' });
-    expect(r.phases[0]!.decision).toBe('warned');
+    expect(r.phases[0]!.decision).toBe('aborted');
+    expect(r.decision).toBe('ABORTED');
   });
 
   // Guard (test-architect #1). MC: swap hasBlocked/hasAborted in aggregate() → ABORTED.
@@ -650,5 +653,154 @@ describe('fold re-check (H1, M1, M2)', () => {
   it('a stopped multi-agent command and stage carry the run-stopped marker', async () => {
     const { result } = await runCommand({ a: 'pass', b: 'wait' }, ['a@1', 'b@1'], false);
     expect(result!.degradationMarkers?.map(m => m.code)).toEqual(['execution.run-stopped']);
+  });
+});
+
+describe('second re-check (M1, M2, L1)', () => {
+  function layout(sameLevel: boolean): ResolvedDefinition {
+    const d = workflowDef([], true);
+    const w = (d.definition as unknown as { workflow: { orchestration: Record<string, unknown> } }).workflow;
+    w.orchestration = {
+      ...w.orchestration,
+      on_failure: 'warn',
+      ...(sameLevel ? { max_parallel: 1 } : {}),
+      phases: [
+        { id: 'a', name: 'A', commands: ['first'], parallel: true },
+        { id: 'b', name: 'B', commands: ['second'], parallel: true, ...(sameLevel ? {} : { depends_on: ['a'] }) },
+      ],
+    };
+    return d;
+  }
+  async function deadlineDuringA(def: ResolvedDefinition) {
+    const c = new AbortController();
+    const cmdExec = {
+      execute: vi.fn().mockImplementation(async (r: ResolvedDefinition) => {
+        if (r.name === 'first') c.abort(new DOMException('deadline', 'TimeoutError'));
+        return makeCommandResult({ name: r.name, score: 90, metrics: { inputTokens: 1, outputTokens: 1, totalEffectiveTokens: 2, durationMs: 1, model: 'm', toolCalls: 0, costUsd: 0.01, costBasis: 'estimated' } as never });
+      }),
+    } as unknown as CommandExecutor;
+    return new WorkflowExecutor(cmdExec, makeRegistry(), undefined, noopLogger).execute(def, { target: '/tmp' }, { abortSignal: c.signal });
+  }
+
+  // M1. NC: against 3381f4f the queued layout reads HOLD (on_failure warn rewrote it) while the
+  // later-level layout reads BLOCK — scheduling decided the verdict of one deadline.
+  it('one deadline, two layouts, one verdict: BLOCK, never HOLD', async () => {
+    const queued = await deadlineDuringA(layout(true));
+    const later = await deadlineDuringA(layout(false));
+    expect(queued.phases.map(p => p.decision)).toEqual(['passed', 'blocked']);
+    expect(later.phases.map(p => p.decision)).toEqual(['passed', 'blocked']);
+    expect([queued.decision, later.decision]).toEqual(['BLOCK', 'BLOCK']);
+  });
+
+  // M2. NC: against 3381f4f the stopped phase counts as executed and makes the cost unpriced.
+  it('a phase a deadline kept from starting is not executed and adds no cost', async () => {
+    const r = await deadlineDuringA(layout(false));
+    expect(r.metrics.phasesExecuted).toBe(1);
+    expect(r.metrics.costUsd).toBe(0.01);
+    expect(r.phases[1]!.stoppedBeforeStart).toBe(true);
+  });
+
+  // L1. NC: against 3381f4f a skip_if phase after the stop is recorded aborted, not skipped.
+  it('a phase skip_if would have skipped stays skipped after a stop', async () => {
+    const d = workflowDef([], true);
+    const w = (d.definition as unknown as { workflow: { orchestration: Record<string, unknown> } }).workflow;
+    w.orchestration = { ...w.orchestration, phases: [
+      { id: 'a', name: 'A', commands: ['first'], parallel: true },
+      { id: 'b', name: 'B', commands: ['second'], parallel: true, depends_on: ['a'], skip_if: '{{ input.skipB }}' },
+    ] };
+    const c = new AbortController();
+    const cmdExec = { execute: vi.fn().mockImplementation(async () => { c.abort(); return makeCommandResult({ score: 90 }); }) } as unknown as CommandExecutor;
+    const exec = new WorkflowExecutor(cmdExec, makeRegistry(), undefined, noopLogger);
+    const r = await exec.execute(d, { target: '/tmp', options: { skipB: true } } as never, { abortSignal: c.signal });
+    expect(r.phases[1]!.decision).toBe('skipped');
+  });
+});
+
+describe('second re-check H1: a stop survives every hand-off', () => {
+  // NC: against 3381f4f — command WARN (no marker), phase passed, workflow SHIP.
+  it('a workflow whose command step held a lens negative and a stopped agent never reads SHIP', async () => {
+    const lens = makeValidatorResult({ name: 'lens', decision: 'DISORDERED', decisionCategory: 'negative', score: 82, recommendations: [] });
+    const agentExec = {
+      execute: vi.fn().mockImplementation(async (r: ResolvedDefinition, _i: unknown, o?: ExecutionOptions) =>
+        r.name === 'lens' ? lens : untilAborted(o?.abortSignal, makeValidatorResult())),
+    } as unknown as AgentExecutor;
+    const registry = makeRegistry({ panel: commandDef(['lens@1', 'b@1'], false) });
+    const c = new AbortController();
+    setTimeout(() => c.abort(), 5);
+    const d = workflowDef(['panel'], true);
+    const r = await new WorkflowExecutor(new CommandExecutor(agentExec, registry), registry, undefined, noopLogger)
+      .execute(d, { target: '/tmp' }, { abortSignal: c.signal });
+    expect(r.decision).not.toBe('SHIP');
+    expect(r.decision).toBe('ABORTED');
+  });
+
+  // Guard: a container whose own verdict IS negative from a real failure keeps it. MC: drop the
+  // `decisionCategory === 'negative'` conjunct's partner (child-negative) → ABORTED.
+  it('a crash beside a stopped step under on_fail block stays blocked', async () => {
+    const r = await runWorkflow({ a: 'boom', b: 'wait' }, ['a', 'b']);
+    expect(r.phases[0]!.decision).toBe('blocked');
+  });
+});
+
+/**
+ * INVARIANT, independent of any one rule's wording: if any agent in a workflow was stopped by an
+ * explicit run stop, the workflow never reads SHIP or HOLD — a quality verdict over work that did
+ * not finish. Enumerated over real CommandExecutor + WorkflowExecutor: a phase holding a 2-agent
+ * command step and a plain step, every agent-outcome mix, gate on_fail × workflow on_failure.
+ * Written after three review rounds each found the previous fold's own joints; the per-rule tests
+ * kept passing while the composition broke, so this asserts the composed property directly.
+ */
+describe('invariant: a stopped workflow never reads SHIP or HOLD', () => {
+  type B = 'pass' | 'warnscore' | 'lens' | 'boom' | 'wait';
+  const outcomes: B[] = ['pass', 'warnscore', 'lens', 'boom', 'wait'];
+  function agentFor(b: B, name: string, signal?: AbortSignal): Promise<AgentResult> {
+    switch (b) {
+      case 'pass': return Promise.resolve(makeValidatorResult({ name, score: 90, recommendations: [] }));
+      case 'warnscore': return Promise.resolve(makeValidatorResult({ name, score: 60, decision: 'WARN', decisionCategory: 'conditional', recommendations: [] }));
+      case 'lens': return Promise.resolve(makeValidatorResult({ name, score: 82, decision: 'DISORDERED', decisionCategory: 'negative', recommendations: [] }));
+      case 'boom': return Promise.reject(new Error('boom'));
+      case 'wait': return untilAborted(signal, makeValidatorResult({ name }));
+    }
+  }
+
+  for (const mode of ['explicit', 'deadline'] as const)
+  it(`holds across 300 compositions (${mode} stop)`, async () => {
+    let checked = 0;
+    let stoppedRuns = 0;
+    for (const x of outcomes) for (const y of outcomes) for (const z of ['pass', 'boom', 'wait'] as const)
+    for (const on_fail of ['block', 'warn']) for (const on_failure of ['continue', 'warn']) {
+      const plan: Record<string, B> = { x, y, z };
+      const agentExec = {
+        execute: vi.fn().mockImplementation((r: ResolvedDefinition, _i: unknown, o?: ExecutionOptions) => agentFor(plan[r.name]!, r.name, o?.abortSignal)),
+      } as unknown as AgentExecutor;
+      const registry = makeRegistry({
+        panel: commandDef(['x@1', 'y@1'], false),
+        plain: commandDef(['z@1'], false),
+      });
+      const d = workflowDef([], true);
+      const w = (d.definition as unknown as { workflow: { orchestration: Record<string, unknown> } }).workflow;
+      w.orchestration = { ...w.orchestration, on_failure, phases: [
+        { id: 'p', name: 'P', commands: ['panel', 'plain'], parallel: true, gate: { threshold: 70, aggregate: 'average', on_fail } },
+      ] };
+      const c = new AbortController();
+      const anyWait = [x, y, z].includes('wait');
+      if (anyWait) setTimeout(() => (mode === 'deadline' ? c.abort(new DOMException('deadline', 'TimeoutError')) : c.abort()), 3);
+      const r = await new WorkflowExecutor(new CommandExecutor(agentExec, registry), registry, undefined, noopLogger)
+        .execute(d, { target: '/tmp' }, { abortSignal: c.signal })
+        .catch((e: unknown) => ({ decision: `THREW:${(e as Error).name}` }) as { decision: string });
+      checked++;
+      if (anyWait) {
+        stoppedRuns++;
+        // A deadline is a failure (OD-9): never SHIP and never the neutral ABORTED. Its in-flight
+        // agents are CRASHES, and a crash beside passing work can already read HOLD through the
+        // existing rules (on_failure: warn; the scored-negative cap on a FAIL command that still
+        // averages 90) — the same verdict an agent's own timeout gets. That is crash semantics,
+        // not a stop leaking, so HOLD is not what this invariant polices for deadlines.
+        const forbidden = mode === 'deadline' ? ['SHIP', 'ABORTED'] : ['SHIP', 'HOLD'];
+        expect(forbidden, `${mode}: ${x},${y},${z} on_fail=${on_fail} on_failure=${on_failure}`).not.toContain(r.decision);
+      }
+    }
+    expect(checked).toBe(300);
+    expect(stoppedRuns).toBeGreaterThan(100); // the property was actually exercised
   });
 });

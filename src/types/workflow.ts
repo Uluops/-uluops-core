@@ -184,4 +184,11 @@ export interface PhaseResult {
 
   /** Error message when phase threw (blocked phases only) */
   error?: string;
+
+  /**
+   * True when a run stop kept this phase from STARTING (queued behind `max_parallel`, or in a later
+   * level). Nothing ran: such a phase is not counted as executed, adds no cost, and its decision
+   * (`'aborted'`, or `'blocked'` under a caller deadline) is never rewritten by `on_failure`.
+   */
+  stoppedBeforeStart?: true;
 }

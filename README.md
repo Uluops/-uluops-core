@@ -489,7 +489,7 @@ Pass your own `abortSignal` on `ExecutionOptions` to tie a run to a lifetime you
 have (an inbound request, a parent job). It is **merged** with the pipeline's own signal,
 not replaced, so `handle.cancel()` keeps working on the same run. An explicit `abort()` of your
 signal stops the run exactly like `cancel()` — status `cancelled`, later stages skipped — and a
-`cancel()` while any stopped run is still unwinding is a no-op. A **deadline** is different: if your signal is
+`cancel()` on a cancelled run, or while any stopped run is still unwinding, is a no-op. A **deadline** is different: if your signal is
 `AbortSignal.timeout(ms)` (its abort reason is a `TimeoutError`), the run ends **`failed`**,
 `wait()` throws a `PipelineError` naming the deadline, and the agents still in flight are
 recorded as crashes — the slow agent is the likeliest broken one, so a deadline is never filed
@@ -873,10 +873,12 @@ const stoppedAgents = result.stages.flatMap(s => s.agentResults ?? []).filter(is
 const stoppedStages = result.stages.filter(s => s.result && isStoppedResult(s.result));
 ```
 
-Containers apply **negative > aborted > conditional > positive**, where *negative* means a child
-that itself failed or crashed. A command, stage, workflow phase or workflow holding such a child
-keeps its verdict; otherwise any stopped child makes it `ABORTED` / `neutral` (phase decision
-`'aborted'`). A verdict computed only from the score of the agents that finished is **not**
+Containers apply **negative > aborted > conditional > positive** at every level: a command, stage,
+workflow phase or workflow keeps its verdict over a stop only when that verdict is itself negative
+*and* a child really failed or crashed. Otherwise a stop anywhere inside makes it `ABORTED` /
+`neutral` (phase decision `'aborted'`). A failure softened to a warning — a lens capped at `WARN`,
+`on_fail: warn`, `on_failure: warn` — counts as a conditional, which a stop outranks, so an
+explicitly stopped workflow never reads `SHIP` or `HOLD`. A verdict computed only from the score of the agents that finished is **not**
 evidence and does not count as negative: with `sum`, 90 plus a stopped agent under a 150 threshold
 is `ABORTED`, not `FAIL`. A panel whose agents were *all* stopped returns rather than throwing, and
 a pipeline stage whose single agent was stopped is a completed stage holding an `ABORTED` record.

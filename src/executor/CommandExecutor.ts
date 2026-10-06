@@ -15,7 +15,7 @@ import { DEFAULT_PASS_THRESHOLD, DEFAULT_WARN_THRESHOLD } from '../constants.js'
 import { mapCategory } from './mapCategory.js';
 import { resolveDecisionCategory, type DecisionCategory } from './classifyDecision.js';
 import { aggregateScores, type AggregationMethod } from '../utils/aggregateScores.js';
-import { crashPlaceholder, abortedPlaceholder, isAbortedRecord, runStoppedMarker, ABORTED_DECISION, CRASH_PLACEHOLDER_VERSION } from '../utils/crashPlaceholder.js';
+import { crashPlaceholder, abortedPlaceholder, isAbortedRecord, runStoppedMarker, runStoppedPartialMarker, ABORTED_DECISION, CRASH_PLACEHOLDER_VERSION } from '../utils/crashPlaceholder.js';
 import { isRunStopAbort } from '../utils/runStop.js';
 import { worstExtractionConfidence } from '../utils/worstExtractionConfidence.js';
 
@@ -423,12 +423,19 @@ export class CommandExecutor {
     // 150 threshold that the full panel would have passed (crew #110 F1). So a threshold verdict
     // over a stopped panel becomes ABORTED; only a child's own failure keeps the container's
     // verdict (Alex 2026-10-05). Score is unchanged: aborted children are null and excluded.
+    //
+    // A kept verdict must itself be NEGATIVE (second re-check H1): a categorical negative softened
+    // to a conditional — a passing-score lens capped at WARN — is a conditional, and aborted
+    // outranks conditional. Keeping that WARN hid the stop from every container above: the phase
+    // saw a plain WARN, read `passed`, and the workflow read SHIP.
     if (results.some(isAbortedRecord) &&
-        !results.some(r => resolveDecisionCategory(r, this.warnUnclassified) === 'negative')) {
+        !(decisionCategory === 'negative' &&
+          results.some(r => resolveDecisionCategory(r, this.warnUnclassified) === 'negative'))) {
       decision = ABORTED_DECISION;
       decisionCategory = 'neutral';
     }
     const stopped = decision === ABORTED_DECISION;
+    const stoppedInside = !stopped && results.some(isAbortedRecord);
 
     // Aggregate metrics
     // FABRICATION-OK: summing a count of events; see the wrapAgentResult waiver.
@@ -462,7 +469,8 @@ export class CommandExecutor {
       recommendations,
       durationMs,
       metrics,
-      ...(stopped ? { degradationMarkers: [runStoppedMarker()] } : {}),
+      ...(stopped ? { degradationMarkers: [runStoppedMarker()] }
+        : stoppedInside ? { degradationMarkers: [runStoppedPartialMarker()] } : {}),
     };
   }
 }
