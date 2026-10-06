@@ -18,8 +18,8 @@ import { rollupCost, type CostFields } from '../utils/costRollup.js';
 import { resolveDecisionCategory } from './classifyDecision.js';
 import { worstExtractionConfidence } from '../utils/worstExtractionConfidence.js';
 import { aggregateScores } from '../utils/aggregateScores.js';
-import { crashPlaceholder, abortedPlaceholder, isAbortedRecord, ABORTED_DECISION, CRASH_PLACEHOLDER_VERSION } from '../utils/crashPlaceholder.js';
-import { isRunStopAbort } from '../utils/runStop.js';
+import { crashPlaceholder, abortedPlaceholder, isAbortedRecord, isStoppedResult, toCommandRecord, ABORTED_DECISION, CRASH_PLACEHOLDER_VERSION } from '../utils/crashPlaceholder.js';
+import { isRunStopAbort, isDeadlineSignal } from '../utils/runStop.js';
 import { verifiedNothingExecuted } from '../utils/executionEvidence.js';
 import type { Logger } from '@uluops/sdk-core';
 import { registerRunTrip, unregisterRunTrip } from '../utils/runTrip.js';
@@ -108,18 +108,25 @@ export class PipelineExecutor {
     const runSignal = runOptions.abortSignal!;
     registerRunTrip(runSignal, (reason) => {
       if (state.status !== 'running') return false;
-      stopRun(state, controller, 'failed', reason);
+      stopRun(state, controller, 'failed', reason, 'run stopped (provider credit)');
       return true;
     });
 
     // A caller-supplied signal stops the run, not just the provider calls (aborted-agent-recording
     // OD-7). Before, it aborted in-flight calls through the merged signal while `state.status`
     // stayed `running`: later stages were dispatched against an already-aborted signal and the run
-    // ended `completed`. Same sequence and status as handle.cancel() — the caller chose to stop.
-    // An already-aborted signal fires no event, so it is checked up front.
+    // ended `completed`. An explicit abort is the caller choosing to stop: same sequence and status
+    // as handle.cancel(). A DEADLINE (AbortSignal.timeout — reason TimeoutError) is a timeout, not
+    // a choice: the run ends `failed` and wait() throws, as for a credit trip (Alex 2026-10-05,
+    // crew #110 P1). An already-aborted signal fires no event, so it is checked up front.
     const callerSignal = options?.abortSignal;
     const onCallerAbort = () => {
-      if (state.status === 'running') stopRun(state, controller, 'cancelled', 'Pipeline cancelled by caller signal');
+      if (state.status !== 'running') return;
+      if (isDeadlineSignal(callerSignal)) {
+        stopRun(state, controller, 'failed', "Pipeline deadline exceeded: the caller's abortSignal timed out", 'run stopped (deadline)');
+      } else {
+        stopRun(state, controller, 'cancelled', 'Pipeline cancelled by caller signal');
+      }
     };
     if (callerSignal?.aborted) onCallerAbort();
     else callerSignal?.addEventListener('abort', onCallerAbort, { once: true });
@@ -338,6 +345,23 @@ export class PipelineExecutor {
       }
       return await this.executeRefStage(stage, input, startTime, options);
     } catch (error) {
+      // A ref stage whose single agent was stopped by a stop of this run rejects with
+      // CancelledError (single-agent commands do not contain it). Recorded as a completed stage
+      // holding an ABORTED record, like an inline-agents stage, not as a failed stage — a throw
+      // here counted in stagesFailed and the agent vanished from submission (Alex 2026-10-05,
+      // crew #110 F4).
+      if (isRunStopAbort(error, options?.abortSignal)) {
+        const record = abortedPlaceholder(stage.ref ?? stage.id, error, { startedAt: startTime });
+        return {
+          id: stage.id,
+          name: stage.name,
+          type: stage.type === 'workflow' ? 'workflow' : 'command',
+          status: 'completed',
+          result: toCommandRecord(record),
+          agentResults: [record],
+          durationMs: Date.now() - startTime,
+        };
+      }
       return {
         id: stage.id,
         name: stage.name,
@@ -562,12 +586,19 @@ export class PipelineExecutor {
     // which meant an inline agent that consumed 45 s before failing reported 0 ms — a
     // number nobody measured, in the field that says how much work was done.
     const dispatchStart = dispatched.map(() => Date.now());
+    // Classified at rejection time — see CommandExecutor.executeParallel (crew #110 F5).
+    const stopped = dispatched.map(() => false);
     const settled = await Promise.allSettled(
       dispatched.map(async (a, idx) => {
         dispatchStart[idx] = Date.now();
-        const [name, version] = parseRef(a.ref);
-        const resolved = await this.registry.resolve(name, version, 'agent');
-        return this.agentExecutor.execute(resolved, input, options);
+        try {
+          const [name, version] = parseRef(a.ref);
+          const resolved = await this.registry.resolve(name, version, 'agent');
+          return await this.agentExecutor.execute(resolved, input, options);
+        } catch (error) {
+          stopped[idx] = isRunStopAbort(error, options?.abortSignal);
+          throw error;
+        }
       }),
     );
 
@@ -585,7 +616,7 @@ export class PipelineExecutor {
         // An agent stopped by a stop of THIS run is not a crash (aborted-agent-recording §4):
         // it gets the aborted twin — no recommendation, neutral, not completed.
         const ref = dispatched[i]?.ref ?? 'unknown';
-        results.push(isRunStopAbort(outcome.reason, options?.abortSignal)
+        results.push(stopped[i]
           ? abortedPlaceholder(ref, outcome.reason, { startedAt: dispatchStart[i] })
           : crashPlaceholder(ref, outcome.reason, { startedAt: dispatchStart[i] }));
       }
@@ -845,8 +876,8 @@ function isStepsStage(stage: StageDefinition): boolean {
  * Whether the run was stopped mid-flight from another task: a user `cancel()` (`cancelled`) or
  * a provider-credit trip (`failed`).
  *
- * INVARIANT this relies on (1d re-check L2): inside the stage loop, the trip is the ONLY writer
- * of `failed`. The gate-abort branch writes `failed` and `break`s in the same block; the catch
+ * INVARIANT this relies on (1d re-check L2): inside the stage loop, stopRun — the credit trip and,
+ * since aborted-agent-recording, a caller deadline — is the ONLY writer of `failed`. The gate-abort branch writes `failed` and `break`s in the same block; the catch
  * and `execution.catch` run after the loop. A new writer of `failed` inside the loop that does
  * not break would be read here as a credit stop and its remaining stages skipped under that
  * label — give it its own break, or key this on a dedicated flag.
@@ -866,8 +897,11 @@ function stoppedNow(state: PipelineState): boolean {
  * thrown PipelineError), not copied into every skipped stage (1d re-check L1).
  */
 function stopLabel(state: PipelineState): string {
-  return state.status === 'cancelled' ? 'cancelled' : 'run stopped (provider credit)';
+  return state.status === 'cancelled' ? 'cancelled' : stopLabels.get(state) ?? 'run stopped';
 }
+
+/** The short skip label of a `failed` stop, recorded by stopRun: a credit trip or a deadline. */
+const stopLabels = new WeakMap<PipelineState, string>();
 
 
 /** PDL schema default: a gate without on_failure is an abort gate. Corpus
@@ -892,7 +926,9 @@ function stopRun(
   controller: AbortController,
   status: 'cancelled' | 'failed',
   reason: string,
+  label?: string,
 ): void {
+  if (label !== undefined) stopLabels.set(state, label);
   state.status = status;
   state.error = reason;
   controller.abort();
@@ -939,6 +975,10 @@ class PipelineHandle implements IPipelineHandle {
   }
 
   async cancel(): Promise<void> {
+    // Already cancelled — by an earlier cancel() or by the caller's own abortSignal (OD-7) — is a
+    // no-op, not an error: teardown code that both aborts its signal and calls cancel() must not
+    // get a rejection the pre-OD-7 run never produced (crew #110 F3).
+    if (this.state.status === 'cancelled') return;
     if (this.isComplete()) {
       throw new PipelineError(
         `Pipeline ${this.executionId} is already complete (status: ${this.state.status})`,
@@ -1081,7 +1121,7 @@ class PipelineHandle implements IPipelineHandle {
     // A stage holding an aborted record means the run was stopped, whatever the status says.
     // Defence in depth beside the caller-signal listener in start() (OD-7): without it, a run whose
     // stop did not reach `state.status` and whose completed agents passed would report PASS.
-    if (this.state.stageResults.some(s => s.result?.decision === ABORTED_DECISION)) return 'CANCELLED';
+    if (this.state.stageResults.some(s => s.result !== undefined && isStoppedResult(s.result))) return 'CANCELLED';
 
     const hasWarnings = this.state.stageResults.some(s =>
       resolveDecisionCategory(s.result) === 'conditional',

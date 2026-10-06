@@ -68,7 +68,9 @@ export class CommandExecutor {
    * @returns The aggregated {@link CommandResult} with per-agent scores, decision, and recommendations.
    * @throws {ExecutionError} If the resolved definition is not a command.
    * @throws {PreflightError} If a preflight check fails before agents run.
-   * @throws {CancelledError} If `overrides.abortSignal` fires while an agent is in flight.
+   * @throws {CancelledError} If `overrides.abortSignal` fires while the agent of a SINGLE-agent
+   *   command is in flight. A multi-agent command does not throw on a stop: it returns, recording
+   *   each stopped agent ABORTED (an explicit abort; a deadline signal's agents are crashes).
    */
   async execute(
     resolved: ResolvedDefinition,
@@ -160,13 +162,13 @@ export class CommandExecutor {
    * the unhardened twin was the common path. Extracting the shape is the fix — two call
    * sites that must agree are two chances to disagree.
    */
-  private crashPlaceholder(ref: string, reason: unknown, startedAt: number | undefined, signal: AbortSignal | undefined): AgentResult {
+  private crashPlaceholder(ref: string, reason: unknown, startedAt: number | undefined, stopped: boolean): AgentResult {
     // Delegates to the shared factories in utils. This method's own docstring said "two call
     // sites that must agree are two chances to disagree" — and there were three; the third
     // had drifted on decisionCategory, priority, severity and failure code. Kept as a thin
     // wrapper so the existing call sites read unchanged. An agent stopped by a stop of THIS
     // run is not a crash (aborted-agent-recording spec §4): it gets the aborted twin.
-    return isRunStopAbort(reason, signal)
+    return stopped
       ? abortedPlaceholder(ref, reason, { startedAt })
       : crashPlaceholder(ref, reason, { startedAt });
   }
@@ -192,7 +194,7 @@ export class CommandExecutor {
       try {
         results.push(await fn(ref));
       } catch (error) {
-        results.push(this.crashPlaceholder(ref, error, startedAt, signal));
+        results.push(this.crashPlaceholder(ref, error, startedAt, isRunStopAbort(error, signal)));
         // Fail-fast: stop dispatching, keep everything already billed. Also right for an abort:
         // the run is stopped, so nothing after it should be dispatched.
         break;
@@ -216,9 +218,12 @@ export class CommandExecutor {
     signal: AbortSignal | undefined,
   ): Promise<AgentResult[]> {
     const startedAt = refs.map(() => Date.now());
+    // Classified AT REJECTION TIME (crew #110 F5): after allSettled the signal is aborted for
+    // every child of a stopped run, including one that had rejected earlier for its own reasons.
+    const stopped = refs.map(() => false);
     const settled = await Promise.allSettled(refs.map((ref, i) => {
       startedAt[i] = Date.now();
-      return fn(ref);
+      return fn(ref).catch((error: unknown) => { stopped[i] = isRunStopAbort(error, signal); throw error; });
     }));
     const results: AgentResult[] = [];
 
@@ -227,7 +232,7 @@ export class CommandExecutor {
       if (outcome.status === 'fulfilled') {
         results.push(outcome.value);
       } else {
-        results.push(this.crashPlaceholder(refs[i]!, outcome.reason, startedAt[i], signal));
+        results.push(this.crashPlaceholder(refs[i]!, outcome.reason, startedAt[i], stopped[i]!));
       }
     }
 
@@ -411,12 +416,15 @@ export class CommandExecutor {
       decisionCategory = failed ? 'negative' : partial ? 'conditional' : 'positive';
     }
 
-    // negative > aborted > conditional > positive (spec §6). An aborted child resolves neutral, so
-    // it influences neither branch above: a panel whose completed agents passed and whose others
-    // were stopped would read PASS / COMPLETE — an unqualified verdict over an incomplete panel.
-    // A failure observed before the stop is evidence and keeps the negative verdict. Score is
-    // unchanged: aborted children are null and already excluded from the aggregate.
-    if (decisionCategory !== 'negative' && results.some(isAbortedRecord)) {
+    // negative > aborted > conditional > positive (spec §6), where NEGATIVE MEANS CATEGORICAL: a
+    // child that itself resolved negative (a failing verdict, a crash). An aborted child resolves
+    // neutral, so it influences neither branch above, and a verdict computed over the completed
+    // part of the panel is not evidence: with `sum`, 90 + a stopped agent read FAIL against a
+    // 150 threshold that the full panel would have passed (crew #110 F1). So a threshold verdict
+    // over a stopped panel becomes ABORTED; only a child's own failure keeps the container's
+    // verdict (Alex 2026-10-05). Score is unchanged: aborted children are null and excluded.
+    if (results.some(isAbortedRecord) &&
+        !results.some(r => resolveDecisionCategory(r, this.warnUnclassified) === 'negative')) {
       decision = ABORTED_DECISION;
       decisionCategory = 'neutral';
     }

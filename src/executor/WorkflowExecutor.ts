@@ -1,6 +1,6 @@
 import type { AgentExecutor } from './AgentExecutor.js';
 import { externalInt, finiteNonNegative } from '../utils/externalValue.js';
-import { CRASH_PLACEHOLDER_VERSION, abortedPlaceholder, isAbortedRecord, ABORTED_DECISION } from '../utils/crashPlaceholder.js';
+import { CRASH_PLACEHOLDER_VERSION, abortedPlaceholder, isStoppedResult, toCommandRecord, ABORTED_DECISION } from '../utils/crashPlaceholder.js';
 import { isRunStopAbort } from '../utils/runStop.js';
 import type { CommandExecutor } from './CommandExecutor.js';
 import type { RegistryClient } from '../registry/RegistryClient.js';
@@ -85,7 +85,8 @@ export class WorkflowExecutor {
    *                   trailing — existing two-argument callers are unaffected.
    * @returns The {@link WorkflowResult} with per-phase results, aggregate score, decision, and metrics.
    * @throws {WorkflowError} on internal workflow failures (phase crashes, gate violations)
-   * @throws {CancelledError} if `control.abortSignal` fires while a phase is in flight
+   * Does NOT throw on `control.abortSignal`: a stopped step is recorded ABORTED and its phase
+   * `'aborted'` (an explicit abort; a deadline signal's steps are crashes).
    * @throws {ConfigurationError} if the definition is not a valid workflow
    */
   async execute(
@@ -406,6 +407,12 @@ export class WorkflowExecutor {
       while (nextIndex < phases.length) {
         const idx = nextIndex++;
         const phase = phases[idx]!;
+        // A phase still queued behind max_parallel when the run stops never started: skipped, not
+        // dispatched and recorded as stopped (crew #110 F6).
+        if (control?.abortSignal?.aborted) {
+          results[idx] = this.createSkippedPhase(phase);
+          continue;
+        }
         try {
           results[idx] = await this.executePhase(phase, input, control);
         } catch (error) {
@@ -441,18 +448,21 @@ export class WorkflowExecutor {
     const signal = control?.abortSignal;
     if (phase.parallel) {
       const startedAt = stepRefs.map(() => Date.now());
+      // Classified at rejection time — see CommandExecutor.executeParallel (crew #110 F5).
+      const stopped = stepRefs.map(() => false);
       const settled = await Promise.allSettled(
         stepRefs.map((step, j) => {
           startedAt[j] = Date.now();
-          return this.executeStep(step.type, step.ref, input, control);
+          return this.executeStep(step.type, step.ref, input, control)
+            .catch((error: unknown) => { stopped[j] = isRunStopAbort(error, signal); throw error; });
         }),
       );
       for (let j = 0; j < settled.length; j++) {
         const outcome = settled[j]!;
         if (outcome.status === 'fulfilled') {
           commandResults.push(outcome.value);
-        } else if (isRunStopAbort(outcome.reason, signal)) {
-          commandResults.push(toStepRecord(abortedPlaceholder(stepRefs[j]!.ref, outcome.reason, { startedAt: startedAt[j] })));
+        } else if (stopped[j]) {
+          commandResults.push(toCommandRecord(abortedPlaceholder(stepRefs[j]!.ref, outcome.reason, { startedAt: startedAt[j] })));
         } else {
           const errorMsg = outcome.reason instanceof Error ? outcome.reason.message : String(outcome.reason);
           errors.push(errorMsg);
@@ -473,7 +483,7 @@ export class WorkflowExecutor {
           commandResults.push(await this.executeStep(step.type, step.ref, input, control));
         } catch (error) {
           if (isRunStopAbort(error, signal)) {
-            commandResults.push(toStepRecord(abortedPlaceholder(step.ref, error, { startedAt })));
+            commandResults.push(toCommandRecord(abortedPlaceholder(step.ref, error, { startedAt })));
           } else {
             errors.push(error instanceof Error ? error.message : String(error));
             commandResults.push(this.stepCrashPlaceholder(step.ref, error));
@@ -519,12 +529,13 @@ export class WorkflowExecutor {
         commandResults.some(r => r.score != null && resolveDecisionCategory(r, this.warnUnclassified) === 'negative')) {
       decision = 'warned';
     }
-    // negative > aborted > conditional > positive (aborted-agent-recording §6, OD-3). A phase
-    // holding a stopped step and no negative child has no verdict: the declared-but-never-written
-    // 'aborted' phase decision, read neutral by aggregate(). A negative child observed before the
-    // stop keeps the phase's own verdict (blocked, or warned under on_fail: warn).
-    if (decision !== 'blocked' &&
-        commandResults.some(isStoppedStep) &&
+    // negative > aborted > conditional > positive (aborted-agent-recording §6, OD-3), with
+    // NEGATIVE MEANING CATEGORICAL — the CommandExecutor.aggregateResults twin, same rule at every
+    // container (Alex 2026-10-05, crew #110 F1). A phase holding a stopped step has no verdict —
+    // the 'aborted' phase decision, read neutral by aggregate() — unless a step ITSELF resolved
+    // negative. A gate verdict over the completed part of the panel (a score under threshold, under
+    // on_fail block or warn alike) is not evidence and does not keep `blocked`.
+    if (commandResults.some(isStoppedResult) &&
         !commandResults.some(r => resolveDecisionCategory(r, this.warnUnclassified) === 'negative')) {
       decision = 'aborted';
     }
@@ -710,11 +721,17 @@ export class WorkflowExecutor {
     //
     // A phase that RAN and produced no score is a different fact and still yields null —
     // that is the generator/executor case, and it is meant to fail-open.
-    const score = aggregateScores(
-      scorable.map(p => ({ key: p.id, score: p.score })),
-      method,
-      config?.score?.weights,
-    );
+    // A workflow whose scored work sits only in STOPPED phases has no score, not 0 (crew #110 F2):
+    // aggregateScores' empty-input 0 exists so an all-skipped run BLOCKs, and a stopped run is
+    // ABORTED, not BLOCK — there the 0 would read as a measured worst score beside a phase that
+    // really scored.
+    const score = scorable.length === 0 && phases.some(p => p.decision === 'aborted')
+      ? null
+      : aggregateScores(
+        scorable.map(p => ({ key: p.id, score: p.score })),
+        method,
+        config?.score?.weights,
+      );
 
     const hasBlocked = phases.some(p => p.decision === 'blocked');
     const hasWarned = phases.some(p => p.decision === 'warned');
@@ -966,34 +983,3 @@ export class WorkflowExecutor {
   }
 }
 
-/**
- * A step the run stop cut short: an aborted placeholder (a step whose agent was stopped), or a
- * multi-agent command that itself aggregated to ABORTED (`CommandExecutor.aggregateResults` — that
- * result carries the command's real version, so `isAbortedRecord` alone would miss it).
- */
-function isStoppedStep(r: CommandResult): boolean {
-  return isAbortedRecord(r) || (r.decision === ABORTED_DECISION && r.decisionCategory === 'neutral');
-}
-
-/**
- * The workflow-step form of an aborted agent record — DERIVED from `abortedPlaceholder`, not hand
- * built, so the aborted shape has exactly one construction across all five synthesis sites
- * (`stepCrashPlaceholder` is the drifted fourth crash shape this spec declines to repeat).
- */
-function toStepRecord(agentRecord: AgentResult): CommandResult {
-  return {
-    type: 'command',
-    name: agentRecord.name,
-    version: agentRecord.version,
-    definitionHash: agentRecord.definitionHash,
-    agentType: agentRecord.agentType,
-    decision: agentRecord.decision,
-    decisionCategory: agentRecord.decisionCategory,
-    score: agentRecord.score,
-    maxScore: agentRecord.maxScore,
-    recommendations: agentRecord.recommendations,
-    durationMs: agentRecord.durationMs,
-    // FABRICATION-OK: defaults UNDER the spread, as in stepCrashPlaceholder; a count of events.
-    metrics: { toolCallCount: 0, toolCalls: 0, ...agentRecord.metrics },
-  } as CommandResult;
-}

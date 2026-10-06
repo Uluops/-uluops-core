@@ -717,6 +717,23 @@ describe('AIProvider', () => {
       })).rejects.toThrow(CancelledError);
     });
 
+    // aborted-agent-recording fold (crew #110 P1). NEGATIVE CONTROL: against 911115f the message
+    // is the generic "cancelled by the caller", so a deadline's crash record names the wrong event.
+    it("names a caller DEADLINE (AbortSignal.timeout) as a deadline, not a cancel", async () => {
+      const { generateText } = await import('ai');
+      const mockGenerateText = vi.mocked(generateText);
+      const deadline = AbortSignal.timeout(1);
+      await new Promise(r => setTimeout(r, 10));
+      expect(deadline.aborted).toBe(true);
+
+      mockGenerateText.mockRejectedValueOnce(new DOMException('aborted', 'TimeoutError'));
+      const provider = new AIProvider(mockConfig, mockCatalog(), noopLogger);
+      const err = await provider.generate({
+        model: 'sonnet', system: 'test', prompt: 'test', timeoutMs: 30_000, abortSignal: deadline,
+      }).catch((e: unknown) => e as Error);
+      expect((err as Error).message).toMatch(/deadline/);
+    });
+
     it('reports a cancel as a cancel even when the abort surfaces as a TimeoutError DOMException', async () => {
       // AbortSignal.any() propagates whichever member fired, so a cancel racing a timeout
       // signal can surface under either name. Attribution must come from the signal, not

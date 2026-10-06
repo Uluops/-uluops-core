@@ -183,7 +183,7 @@ export { isApiErrorLike, type ApiErrorLike } from './errors/index.js';
 // An agent stopped by a run stop (cancel, provider-credit trip, caller abortSignal) is recorded
 // with decision ABORTED, neutral, no recommendation — not as a crash (aborted-agent-recording).
 // Exported so consumers test a predicate instead of string-matching a decision.
-export { ABORTED_DECISION, isAbortedRecord } from './utils/crashPlaceholder.js';
+export { ABORTED_DECISION, isAbortedRecord, isStoppedResult } from './utils/crashPlaceholder.js';
 
 export {
   UluOpsError,

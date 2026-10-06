@@ -361,3 +361,222 @@ describe('workflow phase', () => {
     expect(result.decision).toBe('BLOCK');
   });
 });
+
+// ─── crew #110 fold (Alex's decisions 2026-10-05 + reviewer findings) ───────────────────────────
+
+describe('fold: negative means categorical (Alex, crew #110 F1)', () => {
+  // NC: against 911115f this is FAIL/negative — a threshold verdict over half a panel.
+  it('sum aggregation: 90 + a stopped agent under a 150 threshold is ABORTED, not FAIL', async () => {
+    const agentExec = agentExecutor({ a: 'pass', b: 'wait' });
+    const exec = new CommandExecutor(agentExec, makeRegistry());
+    const def = commandDef(['a@1', 'b@1'], false);
+    const cmd = (def.definition as CommandDefinition).command as unknown as Record<string, unknown>;
+    cmd['aggregation'] = { method: 'sum' };
+    (cmd['execution'] as Record<string, unknown>)['thresholds'] = { pass: 150, warn: 100 };
+    const c = new AbortController();
+    setTimeout(() => c.abort(), 5);
+    const result = await exec.execute(def, { target: '/tmp' }, { abortSignal: c.signal });
+    expect(result).toMatchObject({ decision: 'ABORTED', decisionCategory: 'neutral', score: 90 });
+  });
+
+  // Guard: a scored child that ITSELF resolved negative (a lens DISORDERED@82) keeps the verdict.
+  // MC: drop the categorical-negative clause → ABORTED.
+  it('a scored lens negative beside a stopped agent keeps the command WARN', async () => {
+    const lens = makeValidatorResult({ name: 'lens', decision: 'DISORDERED', decisionCategory: 'negative', score: 82, recommendations: [] });
+    const agentExec = {
+      execute: vi.fn().mockImplementation(async (r: ResolvedDefinition, _i: unknown, o?: ExecutionOptions) =>
+        r.name === 'lens' ? lens : untilAborted(o?.abortSignal, makeValidatorResult())),
+    } as unknown as AgentExecutor;
+    const c = new AbortController();
+    setTimeout(() => c.abort(), 5);
+    const result = await new CommandExecutor(agentExec, makeRegistry())
+      .execute(commandDef(['lens@1', 'b@1'], false), { target: '/tmp' }, { abortSignal: c.signal });
+    expect(result.decision).toBe('WARN');
+  });
+});
+
+describe('fold: workflow phase precedence matches the command rule', () => {
+  function wf(phases: unknown[], extra: Record<string, unknown> = {}): ResolvedDefinition {
+    const d = workflowDef([], true);
+    const w = (d.definition as unknown as { workflow: { orchestration: Record<string, unknown> } }).workflow;
+    w.orchestration = { ...w.orchestration, phases, ...extra };
+    return d;
+  }
+  function stepExec(plan: Record<string, 'pass' | 'low' | 'wait' | 'boom'>) {
+    return {
+      execute: vi.fn().mockImplementation(async (resolved: ResolvedDefinition, _i: unknown, o?: { abortSignal?: AbortSignal }) => {
+        const b = plan[resolved.name];
+        if (b === 'pass') return makeCommandResult({ name: resolved.name, score: 90 });
+        if (b === 'low') return makeCommandResult({ name: resolved.name, score: 10, decision: 'PASS', decisionCategory: 'positive' });
+        if (b === 'boom') throw new Error('boom');
+        return new Promise((_res, rej) => o?.abortSignal?.addEventListener('abort', () => rej(new CancelledError('x')), { once: true }));
+      }),
+    } as unknown as CommandExecutor;
+  }
+  async function run(def: ResolvedDefinition, plan: Record<string, 'pass' | 'low' | 'wait' | 'boom'>) {
+    const c = new AbortController();
+    setTimeout(() => c.abort(), 5);
+    return new WorkflowExecutor(stepExec(plan), makeRegistry(), undefined, noopLogger).execute(def, { target: '/tmp' }, { abortSignal: c.signal });
+  }
+
+  // NC: against 911115f the score gate (threshold 50, panel avg 10) BLOCKs a stopped panel.
+  it('a low score beside a stopped step is aborted under on_fail block and warn alike', async () => {
+    for (const on_fail of ['block', 'warn']) {
+      const r = await run(wf([{ id: 'p', name: 'P', commands: ['low', 'w'], parallel: true, gate: { threshold: 50, aggregate: 'average', on_fail } }]), { low: 'low', w: 'wait' });
+      expect(r.phases[0]!.decision, on_fail).toBe('aborted');
+    }
+  });
+
+  // Guard (test-architect #2): a real crash under on_fail warn keeps `warned`, not `aborted`.
+  it('a crash beside a stopped step under on_fail warn stays warned', async () => {
+    const r = await run(wf([{ id: 'p', name: 'P', commands: ['b', 'w'], parallel: true, gate: { threshold: 0, aggregate: 'average', on_fail: 'warn' } }]), { b: 'boom', w: 'wait' });
+    expect(r.phases[0]!.decision).toBe('warned');
+  });
+
+  // Guard (test-architect #1). MC: swap hasBlocked/hasAborted in aggregate() → ABORTED.
+  it('two phases, one blocked by a crash and one aborted: the workflow is BLOCK', async () => {
+    const r = await run(wf([
+      { id: 'a', name: 'A', commands: ['b1', 'b2'], parallel: true, gate: { threshold: 0, aggregate: 'average', on_fail: 'block' } },
+      { id: 'b', name: 'B', commands: ['ok', 'w'], parallel: true, gate: { threshold: 0, aggregate: 'average', on_fail: 'block' } },
+    ]), { b1: 'boom', b2: 'pass', ok: 'pass', w: 'wait' });
+    expect(r.phases.map(p => p.decision).sort()).toEqual(['aborted', 'blocked']);
+    expect(r.decision).toBe('BLOCK');
+  });
+
+  // crew #110 F2. NC: against 911115f the workflow score is 0 beside a phase that scored 90.
+  it('a workflow whose only scored work is in a stopped phase has score null, not 0', async () => {
+    const r = await run(wf([{ id: 'p', name: 'P', commands: ['ok', 'w'], parallel: true, gate: { threshold: 0, aggregate: 'average', on_fail: 'block' } }]), { ok: 'pass', w: 'wait' });
+    expect(r.phases[0]!.score).toBe(90);
+    expect(r.score).toBeNull();
+  });
+
+  // crew #110 F6. NC: against 911115f the queued phase is dispatched and recorded aborted.
+  it('a phase queued behind max_parallel when the run stops is skipped, not dispatched', async () => {
+    const exec = stepExec({ w1: 'wait', q: 'pass' });
+    const c = new AbortController();
+    setTimeout(() => c.abort(), 5);
+    const r = await new WorkflowExecutor(exec, makeRegistry(), undefined, noopLogger).execute(wf([
+      { id: 'first', name: 'First', commands: ['w1'], parallel: true },
+      { id: 'queued', name: 'Queued', commands: ['q'], parallel: true },
+    ], { max_parallel: 1 }), { target: '/tmp' }, { abortSignal: c.signal });
+    expect(r.phases.find(p => p.id === 'queued')!.decision).toBe('skipped');
+    expect((exec.execute as ReturnType<typeof vi.fn>).mock.calls.map(c => (c[0] as ResolvedDefinition).name)).not.toContain('q');
+  });
+
+  // test-architect #5: a step that is itself a REAL multi-agent command aggregated to ABORTED
+  // (real version) — only isStoppedResult's container clause sees it.
+  it('a real multi-agent command step that aggregated to ABORTED makes the phase aborted', async () => {
+    const registry = makeRegistry({ panel: commandDef(['a@1', 'b@1'], false) });
+    const realCmd = new CommandExecutor(agentExecutor({ a: 'pass', b: 'wait' }), registry);
+    const c = new AbortController();
+    setTimeout(() => c.abort(), 5);
+    const r = await new WorkflowExecutor(realCmd, registry, undefined, noopLogger).execute(
+      wf([{ id: 'p', name: 'P', commands: ['panel'], parallel: true }]), { target: '/tmp' }, { abortSignal: c.signal });
+    expect(r.phases[0]!.commands[0]!.version).toBe('1.0.0');
+    expect(r.phases[0]!.commands[0]!.decision).toBe('ABORTED');
+    expect(r.phases[0]!.decision).toBe('aborted');
+  });
+});
+
+describe('fold: a caller DEADLINE is a timeout, not a stop (Alex, crew #110 P1)', () => {
+  // NC: against 911115f the run ends `cancelled`, wait() resolves, the waiting agent is ABORTED.
+  it('AbortSignal.timeout as the caller signal fails the run and keeps agents as crashes', async () => {
+    const exec = pipelineExecutor(agentExecutor({ waits: 'wait' }), ['waits']);
+    const handle = await exec.start(inlinePipeline(['waits']), { target: '/tmp' }, { abortSignal: AbortSignal.timeout(10) });
+    const { thrown } = await settle(handle.wait());
+    expect(thrown).toBeInstanceOf(PipelineError);
+    expect(thrown!.message).toMatch(/deadline/);
+    const partial = thrown!.context.partialResult as { status: string; stages: Array<{ agentResults: AgentResult[] }> };
+    expect(partial.status).toBe('failed');
+    expect(partial.stages[0]!.agentResults.map(a => a.decision)).toEqual(['FAIL']);
+  });
+
+  it('isRunStopAbort is false under a fired deadline signal', async () => {
+    const d = AbortSignal.timeout(1);
+    await new Promise(r => setTimeout(r, 10));
+    expect(isRunStopAbort(new CancelledError('x'), d)).toBe(false);
+  });
+});
+
+describe('fold: pipeline edges', () => {
+  function refPipeline(): ResolvedDefinition {
+    const d = inlinePipeline([]);
+    (d.definition as unknown as PipelineDefinition).pipeline.stages = [
+      { id: 's1', name: 'S1', type: 'command', ref: 'one@1' },
+      { id: 's2', name: 'S2', type: 'command', ref: 'two@1' },
+    ] as never;
+    return d;
+  }
+  function refExecutor() {
+    const cmdExec = {
+      execute: vi.fn().mockImplementation((_r: unknown, _i: unknown, o?: { abortSignal?: AbortSignal }) =>
+        new Promise((_res, rej) => o?.abortSignal?.addEventListener('abort', () => rej(new CancelledError('x')), { once: true }))),
+    } as unknown as CommandExecutor;
+    const registry = makeRegistry();
+    return new PipelineExecutor(new WorkflowExecutor(cmdExec, registry), cmdExec, {} as AgentExecutor, registry, noopLogger);
+  }
+
+  // Alex, crew #110 F4. NC: against 911115f the stage is `failed` and counts in stagesFailed.
+  it('a stopped single-agent ref stage is a completed stage holding an ABORTED record', async () => {
+    const handle = await refExecutor().start(refPipeline(), { target: '/tmp' });
+    await new Promise(r => setTimeout(r, 5));
+    await handle.cancel();
+    const result = await handle.wait();
+    expect(result.stages[0]!.status).toBe('completed');
+    expect(result.stages[0]!.agentResults!.map(a => a.decision)).toEqual(['ABORTED']);
+    expect(result.metrics.stagesFailed).toBe(0);
+    expect(result.stages[1]!.status).toBe('skipped');
+  });
+
+  // crew #110 F3. NC: against 911115f cancel() throws "already complete (status: cancelled)".
+  it('cancel() after the caller signal stopped the run is a no-op', async () => {
+    const caller = new AbortController();
+    const handle = await refExecutor().start(refPipeline(), { target: '/tmp' }, { abortSignal: caller.signal });
+    await new Promise(r => setTimeout(r, 5));
+    caller.abort();
+    await expect(handle.cancel()).resolves.toBeUndefined();
+    expect((await handle.wait()).status).toBe('cancelled');
+  });
+
+  // test-architect #4. MC: drop removeEventListener in start()'s unregister → fails.
+  it('the caller-signal listener is removed when the run settles', async () => {
+    const caller = new AbortController();
+    const remove = vi.spyOn(caller.signal, 'removeEventListener');
+    const exec = pipelineExecutor(agentExecutor({ ok: 'pass' }), ['ok']);
+    await (await exec.start(inlinePipeline(['ok']), { target: '/tmp' }, { abortSignal: caller.signal })).wait();
+    await new Promise(r => setTimeout(r, 0));
+    expect(remove.mock.calls.map(c => c[0])).toContain('abort');
+  });
+
+  // crew #110 F5. NC: against 911115f the early foreign CANCELLED is classified after the stop and
+  // reads ABORTED.
+  it('a CANCELLED that rejected while the run was live stays a crash after a later stop', async () => {
+    const agentExec = {
+      execute: vi.fn().mockImplementation(async (r: ResolvedDefinition, _i: unknown, o?: ExecutionOptions) => {
+        if (r.name === 'early') throw new CancelledError('foreign');
+        return untilAborted(o?.abortSignal, makeValidatorResult({ name: r.name }));
+      }),
+    } as unknown as AgentExecutor;
+    const exec = pipelineExecutor(agentExec, ['early', 'late']);
+    const handle = await exec.start(inlinePipeline(['early', 'late']), { target: '/tmp' });
+    await new Promise(r => setTimeout(r, 5));
+    await handle.cancel();
+    const byName = Object.fromEntries((await handle.wait()).stages[0]!.agentResults!.map(a => [a.name, a.decision]));
+    expect(byName).toEqual({ early: 'FAIL', late: 'ABORTED' });
+  });
+
+  // The computeDecision ABORTED guard is DEFENCE IN DEPTH and unreachable through the public API
+  // today: every stop source (cancel, credit trip, caller abort, deadline) now goes through
+  // stopRun, which sets status before any child classifies, so the status short-circuit decides
+  // first. No test claims to cover it (test-architect #3).
+});
+
+describe('isStoppedResult (crew #110 F3)', () => {
+  it('matches a placeholder and a real-versioned container that aggregated to ABORTED', async () => {
+    const { isStoppedResult } = await import('../../src/index.js');
+    expect(isStoppedResult(abortedPlaceholder('x', new CancelledError('x')))).toBe(true);
+    expect(isStoppedResult({ decision: 'ABORTED', decisionCategory: 'neutral', version: '1.0.0' })).toBe(true);
+    expect(isStoppedResult({ decision: 'ABORTED', decisionCategory: 'negative', version: '1.0.0' })).toBe(false);
+    expect(isStoppedResult({ decision: 'PASS', decisionCategory: 'positive', version: '1.0.0' })).toBe(false);
+  });
+});

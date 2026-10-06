@@ -13,6 +13,8 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) 
   with the predicate rather than string-matching the decision. `isAbortedRecord` also checks the
   synthesized version, so a real definition that uses `ABORTED` as its own vocabulary word (none
   does today) is never mistaken for a stopped placeholder.
+- **`isStoppedResult(result)`** for command, stage and workflow results that aggregated to
+  `ABORTED`. They carry their real version, so `isAbortedRecord` returns false for them.
 
 ### Changed
 
@@ -25,15 +27,19 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) 
   every stopped run. Now such an agent carries decision `ABORTED`, `decisionCategory: 'neutral'`,
   `score: null`, **no recommendation**, `summary: 'Not completed: …'`, a critical
   `execution.run-stopped` marker and `completeness: 'failed'`. The match is exact: the rejection's
-  `code` is `CANCELLED` **and** the run's signal is aborted. A timeout, the 402 originator, a
-  max-steps exhaustion, or a `CancelledError` while the run is still live keep the crash record.
+  `code` is `CANCELLED`, the run's signal is aborted **at the moment the agent rejected**, and the
+  signal was not a deadline. A timeout, a caller deadline, the 402 originator, a max-steps
+  exhaustion, or a `CancelledError` while the run is still live keep the crash record.
 - **Semantics without signature — read this if you count failures.** No type changed (the
   `'aborted'` phase decision was already declared; `WorkflowDecision` is an open string), but:
   - `decision` on agent, command, stage, phase and workflow results can now be `ABORTED` /
     `'aborted'` with `decisionCategory: 'neutral'` where it was `FAIL` / `'blocked'` / `BLOCK` /
-    `negative`. Containers apply **negative > aborted > conditional > positive**: a real failure
-    keeps its verdict; otherwise a stopped child makes the container `ABORTED`, never a `PASS`,
-    `COMPLETE` or `SHIP` over an incomplete panel.
+    `negative`. Containers apply **negative > aborted > conditional > positive**, where negative
+    means a child that itself failed or crashed (Alex 2026-10-05): such a child keeps the
+    container's verdict; otherwise a stopped child makes it `ABORTED`. A threshold verdict over
+    the agents that finished is not evidence — `sum` of 90 plus a stopped agent under a 150 pass
+    threshold is `ABORTED`, not `FAIL`, and a phase's score gate over a stopped panel no longer
+    `blocked`s it.
   - The `'aborted'` phase decision, declared but produced by no code until now, is produced for a
     phase a stop cut short and reads **neutral** — the workflow aggregate's dead `aborted → BLOCK`
     reading is gone. Submission no longer drops `'aborted'` phases: their completed commands are
@@ -41,6 +47,11 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) 
   - A multi-agent command or workflow phase whose agents were **all** stopped returns `ABORTED`
     instead of throwing `ExecutionError` / `WorkflowError("All … failed")`; one crash plus stopped
     siblings returns the crash's `FAIL` instead of throwing with an overstated crash count.
+  - A pipeline ref stage whose single agent was stopped is a **completed** stage holding an
+    `ABORTED` record, not a `failed` stage counted in `stagesFailed`; the agent now reaches
+    submission. Calling a single-agent command directly still rejects with `CancelledError`.
+  - A workflow whose scored work sat only in stopped phases reports `score: null`, not 0.
+  - A phase still queued behind `max_parallel` when the run stops is `skipped`, not dispatched.
   - Consumers that counted `FAIL`s or "Agent … failed" recommendations to detect an unfinished run
     must read `PipelineResult.status` or `isAbortedRecord` instead. A credit-stopped run is
     unchanged at the run level: still `failed`, `wait()` still throws.
@@ -48,7 +59,13 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) 
   in-flight provider calls through the merged signal while the run stayed `running`, so later
   stages were dispatched against an already-aborted signal and the run ended `completed`. It now
   stops the run exactly as `handle.cancel()` does: status `cancelled`, decision `CANCELLED`, later
-  stages skipped. A signal already aborted when the run starts stops it before the first stage.
+  stages skipped, and a later `cancel()` is a no-op rather than an "already complete" rejection. A
+  signal already aborted when the run starts stops it before the first stage. **A deadline signal
+  (`AbortSignal.timeout`, abort reason `TimeoutError`) is a timeout, not a stop** (Alex
+  2026-10-05): the run ends `failed`, `wait()` throws a `PipelineError` naming the deadline, later
+  stages are skipped as `run stopped (deadline)`, and in-flight agents are crash records whose
+  message names the deadline — the agents still running at a deadline are the slow ones, and
+  recording them as neutral non-verdicts would hide exactly those.
   Separately, a stage holding an `ABORTED` record makes the pipeline decision `CANCELLED`, so a
   stop that somehow did not reach the run status still cannot report `PASS`.
 
@@ -59,6 +76,16 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) 
   first in a stage won (observed in the negative control: the run summary's decision was
   `ABORTED`). Placeholders are now skipped when collecting analysis.
 - `CommandExecutor.executeParallel` built an error-message array it never read; removed.
+- `@throws {CancelledError}` on `CommandExecutor.execute` and `WorkflowExecutor.execute` claimed a
+  stop rejects; it rejects only for a single-agent command. Corrected.
+
+### Design Notes
+
+- **A stopped run can make its stopped agents' open issues read as resolved.** The tracker reads
+  a finding absent from a run as RESOLVED (and its return as a regression); a stopped run lacks
+  its stopped agents' findings, and nothing on the wire says those agents did not run. Crash
+  records already had this gap. Tracked separately: it needs a wire signal and a tracker
+  correlation change.
 
 ## [0.49.0] - 2026-10-05
 

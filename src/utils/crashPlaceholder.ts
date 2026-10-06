@@ -1,4 +1,5 @@
 import type { AgentResult } from '../types/agent.js';
+import type { CommandResult } from '../types/command.js';
 import type { AgentType } from '../types/execution.js';
 import { crashMetrics } from './crashMetrics.js';
 
@@ -156,4 +157,41 @@ export function abortedPlaceholder(
  */
 export function isAbortedRecord(r: { decision: string; version: string }): boolean {
   return r.decision === ABORTED_DECISION && r.version === CRASH_PLACEHOLDER_VERSION;
+}
+
+/**
+ * True for ANY result a run stop left without a verdict: an aborted placeholder
+ * ({@link isAbortedRecord}), or a container — a multi-agent command, a stage, a workflow — that
+ * aggregated to ABORTED. Containers carry their real version, so `isAbortedRecord` alone misses
+ * them (crew #110 F3). Use this one on command, stage and workflow results; `isAbortedRecord` on
+ * agent records when you need to know it was synthesized.
+ *
+ * Limit, stated: a container check is necessarily decision-based, so a real definition whose own
+ * vocabulary emitted a neutral `ABORTED` would match. None does today (corpus census, spec §2.5).
+ */
+export function isStoppedResult(r: { decision: string; version: string; decisionCategory?: string }): boolean {
+  return isAbortedRecord(r) || (r.decision === ABORTED_DECISION && r.decisionCategory === 'neutral');
+}
+
+/**
+ * The command-shaped form of an aborted agent record — DERIVED from {@link abortedPlaceholder}, not
+ * hand built, so the aborted shape has exactly one construction. Used for a workflow step and for
+ * a pipeline ref stage whose single agent was stopped.
+ */
+export function toCommandRecord(agentRecord: AgentResult): CommandResult {
+  return {
+    type: 'command',
+    name: agentRecord.name,
+    version: agentRecord.version,
+    definitionHash: agentRecord.definitionHash,
+    agentType: agentRecord.agentType,
+    decision: agentRecord.decision,
+    decisionCategory: agentRecord.decisionCategory,
+    score: agentRecord.score,
+    maxScore: agentRecord.maxScore,
+    recommendations: agentRecord.recommendations,
+    durationMs: agentRecord.durationMs,
+    // FABRICATION-OK: defaults UNDER the spread, as in stepCrashPlaceholder; a count of events.
+    metrics: { toolCallCount: 0, toolCalls: 0, ...agentRecord.metrics },
+  } as CommandResult;
 }
