@@ -25,6 +25,7 @@ import type { DefinitionType } from '../types/execution.js';
 import { parseRef } from '../utils/parseRef.js';
 import { DEFAULT_MAX_CONCURRENCY } from '../constants.js';
 import type { RunSubmissionResponse, RunHistoryEntry, SubmissionQueryOptions } from '../types/submission.js';
+import { firstDataCollection } from '../utils/dataCollection.js';
 
 /** Default request timeout: 5 minutes. Allows for model cold-start + multi-step tool loops in agent execution. */
 const DEFAULT_TIMEOUT_MS = 300_000;
@@ -860,8 +861,19 @@ export function resolveAIConfig(ai: AIConfig | undefined, env: NodeJS.ProcessEnv
     defaultProvider: ai?.defaultProvider ?? 'anthropic',
     modelOverride: ai?.modelOverride,
     additionalProviders: ai?.additionalProviders,
+    // D7: deny unless explicitly allowed. A misspelled value fails safe to 'deny' at the layer that
+    // set it — it does not fall through to the env var. The source is kept for the allow notice.
+    ...(() => {
+      // EXTERNAL-OK: the env value is allowlisted by firstDataCollection (only 'allow'/'deny' survive).
+      const hit = firstDataCollection(ai?.openRouterDataCollection, env['OPENROUTER_DATA_COLLECTION']);
+      return {
+        openRouterDataCollection: hit?.value ?? 'deny',
+        openRouterDataCollectionSource: hit === undefined ? 'default' : hit.layer === 0 ? 'config' : 'env',
+      } as const;
+    })(),
   };
 }
+
 
 /**
  * Parse ULUOPS_MAX_CONCURRENCY env var into a positive integer, or undefined

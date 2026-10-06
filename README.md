@@ -190,12 +190,29 @@ const result = await client.runAgent('code-validator', './src', {
 ```
 
 > **Data governance.** Every file the agent reads, and every shell command's output, is sent to
-> OpenRouter and on to whichever upstream provider serves the request. Core sets no retention
-> constraint by default (the decision is open). For private code, pass one yourself in
-> `runAgent`'s options: `providerOptions: { openrouter: { provider: { data_collection: 'deny', zdr: true } } }`,
-> and pin upstreams with `provider.only` (e.g. `only: ['DekaLLM']`). Core keeps any `provider`
-> fields you set and adds its own `require_parameters`. `providerOptions` is a `runAgent` option
-> only: commands, workflows and pipelines do not take it yet.
+> OpenRouter and on to whichever upstream provider serves the request. OpenRouter itself retains
+> no prompts unless you opt in to its prompt logging; the upstreams differ. **Since 0.49.0 core
+> sends `provider.data_collection: 'deny'` by default**, so only upstreams that do not retain or
+> train on your data are eligible. Fewer endpoints qualify; when none does (OpenRouter's routing
+> step "Filter by Data Policy" — typical of `:free` models), the run fails with a `CapabilityError`
+> that names `provider.data_collection = 'deny'` and how to opt in.
+>
+> To opt in for one run, pass it per request in `runAgent`'s options:
+> `providerOptions: { openrouter: { provider: { data_collection: 'allow' } } }`. Commands,
+> workflows, pipelines and the CLI take no `providerOptions`; for them the levers are
+> `ai.openRouterDataCollection: 'allow'` in the client config or `OPENROUTER_DATA_COLLECTION=allow`
+> in the environment, and both apply to **every** run that client or shell makes. While `allow` is
+> in effect, the first OpenRouter request it applies to from each lever logs a warning naming that
+> lever. Per request beats config, config beats the environment. At every layer an empty or null
+> value means unset; any other value than `allow`/`deny` means `deny` at that layer — it does not
+> fall through to a lower layer's `allow`.
+>
+> These levers are a preference, not a lock: a more specific one always overrides a less specific
+> one, so an environment `deny` cannot stop an embedding app's `allow`. To **enforce** deny, use
+> your OpenRouter account's privacy settings (openrouter.ai/settings/privacy), which apply on top of
+> all of this. `deny` is OpenRouter's per-provider data-policy flag, not zero data retention: for
+> the strictest routing add `zdr: true` (zero-retention endpoints only) and pin upstreams with
+> `provider.only`. Core keeps any `provider` fields you set and adds its own `require_parameters`.
 
 - **Pin 2.10.0.** The package's npm `latest` is 3.x, which targets `ai@7`; core runs `ai@6` and
   refuses a different major at load with an error naming both versions. Under strict pnpm
@@ -1125,7 +1142,7 @@ The SDK provides a structured error hierarchy:
 | `ConfigurationError` | `UluOpsClient` constructor, `RegistryClient.resolve()`, `AIProvider.ensureProvider()`, `ModelCatalog.resolve()` (registry route miss, 0.45.0+) | Missing API key, invalid provider config, definition not found in registry, invalid definition format |
 | `ModelNotFoundError` | `ModelCatalog.resolve()`, `AIProvider.generate()` (OpenRouter unknown slug, 0.48.0+) | Model alias not found in registry catalog, or a slug the provider does not recognize |
 | `CapabilityError` | `ModelCatalog.resolve()`, `AIProvider.generate()` (OpenRouter no-endpoint 404, 0.48.0+) | Resolved model lacks a required capability (e.g. tools, vision, extendedThinking), or no provider endpoint can serve the request as sent; the message names the routing constraints |
-| `ProviderCreditError` | `AIProvider.generate()` (reached via any executor) | The model provider refused the request for lack of credit (HTTP 402; code `PROVIDER_CREDIT`). Carries `error.provider`, `error.statusCode` and `error.limitSource`. Not UluOps' own entitlement 402 (`SubscriptionRequiredError`). Retrying will not help; inside a pipeline it stops the run as `cancelled` |
+| `ProviderCreditError` | `AIProvider.generate()` (reached via any executor) | The model provider refused the request for lack of credit (HTTP 402; code `PROVIDER_CREDIT`). Carries `error.provider`, `error.statusCode` and `error.limitSource`. Not UluOps' own entitlement 402 (`SubscriptionRequiredError`). The same request will not succeed on retry; inside a pipeline it stops the run and fails it (`wait()` throws a `PipelineError` with this message) |
 | `PreflightError` | `CommandExecutor` (preflight phase) | Preflight check failed — missing env var, file not found, command unavailable |
 | `ExecutionError` | `AgentExecutor.execute()`, `CommandExecutor.execute()` | Agent execution failure or definition type mismatch. `error.partialResult` is typed `unknown` — no producer in this package populates it; do not rely on it |
 | `CancelledError` | `AIProvider.generate()` (reached via any executor) | The run stopped because the CALLER asked it to — `PipelineHandle.cancel()`, or an `abortSignal` you supplied on `ExecutionOptions`. Subclass of `ExecutionError` (code `CANCELLED`). Check it BEFORE `ExecutionError`, and note it is deliberately **not** a `TimeoutError`: a cancel names no elapsed duration, so treating the two alike sends you to raise a timeout that was never the cause, and makes timeout-keyed retry logic retry work you asked to stop |

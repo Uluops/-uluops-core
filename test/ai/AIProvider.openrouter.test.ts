@@ -10,6 +10,7 @@ import { describe, it, expect, vi, afterEach } from 'vitest';
 import { APICallError } from 'ai';
 import { AIProvider, SHELL_SCHEMA_FALLBACK_PROVIDERS } from '../../src/ai/AIProvider.js';
 import { resolveAIConfig } from '../../src/client/UluOpsClient.js';
+import { firstDataCollection } from '../../src/utils/dataCollection.js';
 import { ConfigurationError, CapabilityError, ModelNotFoundError, ProviderCreditError, RateLimitError } from '../../src/errors/index.js';
 import type { ModelCatalog, ResolvedModel } from '../../src/ai/ModelCatalog.js';
 import type { ResolvedConfig } from '../../src/types/config.js';
@@ -119,7 +120,7 @@ describe('S4: OpenRouter provider options', () => {
 
   it('forces require_parameters even when the caller sets it false', () => {
     const opts = build(model(), { openrouter: { provider: { require_parameters: false, sort: 'price' } } });
-    expect(opts?.['provider']).toEqual({ sort: 'price', require_parameters: true });
+    expect(opts?.['provider']).toEqual({ sort: 'price', require_parameters: true, data_collection: 'deny' });
   });
 
   it('forces usage.include even when the caller sets it false', () => {
@@ -154,7 +155,7 @@ describe('S4: OpenRouter provider options', () => {
 
   it('a non-object caller provider block is replaced, not spread into index keys', () => {
     const opts = build(model(), { openrouter: { provider: 'price' } });
-    expect(opts?.['provider']).toEqual({ require_parameters: true });
+    expect(opts?.['provider']).toEqual({ require_parameters: true, data_collection: 'deny' });
   });
 
   it("keeps a caller's own reasoning block", () => {
@@ -381,6 +382,24 @@ describe('1d: typed OpenRouter errors', () => {
     expect(mapped.message).toContain('available for this model [DeepInfra, Relace]');
   });
 
+  // D7 fold P2, from the live 2026-10-05 body (liquid/lfm-2.5-2.6b:free under deny).
+  // NEGATIVE CONTROL: 79feff1's message named only require_parameters.
+  it('a data-policy miss (Filter by Data Policy) names data_collection and the per-request opt-in', () => {
+    const e = new APICallError({
+      message: 'No endpoints found matching your data policy (Free model training). Configure: https://openrouter.ai/settings/privacy',
+      url: 'u', statusCode: 404,
+      requestBodyValues: { ...body, provider: { require_parameters: true, data_collection: 'deny' } },
+      data: { error: { code: 404, message: 'No endpoints found matching your data policy', metadata: {
+        routing_funnel: [{ step: 'Initial Endpoints', endpoint_count: 1 }], failed_routing_step: 'Filter by Data Policy',
+      } } },
+    });
+    const mapped = map(e, model({ registered: true }));
+    expect(mapped).toBeInstanceOf(CapabilityError);
+    expect(mapped.message).toContain("provider.data_collection = 'deny'");
+    expect(mapped.message).toContain("providerOptions.openrouter.provider.data_collection: 'allow'");
+    expect(mapped.message).not.toContain('STALE');
+  });
+
   it('an unknown slug (400 "is not a valid model ID") is a ModelNotFoundError naming the slug', () => {
     const e = new APICallError({
       message: 'deepseek/no-such-model is not a valid model ID', url: 'u', requestBodyValues: body, statusCode: 400,
@@ -494,5 +513,147 @@ describe('1d: an unknown provider name is reported as unknown, not unconfigured'
     const provider = new AIProvider(config, catalog, noopLogger);
     const err = await provider.ensureProvider('mistral').then(() => null, (e: unknown) => e as Error);
     expect(err!.message).toContain('MISTRAL_API_KEY');
+  });
+});
+
+/**
+ * D7 (Alex 2026-10-05): OpenRouter requests deny data-collecting upstreams by default, with an
+ * explicit override. NEGATIVE CONTROL: against 0.48.0 no data_collection is sent at all, so the
+ * account default (and OpenRouter's request default, 'allow') applies.
+ */
+describe('D7: data_collection defaults to deny', () => {
+  const opts = (cfg: Partial<ResolvedConfig['ai']> = {}, user?: Record<string, unknown>) =>
+    internals(new AIProvider({ ...config, ai: { ...config.ai, ...cfg } }, catalog, noopLogger))
+      .buildProviderOptions(model(), user ? { openrouter: user } as never : undefined)!['openrouter']!['provider'] as Record<string, unknown>;
+
+  it('sends data_collection: deny when nothing is configured', () => {
+    expect(opts().data_collection).toBe('deny');
+  });
+
+  it('a configured allow is sent', () => {
+    expect(opts({ openRouterDataCollection: 'allow' }).data_collection).toBe('allow');
+  });
+
+  it('a per-request deny beats a configured allow', () => {
+    expect(opts({ openRouterDataCollection: 'allow' }, { provider: { data_collection: 'deny' } }).data_collection).toBe('deny');
+  });
+
+  it('a per-request allow beats the default', () => {
+    expect(opts({}, { provider: { data_collection: 'allow' } }).data_collection).toBe('allow');
+  });
+
+  // Re-check #2 (logic, L). NEGATIVE CONTROL: e1f1f70 sent '' verbatim for a hand-built config.
+  it('a blank or malformed configured value on a hand-built AIProvider is deny, not sent verbatim', () => {
+    expect(opts({ openRouterDataCollection: '' as never }).data_collection).toBe('deny');
+    expect(opts({ openRouterDataCollection: 'yes' as never }).data_collection).toBe('deny');
+  });
+
+  it('a malformed per-request value is replaced, not sent', () => {
+    expect(opts({}, { provider: { data_collection: 'sometimes' } }).data_collection).toBe('deny');
+  });
+
+  // Fold P6. NEGATIVE CONTROL: 79feff1 sent 'allow' here (the malformed value fell to the config).
+  it('a malformed per-request value is deny even when the config allows', () => {
+    expect(opts({ openRouterDataCollection: 'allow' }, { provider: { data_collection: 'denied' } }).data_collection).toBe('deny');
+  });
+
+  it('the caller provider block is kept alongside it', () => {
+    const p = opts({}, { provider: { only: ['DeepInfra'] } });
+    expect(p).toMatchObject({ only: ['DeepInfra'], require_parameters: true, data_collection: 'deny' });
+  });
+
+  // Test-architect's surviving mutant: nothing asserted the field stays OpenRouter-scoped.
+  it('no other provider gets data_collection', () => {
+    const build = (r: ResolvedModel) => JSON.stringify(
+      internals(new AIProvider({ ...config, ai: { ...config.ai, openRouterDataCollection: 'deny' } }, catalog, noopLogger)).buildProviderOptions(r) ?? {},
+    );
+    expect(build(model())).toContain('data_collection'); // control: the probe can see it
+    for (const provider of ['anthropic', 'openai', 'google']) {
+      const r = model({ provider, modelId: 'm', providerModelId: 'm', capabilities: { tools: true, vision: false, streaming: true, extendedThinking: true } });
+      expect(build(r), provider).not.toContain('data_collection');
+    }
+  });
+});
+
+/** Fold P1: 'allow' is never silent. NEGATIVE CONTROL: 79feff1 logged nothing for an allow. */
+describe('D7: allow-in-effect notice', () => {
+  const run = (cfg: Partial<ResolvedConfig['ai']>, user?: Record<string, unknown>, calls = 1) => {
+    const warn = vi.fn();
+    const debug = vi.fn();
+    const p = internals(new AIProvider({ ...config, ai: { ...config.ai, ...cfg } }, catalog, { ...noopLogger, warn, debug }));
+    for (let i = 0; i < calls; i++) p.buildProviderOptions(model(), user ? { openrouter: user } as never : undefined);
+    return { warn: warn.mock.calls.map(c => String(c[0])), debug: debug.mock.calls.map(c => String(c[0])) };
+  };
+
+  it('warns once, naming the env var, then drops to debug', () => {
+    const { warn, debug } = run({ openRouterDataCollection: 'allow', openRouterDataCollectionSource: 'env' }, undefined, 3);
+    expect(warn).toHaveLength(1);
+    expect(warn[0]).toContain('OPENROUTER_DATA_COLLECTION');
+    expect(debug.filter(d => d.includes('data_collection'))).toHaveLength(2);
+  });
+
+  it('names the per-request lever when the request set it', () => {
+    expect(run({}, { provider: { data_collection: 'allow' } }).warn[0]).toContain("this request's providerOptions");
+  });
+
+  // Re-check #2 (logic, M). NEGATIVE CONTROL: e1f1f70 shared one flag, so the env allow got debug only.
+  it('a per-request allow does not consume the warning an env allow should print', () => {
+    const warn = vi.fn();
+    const p = internals(new AIProvider(
+      { ...config, ai: { ...config.ai, openRouterDataCollection: 'allow', openRouterDataCollectionSource: 'env' } }, catalog, { ...noopLogger, warn }));
+    p.buildProviderOptions(model(), { openrouter: { provider: { data_collection: 'allow' } } } as never);
+    p.buildProviderOptions(model());
+    const msgs = warn.mock.calls.map(c => String(c[0]));
+    expect(msgs).toHaveLength(2);
+    expect(msgs[1]).toContain('OPENROUTER_DATA_COLLECTION');
+  });
+
+  // Re-check #2 (auditor, L). NEGATIVE CONTROL: e1f1f70 set the flag first, so the retry was debug.
+  it('a logger that throws once does not demote the warning for good', () => {
+    let calls = 0;
+    const warn = vi.fn(() => { if (calls++ === 0) throw new Error('logger down'); });
+    const p = internals(new AIProvider(
+      { ...config, ai: { ...config.ai, openRouterDataCollection: 'allow', openRouterDataCollectionSource: 'config' } }, catalog, { ...noopLogger, warn }));
+    expect(() => p.buildProviderOptions(model())).toThrow('logger down');
+    p.buildProviderOptions(model());
+    expect(warn).toHaveBeenCalledTimes(2);
+  });
+
+  it('says nothing under deny', () => {
+    expect(run({}).warn).toEqual([]);
+  });
+});
+
+describe('D7: resolveAIConfig', () => {
+  it('defaults to deny, reads OPENROUTER_DATA_COLLECTION, and the config field wins', () => {
+    expect(resolveAIConfig(undefined, {}).openRouterDataCollection).toBe('deny');
+    expect(resolveAIConfig(undefined, { OPENROUTER_DATA_COLLECTION: ' Allow ' }).openRouterDataCollection).toBe('allow');
+    expect(resolveAIConfig({ providers: {}, openRouterDataCollection: 'deny' }, { OPENROUTER_DATA_COLLECTION: 'allow' }).openRouterDataCollection).toBe('deny');
+  });
+
+  it('a misspelled env value fails safe to deny', () => {
+    expect(resolveAIConfig(undefined, { OPENROUTER_DATA_COLLECTION: 'alow' }).openRouterDataCollection).toBe('deny');
+  });
+
+  // Fold P6. NEGATIVE CONTROL: 79feff1 returned 'allow' (the bad config value fell to the env).
+  it('a misspelled config value is deny even when the env allows', () => {
+    const r = resolveAIConfig({ providers: {}, openRouterDataCollection: 'denied' as never }, { OPENROUTER_DATA_COLLECTION: 'allow' });
+    expect(r.openRouterDataCollection).toBe('deny');
+    expect(r.openRouterDataCollectionSource).toBe('config');
+  });
+
+  it('a blank env var reads as unset, and the source is recorded', () => {
+    expect(resolveAIConfig(undefined, { OPENROUTER_DATA_COLLECTION: '  ' })).toMatchObject({ openRouterDataCollection: 'deny', openRouterDataCollectionSource: 'default' });
+    expect(resolveAIConfig(undefined, { OPENROUTER_DATA_COLLECTION: 'allow' }).openRouterDataCollectionSource).toBe('env');
+  });
+});
+
+describe('D7: firstDataCollection', () => {
+  it('the first set layer decides; malformed is deny; non-strings are malformed', () => {
+    expect(firstDataCollection(undefined, null, '', 'allow')).toEqual({ value: 'allow', layer: 3 });
+    expect(firstDataCollection('nope', 'allow')).toEqual({ value: 'deny', layer: 0 });
+    expect(firstDataCollection(123, 'allow')).toEqual({ value: 'deny', layer: 0 });
+    expect(firstDataCollection(true)).toEqual({ value: 'deny', layer: 0 });
+    expect(firstDataCollection()).toBeUndefined();
   });
 });

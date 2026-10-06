@@ -47,6 +47,7 @@ import { tripRunFor } from '../utils/runTrip.js';
 import type { ModelCapabilities } from '@uluops/registry-sdk';
 import type { Logger } from '@uluops/sdk-core';
 import { usableBudget, resolveRequestTimeoutMs, finitePositive, finiteNonNegative, parseExternalNumber } from '../utils/externalValue.js';
+import { firstDataCollection } from '../utils/dataCollection.js';
 
 /**
  * What `mapUsage` accepts — DERIVED from the AI SDK's own `LanguageModelUsage`
@@ -1215,7 +1216,22 @@ export class AIProvider {
     const orOpts: Record<string, unknown> = { ...user };
     // A caller block that is not a plain object (a string, an array) is replaced, not spread:
     // spreading a string yields index keys, and the forced flags must land on a real object.
-    orOpts['provider'] = { ...asPlainObject(user['provider']), require_parameters: true };
+    // `data_collection` (D7): the caller's per-request value if set, else the configured default,
+    // else 'deny' — so target code goes only to upstreams that do not retain or train on it unless
+    // someone opted in. A malformed per-request value is 'deny', not the configured value; a blank or
+    // null one is unset. Placed after the spread so a malformed caller value is replaced, not sent.
+    const userProvider = asPlainObject(user['provider']);
+    const perRequest = firstDataCollection(userProvider['data_collection']);
+    // The resolved layer goes through the same seam: an AIProvider built without resolveAIConfig
+    // (embedders, untyped JS) must not send a blank or malformed value verbatim (re-check #2).
+    const configured = firstDataCollection(this.config.ai.openRouterDataCollection);
+    const dataCollection = perRequest?.value ?? configured?.value ?? 'deny';
+    if (dataCollection === 'allow') this.noticeDataCollectionAllow(perRequest !== undefined ? 'request' : this.config.ai.openRouterDataCollectionSource);
+    orOpts['provider'] = {
+      ...userProvider,
+      require_parameters: true,
+      data_collection: dataCollection,
+    };
     orOpts['usage'] = { ...asPlainObject(user['usage']), include: true };
     // Through the finitePositive seam, not verbatim like the Anthropic builder: OpenRouter forwards
     // to whichever upstream serves the request, so no single provider can be relied on to reject a
@@ -1227,6 +1243,33 @@ export class AIProvider {
     }
     return { ...userOptions, openrouter: orOpts } as ProviderOptions;
   }
+
+  /**
+   * D7 fold (perverse-outcome P1): 'allow' must not be silent. The easiest fix for a deny-induced
+   * no-endpoint error is a process-wide `OPENROUTER_DATA_COLLECTION=allow`, which then covers every
+   * later run in every repo. The first allowed request FROM EACH LEVER warns (prints without debug)
+   * and names it; repeats from the same lever are debug, so a pipeline says it once. Per lever, not
+   * per provider (re-check #2): a shared flag let a per-request allow consume the warning a later
+   * environment allow should have printed. The lever is marked only after warn returns, so a logger
+   * that throws once does not demote the notice for good.
+   */
+  private noticeDataCollectionAllow(source: 'request' | 'config' | 'env' | 'default' | undefined): void {
+    const key = source ?? 'default';
+    const lever = key === 'request' ? "this request's providerOptions.openrouter.provider.data_collection"
+      : key === 'env' ? 'the OPENROUTER_DATA_COLLECTION environment variable'
+      : key === 'config' ? 'ai.openRouterDataCollection in the client config'
+      : 'the client configuration';
+    const notice = `OpenRouter data_collection is 'allow' (set by ${lever}): requests may go to upstream providers ` +
+      `that retain or train on what the agent reads, target code included.`;
+    if (this.dataCollectionNoticeShown.has(key)) {
+      this.logger.debug(notice);
+    } else {
+      this.logger.warn(notice);
+      this.dataCollectionNoticeShown.add(key);
+    }
+  }
+
+  private readonly dataCollectionNoticeShown = new Set<string>();
 
   private buildProviderOptions(
     resolved: ResolvedModel,
@@ -2358,8 +2401,9 @@ function rateLimitRetryAfterSeconds(
 
 /**
  * The routing constraints a request carried, for a no-endpoint 404: the parameters OpenRouter's
- * `require_parameters` holds every endpoint to, and any provider filter (`only`, `ignore`,
- * `quantizations`). For an allowed-providers miss, the lists OpenRouter returns.
+ * `require_parameters` holds every endpoint to, any provider filter (`only`, `ignore`,
+ * `quantizations`), and `data_collection: 'deny'` (D7) with how to opt in. For an allowed-providers
+ * miss, the lists OpenRouter returns.
  */
 function describeRoutingConstraints(requestBodyValues: unknown, meta: Record<string, unknown>): string {
   const body = asPlainObject(requestBodyValues);
@@ -2374,6 +2418,16 @@ function describeRoutingConstraints(requestBodyValues: unknown, meta: Record<str
     if (Array.isArray(provider[key]) && provider[key].length > 0) {
       parts.push(`provider.${key} = [${(provider[key] as unknown[]).join(', ')}]`);
     }
+  }
+  if (provider['data_collection'] === 'deny') {
+    // Live 2026-10-05: a deny miss is failed_routing_step "Filter by Data Policy". Name the opt-in
+    // per request first — the narrow lever — so the fix is not a process-wide allow (D7 fold P1/P2).
+    parts.push(
+      "provider.data_collection = 'deny' (only upstreams that do not retain or train on prompts are eligible; " +
+      'to allow one run, pass ' +
+      "providerOptions.openrouter.provider.data_collection: 'allow', or set " +
+      'ai.openRouterDataCollection / OPENROUTER_DATA_COLLECTION, which applies to every run)',
+    );
   }
   const list = (v: unknown) => (Array.isArray(v) ? v.join(', ') : undefined);
   const requested = list(meta['requested_providers']);

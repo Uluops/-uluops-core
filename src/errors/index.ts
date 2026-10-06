@@ -256,9 +256,10 @@ export class CapabilityError extends UluOpsError {
  * ("You requested up to 100000 tokens, but can only afford 83666"; Phase 0).
  *
  * Distinct from {@link SubscriptionRequiredError}, which is UluOps' own entitlement 402. This
- * one is the provider's, and no retry fixes it, so a pipeline run that hits it is stopped as
- * `cancelled` with this message as its reason (OpenRouter plan D13): later stages and in-flight
- * siblings would otherwise each spend a request to learn the same thing.
+ * one is the provider's, and the same request will not succeed on retry, so a pipeline run that
+ * hits it is stopped and FAILED (OpenRouter plan D13 as revised in v0.6.3): later stages and
+ * in-flight siblings would otherwise each spend a request to learn the same thing, and wait()
+ * throws a PipelineError carrying this message.
  *
  * The message carries everything a reader needs, because a crash placeholder keeps only the
  * message: the provider, the status, whose limit (`limitSource`), and the provider's own text.
