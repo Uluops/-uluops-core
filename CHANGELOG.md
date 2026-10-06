@@ -6,6 +6,25 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) 
 
 ## [Unreleased]
 
+### Changed
+
+- **OpenRouter requests deny data-collecting upstreams by default (OpenRouter plan D7, decided by
+  Alex 2026-10-05).** Core now sends `provider.data_collection: 'deny'` on every OpenRouter
+  request, so the code and shell output an agent reads go only to upstreams that do not retain or
+  train on it. Until now core sent nothing, so OpenRouter's request default (`allow`) or the
+  account's privacy setting decided. **Behaviour change:** fewer endpoints are eligible; a model
+  served only by data-collecting upstreams now fails with the typed no-endpoint
+  `CapabilityError`, which names `data_collection` among the constraints.
+
+### Added
+
+- **`ai.openRouterDataCollection: 'allow' | 'deny'`** (and the `OPENROUTER_DATA_COLLECTION`
+  environment variable) to opt back in. Precedence: per-request
+  `providerOptions.openrouter.provider.data_collection`, then the config field, then the
+  environment, then `'deny'`. Any other value, including a misspelling, falls back to `'deny'`.
+  The environment variable reaches commands, workflows, pipelines and the CLI, which take no
+  `providerOptions`.
+
 ## [0.48.0] - 2026-10-05
 
 ### Added

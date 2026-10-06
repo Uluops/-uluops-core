@@ -50,6 +50,22 @@ export interface AIConfig {
    * Each name must have a corresponding `@ai-sdk/<name>` package installed.
    */
   additionalProviders?: string[];
+
+  /**
+   * Whether OpenRouter may route requests to upstream providers that retain or train on the data
+   * sent to them (OpenRouter's `provider.data_collection`). Everything an agent reads — target
+   * code included — goes to whichever upstream serves the request.
+   *
+   * Defaults to `'deny'` (OpenRouter plan D7, Alex 2026-10-05): only upstreams that do not collect
+   * data are eligible. Set `'allow'` to opt back in to the wider pool. Also read from the
+   * `OPENROUTER_DATA_COLLECTION` environment variable; this field wins over the variable, and a
+   * per-request `providerOptions.openrouter.provider.data_collection` wins over both. Any value
+   * other than `'allow'`/`'deny'` is ignored, falling back to `'deny'`.
+   *
+   * Your OpenRouter account's privacy settings still apply on top of this.
+   * @default 'deny'
+   */
+  openRouterDataCollection?: 'allow' | 'deny';
 }
 
 /**
@@ -60,6 +76,8 @@ export interface ResolvedAIConfig {
   defaultProvider: string;
   modelOverride?: string;
   additionalProviders?: string[];
+  /** OpenRouter's `provider.data_collection` default; see {@link AIConfig.openRouterDataCollection}. Absent reads as `'deny'`. */
+  openRouterDataCollection?: 'allow' | 'deny';
 }
 
 /**

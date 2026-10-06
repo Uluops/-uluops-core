@@ -190,12 +190,21 @@ const result = await client.runAgent('code-validator', './src', {
 ```
 
 > **Data governance.** Every file the agent reads, and every shell command's output, is sent to
-> OpenRouter and on to whichever upstream provider serves the request. Core sets no retention
-> constraint by default (the decision is open). For private code, pass one yourself in
-> `runAgent`'s options: `providerOptions: { openrouter: { provider: { data_collection: 'deny', zdr: true } } }`,
-> and pin upstreams with `provider.only` (e.g. `only: ['DekaLLM']`). Core keeps any `provider`
-> fields you set and adds its own `require_parameters`. `providerOptions` is a `runAgent` option
-> only: commands, workflows and pipelines do not take it yet.
+> OpenRouter and on to whichever upstream provider serves the request. OpenRouter itself retains
+> no prompts unless you opt in to its prompt logging; the upstreams differ. **Since 0.49.0 core
+> sends `provider.data_collection: 'deny'` by default**, so only upstreams that do not retain or
+> train on your data are eligible. Fewer endpoints qualify; when none does, the run fails with a
+> `CapabilityError` that names `data_collection` among the routing constraints.
+>
+> To opt back in to the wider pool, set `ai.openRouterDataCollection: 'allow'` in the client config
+> or `OPENROUTER_DATA_COLLECTION=allow` in the environment (this reaches commands, workflows,
+> pipelines and the CLI), or per request in `runAgent`'s options:
+> `providerOptions: { openrouter: { provider: { data_collection: 'allow' } } }`. Per request beats
+> config, config beats the environment, and any value other than `allow`/`deny` falls back to
+> `deny`. For the strictest routing add `zdr: true` (zero-retention endpoints only) and pin
+> upstreams with `provider.only`. Core keeps any `provider` fields you set and adds its own
+> `require_parameters`. Your OpenRouter account's privacy settings
+> (openrouter.ai/settings/privacy) apply on top of all of this.
 
 - **Pin 2.10.0.** The package's npm `latest` is 3.x, which targets `ai@7`; core runs `ai@6` and
   refuses a different major at load with an error naming both versions. Under strict pnpm

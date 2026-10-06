@@ -119,7 +119,7 @@ describe('S4: OpenRouter provider options', () => {
 
   it('forces require_parameters even when the caller sets it false', () => {
     const opts = build(model(), { openrouter: { provider: { require_parameters: false, sort: 'price' } } });
-    expect(opts?.['provider']).toEqual({ sort: 'price', require_parameters: true });
+    expect(opts?.['provider']).toEqual({ sort: 'price', require_parameters: true, data_collection: 'deny' });
   });
 
   it('forces usage.include even when the caller sets it false', () => {
@@ -154,7 +154,7 @@ describe('S4: OpenRouter provider options', () => {
 
   it('a non-object caller provider block is replaced, not spread into index keys', () => {
     const opts = build(model(), { openrouter: { provider: 'price' } });
-    expect(opts?.['provider']).toEqual({ require_parameters: true });
+    expect(opts?.['provider']).toEqual({ require_parameters: true, data_collection: 'deny' });
   });
 
   it("keeps a caller's own reasoning block", () => {
@@ -494,5 +494,50 @@ describe('1d: an unknown provider name is reported as unknown, not unconfigured'
     const provider = new AIProvider(config, catalog, noopLogger);
     const err = await provider.ensureProvider('mistral').then(() => null, (e: unknown) => e as Error);
     expect(err!.message).toContain('MISTRAL_API_KEY');
+  });
+});
+
+/**
+ * D7 (Alex 2026-10-05): OpenRouter requests deny data-collecting upstreams by default, with an
+ * explicit override. NEGATIVE CONTROL: against 0.48.0 no data_collection is sent at all, so the
+ * account default (and OpenRouter's request default, 'allow') applies.
+ */
+describe('D7: data_collection defaults to deny', () => {
+  const opts = (cfg: Partial<ResolvedConfig['ai']> = {}, user?: Record<string, unknown>) =>
+    internals(new AIProvider({ ...config, ai: { ...config.ai, ...cfg } }, catalog, noopLogger))
+      .buildProviderOptions(model(), user ? { openrouter: user } as never : undefined)!['openrouter']!['provider'] as Record<string, unknown>;
+
+  it('sends data_collection: deny when nothing is configured', () => {
+    expect(opts().data_collection).toBe('deny');
+  });
+
+  it('a configured allow is sent', () => {
+    expect(opts({ openRouterDataCollection: 'allow' }).data_collection).toBe('allow');
+  });
+
+  it('a per-request value wins over the configured one', () => {
+    expect(opts({ openRouterDataCollection: 'allow' }, { provider: { data_collection: 'deny' } }).data_collection).toBe('deny');
+    expect(opts({}, { provider: { data_collection: 'allow' } }).data_collection).toBe('allow');
+  });
+
+  it('a malformed per-request value is replaced, not sent', () => {
+    expect(opts({}, { provider: { data_collection: 'sometimes' } }).data_collection).toBe('deny');
+  });
+
+  it('the caller provider block is kept alongside it', () => {
+    const p = opts({}, { provider: { only: ['DeepInfra'] } });
+    expect(p).toMatchObject({ only: ['DeepInfra'], require_parameters: true, data_collection: 'deny' });
+  });
+});
+
+describe('D7: resolveAIConfig', () => {
+  it('defaults to deny, reads OPENROUTER_DATA_COLLECTION, and the config field wins', () => {
+    expect(resolveAIConfig(undefined, {}).openRouterDataCollection).toBe('deny');
+    expect(resolveAIConfig(undefined, { OPENROUTER_DATA_COLLECTION: ' Allow ' }).openRouterDataCollection).toBe('allow');
+    expect(resolveAIConfig({ providers: {}, openRouterDataCollection: 'deny' }, { OPENROUTER_DATA_COLLECTION: 'allow' }).openRouterDataCollection).toBe('deny');
+  });
+
+  it('a misspelled env value fails safe to deny', () => {
+    expect(resolveAIConfig(undefined, { OPENROUTER_DATA_COLLECTION: 'alow' }).openRouterDataCollection).toBe('deny');
   });
 });

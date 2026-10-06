@@ -47,6 +47,7 @@ import { tripRunFor } from '../utils/runTrip.js';
 import type { ModelCapabilities } from '@uluops/registry-sdk';
 import type { Logger } from '@uluops/sdk-core';
 import { usableBudget, resolveRequestTimeoutMs, finitePositive, finiteNonNegative, parseExternalNumber } from '../utils/externalValue.js';
+import { dataCollectionValue } from '../utils/dataCollection.js';
 
 /**
  * What `mapUsage` accepts — DERIVED from the AI SDK's own `LanguageModelUsage`
@@ -1215,7 +1216,18 @@ export class AIProvider {
     const orOpts: Record<string, unknown> = { ...user };
     // A caller block that is not a plain object (a string, an array) is replaced, not spread:
     // spreading a string yields index keys, and the forced flags must land on a real object.
-    orOpts['provider'] = { ...asPlainObject(user['provider']), require_parameters: true };
+    // `data_collection` (D7): the caller's per-request value if it is 'allow'/'deny', else the
+    // configured default, else 'deny' — so target code goes only to upstreams that do not retain
+    // or train on it unless someone opted in. Placed after the spread so a malformed caller value
+    // is replaced, not sent.
+    const userProvider = asPlainObject(user['provider']);
+    orOpts['provider'] = {
+      ...userProvider,
+      require_parameters: true,
+      data_collection: dataCollectionValue(userProvider['data_collection'])
+        ?? this.config.ai.openRouterDataCollection
+        ?? 'deny',
+    };
     orOpts['usage'] = { ...asPlainObject(user['usage']), include: true };
     // Through the finitePositive seam, not verbatim like the Anthropic builder: OpenRouter forwards
     // to whichever upstream serves the request, so no single provider can be relied on to reject a
