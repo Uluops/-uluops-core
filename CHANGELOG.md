@@ -6,6 +6,22 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) 
 
 ## [Unreleased]
 
+## [0.49.0] - 2026-10-05
+
+### Added
+
+- **`ai.openRouterDataCollection: 'allow' | 'deny'`** (and the `OPENROUTER_DATA_COLLECTION`
+  environment variable) to opt back in. Precedence: per-request
+  `providerOptions.openrouter.provider.data_collection`, then the config field, then the
+  environment, then `'deny'`. The first layer that sets a value decides, and any value other
+  than `allow`/`deny` there — including a misspelling — is `'deny'`; it does not fall through to a
+  lower layer's `allow`. At every layer, `null` or a blank string reads as unset. The environment variable
+  reaches commands, workflows, pipelines and the CLI, which take no `providerOptions`. These are
+  preferences, not a lock (a more specific layer always wins); the OpenRouter account privacy
+  setting is the enforced ceiling. `'deny'` is a data-policy flag, not zero retention (`zdr`).
+- **`ResolvedAIConfig.openRouterDataCollectionSource`** (`'config' | 'env' | 'default'`): which
+  layer set the value, for the warning above.
+
 ### Changed
 
 - **OpenRouter requests deny data-collecting upstreams by default (OpenRouter plan D7, decided by
@@ -28,20 +44,6 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) 
 - **`ProviderCreditError`'s JSDoc and the README error table said a 402 stops the run as
   `cancelled`.** 0.48.0 shipped the revised behaviour (the run ends `failed`, `wait()` throws) but
   these two places kept the earlier wording.
-
-### Added
-
-- **`ai.openRouterDataCollection: 'allow' | 'deny'`** (and the `OPENROUTER_DATA_COLLECTION`
-  environment variable) to opt back in. Precedence: per-request
-  `providerOptions.openrouter.provider.data_collection`, then the config field, then the
-  environment, then `'deny'`. The first layer that sets a value decides, and any value other
-  than `allow`/`deny` there — including a misspelling — is `'deny'`; it does not fall through to a
-  lower layer's `allow`. At every layer, `null` or a blank string reads as unset. The environment variable
-  reaches commands, workflows, pipelines and the CLI, which take no `providerOptions`. These are
-  preferences, not a lock (a more specific layer always wins); the OpenRouter account privacy
-  setting is the enforced ceiling. `'deny'` is a data-policy flag, not zero retention (`zdr`).
-- **`ResolvedAIConfig.openRouterDataCollectionSource`** (`'config' | 'env' | 'default'`): which
-  layer set the value, for the warning above.
 
 ## [0.48.0] - 2026-10-05
 
