@@ -552,9 +552,11 @@ describe('PipelineExecutor', () => {
 
       resolveCmd!(makeCommandResult());
       await new Promise(r => setTimeout(r, 0));
-      // And the pipeline still reports a normal outcome, not a cancel — nobody called
-      // cancel(); the caller's signal ended the provider work, which is a different event.
-      expect((await handle.status()).status).not.toBe('cancelled');
+      // The caller's signal now STOPS the run (aborted-agent-recording OD-7, Alex 2026-10-05).
+      // This line used to assert the opposite — "nobody called cancel(), so not a cancel" —
+      // which is how a caller-aborted run went on dispatching later stages against a dead signal
+      // and ended `completed`. NEGATIVE CONTROL: against 0.49.0 the status is `completed`.
+      expect((await handle.status()).status).toBe('cancelled');
     });
 
     it('cancel() still works when the caller supplied their own signal', async () => {

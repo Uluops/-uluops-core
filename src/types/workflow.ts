@@ -1,5 +1,6 @@
 import type { ExecutionResult, ExecutionMetrics, Domain, CostBasis } from './execution.js';
 import type { CommandResult } from './command.js';
+import type { DegradationMarker } from './degradation.js';
 
 /**
  * Workflow definition - multi-phase command orchestration
@@ -97,6 +98,9 @@ export interface WorkflowResult extends ExecutionResult {
 
   /** Workflow-specific metrics */
   metrics: WorkflowMetrics;
+
+  /** Set by core when a run stop left the workflow without a verdict; see CommandResult. */
+  degradationMarkers?: DegradationMarker[];
 }
 
 /**
@@ -180,4 +184,11 @@ export interface PhaseResult {
 
   /** Error message when phase threw (blocked phases only) */
   error?: string;
+
+  /**
+   * True when a run stop kept this phase from STARTING (queued behind `max_parallel`, or in a later
+   * level). Nothing ran: such a phase is not counted as executed, adds no cost, and its decision
+   * (`'aborted'`, or `'blocked'` under a caller deadline) is never rewritten by `on_failure`.
+   */
+  stoppedBeforeStart?: true;
 }

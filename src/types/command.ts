@@ -1,4 +1,5 @@
 import type { ExecutionResult, ExecutionMetrics, Domain, AgentType } from './execution.js';
+import type { DegradationMarker } from './degradation.js';
 
 /**
  * Command definition - Agent(s) + execution context
@@ -119,6 +120,17 @@ export interface CommandResult extends ExecutionResult {
 
   /** Command-specific metrics */
   metrics: CommandMetrics;
+
+  /**
+   * Core-stamped marks of what happened INSIDE this command (utils/stopVerdict.ts):
+   * `execution.run-stopped` (a stop left it without a verdict — what `isStoppedResult` keys on),
+   * `execution.run-stopped-partial` (a stop reached it and something inside crashed, so it is
+   * FAIL), `execution.child-crashed` (a real crash inside), `execution.deadline` (a crash record a
+   * caller deadline produced). Never inferred from the decision string, which a model can emit
+   * freely. Not a general channel: an agent's own markers (`budget.*`, `context.*`) are not lifted
+   * onto a command.
+   */
+  degradationMarkers?: DegradationMarker[];
 }
 
 /**

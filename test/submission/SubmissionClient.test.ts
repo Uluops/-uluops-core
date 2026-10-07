@@ -1482,3 +1482,81 @@ describe('SubmissionClient — a run that verified NOTHING must not submit avera
     expect(Object.keys(input.summary)).not.toContain('averageScore');
   });
 });
+
+/**
+ * aborted-agent-recording §5.2 / T13-T15. An agent stopped by a run stop is submitted as decision
+ * ABORTED with no recommendation; an `aborted` workflow phase is no longer dropped; a synthesized
+ * placeholder never becomes the run-level analysis summary.
+ */
+describe('aborted-agent recording (submission)', () => {
+  beforeEach(() => { vi.clearAllMocks(); warnings.length = 0; });
+  const okSave = () => mockSave.mockResolvedValueOnce({
+    run: { id: 'r', projectId: 'p', runNumber: 1, allGatesPassed: false, averageScore: 85 },
+    agents: [], correlation: { newIssues: 0, recurringIssues: 0, regressions: 0 },
+  });
+
+  // T13. A WIRE PIN, not a negative control: SubmissionClient already sends whatever decision a
+  // record carries, so this passes against 0.49.0's SubmissionClient too. What changed is that the
+  // executors now PRODUCE this record (their NC is T1 in abortedAgentRecording.test.ts); this pins
+  // how it reaches the wire — decision, null score, summary, no recommendation, gates not passed.
+  it('an aborted inline agent is sent as ABORTED with its not-completed summary and no recommendation', async () => {
+    okSave();
+    const { abortedPlaceholder } = await import('../../src/utils/crashPlaceholder.js');
+    const { CancelledError } = await import('../../src/errors/index.js');
+    const pipeline = makePipelineResultWithAgents([[0]]);
+    pipeline.status = 'cancelled';
+    pipeline.decision = 'CANCELLED';
+    pipeline.stages[0]!.agentResults!.push(abortedPlaceholder('steady', new CancelledError('Execution was cancelled by the caller')));
+    pipeline.recommendations = pipeline.stages[0]!.agentResults!.flatMap(a => a.recommendations);
+    const client = new SubmissionClient(baseConfig, testLogger);
+    await client.submit(makeSubmission({ result: pipeline }));
+
+    const input = mockSave.mock.calls[0]![0] as { agents: Array<{ name: string; decision: string; score: unknown; summary?: string }>; recommendations: Array<{ title: string }>; summary: { allGatesPassed: boolean } };
+    expect(input.agents.length).toBeGreaterThan(0);
+    const steady = input.agents.find(a => a.name === 'steady')!;
+    expect(steady).toMatchObject({ decision: 'ABORTED', score: null });
+    expect(steady.summary).toMatch(/^Not completed/);
+    expect(input.recommendations.map(r => r.title).filter(t => t.includes('cancelled by the caller'))).toEqual([]);
+    expect(input.summary.allGatesPassed).toBe(false);
+  });
+
+  // T14. NC: against 0.49.0 the completed command in an `aborted` phase is dropped.
+  it("a completed command in an 'aborted' workflow phase is submitted", async () => {
+    okSave();
+    const wf: WorkflowResult = {
+      type: 'workflow', name: 'ship', version: '1.0.0', definitionHash: 'sha256:wf', decision: 'ABORTED',
+      decisionCategory: 'neutral', score: undefined as never, recommendations: [], durationMs: 10,
+      phases: [{
+        id: 'checks', name: 'Checks', decision: 'aborted', gateThreshold: 0, score: 90, durationMs: 10,
+        commands: [{
+          type: 'command', name: 'done-cmd', version: '1.0.0', definitionHash: 'sha256:c', agentType: 'validator',
+          decision: 'PASS', score: 90, maxScore: 100, recommendations: [], durationMs: 5,
+          metrics: { inputTokens: 10, outputTokens: 5, totalEffectiveTokens: 15, durationMs: 5, model: 'm', toolCalls: 0 },
+        }],
+      }],
+      metrics: {
+        inputTokens: 10, outputTokens: 5, totalEffectiveTokens: 15, durationMs: 10, model: 'mixed',
+        phasesExecuted: 0, phasesPassed: 0, phasesWarned: 0, phasesBlocked: 0, phasesSkipped: 0, phasesAborted: 1, commands: [],
+      },
+    } as unknown as WorkflowResult;
+    const client = new SubmissionClient(baseConfig, testLogger);
+    await client.submit(makeSubmission({ result: wf }));
+    const input = mockSave.mock.calls[0]![0] as { agents: Array<{ name: string }> };
+    expect(input.agents.map(a => a.name)).toContain('done-cmd');
+  });
+
+  // T15. NC: against 0.49.0's SubmissionClient the placeholder, first in the stage, DID become the
+  // run-level summary (observed: decision 'ABORTED') — this resolves the spec's [VERIFY].
+  it('a placeholder first in a stage never becomes the run-level analysis summary', async () => {
+    okSave();
+    const { abortedPlaceholder } = await import('../../src/utils/crashPlaceholder.js');
+    const { CancelledError } = await import('../../src/errors/index.js');
+    const pipeline = makePipelineResultWithAgents([[2]]);
+    pipeline.stages[0]!.agentResults!.unshift(abortedPlaceholder('steady', new CancelledError('x')));
+    const client = new SubmissionClient(baseConfig, testLogger);
+    await client.submit(makeSubmission({ result: pipeline, resolvedDefinition: makeResolvedDefinitionForAnalysis() }));
+    const input = mockSave.mock.calls[0]![0] as { analysisSummary?: { decision?: string }; analysisRecords?: unknown[] };
+    expect(input.analysisRecords).toHaveLength(2);
+    expect(input.analysisSummary?.decision).not.toBe('ABORTED');
+  });
+});

@@ -48,6 +48,7 @@ import type { ModelCapabilities } from '@uluops/registry-sdk';
 import type { Logger } from '@uluops/sdk-core';
 import { usableBudget, resolveRequestTimeoutMs, finitePositive, finiteNonNegative, parseExternalNumber } from '../utils/externalValue.js';
 import { firstDataCollection } from '../utils/dataCollection.js';
+import { isDeadlineSignal } from '../utils/runStop.js';
 
 /**
  * What `mapUsage` accepts — DERIVED from the AI SDK's own `LanguageModelUsage`
@@ -2228,7 +2229,11 @@ export class AIProvider {
       // it is set only by cancel() or a consumer-supplied signal, never by the SDK's own
       // timeout signal, which is a separate object.
       if (callerSignal?.aborted) {
-        const mapped = new CancelledError();
+        // A caller DEADLINE (AbortSignal.timeout) says so, so its crash record does not read
+        // "cancelled by the caller" — isRunStopAbort keeps such agents crashes, not ABORTED.
+        const mapped = new CancelledError(isDeadlineSignal(callerSignal)
+          ? "Execution stopped: the caller's deadline (abortSignal timeout) elapsed"
+          : undefined);
         mapped.cause = cause;
         return mapped;
       }

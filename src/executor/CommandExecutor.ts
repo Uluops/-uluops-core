@@ -15,7 +15,9 @@ import { DEFAULT_PASS_THRESHOLD, DEFAULT_WARN_THRESHOLD } from '../constants.js'
 import { mapCategory } from './mapCategory.js';
 import { resolveDecisionCategory, type DecisionCategory } from './classifyDecision.js';
 import { aggregateScores, type AggregationMethod } from '../utils/aggregateScores.js';
-import { crashPlaceholder, CRASH_PLACEHOLDER_VERSION } from '../utils/crashPlaceholder.js';
+import { crashPlaceholder, abortedPlaceholder, withDeadlineMark, ABORTED_DECISION } from '../utils/crashPlaceholder.js';
+import { rejectionKind } from '../utils/runStop.js';
+import { stopVerdict, crashInside, isCrashRecord, stopReached, containerMarkers } from '../utils/stopVerdict.js';
 import { worstExtractionConfidence } from '../utils/worstExtractionConfidence.js';
 
 /**
@@ -67,7 +69,9 @@ export class CommandExecutor {
    * @returns The aggregated {@link CommandResult} with per-agent scores, decision, and recommendations.
    * @throws {ExecutionError} If the resolved definition is not a command.
    * @throws {PreflightError} If a preflight check fails before agents run.
-   * @throws {CancelledError} If `overrides.abortSignal` fires while an agent is in flight.
+   * @throws {CancelledError} If `overrides.abortSignal` fires while the agent of a SINGLE-agent
+   *   command is in flight. A multi-agent command does not throw on a stop: it returns, recording
+   *   each stopped agent ABORTED (an explicit abort; a deadline signal's agents are crashes).
    */
   async execute(
     resolved: ResolvedDefinition,
@@ -130,9 +134,9 @@ export class CommandExecutor {
     let agentResults: AgentResult[];
 
     if (def.command.execution.sequential === false) {
-      agentResults = await this.executeParallel(agentRefs, executeAgent);
+      agentResults = await this.executeParallel(agentRefs, executeAgent, overrides?.abortSignal);
     } else {
-      agentResults = await this.executeSequentially(agentRefs, executeAgent);
+      agentResults = await this.executeSequentially(agentRefs, executeAgent, overrides?.abortSignal);
     }
 
     // Governs BOTH dispatch modes — see assertNotAllCrashed.
@@ -159,12 +163,15 @@ export class CommandExecutor {
    * the unhardened twin was the common path. Extracting the shape is the fix — two call
    * sites that must agree are two chances to disagree.
    */
-  private crashPlaceholder(ref: string, reason: unknown, startedAt?: number): AgentResult {
-    // Delegates to the shared factory in utils. This method's own docstring said "two call
+  private crashPlaceholder(ref: string, reason: unknown, startedAt: number | undefined, kind: 'stopped' | 'deadline' | 'crash'): AgentResult {
+    // Delegates to the shared factories in utils. This method's own docstring said "two call
     // sites that must agree are two chances to disagree" — and there were three; the third
     // had drifted on decisionCategory, priority, severity and failure code. Kept as a thin
-    // wrapper so the existing call sites read unchanged.
-    return crashPlaceholder(ref, reason, { startedAt });
+    // wrapper so the existing call sites read unchanged. An agent stopped by a stop of THIS
+    // run is not a crash (aborted-agent-recording spec §4): it gets the aborted twin.
+    if (kind === 'stopped') return abortedPlaceholder(ref, reason, { startedAt });
+    const crash = crashPlaceholder(ref, reason, { startedAt });
+    return kind === 'deadline' ? withDeadlineMark(crash) : crash;
   }
 
   /**
@@ -180,6 +187,7 @@ export class CommandExecutor {
   private async executeSequentially(
     refs: string[],
     fn: (ref: string) => Promise<AgentResult>,
+    signal: AbortSignal | undefined,
   ): Promise<AgentResult[]> {
     const results: AgentResult[] = [];
     for (const ref of refs) {
@@ -187,8 +195,9 @@ export class CommandExecutor {
       try {
         results.push(await fn(ref));
       } catch (error) {
-        results.push(this.crashPlaceholder(ref, error, startedAt));
-        // Fail-fast: stop dispatching, keep everything already billed.
+        results.push(this.crashPlaceholder(ref, error, startedAt, rejectionKind(error, signal)));
+        // Fail-fast: stop dispatching, keep everything already billed. Also right for an abort:
+        // the run is stopped, so nothing after it should be dispatched.
         break;
       }
     }
@@ -207,24 +216,24 @@ export class CommandExecutor {
   private async executeParallel(
     refs: string[],
     fn: (ref: string) => Promise<AgentResult>,
+    signal: AbortSignal | undefined,
   ): Promise<AgentResult[]> {
     const startedAt = refs.map(() => Date.now());
+    // Classified AT REJECTION TIME (crew #110 F5): after allSettled the signal is aborted for
+    // every child of a stopped run, including one that had rejected earlier for its own reasons.
+    const kinds = refs.map((): 'stopped' | 'deadline' | 'crash' => 'crash');
     const settled = await Promise.allSettled(refs.map((ref, i) => {
       startedAt[i] = Date.now();
-      return fn(ref);
+      return fn(ref).catch((error: unknown) => { kinds[i] = rejectionKind(error, signal); throw error; });
     }));
     const results: AgentResult[] = [];
-    const agentErrors: string[] = [];
 
     for (let i = 0; i < settled.length; i++) {
       const outcome = settled[i]!;
       if (outcome.status === 'fulfilled') {
         results.push(outcome.value);
       } else {
-        const ref = refs[i]!;
-        const msg = outcome.reason instanceof Error ? outcome.reason.message : String(outcome.reason);
-        agentErrors.push(`Agent ${ref} failed: ${msg}`);
-        results.push(this.crashPlaceholder(ref, outcome.reason, startedAt[i]));
+        results.push(this.crashPlaceholder(refs[i]!, outcome.reason, startedAt[i], kinds[i]!));
       }
     }
 
@@ -251,7 +260,14 @@ export class CommandExecutor {
     // of genuinely scoreless agents (explorer/generator class) returning a negative
     // decision produces, and until ship run #94 such a panel was thrown away as
     // "All agents failed" — a completed, billed run reported as a crash.
-    const crashed = results.filter(r => r.version === CRASH_PLACEHOLDER_VERSION);
+    // Aborted placeholders carry the same version but are not crashes: an all-aborted panel
+    // broke nothing and returns ABORTED (spec OD-4); one crash + the rest aborted returns FAIL
+    // with the crash's recommendation instead of overstating the crash count.
+    // A panel a stop reached (incl. a deadline, whose agents are crashes) RETURNS its stop verdict
+    // rather than throwing: the throw would carry no stop mark upward, and a parent posture would
+    // then soften a deadline into HOLD (found by the composed invariant, deadline mode).
+    if (results.some(stopReached)) return;
+    const crashed = results.filter(isCrashRecord);
     if (results.length > 0 && crashed.length === results.length) {
       const detail = crashed
         .flatMap(r => r.recommendations?.map(rec => rec.title) ?? [])
@@ -405,6 +421,14 @@ export class CommandExecutor {
       decisionCategory = failed ? 'negative' : partial ? 'conditional' : 'positive';
     }
 
+    // "Crash decides" (utils/stopVerdict.ts, Alex 2026-10-05 OD-12): once a run stop reached any
+    // child, the computed verdict above does not stand — thresholds and the lens cap judge
+    // finished work. Negative if anything inside really crashed, else ABORTED. Score unchanged.
+    const verdict = stopVerdict(results);
+    if (verdict === 'aborted') { decision = ABORTED_DECISION; decisionCategory = 'neutral'; }
+    if (verdict === 'negative') { decision = score !== undefined ? 'FAIL' : 'FAILED'; decisionCategory = 'negative'; }
+    const markers = containerMarkers(verdict, results.some(crashInside));
+
     // Aggregate metrics
     // FABRICATION-OK: summing a count of events; see the wrapAgentResult waiver.
     const totalToolCalls = results.reduce((sum, r) => sum + (r.metrics.toolCallCount ?? 0), 0);
@@ -437,6 +461,7 @@ export class CommandExecutor {
       recommendations,
       durationMs,
       metrics,
+      ...(markers ? { degradationMarkers: markers } : {}),
     };
   }
 }

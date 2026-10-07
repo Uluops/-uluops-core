@@ -6,6 +6,157 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) 
 
 ## [Unreleased]
 
+### Added
+
+- **`ABORTED_DECISION` and `isAbortedRecord(result)`**, exported from the package entry. An agent
+  stopped by a stop of its run is now recorded with decision `ABORTED` (see Changed); test for it
+  with the predicate rather than string-matching the decision. `isAbortedRecord` also checks the
+  synthesized version, so a real definition that uses `ABORTED` as its own vocabulary word (none
+  does today) is never mistaken for a stopped placeholder.
+- **`stopReached(result)`**: did a run stop (explicit or a deadline) reach this result or anything
+  inside it — including a container that kept `FAIL` because something inside crashed.
+- **`isStoppedResult(result)`** for command, stage and workflow results that core aggregated to
+  `ABORTED`. They carry their real version, so `isAbortedRecord` returns false for them. It keys on
+  a marker core stamps, not on the decision string: a model can output `decision: "ABORTED"`, and
+  that is not a stopped run.
+- **`degradationMarkers?` on `CommandResult` and `WorkflowResult`** (optional, additive). Core sets
+  `[{ code: 'execution.run-stopped', … }]` on any command, stage or workflow it writes `ABORTED`,
+  and `execution.run-stopped-partial` (severity `degraded`) on a command that kept a real failure
+  over a panel a stop cut short — so a parent that later softens that failure still sees the stop.
+  **`execution.child-crashed` is stamped on any command, stage or workflow with a real crash
+  inside, whether or not a run stop happened** — so an ordinary unstopped `FAIL` driven by a crashed
+  agent now carries a marker it did not carry in 0.49.0. It lets a parent tell a crash-derived
+  negative from a score-derived one; consumers that treat any `degradationMarkers` entry as "this
+  run was stopped" must filter by `code`.
+
+### Changed
+
+- **An agent stopped by a run stop is recorded as NOT COMPLETED, not as a crash**
+  (aborted-agent-recording spec v0.2.0, decided by Alex 2026-10-05). A user `cancel()`, a
+  provider-credit trip (0.48.0) or a caller `abortSignal` used to turn every in-flight sibling into
+  a crash placeholder: decision `FAIL`, category `negative`, and one critical "Agent X failed:
+  Execution was cancelled by the caller" recommendation each — three innocent agents reported as
+  broken beside the one that received the 402, and, once submitted, tracker issues that recurred on
+  every stopped run. Now such an agent carries decision `ABORTED`, `decisionCategory: 'neutral'`,
+  `score: null`, **no recommendation**, `summary: 'Not completed: …'`, a critical
+  `execution.run-stopped` marker and `completeness: 'failed'`. The match is exact: the rejection's
+  `code` is `CANCELLED`, the run's signal is aborted **at the moment the agent rejected**, and the
+  signal was not a deadline. A timeout, a caller deadline, the 402 originator, a max-steps
+  exhaustion, or a `CancelledError` while the run is still live keep the crash record.
+- **Semantics without signature — read this if you count failures.** No type changed (the
+  `'aborted'` phase decision was already declared; `WorkflowDecision` is an open string), but:
+  - `decision` on agent, command, stage, phase and workflow results can now be `ABORTED` /
+    `'aborted'` with `decisionCategory: 'neutral'` where it was `FAIL` / `'blocked'` / `BLOCK` /
+    `negative`. **"Crash decides"** (Alex 2026-10-05) at every level — command, stage, workflow
+    phase, workflow: once a run stop reached anything inside a container, it gives no quality
+    verdict. It is negative (`FAIL`/`FAILED`/`'blocked'`/`BLOCK`) if anything inside really
+    crashed — a caller deadline's agents count as crashes — and otherwise `ABORTED`. Score
+    thresholds, lens caps and warn postures (`on_fail`, `on_failure: warn`) do not apply to a
+    stopped container: they judge finished work. So `sum` of 90 plus a stopped agent under a 150
+    pass threshold is `ABORTED`, not `FAIL`; a lens negative beside a stopped agent is `ABORTED`; a
+    crash beside a stopped agent is `FAIL` even under `on_fail: warn`. Containers tell their
+    parents what happened inside through core-stamped `degradationMarkers` (`execution.run-stopped`,
+    `execution.run-stopped-partial`, `execution.child-crashed`, `execution.deadline`), never
+    through the decision string. A panel a stop reached returns its stop verdict instead of
+    throwing "All agents failed". Pinned by a composed test over 300 real-executor workflows ×
+    {explicit stop, deadline}: a stopped workflow and its phase are `BLOCK`/`'blocked'` exactly
+    when something crashed, otherwise `ABORTED`/`'aborted'`.
+  - **"Finished keeps verdict"** (Alex 2026-10-06) bounds that rule: it applies only to the parts a
+    stop **reached**. A workflow phase that finished before the stop keeps its own verdict, its gate
+    and warn postures included. So a stopped workflow is `BLOCK` if a stopped phase holds a real
+    crash **or** a finished phase is `'blocked'`, and otherwise `ABORTED`. A finished `'warned'`
+    phase does not make it `HOLD`. A crash inside a finished phase that `on_fail: warn` softened to
+    `'warned'` does not make it `BLOCK`. This is what a pipeline already did with finished stages,
+    so the same phases now get the same verdict whether they sit in one workflow or are split
+    across pipeline stages. Pinned by an enumerated test over 48 layouts × {explicit
+    stop, deadline} × `on_failure` {continue, warn}, checked against an oracle computed
+    independently of both executors, and by a randomized fuzzer in the suite
+    (`test/fuzz/stopVerdict.fuzz.test.ts`, 20k workflows + 4k pipelines, layout pairs, every
+    verdict derived from the rules). A phase authored with no steps, blocked by its fail-closed
+    gate, is no longer counted as a crash.
+  - **"Stopped" means a stop REACHED something, at every level** (Alex 2026-10-06). A stop that
+    fired but reached nothing — it landed after the last work had returned — leaves the verdict:
+    the workflow keeps `SHIP`/`HOLD`/`BLOCK`, and the pipeline's decision now comes from its stages
+    instead of reading `CANCELLED` (or `FAIL` under a deadline). The run-level fact is kept:
+    status stays `cancelled`/`failed`, and a deadline still makes `wait()` throw. A stop that kept
+    a later stage from starting did reach something and still reads `CANCELLED`.
+  - When an `on_failure: stop`/`abort` halt and a run stop land in the same level, the phases the
+    halt skips stay `'skipped'`; they were recorded stopped (`'aborted'`, or `'blocked'` with a
+    spurious `execution.child-crashed` under a deadline).
+- **`on_failure: warn` no longer softens a workflow phase whose every step crashed** (Alex
+  2026-10-06). Such a phase is kept `'blocked'`, so a workflow that read `HOLD` because of it now
+  reads `BLOCK` — **this changes unstopped runs too**. A warn posture softens a quality verdict and
+  that phase produced none; the same phase standing alone (a one-phase level) already threw, and a
+  pipeline stage running it already read `FAIL`, so the two layouts now agree. A phase blocked by
+  its gate is still softened to `'warned'` as before.
+  - The `'aborted'` phase decision, declared but produced by no code until now, is produced for a
+    phase a stop cut short and reads **neutral** — the workflow aggregate's dead `aborted → BLOCK`
+    reading is gone. Submission no longer drops `'aborted'` phases: their completed commands are
+    real billed work.
+  - A multi-agent command or workflow phase whose agents were **all** stopped returns `ABORTED`
+    instead of throwing `ExecutionError` / `WorkflowError("All … failed")`; one crash plus stopped
+    siblings returns the crash's `FAIL` instead of throwing with an overstated crash count.
+  - A pipeline ref stage whose single agent was stopped is a **completed** stage holding an
+    `ABORTED` record, not a `failed` stage counted in `stagesFailed`; the agent now reaches
+    submission. Calling a single-agent command directly still rejects with `CancelledError`. Under
+    a caller **deadline** the same stage is likewise **completed**, holding the crash record marked
+    `execution.deadline` (counted in `stagesFailed` through its negative record), rather than a bare
+    `failed` stage that dropped the record and the mark.
+  - A workflow whose scored work sat only in stopped phases reports `score: null`, not 0.
+  - Phases a stop kept from starting — queued behind `max_parallel`, or in later levels — are not
+    dispatched and are recorded `'aborted'` (or `'blocked'` under a caller deadline), no longer
+    `'skipped'`, with `stoppedBeforeStart: true` (new optional `PhaseResult` field). A skipped
+    phase is "no evidence" to the workflow verdict, so a stop that landed between phases used to
+    leave a stopped workflow reading **`SHIP`**. Such a phase is not counted in `phasesExecuted`,
+    adds no cost, and is never rewritten by `on_failure` (a deadline does not read as `HOLD`).
+    Phases that `skip_if` or an unmet dependency would have skipped are still `skipped`.
+  - Consumers that counted `FAIL`s or "Agent … failed" recommendations to detect an unfinished run
+    must read `PipelineResult.status` or `isAbortedRecord` instead. A credit-stopped run is
+    unchanged at the run level: still `failed`, `wait()` still throws.
+- **A caller-supplied `abortSignal` now stops a pipeline run** (spec OD-7). It used to abort
+  in-flight provider calls through the merged signal while the run stayed `running`, so later
+  stages were dispatched against an already-aborted signal and the run ended `completed`. It now
+  stops the run exactly as `handle.cancel()` does: status `cancelled`, decision `CANCELLED`, later
+  stages skipped. A `cancel()` on a cancelled run, or on any stopped run that is still unwinding
+  (caller abort, deadline, credit trip), is a no-op rather than an "already complete" rejection; on
+  a run that has settled `completed` or `failed` it still rejects. A
+  signal already aborted when the run starts stops it before the first stage. **A deadline signal
+  (`AbortSignal.timeout`, abort reason `TimeoutError`) is a timeout, not a stop** (Alex
+  2026-10-05): the run ends `failed`, `wait()` throws a `PipelineError` naming the deadline, later
+  stages are skipped as `run stopped (deadline)`, and in-flight agents are crash records whose
+  message names the deadline — the agents still running at a deadline are the slow ones, and
+  recording them as neutral non-verdicts would hide exactly those.
+  Separately, a stage holding an `ABORTED` record makes the pipeline decision `CANCELLED`, so a
+  stop that somehow did not reach the run status still cannot report `PASS`.
+- **A real stage failure beats a later user cancel at the pipeline** (Alex 2026-10-05): a run that
+  FAILED a stage, continued, and was then cancelled reads decision `FAIL` (status stays
+  `cancelled`, `wait()` still resolves). A cancel with no failure still reads `CANCELLED`.
+
+### Fixed
+
+- **A synthesized placeholder could become a pipeline run's analysis summary.** Submission took
+  the first summary any stage agent produced, placeholders included; a crashed or stopped agent
+  first in a stage won (observed in the negative control: the run summary's decision was
+  `ABORTED`). Placeholders are now skipped when collecting analysis.
+- `CommandExecutor.executeParallel` built an error-message array it never read; removed.
+- `@throws {CancelledError}` on `CommandExecutor.execute` and `WorkflowExecutor.execute` claimed a
+  stop rejects; it rejects only for a single-agent command. Corrected.
+
+### Design Notes
+
+- **Known limit: a foreign `CANCELLED` in the same microtask as a stop.** A single-agent command
+  step or ref stage whose agent rejects with `code: 'CANCELLED'` while the run signal is still live
+  is a crash, but it is classified where the step or stage rejects, after propagation. A run stop
+  landing inside that same microtask drain (e.g. `cancel()` called synchronously from a callback)
+  records it `ABORTED`. Stops that arrive as separate events (a timer, a response, user input)
+  cannot land inside that window. Tracked from the run #114 fuzz; not fixed in this release.
+
+- **A stopped run can make its stopped agents' open issues read as resolved.** The tracker reads
+  a finding absent from a run as RESOLVED (and its return as a regression); a stopped run lacks
+  its stopped agents' findings, and nothing on the wire says those agents did not run. Crash
+  records already had this gap. Tracked separately: it needs a wire signal and a tracker
+  correlation change.
+
 ## [0.49.0] - 2026-10-05
 
 ### Added

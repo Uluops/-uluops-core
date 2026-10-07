@@ -718,9 +718,14 @@ describe('WorkflowExecutor', () => {
 
       const result = await executor.execute(def, { target: '/tmp/test' }, { abortSignal: controller.signal });
 
-      // The downstream phases were never asked for — skipped, not failed.
-      expect(result.phases[1]!.decision).toBe('skipped');
+      // The downstream phases were never asked for — not failed. Since aborted-agent recording
+      // they are `aborted` (stopped, no verdict), not `skipped`: aggregate() reads skipped as
+      // "no evidence", which let a stop between levels read SHIP (crew #110 re-check H1).
+      expect(result.phases[1]!.decision).toBe('aborted');
+      // p3 depends on p2, which the stop kept from running: its dependency is unmet, so it is
+      // `skipped` (eligibility is evaluated before the stop branch — second re-check L1).
       expect(result.phases[2]!.decision).toBe('skipped');
+      expect(result.decision).toBe('ABORTED');
       // And no fabricated failure recommendations were manufactured for them.
       expect(result.phases[1]!.commands).toHaveLength(0);
       expect(result.phases[2]!.commands).toHaveLength(0);
