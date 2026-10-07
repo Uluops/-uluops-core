@@ -69,8 +69,26 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) 
     `'warned'` does not make it `BLOCK`. This is what a pipeline already did with finished stages,
     so the same phases now get the same verdict whether they sit in one workflow or are split
     across pipeline stages. Pinned by an enumerated test over 48 layouts × {explicit
-    stop, deadline}, checked against an oracle computed independently of both executors. A phase
-    authored with no steps, blocked by its fail-closed gate, is no longer counted as a crash.
+    stop, deadline} × `on_failure` {continue, warn}, checked against an oracle computed
+    independently of both executors, and by a randomized fuzzer in the suite
+    (`test/fuzz/stopVerdict.fuzz.test.ts`, 20k workflows + 4k pipelines, layout pairs, every
+    verdict derived from the rules). A phase authored with no steps, blocked by its fail-closed
+    gate, is no longer counted as a crash.
+  - **"Stopped" means a stop REACHED something, at every level** (Alex 2026-10-06). A stop that
+    fired but reached nothing — it landed after the last work had returned — leaves the verdict:
+    the workflow keeps `SHIP`/`HOLD`/`BLOCK`, and the pipeline's decision now comes from its stages
+    instead of reading `CANCELLED` (or `FAIL` under a deadline). The run-level fact is kept:
+    status stays `cancelled`/`failed`, and a deadline still makes `wait()` throw. A stop that kept
+    a later stage from starting did reach something and still reads `CANCELLED`.
+  - When an `on_failure: stop`/`abort` halt and a run stop land in the same level, the phases the
+    halt skips stay `'skipped'`; they were recorded stopped (`'aborted'`, or `'blocked'` with a
+    spurious `execution.child-crashed` under a deadline).
+- **`on_failure: warn` no longer softens a workflow phase whose every step crashed** (Alex
+  2026-10-06). Such a phase is kept `'blocked'`, so a workflow that read `HOLD` because of it now
+  reads `BLOCK` — **this changes unstopped runs too**. A warn posture softens a quality verdict and
+  that phase produced none; the same phase standing alone (a one-phase level) already threw, and a
+  pipeline stage running it already read `FAIL`, so the two layouts now agree. A phase blocked by
+  its gate is still softened to `'warned'` as before.
   - The `'aborted'` phase decision, declared but produced by no code until now, is produced for a
     phase a stop cut short and reads **neutral** — the workflow aggregate's dead `aborted → BLOCK`
     reading is gone. Submission no longer drops `'aborted'` phases: their completed commands are
@@ -125,6 +143,13 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) 
   stop rejects; it rejects only for a single-agent command. Corrected.
 
 ### Design Notes
+
+- **Known limit: a foreign `CANCELLED` in the same microtask as a stop.** A single-agent command
+  step or ref stage whose agent rejects with `code: 'CANCELLED'` while the run signal is still live
+  is a crash, but it is classified where the step or stage rejects, after propagation. A run stop
+  landing inside that same microtask drain (e.g. `cancel()` called synchronously from a callback)
+  records it `ABORTED`. Stops that arrive as separate events (a timer, a response, user input)
+  cannot land inside that window. Tracked from the run #114 fuzz; not fixed in this release.
 
 - **A stopped run can make its stopped agents' open issues read as resolved.** The tracker reads
   a finding absent from a run as RESOLVED (and its return as a regression); a stopped run lacks

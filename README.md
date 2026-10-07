@@ -883,7 +883,10 @@ phase that finished before the stop keeps its own verdict, so a stopped workflow
 stopped phase crashed or a finished phase is `'blocked'`, and otherwise `ABORTED`. A pipeline
 treats finished stages the same way: a stage that really failed before a user `cancel()` makes the
 decision `FAIL`, and a cancel with no failure reads `CANCELLED`. So the same phases get the same
-verdict as one workflow or as separate pipeline stages. Use `stopReached(result)` to ask whether a stop touched a result
+verdict as one workflow or as separate pipeline stages. A stop that fired but reached nothing
+(it landed after the last work returned) leaves the verdict alone at every level; the pipeline's
+`status` still records it. A phase whose every step crashed stays `'blocked'` even under
+`on_failure: warn`, which softens only gate verdicts. Use `stopReached(result)` to ask whether a stop touched a result
 or anything inside it. With `sum`, 90 plus a stopped agent under a 150 threshold is `ABORTED`, not `FAIL`. A panel whose agents were *all* stopped returns rather than throwing, and
 a pipeline stage whose single agent was stopped is a completed stage holding an `ABORTED` record.
 Genuine crashes — a timeout, a caller deadline, and the agent that received the 402 — keep the

@@ -20,7 +20,7 @@ import { worstExtractionConfidence } from '../utils/worstExtractionConfidence.js
 import { aggregateScores } from '../utils/aggregateScores.js';
 import { crashPlaceholder, abortedPlaceholder, isStoppedResult, toCommandRecord, withDeadlineMark, ABORTED_DECISION, CRASH_PLACEHOLDER_VERSION } from '../utils/crashPlaceholder.js';
 import { isDeadlineSignal, rejectionKind } from '../utils/runStop.js';
-import { stopVerdict, crashInside, containerMarkers } from '../utils/stopVerdict.js';
+import { stopVerdict, crashInside, containerMarkers, stopReached } from '../utils/stopVerdict.js';
 import { verifiedNothingExecuted } from '../utils/executionEvidence.js';
 import type { Logger } from '@uluops/sdk-core';
 import { registerRunTrip, unregisterRunTrip } from '../utils/runTrip.js';
@@ -1129,6 +1129,15 @@ class PipelineHandle implements IPipelineHandle {
     return { stagesExecuted, stagesPassed, stagesFailed, stagesWarned, stagesSkipped };
   }
 
+  /** A run stop reached a stage: a stage it kept from starting, or a stage holding a stopped/deadline record. */
+  private stopReachedAnyStage(): boolean {
+    const label = stopLabel(this.state);
+    return this.state.stageResults.some(s =>
+      (s.status === 'skipped' && s.skipReason === label)
+      || (s.result !== undefined && stopReached(s.result))
+      || (s.agentResults?.some(stopReached) ?? false));
+  }
+
   private computeDecision(): string {
     // Thrown-error stages have status='failed' but no result.decision.
     // resolveDecisionCategory prefers the stage result's propagated decisionCategory
@@ -1140,9 +1149,18 @@ class PipelineHandle implements IPipelineHandle {
     // A real failure wins over a user cancel (Alex 2026-10-05, OD-13), as at every level below:
     // a run that FAILED a stage and was then cancelled reads FAIL. Status stays `cancelled` and
     // wait() still resolves — only the decision word changes.
-    if (this.state.status === 'cancelled') return hasFailures ? 'FAIL' : 'CANCELLED';
-    if (this.state.status === 'failed') return 'FAIL';
-    if (hasFailures) return 'FAIL';
+    if (this.state.status === 'cancelled') {
+      if (hasFailures) return 'FAIL';
+      if (this.stopReachedAnyStage()) return 'CANCELLED';
+      // A cancel that reached no stage — it landed after the last stage's work returned — leaves
+      // the stages' own verdict (fall through). Status stays `cancelled`; only the word follows the
+      // work (F2, Alex 2026-10-06: "stopped" means a stop REACHED something, at every level).
+    } else if (this.state.status === 'failed') {
+      // `failed` written by a STOP (deadline; a credit trip always leaves its originator's crash, so
+      // hasFailures) that reached no stage keeps the stages' verdict; wait() still throws. Any other
+      // `failed` — a gate abort, a thrown execution — is FAIL.
+      if (hasFailures || !stopLabels.has(this.state) || this.stopReachedAnyStage()) return 'FAIL';
+    } else if (hasFailures) return 'FAIL';
 
     // A stage holding an aborted record means the run was stopped, whatever the status says.
     // Defence in depth beside the caller-signal listener in start() (OD-7): without it, a run whose

@@ -132,16 +132,18 @@ export class WorkflowExecutor {
         // stop landing between levels vanished from the verdict and a stopped workflow read SHIP.
         // Eligibility first (second re-check L1): a phase skip_if or an unmet dependency would have
         // skipped is still `skipped`; only phases that WOULD have run are recorded stopped.
+        // An `on_failure` halt is checked FIRST: the phases it would have skipped would not have run
+        // whatever the stop did, so they stay `skipped` — eligibility first again (run #113+ fuzz F3).
+        if (stopped || aborted) {
+          this.skipLevel(level, phaseResults, completedPhases);
+          continue;
+        }
         if (control?.abortSignal?.aborted) {
           for (const phase of this.filterEligible(level, input, phaseResults, completedPhases)) {
             const p = this.createStoppedPhase(phase, control.abortSignal);
             phaseResults.push(p);
             completedPhases.set(phase.id, p);
           }
-          continue;
-        }
-        if (stopped || aborted) {
-          this.skipLevel(level, phaseResults, completedPhases);
           continue;
         }
 
@@ -335,7 +337,11 @@ export class WorkflowExecutor {
             behavior = 'abort';
             break;
           case 'warn':
-            phaseResult.decision = 'warned';
+            // Not a phase whose every step crashed (createBlockedPhase sets `error`): a warn posture
+            // softens a quality verdict, and that phase produced none. Kept `blocked`, so it reads the
+            // same as when it stands alone (a one-phase level throws → a pipeline stage FAILs) — F1,
+            // Alex 2026-10-06.
+            if (phaseResult.error === undefined) phaseResult.decision = 'warned';
             break;
           case 'continue':
           default:

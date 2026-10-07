@@ -862,12 +862,12 @@ describe('OD-14: finished keeps verdict, layout-invariant', () => {
   function phase(id: string, steps: string[], on_fail: string, extra: Record<string, unknown> = {}) {
     return { id, name: id.toUpperCase(), commands: steps, parallel: true, gate: { threshold: 50, aggregate: 'average', on_fail }, ...extra };
   }
-  function wfOf(name: string, phases: unknown[]): ResolvedDefinition {
+  function wfOf(name: string, phases: unknown[], on_failure = 'continue'): ResolvedDefinition {
     const d = workflowDef([], true);
     d.name = name;
     const w = (d.definition as unknown as { workflow: { interface: { name: string }; orchestration: Record<string, unknown> } }).workflow;
     w.interface.name = name;
-    w.orchestration = { ...w.orchestration, on_failure: 'continue', phases };
+    w.orchestration = { ...w.orchestration, on_failure, phases };
     return d;
   }
   /** Step names are `<phase>-<i>-<behaviour>`; the trigger fires the stop on the shared controller. */
@@ -892,33 +892,33 @@ describe('OD-14: finished keeps verdict, layout-invariant', () => {
   }
   const cat = (decision: string) => ({ FAIL: 'negative', BLOCK: 'negative', CANCELLED: 'neutral', ABORTED: 'neutral', WARN: 'conditional', HOLD: 'conditional', PASS: 'positive', SHIP: 'positive' } as Record<string, string>)[decision] ?? `?${decision}`;
 
-  async function aloneCategory(a: S[], on_fail: string): Promise<string> {
+  async function aloneCategory(a: S[], on_fail: string, on_failure = 'continue'): Promise<string> {
     const r = await new WorkflowExecutor(stepExec(undefined, 'explicit'), makeRegistry(), undefined, noopLogger)
-      .execute(wfOf('a', [phase('a', stepsFor('a', a), on_fail)]), { target: '/tmp' })
+      .execute(wfOf('a', [phase('a', stepsFor('a', a), on_fail)], on_failure), { target: '/tmp' })
       .catch(() => ({ decision: 'BLOCK' }));
     return cat(r.decision);
   }
   // Same level under max_parallel 1, not depends_on: a blocked A would make B dependencies-not-met
   // (skipped), so the stop would never happen and the case would test nothing.
-  async function oneWorkflowResult(a: S[], b: S[], on_fail: string, mode: Mode) {
+  async function oneWorkflowResult(a: S[], b: S[], on_fail: string, mode: Mode, on_failure = 'continue') {
     const c = new AbortController();
-    const d = wfOf('ab', [phase('a', stepsFor('a', a), on_fail), phase('b', stepsFor('b', b), on_fail)]);
+    const d = wfOf('ab', [phase('a', stepsFor('a', a), on_fail), phase('b', stepsFor('b', b), on_fail)], on_failure);
     (d.definition as unknown as { workflow: { orchestration: Record<string, unknown> } }).workflow.orchestration.max_parallel = 1;
     return new WorkflowExecutor(stepExec(c, mode), makeRegistry(), undefined, noopLogger)
       .execute(d, { target: '/tmp' }, { abortSignal: c.signal })
       .catch(() => ({ decision: 'BLOCK', phases: undefined }));
   }
-  async function oneWorkflow(a: S[], b: S[], on_fail: string, mode: Mode): Promise<string> {
-    const r = await oneWorkflowResult(a, b, on_fail, mode);
+  async function oneWorkflow(a: S[], b: S[], on_fail: string, mode: Mode, on_failure = 'continue'): Promise<string> {
+    const r = await oneWorkflowResult(a, b, on_fail, mode, on_failure);
     // Every case must actually reach B with the stop — otherwise it is not an OD-14 case.
     if (r.phases) expect(r.phases.find(p => p.id === 'b')!.decision, 'B reached by the stop').toMatch(/^(aborted|blocked)$/);
     return cat(r.decision);
   }
-  async function twoStages(a: S[], b: S[], on_fail: string, mode: Mode): Promise<string> {
+  async function twoStages(a: S[], b: S[], on_fail: string, mode: Mode, on_failure = 'continue'): Promise<string> {
     const c = new AbortController();
     const registry = makeRegistry({
-      wa: wfOf('wa', [phase('a', stepsFor('a', a), on_fail)]),
-      wb: wfOf('wb', [phase('b', stepsFor('b', b), on_fail)]),
+      wa: wfOf('wa', [phase('a', stepsFor('a', a), on_fail)], on_failure),
+      wb: wfOf('wb', [phase('b', stepsFor('b', b), on_fail)], on_failure),
     });
     const cmdExec = stepExec(c, mode);
     const exec = new PipelineExecutor(new WorkflowExecutor(cmdExec, registry, undefined, noopLogger), cmdExec, {} as AgentExecutor, registry, noopLogger);
@@ -934,17 +934,18 @@ describe('OD-14: finished keeps verdict, layout-invariant', () => {
   }
 
   for (const mode of ['explicit', 'deadline'] as const)
-  it(`one workflow and two pipeline stages agree with the oracle (${mode} stop)`, async () => {
+  it(`one workflow and two pipeline stages agree with the oracle across 96 layouts (${mode} stop)`, async () => {
     let checked = 0;
-    for (const a of aSets) for (const b of bSets) for (const on_fail of ['block', 'warn']) {
+    // on_failure: warn included (fuzz F1): a phase whose every step crashed is not softened by it.
+    for (const a of aSets) for (const b of bSets) for (const on_fail of ['block', 'warn']) for (const on_failure of ['continue', 'warn']) {
       const bCrashed = mode === 'deadline' || b.includes('boom');
-      const expected = bCrashed || (await aloneCategory(a, on_fail)) === 'negative' ? 'negative' : 'neutral';
-      const label = `${mode}: A=${a} B=${b} on_fail=${on_fail}`;
-      expect(await oneWorkflow(a, b, on_fail, mode), `workflow ${label}`).toBe(expected);
-      expect(await twoStages(a, b, on_fail, mode), `pipeline ${label}`).toBe(expected);
+      const expected = bCrashed || (await aloneCategory(a, on_fail, on_failure)) === 'negative' ? 'negative' : 'neutral';
+      const label = `${mode}: A=${a} B=${b} on_fail=${on_fail} on_failure=${on_failure}`;
+      expect(await oneWorkflow(a, b, on_fail, mode, on_failure), `workflow ${label}`).toBe(expected);
+      expect(await twoStages(a, b, on_fail, mode, on_failure), `pipeline ${label}`).toBe(expected);
       checked++;
     }
-    expect(checked).toBe(48);
+    expect(checked).toBe(96);
   });
 
   // The two cases 254af8b got wrong, pinned by name. NC: against 254af8b the first reads ABORTED
@@ -1004,5 +1005,97 @@ describe('run #113 mechanicals', () => {
     expect(stage.status).toBe('completed');
     expect(stage.agentResults!.map(a => [a.decision, a.version])).toEqual([['FAIL', CRASH_PLACEHOLDER_VERSION]]);
     expect(stage.result!.degradationMarkers!.map(m => m.code)).toContain('execution.deadline');
+  });
+});
+
+describe('fuzz #114 folds (F1, F2, F3; Alex 2026-10-06)', () => {
+  function wf(phases: unknown[], on_failure: string): ResolvedDefinition {
+    const d = workflowDef([], true);
+    const w = (d.definition as unknown as { workflow: { orchestration: Record<string, unknown> } }).workflow;
+    w.orchestration = { ...w.orchestration, on_failure, phases };
+    return d;
+  }
+  const gate = (on_fail = 'block') => ({ threshold: 50, aggregate: 'average', on_fail });
+  /** `fire` aborts the run signal and then RETURNS normally — the stop reaches nothing. */
+  function stepExec(c: AbortController | undefined, deadline = false) {
+    return {
+      execute: vi.fn().mockImplementation(async (r: ResolvedDefinition) => {
+        if (r.name.startsWith('boom')) throw new Error('boom');
+        if (r.name.startsWith('low')) return makeCommandResult({ name: r.name, score: 10, decision: 'PASS', decisionCategory: 'positive' });
+        if (r.name.startsWith('fire')) c?.abort(deadline ? new DOMException('deadline', 'TimeoutError') : undefined);
+        return makeCommandResult({ name: r.name, score: 90 });
+      }),
+    } as unknown as CommandExecutor;
+  }
+
+  // F1. NC: against 92a6d6c this reads HOLD — on_failure: warn rewrote a phase that produced no
+  // verdict (every step crashed) to `warned`; the same phase as its own workflow throws.
+  it('a phase whose every step crashed stays blocked under on_failure: warn (unstopped)', async () => {
+    const r = await new WorkflowExecutor(stepExec(undefined), makeRegistry(), undefined, noopLogger)
+      .execute(wf([{ id: 'a', name: 'A', commands: ['boom'], parallel: true, gate: gate() }, { id: 'p', name: 'P', commands: ['ok'], parallel: true, gate: gate() }], 'warn'), { target: '/tmp' });
+    expect(r.phases.find(p => p.id === 'a')!.decision).toBe('blocked');
+    expect(r.decision).toBe('BLOCK');
+  });
+  // Guard: a GATE-blocked phase is still softened — the exemption is for crashed-outright phases only.
+  it('control: a gate-blocked phase is still softened to warned under on_failure: warn', async () => {
+    const r = await new WorkflowExecutor(stepExec(undefined), makeRegistry(), undefined, noopLogger)
+      .execute(wf([{ id: 'a', name: 'A', commands: ['low'], parallel: true, gate: gate() }, { id: 'p', name: 'P', commands: ['ok'], parallel: true, gate: gate() }], 'warn'), { target: '/tmp' });
+    expect(r.phases.find(p => p.id === 'a')!.decision).toBe('warned');
+    expect(r.decision).toBe('HOLD');
+  });
+
+  // F2. NC: against 92a6d6c the pipeline reads CANCELLED / FAIL while the workflow reads SHIP.
+  for (const deadline of [false, true])
+  it(`a stop that reached nothing keeps the verdict at both levels (${deadline ? 'deadline' : 'explicit'})`, async () => {
+    const c1 = new AbortController();
+    const w = await new WorkflowExecutor(stepExec(c1, deadline), makeRegistry(), undefined, noopLogger)
+      .execute(wf([{ id: 'a', name: 'A', commands: ['fire'], parallel: true, gate: gate() }], 'continue'), { target: '/tmp' }, { abortSignal: c1.signal });
+    expect(w.decision).toBe('SHIP');
+
+    const c2 = new AbortController();
+    const registry = makeRegistry({ wa: wf([{ id: 'a', name: 'A', commands: ['fire'], parallel: true, gate: gate() }], 'continue') });
+    const cmdExec = stepExec(c2, deadline);
+    const exec = new PipelineExecutor(new WorkflowExecutor(cmdExec, registry, undefined, noopLogger), cmdExec, {} as AgentExecutor, registry, noopLogger);
+    const d = inlinePipeline([]);
+    (d.definition as unknown as PipelineDefinition).pipeline.stages = [{ id: 's1', name: 'S1', type: 'workflow', ref: 'wa@1' }] as never;
+    const { resolved, thrown } = await settle((await exec.start(d, { target: '/tmp' }, { abortSignal: c2.signal })).wait());
+    const result = (resolved ?? thrown!.context.partialResult) as { decision: string; status: string };
+    expect(result.decision).toBe('PASS');
+    // The run-level fact is kept: the status records the stop, and a deadline still throws.
+    expect(result.status).toBe(deadline ? 'failed' : 'cancelled');
+    expect(thrown !== undefined).toBe(deadline);
+  });
+  // Guard: a stop that kept a later stage from starting DID reach something.
+  it('control: a stop that skipped a later stage still reads CANCELLED', async () => {
+    const c = new AbortController();
+    const registry = makeRegistry({ wa: wf([{ id: 'a', name: 'A', commands: ['fire'], parallel: true, gate: gate() }], 'continue') });
+    const cmdExec = stepExec(c);
+    const exec = new PipelineExecutor(new WorkflowExecutor(cmdExec, registry, undefined, noopLogger), cmdExec, {} as AgentExecutor, registry, noopLogger);
+    const d = inlinePipeline([]);
+    (d.definition as unknown as PipelineDefinition).pipeline.stages = [
+      { id: 's1', name: 'S1', type: 'workflow', ref: 'wa@1' },
+      { id: 's2', name: 'S2', type: 'workflow', ref: 'wa@1' },
+    ] as never;
+    const result = await (await exec.start(d, { target: '/tmp' }, { abortSignal: c.signal })).wait();
+    expect(result.stages[1]!.status).toBe('skipped');
+    expect(result.decision).toBe('CANCELLED');
+  });
+
+  // F3. NC: against 92a6d6c C is recorded aborted/stoppedBeforeStart (deadline: blocked + a
+  // child-crashed marker) for a phase the on_failure: stop halt would have skipped anyway.
+  for (const deadline of [false, true])
+  it(`an on_failure halt beside a stop in the same level leaves later phases skipped (${deadline ? 'deadline' : 'explicit'})`, async () => {
+    const c = new AbortController();
+    const r = await new WorkflowExecutor(stepExec(c, deadline), makeRegistry(), undefined, noopLogger)
+      .execute(wf([
+        { id: 'a', name: 'A', commands: ['low'], parallel: true, gate: gate() },
+        { id: 'b', name: 'B', commands: ['fire'], parallel: true, gate: gate() },
+        { id: 'c', name: 'C', commands: ['ok'], parallel: true, gate: gate(), depends_on: ['b'] },
+      ], 'stop'), { target: '/tmp' }, { abortSignal: c.signal });
+    const C = r.phases.find(p => p.id === 'c')!;
+    expect(C.decision).toBe('skipped');
+    expect(C.stoppedBeforeStart).toBeUndefined();
+    expect(r.degradationMarkers?.map(m => m.code) ?? []).not.toContain('execution.child-crashed');
+    expect(r.decision).toBe('BLOCK');
   });
 });
