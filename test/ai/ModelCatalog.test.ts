@@ -857,3 +857,34 @@ describe('sanitizeModelCost', () => {
     }
   });
 });
+
+/**
+ * T4 (thinking-capability-restore spec §10): the `sonnet` alias — core's default route — resolved
+ * through the REAL registry-sdk 0.61.0 client (schema + normalizer) against a payload captured from
+ * the live registry, with `requiredCapabilities: ['reasoning']`.
+ *
+ * The hand-built `{ extendedThinking: true }` cases above pass whatever the SDK does to the wire; this
+ * one does not. Against registry-sdk ≤ 0.60.0 (which stripped `reasoning`) it throws CapabilityError —
+ * shown in the SDK repo's own negative control (registry-sdk test/models-reasoning.test.ts).
+ */
+describe('T4: capability through the real SDK and a live alias payload', () => {
+  it("resolves 'sonnet' with requiredCapabilities ['reasoning'] and the deprecated alias name", async () => {
+    const { readFileSync } = await import('node:fs');
+    const payload = readFileSync(new URL('../fixtures/wire/models-resolve.json', import.meta.url), 'utf8');
+    const fetchStub = vi.fn(async () => new Response(payload, { status: 200, headers: { 'content-type': 'application/json' } }));
+    vi.stubGlobal('fetch', fetchStub);
+    try {
+      const { RegistryClient } = await vi.importActual<typeof import('@uluops/registry-sdk')>('@uluops/registry-sdk');
+      const catalog = new ModelCatalog(new RegistryClient({ baseUrl: 'https://registry.example.com/api/v1/registry' }) as unknown as RegistrySdk);
+      const resolved = await catalog.resolve('sonnet', { requiredCapabilities: ['reasoning'] });
+      expect(fetchStub).toHaveBeenCalled();
+      expect(resolved.capabilities.reasoning).toBe(true);
+      expect(resolved.capabilities.extendedThinking).toBe(true);
+      expect(resolved.maxOutputTokens).toBeGreaterThan(0);
+      // Control: the same path refuses a capability the payload does not carry.
+      await expect(catalog.resolve('sonnet', { requiredCapabilities: ['nonexistent' as never] })).rejects.toThrow(CapabilityError);
+    } finally {
+      vi.unstubAllGlobals();
+    }
+  });
+});

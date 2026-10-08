@@ -166,3 +166,33 @@ describe('AgentExecutor — run conditions and the thinking decision', () => {
     expect(thinkingOutcomeOf(caught)?.runConditions).toMatchObject({ thinkingApplied: true, thinkingObserved: 'yes' });
   });
 });
+
+describe("T10 (0.51.0 form): the agent's own preference is not read; 'declared' is not a mode yet", () => {
+  let target: string;
+  beforeEach(async () => {
+    target = await fs.mkdtemp(path.join(os.tmpdir(), 'thinking-t10-'));
+    await fs.writeFile(path.join(target, 'index.ts'), 'export const x = 1;\n');
+  });
+  afterEach(async () => { await fs.rm(target, { recursive: true, force: true }); });
+
+  it('defaults.extended_thinking: true in the definition changes nothing under on or off (OD-18)', async () => {
+    const declaring = {
+      ...def,
+      yaml: 'agent:\n  defaults:\n    extended_thinking: true\n',
+      runtime: { ...(def.runtime as AgentRuntime), defaults: { model: 'or', timeout: 30_000, extended_thinking: true } as never },
+    } as ResolvedDefinition;
+    for (const [mode, expected] of [['off', false], ['on', true]] as const) {
+      const p = ai(async () => passing);
+      const cfg = { ...baseConfig, ai: { ...baseConfig.ai, extendedThinkingMode: mode, extendedThinkingSource: 'config' as const } };
+      await new AgentExecutor(cfg, p, logger()).execute(declaring, { target });
+      expect(sentThinking(p)).toBe(expected);
+    }
+  });
+
+  it("'declared' is malformed in 0.51.0: off, with the layer reported for a warning", async () => {
+    const { resolveAIConfig } = await import('../../src/client/UluOpsClient.js');
+    const r = resolveAIConfig({ providers: {}, extendedThinking: 'declared' as never }, {});
+    expect(r.extendedThinkingMode).toBe('off');
+    expect(r.extendedThinkingMalformed).toEqual({ layer: 'config', value: 'declared' });
+  });
+});
