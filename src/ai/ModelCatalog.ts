@@ -1,3 +1,4 @@
+import { finitePositive } from '../utils/externalValue.js';
 import type {
   RegistryClient as RegistrySdk,
   Model,
@@ -94,6 +95,13 @@ export interface ResolvedModel {
   contextWindow?: number;
 
   /**
+   * Model's maximum output tokens (registry `limits.output`). Undefined when unknown — a null/0
+   * limit, an unregistered model, or the offline fallback; never invented. The thinking caps use it
+   * so a raised `max_tokens` stays inside what the model can emit (spec §6.1, §6.4).
+   */
+  maxOutputTokens?: number;
+
+  /**
    * Pricing (USD per MILLION tokens) from the registry. Undefined on every
    * degraded resolution path — unregistered model, registry-outage offline
    * fallback, alias without an embedded model — and for registry rows that
@@ -128,6 +136,10 @@ const DEFAULT_CAPABILITIES: ModelCapabilities = {
   vision: false,
   tools: true,
   streaming: true,
+  // Both names: the registry serves `reasoning`; `extendedThinking` is its deprecated alias
+  // (registry-sdk 0.61.0 fills each from the other). An unregistered model cannot think as far as
+  // core knows — canThink() reads either name, then the tier.
+  reasoning: false,
   extendedThinking: false,
   // Default-deny is intentional, not a placeholder: with no registry data we can't
   // know a model supports JSON-schema structured output, and assuming true produces
@@ -334,6 +346,7 @@ export class ModelCatalog {
       tier: model.tier,
       capabilities: model.capabilities,
       contextWindow: model.limits?.context || undefined,
+      maxOutputTokens: finitePositive(model.limits?.output),
       cost: sanitizeModelCost(model.cost),
       registered: true,
       resolvedFrom: providerModelId,
@@ -378,6 +391,7 @@ export class ModelCatalog {
       tier: model.tier,
       capabilities: model.capabilities,
       contextWindow: model.limits?.context || undefined,
+      maxOutputTokens: finitePositive(model.limits?.output),
       cost: sanitizeModelCost(model.cost),
       registered: true,
       resolvedFrom: tier,
@@ -487,6 +501,7 @@ export class ModelCatalog {
       tier: model?.tier ?? 'standard',
       capabilities: model?.capabilities ?? DEFAULT_CAPABILITIES,
       contextWindow: model?.limits?.context || undefined,
+      maxOutputTokens: finitePositive(model?.limits?.output),
       cost: sanitizeModelCost(model?.cost),
       // The alias resolved, but the response may carry no model object; only
       // the object's presence proves a catalog row exists.

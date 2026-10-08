@@ -235,7 +235,7 @@ export class ModelNotFoundError extends UluOpsError {
 }
 
 /**
- * Thrown when a resolved model lacks a required capability (e.g. tools, vision, extendedThinking)
+ * Thrown when a resolved model lacks a required capability (e.g. tools, vision, reasoning)
  * before a run, or — since 0.48.0 — when no provider endpoint can serve the request as sent
  * (OpenRouter's no-endpoint 404), mid-run. Carries no `statusCode`: a handler keyed on
  * `SdkApiError` status 404 does not see the routing case.

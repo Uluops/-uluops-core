@@ -91,6 +91,7 @@ This still requires an AI provider key but no UluOps API key or network access t
   - [Convenience Methods](#convenience-methods)
   - [Discovery](#discovery)
   - [Result Tracking](#result-tracking)
+  - [Extended Thinking](#extended-thinking)
   - [Integrity Verification](#integrity-verification)
 - [Architecture](#architecture)
 - [Execution Hierarchy](#execution-hierarchy)
@@ -224,12 +225,11 @@ const result = await client.runAgent('code-validator', './src', {
   (programmatic callers of `AIProvider.generate()` also get `modelRegistered: false` on the result).
 - **Routing guards.** Core always sends `provider.require_parameters: true` (route only to
   endpoints that support every parameter sent, the only capability guard for a routed model) and
-  `usage.include: true`; caller options cannot turn either off. A model the catalog reports as
-  `extendedThinking` gets `reasoning.max_tokens` from `defaultThinkingBudget`, as direct Anthropic
-  models get thinking. **Known gap, every provider:** the registry reports thinking as
-  `capabilities.reasoning`, which the registry SDK does not carry, so no registered model resolves
-  `extendedThinking` today and the auto-thinking default does not fire on any route. Pass
-  `reasoning` (or the direct provider's thinking option) explicitly to get it.
+  `usage.include: true`; caller options cannot turn either off. Extended thinking is opt-in (see
+  [Extended Thinking](#extended-thinking)): when it is on, a capable model gets
+  `reasoning.max_tokens` from `defaultThinkingBudget`, and `anthropic/…` models also get a raised
+  `max_tokens` and the interleaved-thinking beta. Adding `reasoning` narrows the endpoints
+  `require_parameters` admits; a no-endpoint error names it and the switch that turns it off.
 - **Shell.** OpenRouter has no provider-defined shell tool, so routed agents that request `bash`
   get a schema-fallback `bash` tool. The `allowedTools` gate applies exactly as for Anthropic's
   native tool (`bash` stays off unless you allow it), and runs offered it carry an info marker,
@@ -669,6 +669,59 @@ estimate against the bill. Reconcile against an invoice only when `costBasis` is
 - **SDK retries are invisible.** A request the AI SDK retried is billed but never reported to
   core, so both figures can understate a run that hit retries.
 
+### Extended Thinking
+
+**Off by default; opt in per client or per run** (core 0.51.0+). Thinking is billed as output on
+every step of a tool loop, and scores measured with it are not comparable with scores measured
+without it, so nothing turns it on for you.
+
+| Lever | Values | Notes |
+|---|---|---|
+| `runAgent(name, target, { extendedThinking })` | `true` / `false` | Wins over everything below. `runAgent` only — commands, workflows and pipelines take the client setting. Any non-boolean (the string `"false"` included) is off with a warning. |
+| `ai.extendedThinking` | `'on'` / `'off'` | Every run this client makes. Booleans are malformed here (off + warning). |
+| `ULUOPS_EXTENDED_THINKING` | `on` / `off` | Same, from the environment; the config field wins. A value in a `.env` file the CLI loaded is sticky across runs — the CLI warns when that is where it came from. |
+
+A malformed value at any layer is **off at that layer** and does not fall through. A
+provider-native option you pass yourself (`providerOptions.openai.reasoningEffort`,
+`google.thinkingConfig`, `openrouter.reasoning`, `anthropic.thinking`) always wins and is not capped.
+
+What "on" sends, per provider, on a model that can think (`capabilities.reasoning`, or the
+`reasoning` tier):
+
+| Provider | Sent | Caps |
+|---|---|---|
+| OpenAI | `reasoningEffort: 'medium'` | — (effort, not budget; `defaultThinkingBudget` is ignored) |
+| Google | `thinkingConfig.thinkingBudget` | Capped at half of `maxTokens`: Gemini counts thinking inside `maxOutputTokens`, and a budget at the cap leaves almost no answer. |
+| OpenRouter | `reasoning.max_tokens` | Kept strictly below the `max_tokens` sent — OpenRouter does not reject a budget at or above it, it silently raises the cap and bills past it. On `anthropic/…` models `max_tokens` is raised by the budget (up to the model's output limit) and the interleaved-thinking beta is sent, so every tool step thinks, not only the first. |
+| Anthropic (direct) | nothing in 0.51.0 | Mapped in 0.52.0, with the structured-output degrade it needs (Anthropic rejects thinking with forced tool use). Until then a run records "not applied: no-mapping". |
+| Others | nothing | Recorded "not applied: no-mapping". |
+
+Below a 1024-token budget after capping, nothing is sent and the run records `'invalid-budget'`.
+
+**"Off" means the provider default, not "no thinking".** Off sends nothing — and gpt-5.x, Gemini
+2.5, DeepSeek/xAI reasoners and the always-adaptive Claude models (Sonnet 5.5, Opus 5.5, Fable 5)
+reason anyway. Those runs record `offMeans: 'provider-default'`.
+
+**Every agent result records what happened**, on `result.runConditions`: what was requested, from
+which layer, whether a thinking option was actually sent (`thinkingApplied`) and why not, the budget
+sent, whether the interleaved beta was sent, and whether thinking tokens were observed
+(`thinkingObserved`). Crash and stopped-run placeholders carry it too, from the error
+(`thinkingOutcomeOf(error)`). It is in-process only: the tracker does not receive it yet.
+
+The applied-keyed notice: a run that requested thinking logs one line — "on" when it was sent, a
+warning naming the reason when it was not, and a warning when the environment turned it on.
+
+**Not covered by the switch: the agent's model choice.** An agent definition's `defaults.model`
+outranks the client's model choice, so a definition naming a model that reasons by default is billed
+reasoning even with thinking off. The counter is `ai.modelOverride`. Thinking cost appears in
+`costUsd` like any output (see [Cost](#cost)); reasoning tokens are in `reasoning_tokens`
+(OpenAI, OpenRouter, Anthropic) or `thinking_tokens` (Google).
+
+**Release order.** `@uluops/registry-sdk` 0.61.0 started surfacing the `reasoning` capability that
+the registry always served. Core 0.50.0 and older auto-enable thinking wherever that capability is
+set; a consumer that injects registry-sdk 0.61.0 into an older core's public `ModelCatalog` turns
+that on. Upgrade core and the SDK together (core pins the SDK exactly, so a plain install is safe).
+
 ### Integrity Verification
 
 Pin a definition's expected hashes so execution is **refused** if the resolved
@@ -905,7 +958,7 @@ import { ModelCatalog } from '@uluops/core';
 
 const catalog = new ModelCatalog(registrySdk);
 const resolved = await catalog.resolve('sonnet', {
-  requiredCapabilities: ['tools', 'extendedThinking'],
+  requiredCapabilities: ['tools', 'reasoning'], // 'extendedThinking' is accepted as an alias
 });
 // → { provider: 'anthropic', modelId: 'claude-sonnet-4-...', providerModelId: 'claude-sonnet-4-...',
 //      tier: 'premium', capabilities: {...}, registered: true, resolvedFrom: 'sonnet' }
@@ -1005,6 +1058,7 @@ const client = new UluOpsClient({
     defaultProvider: 'anthropic',      // Default AI provider
     modelOverride: 'sonnet',           // Override model for all executions
     additionalProviders: ['groq', 'xai'], // Enable extra @ai-sdk/* providers (must be installed)
+    extendedThinking: 'off',           // 'on' | 'off' (default 'off'), or ULUOPS_EXTENDED_THINKING — see Extended Thinking
   },
 
   // Service URLs
@@ -1017,7 +1071,8 @@ const client = new UluOpsClient({
   timeout: 300000,                    // Request timeout in ms
   defaultProject: 'my-project',       // Default project for result submission
   debug: false,                       // Detailed execution logging (or ULUOPS_DEBUG)
-  defaultThinkingBudget: 10000,       // Extended thinking budget (Anthropic + Google models)
+  defaultThinkingBudget: 10000,       // Thinking budget when ai.extendedThinking is on (Google, OpenRouter;
+                                      // direct Anthropic from 0.52.0). Capped per provider; see Extended Thinking
   contextBudget: 200000,              // Optional cap on the context budget (forces wrap-up at 80%, Anthropic eviction at 50%).
                                       // ⚠ The 80% wrap-up brake does NOT apply to Anthropic structured-output runs — see below.
                                       // When unset, the engine uses the resolved model's real context window
@@ -1109,6 +1164,7 @@ you pass to `runAgent()` / `resolve()`.
 | `ULUOPS_DISABLE_STAGE_FORWARDING` | Disable upstream stage-result forwarding engine-wide (`1` or `true`) | `false` |
 | `ULUOPS_MAX_CONCURRENCY` | Ceiling on concurrent in-flight LLM calls, per `UluOpsClient` instance | `8` |
 | `ULUOPS_DEBUG` | Enable detailed execution logging | `false` |
+| `ULUOPS_EXTENDED_THINKING` | Extended thinking for every run: `on` or `off`. `ai.extendedThinking` wins over it; anything else is `off` with a warning | `off` |
 
 ## TypeScript Support
 

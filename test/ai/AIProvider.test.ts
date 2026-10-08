@@ -1306,7 +1306,7 @@ describe('AIProvider', () => {
       expect(result.usage.reasoning_tokens).toBe(75);
     });
 
-    it('auto-sets reasoningEffort for reasoning-capable OpenAI models', async () => {
+    it('sets reasoningEffort only when thinking is requested (opt-in); NC: not requested sends none', async () => {
       const { generateText } = await import('ai');
       const mockGenerateText = vi.mocked(generateText);
 
@@ -1326,14 +1326,20 @@ describe('AIProvider', () => {
         })),
       });
       const provider = new AIProvider(dualConfig, catalog, noopLogger);
-      await provider.generate({
-        model: 'o3',
-        system: 'test',
-        prompt: 'test',
-      });
+      const on = await provider.generate({ model: 'o3', system: 'test', prompt: 'test', extendedThinking: true });
 
       const call = mockGenerateText.mock.calls[0]?.[0] as any;
       expect(call.providerOptions.openai.reasoningEffort).toBe('medium');
+      expect(on.thinking).toEqual({ applied: true });
+
+      // NC: before 0.51.0 a capable model got 'medium' with nothing requested.
+      mockGenerateText.mockResolvedValueOnce({
+        text: 'done', usage: { inputTokens: 50, outputTokens: 25 }, steps: [], finishReason: 'stop', providerMetadata: {},
+      } as never);
+      const off = await provider.generate({ model: 'o3', system: 'test', prompt: 'test' });
+      const offCall = mockGenerateText.mock.calls[1]?.[0] as any;
+      expect(offCall.providerOptions?.openai?.reasoningEffort).toBeUndefined();
+      expect(off.thinking).toEqual({ applied: false, notAppliedReason: 'not-requested' });
     });
 
     it('creates OpenAI shell tool via createProviderShellTool', () => {
@@ -1484,7 +1490,7 @@ describe('AIProvider', () => {
       expect(result.toolCallCount).toBe(1);
     });
 
-    it('auto-enables thinkingConfig for extendedThinking models', async () => {
+    it('sets thinkingConfig only when requested, capped at half of maxTokens; NC: not requested sends none', async () => {
       const { generateText } = await import('ai');
       const mockGenerateText = vi.mocked(generateText);
 
@@ -1502,16 +1508,19 @@ describe('AIProvider', () => {
         })),
       });
       const provider = new AIProvider(googleConfig, catalog, noopLogger);
-      await provider.generate({
-        model: 'gemini-2.5-flash',
-        system: 'test',
-        prompt: 'test',
-      });
+      const on = await provider.generate({ model: 'gemini-2.5-flash', system: 'test', prompt: 'test', extendedThinking: true });
 
       const call = mockGenerateText.mock.calls[0]?.[0] as any;
-      expect(call.providerOptions.google.thinkingConfig).toEqual({
-        thinkingBudget: 10_000,
-      });
+      // Default budget 10000 against the default maxTokens 16384: capped to 8192 (spec §6.2, probe P5).
+      expect(call.providerOptions.google.thinkingConfig).toEqual({ thinkingBudget: 8192 });
+      expect(on.thinking).toEqual({ applied: true, budget: 8192 });
+
+      mockGenerateText.mockResolvedValueOnce({
+        text: 'done', usage: { inputTokens: 50, outputTokens: 25 }, steps: [], finishReason: 'stop', providerMetadata: {},
+      } as never);
+      await provider.generate({ model: 'gemini-2.5-flash', system: 'test', prompt: 'test' });
+      const offCall = mockGenerateText.mock.calls[1]?.[0] as any;
+      expect(offCall.providerOptions?.google?.thinkingConfig).toBeUndefined();
     });
 
     it('preserves user-supplied thinkingConfig (does not override)', async () => {

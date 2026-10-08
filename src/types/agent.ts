@@ -460,6 +460,41 @@ export interface AgentTone {
 /**
  * Base agent result fields shared by both validator and executor results
  */
+/**
+ * Why a requested thinking run sent no thinking option. Single-valued; the first that applies wins
+ * (not-requested → not-capable → no-mapping → invalid-budget). `pre-build-failure`: the run threw
+ * before any provider builder ran, so nothing was decided.
+ */
+export type ThinkingNotAppliedReason =
+  | 'not-requested' | 'not-capable' | 'no-mapping' | 'invalid-budget' | 'pre-build-failure';
+
+/** Run conditions (spec §7.3). See {@link AgentResult.runConditions}. */
+export interface RunConditions {
+  /** Requested: the resolved decision, before any gate. */
+  extendedThinking: boolean;
+  /** The client mode in effect. `'declared'` is reserved (OD-18). */
+  extendedThinkingMode: 'off' | 'on';
+  /**
+   * The layer that decided. `'native'`: the caller's own provider-native thinking block, which
+   * always wins and bypasses core's caps. `'agent'` is reserved (OD-18). A value read from a `.env`
+   * file the CLI loaded is `'env'` — core cannot tell (OD-21); the CLI says so itself.
+   */
+  extendedThinkingSource: 'request' | 'config' | 'env' | 'native' | 'default';
+  /** Set when not applied on a provider/model that reasons with nothing sent (OD-3(b)): "off" is the provider default, not "no thinking". */
+  offMeans?: 'provider-default';
+  /** The budget core SENT; absent for effort/adaptive shapes and when nothing was sent. */
+  thinkingBudget?: number;
+  /** Measured: reasoning/thinking tokens on the result. `'unknown'` when the run threw or the provider does not report them. */
+  thinkingObserved: 'yes' | 'no' | 'unknown';
+  /** A builder emitted a thinking option, or the request carried a native block. */
+  thinkingApplied: boolean;
+  /** Anthropic upstream: the interleaved-thinking beta was sent, so every tool step may think (OD-22). */
+  thinkingInterleaved?: boolean;
+  thinkingNotAppliedReason?: ThinkingNotAppliedReason;
+  /** 0.52.0: the run moved to text extraction because thinking conflicts with forced tool use. */
+  structuredOutputDegraded?: 'thinking';
+}
+
 interface AgentResultBase {
   /** Discriminator — always 'agent' for direct agent execution */
   type: 'agent';
@@ -553,6 +588,14 @@ interface AgentResultBase {
    * of the agent's decision. Absent ⇒ treat as 'complete'.
    */
   completeness?: Completeness;
+
+  /**
+   * The conditions this run executed under that change what its score means — today, extended
+   * thinking: what was requested, what was applied, and why not (thinking-capability-restore spec
+   * §7.3). Set on success, on returning fallbacks, and (through the thrown-error carrier) on crash
+   * placeholders. In-process only in this release: not submitted to the tracker (issue 862356e6).
+   */
+  runConditions?: RunConditions;
 
   /** Full parsed JSON from LLM output (pre-Zod-strip) — the raw structured-output
    * object as the model produced it, not `agentOutputSchema.parse()`'s result.

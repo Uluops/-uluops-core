@@ -49,6 +49,10 @@ import type { Logger } from '@uluops/sdk-core';
 import { usableBudget, resolveRequestTimeoutMs, finitePositive, finiteNonNegative, parseExternalNumber } from '../utils/externalValue.js';
 import { firstDataCollection } from '../utils/dataCollection.js';
 import { isDeadlineSignal } from '../utils/runStop.js';
+import {
+  canThink, planThinking, outcomeOf, attachThinking, hasNativeThinking, thinkingRequestShape,
+  type ThinkingPlan, type ThinkingOutcome,
+} from './thinking.js';
 
 /**
  * What `mapUsage` accepts — DERIVED from the AI SDK's own `LanguageModelUsage`
@@ -336,6 +340,13 @@ export interface AIGenerateResult<TOutput = unknown> {
    *  When present, this is already validated against the schema — no extraction needed.
    *  Generic type parameter allows callers to preserve Zod schema output types. */
   structuredOutput?: TOutput;
+
+  /**
+   * What the thinking gate did on this call (spec §3, §7.3): applied or not, and why not. Set on the
+   * success path and on returning fallbacks; on a thrown error the same outcome rides the error,
+   * read with `thinkingOutcomeOf(error)`.
+   */
+  thinking?: ThinkingOutcome;
 }
 
 /**
@@ -380,6 +391,13 @@ export interface AIGenerateOptions {
   /** Provider-specific options (thinking, effort, etc.) passed through to generateText */
   providerOptions?: ProviderOptions;
 
+  /**
+   * Extended thinking for this call, as already resolved by the caller (AgentExecutor resolves
+   * per-run > config > env). Undefined: resolve from the client config/env here, so a direct
+   * `AIProvider` caller gets the same opt-in rule. Thinking is off unless this resolves true.
+   */
+  extendedThinking?: boolean;
+
   /** Token budget for context window management. When set, forces wrap-up at 80% usage. */
   contextBudget?: number;
 
@@ -402,11 +420,11 @@ export interface AIGenerateOptions {
  * - Registry-backed model alias resolution (sonnet → anthropic:claude-sonnet-4-5-20250929)
  * - Multi-provider support (Anthropic + OpenAI + Google bundled, others via dynamic import;
  *   OpenRouter, experimental, via `@openrouter/ai-sdk-provider` with a major-version install guard)
- * - Capability pre-flight checks (tools, vision, streaming, extendedThinking)
+ * - Capability pre-flight checks (tools, vision, streaming, reasoning)
  * - Unified generation with automatic tool loops
  * - Automatic prompt caching for Anthropic system messages
- * - Extended thinking auto-enabled for capable Anthropic models
- * - Reasoning effort auto-set for capable OpenAI models
+ * - Opt-in extended thinking (`ai.extendedThinking` / per-call `extendedThinking`): OpenAI effort,
+ *   Google and OpenRouter budget; direct Anthropic from 0.52.0. Off by default — see thinking.ts
  * - Provider-defined tool support (Anthropic bash, OpenAI shell), and a schema-fallback `bash`
  *   function tool for providers without one (OpenRouter; SHELL_SCHEMA_FALLBACK_PROVIDERS)
  * - Error mapping to UluOps error types
@@ -565,7 +583,28 @@ export class AIProvider {
 
     const factory = this.getProviderFactory(resolved.provider);
     const languageModel = factory(resolved.providerModelId);
-    const providerOptions = this.buildProviderOptions(resolved, options.providerOptions, options.contextBudget);
+    // Extended thinking (spec §5.2): off unless resolved on — per-call value from AgentExecutor, else
+    // the client config/env for a direct AIProvider caller. One plan, decided here; the builders emit
+    // exactly it. `maxTokens` is seamed first because the caps do arithmetic on it (agent YAML
+    // `max_tokens` arrives raw).
+    const thinkingPlan = planThinking({
+      requested: options.extendedThinking ?? this.config.ai.extendedThinkingMode === 'on',
+      provider: resolved.provider,
+      providerModelId: resolved.providerModelId,
+      capable: canThink(resolved),
+      callerNative: hasNativeThinking(resolved.provider, options.providerOptions),
+      // EXTERNAL-OK: seamed inside planThinking (finitePositive, then the per-provider caps and the
+      // 1024 floor); a malformed budget becomes 'invalid-budget' and sends nothing.
+      budget: this.config.defaultThinkingBudget,
+      maxTokens: Math.floor(finitePositive(options.maxTokens) ?? DEFAULT_MAX_TOKENS),
+      maxOutputTokens: resolved.maxOutputTokens,
+    });
+    if (thinkingPlan.applied && !thinkingPlan.native && thinkingPlan.kind === 'budget' && thinkingPlan.capped && !this.googleCapNoticeShown) {
+      this.logger.info(`Google thinking budget capped to ${thinkingPlan.budget} tokens (half of maxTokens) so the answer keeps room; budget and thinking share Gemini's output allowance.`);
+      this.googleCapNoticeShown = true;
+    }
+    const thinking = outcomeOf(thinkingPlan);
+    const providerOptions = this.buildProviderOptions(resolved, options.providerOptions, options.contextBudget, thinkingPlan);
     const system = this.buildSystemMessage(resolved.provider, options.system);
     // ASSUMPTION (2026-04-16): the model catalog's capability flags
     // (structuredOutput, structuredOutputWithTools, toolCalling) accurately
@@ -582,12 +621,9 @@ export class AIProvider {
       && !(hasTools && resolved.capabilities.structuredOutputWithTools === false);
 
     // Reasoning models (o1, o3, o4-mini, gpt-5.x) don't support temperature —
-    // strip it to suppress repeated AI SDK warnings. Check capabilities
-    // (extendedThinking or reasoning) and tier ('reasoning') since the registry
-    // may signal reasoning capability through any of these fields.
-    const isReasoning = resolved.capabilities.extendedThinking
-      || ('reasoning' in resolved.capabilities && (resolved.capabilities as Record<string, unknown>)['reasoning'] === true)
-      || resolved.tier === 'reasoning';
+    // strip it to suppress repeated AI SDK warnings. Keyed to CAPABILITY, not to whether this run
+    // thinks: it reflects what the model accepts (spec §3). One capability read in core: canThink.
+    const isReasoning = canThink(resolved);
 
     this.logPreGeneration(options, resolved, modelInput, useStructuredOutput);
 
@@ -598,9 +634,9 @@ export class AIProvider {
     const stepTotals = emptyStepTotals();
     let result;
     try {
-      result = await this.executeGeneration(options, languageModel, system, providerOptions, useStructuredOutput, isReasoning, stepTotals);
+      result = await this.executeGeneration(options, languageModel, system, providerOptions, useStructuredOutput, isReasoning, stepTotals, thinkingRequestShape(thinkingPlan));
     } catch (error) {
-      return this.handleGenerateError(error, resolved, useStructuredOutput, resolveRequestTimeoutMs(options.timeoutMs, this.config.timeout), stepTotals, options.abortSignal);
+      return this.handleGenerateError(error, resolved, useStructuredOutput, resolveRequestTimeoutMs(options.timeoutMs, this.config.timeout), stepTotals, options.abortSignal, thinking);
     }
     // Result ASSEMBLY gets its own try, separate from the provider call above.
     //
@@ -613,7 +649,7 @@ export class AIProvider {
     // than as a fabricated zero. Both properties are needed: map the error, AND keep the
     // usage, which stepTotals still holds.
     try {
-      return this.buildGenerateResult(result, resolved, useStructuredOutput);
+      return { ...this.buildGenerateResult(result, resolved, useStructuredOutput), thinking };
     } catch (error) {
       // The log states what handleGenerateError will ACTUALLY do, which depends on the
       // run. Only the structured-output branches return a fallback result carrying
@@ -628,9 +664,12 @@ export class AIProvider {
           ? ' — degrading to text extraction and reporting the usage already billed.'
           : ' — the error is being mapped and rethrown; usage accumulated during this run is NOT reported.'),
       );
-      return this.handleGenerateError(error, resolved, useStructuredOutput, resolveRequestTimeoutMs(options.timeoutMs, this.config.timeout), stepTotals, options.abortSignal);
+      return this.handleGenerateError(error, resolved, useStructuredOutput, resolveRequestTimeoutMs(options.timeoutMs, this.config.timeout), stepTotals, options.abortSignal, thinking);
     }
   }
+
+  /** Whether the Google budget-cap notice has been logged by this AIProvider (once, at info — spec §6.2). */
+  private googleCapNoticeShown = false;
 
   /**
    * Log pre-generation context for debugging.
@@ -667,6 +706,7 @@ export class AIProvider {
     useStructuredOutput: boolean,
     isReasoning = false,
     stepTotals: StepTotals = emptyStepTotals(),
+    thinkingShape: { maxOutputTokens?: number; headers?: Record<string, string> } = {},
   ) {
     let stepCount = 0;
     const budgetTracker = options.budgetTracker;
@@ -708,7 +748,9 @@ export class AIProvider {
       system,
       prompt: options.prompt,
       tools: options.tools,
-      maxOutputTokens: options.maxTokens ?? DEFAULT_MAX_TOKENS,
+      // The OpenRouter thinking rule may raise max_tokens by the budget (spec §6.4, probe P4).
+      maxOutputTokens: thinkingShape.maxOutputTokens ?? options.maxTokens ?? DEFAULT_MAX_TOKENS,
+      ...(thinkingShape.headers ? { headers: thinkingShape.headers } : {}),
       stopWhen: stepCountIs(maxSteps + (useStructuredOutput ? 2 : 0)),
       ...(isReasoning ? {} : { temperature: options.temperature ?? DEFAULT_TEMPERATURE }),
       maxRetries: options.maxRetries,
@@ -1022,6 +1064,7 @@ export class AIProvider {
     timeoutMs?: number,
     stepTotals: StepTotals = emptyStepTotals(),
     callerSignal?: AbortSignal,
+    thinking?: ThinkingOutcome,
   ): AIGenerateResult {
     // NoOutputGeneratedError is a DISTINCT class from NoObjectGeneratedError — its own
     // symbol marker, so NoObjectGeneratedError.isInstance() returns false for it
@@ -1032,7 +1075,7 @@ export class AIProvider {
       this.logger.warn(
         'Structured output was requested but the model produced none (non-"stop" finish) — falling back to text extraction.',
       );
-      return this.buildFallbackResult(resolved, '', stepTotals, 'error');
+      return { ...this.buildFallbackResult(resolved, '', stepTotals, 'error'), ...(thinking ? { thinking } : {}) };
     }
 
     if (useStructuredOutput && NoObjectGeneratedError.isInstance(error)) {
@@ -1041,14 +1084,15 @@ export class AIProvider {
       );
       // NOTE: error.usage is deliberately NOT used — it is lastStep.usage, not the run
       // total (ai/dist/index.js builds the error context from `{ usage: lastStep.usage }`).
-      return this.buildFallbackResult(
-        resolved,
-        error.text ?? '',
-        stepTotals,
-        error.finishReason ?? 'error',
-      );
+      return {
+        ...this.buildFallbackResult(resolved, error.text ?? '', stepTotals, error.finishReason ?? 'error'),
+        ...(thinking ? { thinking } : {}),
+      };
     }
     const mapped = this.mapError(error, timeoutMs, resolved, callerSignal);
+    // The thrown path carries what the gate did (spec §3 item 2): AgentExecutor reads it to build the
+    // run conditions for a crash. Guarded — never throws, never replaces the error.
+    if (thinking) attachThinking(mapped, thinking);
     // A provider 402 stops the whole pipeline run, not just this agent (OpenRouter plan D13):
     // no retry fixes it, and every later stage and in-flight sibling would spend a request to
     // learn the same thing. Looked up by the CALLER's signal — the object every executor hop
@@ -1192,12 +1236,13 @@ export class AIProvider {
    */
   private readonly providerOptionsBuilders: Record<
     string,
-    (resolved: ResolvedModel, userOptions?: ProviderOptions, effectiveBudget?: number) => ProviderOptions | undefined
+    (resolved: ResolvedModel, userOptions: ProviderOptions | undefined, effectiveBudget: number | undefined, thinking: ThinkingPlan) => ProviderOptions | undefined
   > = {
+    // Anthropic has no thinking mapping until core 0.52.0 (OD-13): the plan is 'no-mapping' there.
     anthropic: (r, o, b) => this.buildAnthropicOptions(r, o, b),
-    openai: (r, o) => this.buildOpenAIOptions(r, o),
-    google: (r, o) => this.buildGoogleOptions(r, o),
-    openrouter: (r, o) => this.buildOpenRouterOptions(r, o),
+    openai: (r, o, _b, t) => this.buildOpenAIOptions(r, o, t),
+    google: (r, o, _b, t) => this.buildGoogleOptions(r, o, t),
+    openrouter: (r, o, _b, t) => this.buildOpenRouterOptions(r, o, t),
   };
 
   /**
@@ -1208,11 +1253,11 @@ export class AIProvider {
    *   no caller option can turn them off. `require_parameters` is the only capability guard for a
    *   routed model (an unregistered model's DEFAULT_CAPABILITIES says tools: true whatever the
    *   endpoint supports); `usage.include` is what makes OpenRouter report billed cost.
-   * - The thinking budget maps to `reasoning.max_tokens` for a model whose capabilities say it
-   *   thinks, as buildAnthropicOptions auto-enables thinking on the direct route. A caller's own
-   *   `reasoning` block wins.
+   * - Thinking is opt-in (spec §5): when the gate fired, the planned budget goes out as
+   *   `reasoning.max_tokens`, already kept below the `max_tokens` sent (§6.4). A caller's own
+   *   `reasoning` block wins, and the plan records it as native.
    */
-  private buildOpenRouterOptions(resolved: ResolvedModel, userOptions?: ProviderOptions): ProviderOptions {
+  private buildOpenRouterOptions(_resolved: ResolvedModel, userOptions: ProviderOptions | undefined, thinking: ThinkingPlan): ProviderOptions {
     const user = (userOptions?.['openrouter'] as Record<string, unknown> | undefined) ?? {};
     const orOpts: Record<string, unknown> = { ...user };
     // A caller block that is not a plain object (a string, an array) is replaced, not spread:
@@ -1234,13 +1279,9 @@ export class AIProvider {
       data_collection: dataCollection,
     };
     orOpts['usage'] = { ...asPlainObject(user['usage']), include: true };
-    // Through the finitePositive seam, not verbatim like the Anthropic builder: OpenRouter forwards
-    // to whichever upstream serves the request, so no single provider can be relied on to reject a
-    // malformed budget. A non-finite or non-positive value sends no reasoning option at all.
-    const thinkingBudget = finitePositive(this.config.defaultThinkingBudget);
-    // `reasoning: null`/undefined counts as unset, so the default applies and no bare null is sent.
-    if (resolved.capabilities.extendedThinking && user['reasoning'] == null && thinkingBudget !== undefined) {
-      orOpts['reasoning'] = { max_tokens: thinkingBudget };
+    // Enabling thinking leaves data_collection exactly as resolved above (D7 is unchanged by it).
+    if (thinking.applied && !thinking.native && thinking.kind === 'budget') {
+      orOpts['reasoning'] = { max_tokens: thinking.budget };
     }
     return { ...userOptions, openrouter: orOpts } as ProviderOptions;
   }
@@ -1276,18 +1317,20 @@ export class AIProvider {
     resolved: ResolvedModel,
     userOptions?: ProviderOptions,
     effectiveBudget?: number,
+    thinking: ThinkingPlan = { applied: false, reason: 'not-requested' },
   ): ProviderOptions | undefined {
     const builder = this.providerOptionsBuilders[resolved.provider];
-    return builder ? builder(resolved, userOptions, effectiveBudget) : userOptions;
+    return builder ? builder(resolved, userOptions, effectiveBudget, thinking) : userOptions;
   }
 
   /**
    * Anthropic-specific provider options.
-   * - Auto-enables extended thinking when model has extendedThinking capability
+   * - No thinking option: direct Anthropic thinking is mapped in core 0.52.0, with the structured-
+   *   output degrade it needs (spec OD-13). A caller's own `thinking` block still passes through.
    * - Auto-injects context management (clear old tool uses at 100K tokens)
    */
   private buildAnthropicOptions(
-    resolved: ResolvedModel,
+    _resolved: ResolvedModel,
     userOptions?: ProviderOptions,
     effectiveBudget?: number,
   ): ProviderOptions {
@@ -1310,16 +1353,10 @@ export class AIProvider {
       anthropicOpts = { ...anthropicOpts, structuredOutputMode: 'jsonTool' };
     }
 
-    // Auto-enable extended thinking if model supports it and user hasn't specified
-    if (resolved.capabilities.extendedThinking && !('thinking' in anthropicOpts)) {
-      // EXTERNAL-OK: passed verbatim to the Anthropic provider, which validates its own thinking budget and
-    // rejects a malformed one at the API boundary. Not read arithmetically here.
-      const budgetTokens = this.config.defaultThinkingBudget;
-      anthropicOpts = {
-        ...anthropicOpts,
-        thinking: { type: 'enabled' as const, budgetTokens },
-      };
-    }
+    // The capability-keyed thinking block that stood here is deleted, not gated (spec §4.2 item 4):
+    // it read no opt-in, and once registry-sdk 0.61.0 normalizes `extendedThinking` from `reasoning`
+    // it would have fired on every reasoning-capable Claude run — thinking plus the forced json tool
+    // below (a 400, probe P1) on agent runs, billed thinking in report mode. Mapped in 0.52.0.
 
     // Auto-inject context management to clear old tool uses when context grows large.
     // Trigger at 50% of the effective context budget (the model's real window, or
@@ -1358,13 +1395,15 @@ export class AIProvider {
 
   /**
    * OpenAI-specific provider options.
-   * - Auto-sets reasoningEffort for reasoning-capable models (o1, o3, o4-mini)
+   * - Sets `reasoningEffort: 'medium'` when the thinking gate fired (opt-in, spec §6.3). Off sends
+   *   nothing: gpt-5 and gpt-5.5 still reason at the API default (probe P7) — "off" is the provider default.
    * - No context management equivalent — budget wrap-up via prepareStep is the only guard
    * - systemMessageMode auto-handled by @ai-sdk/openai (system → developer for reasoning)
    */
   private buildOpenAIOptions(
-    resolved: ResolvedModel,
-    userOptions?: ProviderOptions,
+    _resolved: ResolvedModel,
+    userOptions: ProviderOptions | undefined,
+    thinking: ThinkingPlan,
   ): ProviderOptions | undefined {
     const userOpenAIOpts = (userOptions?.openai ?? {}) as Record<string, unknown>;
     let openaiOpts = { ...userOpenAIOpts };
@@ -1387,8 +1426,8 @@ export class AIProvider {
       openaiOpts = { ...openaiOpts, strictJsonSchema: false };
     }
 
-    // Auto-set reasoningEffort for reasoning models if user hasn't specified
-    if (resolved.capabilities.extendedThinking && !('reasoningEffort' in openaiOpts)) {
+    // Thinking gate (opt-in). A caller's own reasoningEffort is native: the plan says so and nothing is set.
+    if (thinking.applied && !thinking.native && thinking.kind === 'effort') {
       openaiOpts = {
         ...openaiOpts,
         reasoningEffort: 'medium',
@@ -1408,24 +1447,25 @@ export class AIProvider {
 
   /**
    * Google-specific provider options.
-   * - Auto-enables thinkingConfig with thinkingBudget for thinking-capable models (Gemini 2.5+)
+   * - Sets `thinkingConfig.thinkingBudget` when the thinking gate fired (opt-in, spec §6.2), capped at
+   *   half of maxTokens — Gemini counts thinking inside maxOutputTokens (probe P5).
    * - No context management equivalent — budget wrap-up via prepareStep is the only guard
    * - No system message wrapping — Gemini caching is implicit for 2.5+ models
    */
   private buildGoogleOptions(
-    resolved: ResolvedModel,
-    userOptions?: ProviderOptions,
+    _resolved: ResolvedModel,
+    userOptions: ProviderOptions | undefined,
+    thinking: ThinkingPlan,
   ): ProviderOptions | undefined {
     const userGoogleOpts = (userOptions?.google ?? {}) as Record<string, unknown>;
     let googleOpts = { ...userGoogleOpts };
 
-    // Auto-enable thinking for models with extendedThinking capability (Gemini 2.5+)
-    if (resolved.capabilities.extendedThinking && !('thinkingConfig' in googleOpts)) {
+    // Thinking gate (opt-in). The budget was seamed and capped in planThinking; a caller's own
+    // thinkingConfig is native and is left alone.
+    if (thinking.applied && !thinking.native && thinking.kind === 'budget') {
       googleOpts = {
         ...googleOpts,
-        // EXTERNAL-OK: passed verbatim to the Anthropic provider, which validates its own thinking budget and
-    // rejects a malformed one at the API boundary. Not read arithmetically here.
-        thinkingConfig: { thinkingBudget: this.config.defaultThinkingBudget },
+        thinkingConfig: { thinkingBudget: thinking.budget },
       };
     }
 
@@ -2072,10 +2112,17 @@ export class AIProvider {
       const provider = resolved?.provider ?? 'unknown';
       const preflight = /can only afford|fewer max_tokens/i.test(error.message);
       const limit = limitSource ? ` (limit: ${limitSource})` : '';
+      // Name the max_tokens actually SENT: with thinking on, the OpenRouter rule raised it by the
+      // budget (spec §6.4), so "lower maxTokens" alone would point at the wrong number.
+      const sentBody = asPlainObject(error.requestBodyValues);
+      const sentMax = typeof sentBody['max_tokens'] === 'number' ? sentBody['max_tokens'] : undefined;
+      const thinkingSent = sentBody['reasoning'] != null;
+      const sentNote = sentMax === undefined ? ''
+        : ` (max_tokens sent: ${sentMax}${thinkingSent ? ', which includes the extended-thinking budget — lower defaultThinkingBudget or turn thinking off' : ''})`;
       mapped = new ProviderCreditError(
         preflight
           ? `Provider "${provider}" refused the request before running it (HTTP 402): its worst case ` +
-            `(maxTokens × price) exceeds the remaining balance${limit}. Lower maxTokens or add credit; ` +
+            `(maxTokens × price) exceeds the remaining balance${limit}${sentNote}. Lower maxTokens or add credit; ` +
             `the same request will not succeed on retry. Provider message: ${error.message}`
           : `Out of credit with provider "${provider}" (HTTP 402)${limit}. Add credit or raise the key's limit; ` +
             `the same request will not succeed on retry. Provider message: ${error.message}`,
@@ -2423,6 +2470,15 @@ function describeRoutingConstraints(requestBodyValues: unknown, meta: Record<str
     if (Array.isArray(provider[key]) && provider[key].length > 0) {
       parts.push(`provider.${key} = [${(provider[key] as unknown[]).join(', ')}]`);
     }
+  }
+  if (body['reasoning'] != null) {
+    // Extended thinking adds `reasoning` (and on anthropic/ upstreams a raised max_tokens), which
+    // require_parameters holds every endpoint to. Name the lever, as for data_collection below.
+    parts.push(
+      'reasoning (extended thinking is on: endpoints must support it' +
+      (typeof body['max_tokens'] === 'number' ? `, with max_tokens ${body['max_tokens']}` : '') +
+      '; to run without it, pass extendedThinking: false to runAgent, or set ai.extendedThinking / ULUOPS_EXTENDED_THINKING to off)',
+    );
   }
   if (provider['data_collection'] === 'deny') {
     // Live 2026-10-05: a deny miss is failed_routing_step "Filter by Data Policy". Name the opt-in

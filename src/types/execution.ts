@@ -349,13 +349,24 @@ export interface ExecutionOptions {
   model?: string;
 
   /**
+   * Extended thinking for this run: `true`/`false` wins over `ai.extendedThinking` and
+   * `ULUOPS_EXTENDED_THINKING`. Any non-boolean (the string `"false"` included) is OFF with a warning,
+   * and does not fall through to the client setting. `runAgent` only: commands, workflows and
+   * pipelines take thinking from the client config and environment. What was requested and applied
+   * is recorded on `AgentResult.runConditions`.
+   */
+  extendedThinking?: boolean;
+
+  /**
    * Provider-specific request options, keyed by provider, passed to the model call — e.g.
    * OpenRouter routing and data governance:
    * `{ openrouter: { provider: { data_collection: 'deny', zdr: true, only: ['…'] } } }`.
    *
    * Merged under core's own per-provider options: core still applies what it forces (OpenRouter
-   * `provider.require_parameters` and `usage.include`), and a key you set where core only has a
-   * default (e.g. `reasoning`, Anthropic `thinking`) wins. A value that is not an object of
+   * `provider.require_parameters` and `usage.include`), and a key you set where core would set one
+   * wins. A provider-native thinking option (`openrouter.reasoning`, `openai.reasoningEffort`,
+   * `google.thinkingConfig`, `anthropic.thinking`) always wins over `extendedThinking`, is not capped,
+   * and is recorded as source `'native'` on `runConditions`. A value that is not an object of
    * objects is dropped with a warning. `runAgent` only for now: commands, workflows and
    * pipelines do not take it.
    */

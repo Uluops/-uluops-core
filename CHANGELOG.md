@@ -6,6 +6,79 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) 
 
 ## [Unreleased]
 
+Extended thinking becomes an explicit, working opt-in (thinking-capability-restore spec v0.7.0).
+Before this release every thinking gate in core read `capabilities.extendedThinking`, which the
+registry SDK always returned as `undefined` (the registry serves `reasoning`): the gates never fired
+on any route, and the comments claiming "auto-enabled" were false. This release does not simply
+re-arm them — it makes thinking off by default, opt-in, and recorded.
+
+### Added
+
+- **`ai.extendedThinking: 'off' | 'on'`** and **`ULUOPS_EXTENDED_THINKING`**, plus a per-run
+  **`extendedThinking: boolean`** on `runAgent`. Precedence per-run > config > env > off. A malformed
+  value at any layer — booleans in the config field, `true`/`1` in the env var, the string `"false"`
+  per run — is **off at that layer** with a warning and does not fall through. Commands, workflows
+  and pipelines take thinking from the client config and environment only; passing
+  `extendedThinking` to them warns once that it is ignored.
+- **`AgentResult.runConditions`** — what the run executed under: requested, mode, the layer that
+  decided (`request`/`config`/`env`/`native`/`default`), whether a thinking option was actually sent
+  (`thinkingApplied`) and why not (`not-requested`, `not-capable`, `no-mapping`, `invalid-budget`,
+  `pre-build-failure`), the budget sent, `thinkingInterleaved`, `thinkingObserved` (from reasoning or
+  thinking tokens), and `offMeans: 'provider-default'` when nothing was sent on a model that reasons
+  anyway. Set on success, on structured-output fallbacks, and on thrown errors in-process
+  (`thinkingOutcomeOf(error)`); crash and stopped-run placeholders carry it. **Not submitted to the
+  tracker** (issue 862356e6).
+- **`AIGenerateOptions.extendedThinking`** and **`AIGenerateResult.thinking`** for direct
+  `AIProvider` callers (undefined resolves from the client config/env, the same rule).
+- **`ResolvedModel.maxOutputTokens`** (registry `limits.output`; absent when unknown, never invented).
+- A notice per agent run that requested thinking: "on (set by …)" at info, or a warning naming the
+  reason when it was not applied, and a warning when the environment turned it on.
+- `src/ai/thinking.ts`: `canThink`, the gate (`planThinking`), the thrown-error carrier
+  (`thinkingOutcomeOf`), and the record builder.
+
+### Changed
+
+- **Thinking is off unless opted in, on every provider.** The OpenAI, Google and OpenRouter gates now
+  require the opt-in. **This is a behaviour change only on paper**: the old gates never fired (they read
+  a field that was always undefined), so no run that thought before stops thinking now — but with
+  `@uluops/registry-sdk` 0.61.0 (pinned in this release) they WOULD have fired, unasked, on every
+  reasoning-capable model. The capability-keyed Anthropic block is deleted, not gated: with 0.61.0 it
+  would have sent thinking with the forced json tool on every agent run, which Anthropic rejects (400).
+- **Direct Anthropic does not think until core 0.52.0.** An opt-in there records
+  `thinkingApplied: false`, reason `'no-mapping'`. 0.52.0 adds the mapping with the structured-output
+  degrade it needs. OpenRouter-routed Claude models think from this release.
+- **What "on" sends** (Phase 0 probes, 2026-10-08): OpenAI `reasoningEffort: 'medium'`; Google
+  `thinkingBudget` capped at half of `maxTokens` (Gemini counts thinking inside `maxOutputTokens`);
+  OpenRouter `reasoning.max_tokens` kept strictly below the `max_tokens` sent (OpenRouter silently
+  raises the cap and bills past it otherwise) and, on `anthropic/…` models, `max_tokens` raised by the
+  budget up to the model's output limit plus the `interleaved-thinking-2025-05-14` beta — without it
+  Claude thinks on the first tool step only. Below a 1024 budget after capping, nothing is sent.
+- **"Off" means the provider default, not "no thinking"**: gpt-5.x, Gemini 2.5 and the always-adaptive
+  Claude models reason with nothing sent. Recorded as `offMeans: 'provider-default'`.
+- Enabling thinking does **not** change the OpenRouter `data_collection: 'deny'` default (D7).
+- The OpenRouter 402 pre-flight message names the `max_tokens` actually sent (and that it includes the
+  thinking budget); the no-endpoint error names `reasoning` and the switch that turns it off.
+- `isReasoning` (the temperature strip) reads the capability through `canThink`: same rows as before
+  (registry `capability=reasoning` ⊆ `tier=reasoning`, checked live 2026-10-08), one capability read in core.
+- `@uluops/registry-sdk` 0.58.0 → **0.61.0** (exact). **Release order:** a consumer on core ≤ 0.50.0
+  that injects registry-sdk ≥ 0.61.0 into the public `ModelCatalog` re-arms 0.50.0's ungated
+  auto-enable blocks. Upgrade both together.
+
+### Fixed
+
+- `requiredCapabilities: ['reasoning']` (or `'extendedThinking'`) now resolves on reasoning models;
+  it failed with `CapabilityError` on every model because the capability never arrived.
+- The Google thinking budget was passed verbatim; it now goes through the `finitePositive` seam and
+  the cap. An agent `max_tokens` that arrives as a string is seamed before any thinking arithmetic.
+
+### Not covered (stated so it is not assumed)
+
+- **The agent's model choice is not covered by the switch.** A definition's `defaults.model` outranks
+  the client's model choice, so a definition naming a model that reasons by default is billed
+  reasoning even with thinking off. The counter is `ai.modelOverride`.
+- `trackThrownRun` is unchanged: a thrown run without billed usage is still not submitted. Recording
+  thrown thinking runs, narrowed so cancels are never filed as failures, ships with 862356e6 (OD-20).
+
 ## [0.50.0] - 2026-10-06
 
 ### Added

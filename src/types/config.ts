@@ -71,6 +71,24 @@ export interface AIConfig {
    * @default 'deny'
    */
   openRouterDataCollection?: 'allow' | 'deny';
+
+  /**
+   * Extended thinking for every run this client makes, on models that can think. **Off by default**
+   * (thinking-capability-restore spec §5, Alex 2026-10-05): thinking is billed as output on every
+   * step of a tool loop, and scores measured without it are not comparable with scores measured
+   * with it.
+   *
+   * `'on'` asks for thinking on every run; `'off'` (the default) sends nothing — which on providers
+   * and models that reason by default (OpenAI gpt-5.x, Gemini 2.5, always-adaptive Claude models)
+   * means the PROVIDER DEFAULT, not "no thinking". Also read from `ULUOPS_EXTENDED_THINKING`; this
+   * field wins over the variable, and `runAgent`'s per-run `extendedThinking` wins over both. Any
+   * other value — booleans included — is `'off'` at the layer that set it, with a warning; it does
+   * not fall through. Mapped in this release: OpenAI, Google, OpenRouter. Direct Anthropic is mapped
+   * in core 0.52.0; until then it records "not applied: no-mapping". Each run records what was
+   * requested and applied on `AgentResult.runConditions`.
+   * @default 'off'
+   */
+  extendedThinking?: 'off' | 'on';
 }
 
 /**
@@ -85,6 +103,12 @@ export interface ResolvedAIConfig {
   openRouterDataCollection?: 'allow' | 'deny';
   /** Which layer set {@link openRouterDataCollection}; named by the allow-in-effect warning. */
   openRouterDataCollectionSource?: 'config' | 'env' | 'default';
+  /** Resolved client thinking mode; see {@link AIConfig.extendedThinking}. Absent reads as `'off'`. */
+  extendedThinkingMode?: 'off' | 'on';
+  /** Which layer set {@link extendedThinkingMode}; recorded on every run's `runConditions`. */
+  extendedThinkingSource?: 'config' | 'env' | 'default';
+  /** A malformed value at the layer that set the mode (resolved to `'off'`); warned at client construction. */
+  extendedThinkingMalformed?: { layer: 'config' | 'env'; value: string };
 }
 
 /**
@@ -167,8 +191,11 @@ export interface UluOpsConfig {
   defaultProject?: string;
 
   /**
-   * Default extended thinking budget in tokens.
-   * Used when a model supports extendedThinking and no per-call budget is specified.
+   * Thinking budget in tokens, used when extended thinking is ON (see `ai.extendedThinking`) on a
+   * provider that takes a budget (Google, OpenRouter; Anthropic from core 0.52.0). OpenAI takes an
+   * effort instead and ignores it. Capped per provider so the visible answer keeps room (Google: half
+   * of `maxTokens`; OpenRouter: below the `max_tokens` sent); below 1024 after capping, no thinking is
+   * sent and the run records `'invalid-budget'`. Has no effect while thinking is off.
    * @default 10000
    */
   defaultThinkingBudget?: number;

@@ -11,6 +11,7 @@ import { APICallError } from 'ai';
 import { AIProvider, SHELL_SCHEMA_FALLBACK_PROVIDERS } from '../../src/ai/AIProvider.js';
 import { resolveAIConfig } from '../../src/client/UluOpsClient.js';
 import { firstDataCollection } from '../../src/utils/dataCollection.js';
+import { planThinking, canThink, hasNativeThinking, type ThinkingPlan } from '../../src/ai/thinking.js';
 import { ConfigurationError, CapabilityError, ModelNotFoundError, ProviderCreditError, RateLimitError } from '../../src/errors/index.js';
 import type { ModelCatalog, ResolvedModel } from '../../src/ai/ModelCatalog.js';
 import type { ResolvedConfig } from '../../src/types/config.js';
@@ -53,7 +54,7 @@ function model(overrides?: Partial<ResolvedModel>): ResolvedModel {
 
 interface Internals {
   providers: Map<string, unknown>;
-  buildProviderOptions(r: ResolvedModel, o?: Record<string, unknown>, b?: number): Record<string, Record<string, unknown>> | undefined;
+  buildProviderOptions(r: ResolvedModel, o?: Record<string, unknown>, b?: number, t?: ThinkingPlan): Record<string, Record<string, unknown>> | undefined;
   mapUsage(usage: unknown, meta?: Record<string, unknown>, provider?: string, modelId?: string): UsageMetrics;
   detectUsageShapeDrift(meta?: Record<string, unknown>): string[];
   mapAPICallError(error: APICallError, resolved?: ResolvedModel): Error;
@@ -115,8 +116,15 @@ describe('S1–S3: loading the OpenRouter provider', () => {
 // ─── S4: options builder ─────────────────────────────────────────────────────
 
 describe('S4: OpenRouter provider options', () => {
-  const build = (r: ResolvedModel, user?: Record<string, unknown>) =>
-    internals(new AIProvider(config, catalog, noopLogger)).buildProviderOptions(r, user)?.['openrouter'];
+  // Thinking is opt-in (thinking-capability-restore spec §5): the builder emits exactly the gate's
+  // plan. `thinking: true` plans as a run that requested it; the default plans as one that did not.
+  const plan = (r: ResolvedModel, user: Record<string, unknown> | undefined, requested: boolean, budget: unknown = 10_000) =>
+    planThinking({
+      requested, provider: 'openrouter', providerModelId: r.providerModelId, capable: canThink(r),
+      callerNative: hasNativeThinking('openrouter', user), budget, maxTokens: 16_384, maxOutputTokens: r.maxOutputTokens,
+    });
+  const build = (r: ResolvedModel, user?: Record<string, unknown>, thinking = false) =>
+    internals(new AIProvider(config, catalog, noopLogger)).buildProviderOptions(r, user, undefined, plan(r, user, thinking))?.['openrouter'];
 
   it('forces require_parameters even when the caller sets it false', () => {
     const opts = build(model(), { openrouter: { provider: { require_parameters: false, sort: 'price' } } });
@@ -128,9 +136,15 @@ describe('S4: OpenRouter provider options', () => {
     expect(opts?.['usage']).toEqual({ include: true });
   });
 
-  it('maps the thinking budget to reasoning.max_tokens for a thinking-capable model', () => {
-    const opts = build(model({ capabilities: { tools: true, extendedThinking: true } as ResolvedModel['capabilities'] }));
+  it('maps the thinking budget to reasoning.max_tokens when thinking is requested on a capable model', () => {
+    const opts = build(model({ capabilities: { tools: true, extendedThinking: true } as ResolvedModel['capabilities'] }), undefined, true);
     expect(opts?.['reasoning']).toEqual({ max_tokens: 10_000 });
+  });
+
+  it('NC (auto-enable): a capable model with thinking NOT requested sends no reasoning option', () => {
+    // Before 0.51.0 this sent reasoning.max_tokens 10000 on every reasoning-capable model, unasked.
+    const opts = build(model({ capabilities: { tools: true, reasoning: true, extendedThinking: true } as ResolvedModel['capabilities'] }));
+    expect(opts?.['reasoning']).toBeUndefined();
   });
 
   it('sends no reasoning option for a model without extendedThinking', () => {
@@ -141,14 +155,18 @@ describe('S4: OpenRouter provider options', () => {
     const opts = build(
       model({ capabilities: { tools: true, extendedThinking: true } as ResolvedModel['capabilities'] }),
       { openrouter: { reasoning: null } },
+      true,
     );
     expect(opts?.['reasoning']).toEqual({ max_tokens: 10_000 });
   });
 
   it('sends no reasoning option when the configured thinking budget is not finite and positive', () => {
     for (const bad of [Number.NaN, 0, -5]) {
+      const r = model({ capabilities: { tools: true, extendedThinking: true } as ResolvedModel['capabilities'] });
+      const p = plan(r, undefined, true, bad);
+      expect(p).toEqual({ applied: false, reason: 'invalid-budget' });
       const opts = internals(new AIProvider({ ...config, defaultThinkingBudget: bad }, catalog, noopLogger))
-        .buildProviderOptions(model({ capabilities: { tools: true, extendedThinking: true } as ResolvedModel['capabilities'] }))?.['openrouter'];
+        .buildProviderOptions(r, undefined, undefined, p)?.['openrouter'];
       expect(opts?.['reasoning']).toBeUndefined();
     }
   });
@@ -162,6 +180,7 @@ describe('S4: OpenRouter provider options', () => {
     const opts = build(
       model({ capabilities: { tools: true, extendedThinking: true } as ResolvedModel['capabilities'] }),
       { openrouter: { reasoning: { effort: 'low' } } },
+      true,
     );
     expect(opts?.['reasoning']).toEqual({ effort: 'low' });
   });

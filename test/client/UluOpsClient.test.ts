@@ -1548,3 +1548,43 @@ describe('UluOpsClient — a thrown run with billed usage still reaches the trac
       .rejects.toBeInstanceOf(MaxStepsExhaustedError);
   });
 });
+
+/**
+ * Extended thinking at the client boundary (thinking-capability-restore spec v0.7.0, OD-16, OD-20).
+ */
+describe('UluOpsClient — extended thinking', () => {
+  beforeEach(() => { vi.clearAllMocks(); });
+
+  it('OD-20: a thrown run carrying run conditions but NO billed usage is still not submitted', async () => {
+    // NC against v0.6.0's design: widening trackThrownRun's gate to "or carries a thinking outcome"
+    // would submit this — a FAIL row with a critical issue, zero tokens, and no thinking data on the
+    // wire (run conditions are not submitted until 862356e6). The widening moved there, narrowed.
+    const { attachThinking } = await import('../../src/ai/thinking.js');
+    const client = new UluOpsClient({ apiKey: 'ulr_test-key-012345678901', trackingEnabled: true });
+    mockRegistryResolve.mockResolvedValue(makeResolvedDef('agent', 'code-validator'));
+    const err = new Error('No endpoints found');
+    attachThinking(err, { applied: true, budget: 10_000 });
+    mockAgentExecutorExecute.mockRejectedValue(err);
+
+    await expect(client.runAgent('code-validator', '/tmp/test')).rejects.toBe(err);
+    expect(mockSubmissionSubmit).not.toHaveBeenCalled();
+  });
+
+  it('OD-16: extendedThinking passed to a non-runAgent entry point warns once that it is ignored', async () => {
+    const client = new UluOpsClient({ apiKey: 'ulr_test-key-012345678901', trackingEnabled: false });
+    const warn = vi.spyOn((client as unknown as { logger: { warn: (m: string) => void } }).logger, 'warn');
+    mockRegistryResolve.mockResolvedValue(makeResolvedDef('workflow', 'ship'));
+    mockWorkflowExecutorExecute.mockResolvedValue({ type: 'workflow' });
+
+    await client.runWorkflow('ship', { target: '/tmp/test' }, { extendedThinking: true } as never);
+    await client.runWorkflow('ship', { target: '/tmp/test' }, { extendedThinking: true } as never);
+    const notices = warn.mock.calls.filter(([m]) => String(m).includes('extendedThinking is ignored by runWorkflow()'));
+    expect(notices).toHaveLength(1);
+  });
+
+  it('a malformed ai.extendedThinking warns at construction and resolves off', () => {
+    const client = new UluOpsClient({ apiKey: 'ulr_test-key-012345678901', ai: { providers: {}, extendedThinking: true as never } });
+    expect((client as unknown as { config: { ai: { extendedThinkingMode: string } } }).config.ai.extendedThinkingMode).toBe('off');
+    expect(mockLogger.warn).toHaveBeenCalledWith(expect.stringContaining('Extended thinking is OFF: ai.extendedThinking is "true"'));
+  });
+});

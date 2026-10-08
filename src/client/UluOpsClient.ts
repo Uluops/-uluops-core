@@ -26,6 +26,7 @@ import { parseRef } from '../utils/parseRef.js';
 import { DEFAULT_MAX_CONCURRENCY } from '../constants.js';
 import type { RunSubmissionResponse, RunHistoryEntry, SubmissionQueryOptions } from '../types/submission.js';
 import { firstDataCollection } from '../utils/dataCollection.js';
+import { resolveThinkingMode } from '../ai/thinking.js';
 
 /** Default request timeout: 5 minutes. Allows for model cold-start + multi-step tool loops in agent execution. */
 const DEFAULT_TIMEOUT_MS = 300_000;
@@ -58,6 +59,14 @@ export class UluOpsClient {
 
     this.logger = createLogger('[core]', this.config.debug);
     const logger = this.logger;
+    const badThinking = this.config.ai.extendedThinkingMalformed;
+    if (badThinking) {
+      logger.warn(
+        `Extended thinking is OFF: ${badThinking.layer === 'env' ? 'ULUOPS_EXTENDED_THINKING' : 'ai.extendedThinking'} `
+        + `is "${badThinking.value}", which is not 'on' or 'off'. A malformed value turns thinking off at that layer; `
+        + `it does not fall through.`,
+      );
+    }
 
     this.registry = new RegistryClient(this.config, logger);
     this.submission = new SubmissionClient(this.config, logger);
@@ -151,6 +160,22 @@ export class UluOpsClient {
    * billed. Best-effort: a tracking failure here must never replace the original error,
    * which is what the caller actually needs to see.
    */
+  /**
+   * `extendedThinking` is a `runAgent` option only (spec OD-16): every other entry point takes thinking
+   * from the client config and environment. An untyped caller passing it here would otherwise see it
+   * dropped silently (lens D11), so the first such call warns.
+   */
+  private warnIgnoredThinking(entry: string, options: unknown): void {
+    if (this.ignoredThinkingWarned || typeof options !== 'object' || options === null || !('extendedThinking' in options)) return;
+    this.logger.warn(
+      `extendedThinking is ignored by ${entry}(): it is a runAgent() option only. `
+      + `Set ai.extendedThinking or ULUOPS_EXTENDED_THINKING to turn thinking on for commands, workflows and pipelines.`,
+    );
+    this.ignoredThinkingWarned = true;
+  }
+
+  private ignoredThinkingWarned = false;
+
   private async trackThrownRun(
     error: unknown,
     resolved: ResolvedDefinition,
@@ -231,6 +256,7 @@ export class UluOpsClient {
     input: ExecutionInput,
     overrides?: { model?: string; expectedHash?: string; expectedPromptHash?: string },
   ): Promise<CommandResult> {
+    this.warnIgnoredThinking('runCommand', overrides);
     const resolved = await this.resolveByRef(name, 'command', toPins(overrides));
 
     if (resolved.type !== 'command') {
@@ -259,6 +285,7 @@ export class UluOpsClient {
    * @throws {WorkflowError} If a phase gate fails (`error.context.partialResult` holds completed phases).
    */
   async runWorkflow(name: string, input: ExecutionInput, options?: ResolvePinOptions): Promise<WorkflowResult> {
+    this.warnIgnoredThinking('runWorkflow', options);
     const resolved = await this.resolveByRef(name, 'workflow', toPins(options));
 
     if (resolved.type !== 'workflow') {
@@ -288,6 +315,7 @@ export class UluOpsClient {
    * @throws {PipelineError} If a stage fails (`error.context` holds stage name/index).
    */
   async runPipeline(name: string, input: ExecutionInput, options?: ResolvePinOptions): Promise<PipelineResult> {
+    this.warnIgnoredThinking('runPipeline', options);
     const resolved = await this.resolveByRef(name, 'pipeline', toPins(options));
 
     if (resolved.type !== 'pipeline') {
@@ -320,6 +348,7 @@ export class UluOpsClient {
    * @throws {IntegrityError} If a supplied pin does not match the resolved definition.
    */
   async run(name: string, input: ExecutionInput, options?: ResolvePinOptions): Promise<ExecutionResult | AgentResult> {
+    this.warnIgnoredThinking('run', options);
     const resolved = await this.resolveByRef(name, undefined, toPins(options));
     let result: ExecutionResult | AgentResult;
 
@@ -369,6 +398,7 @@ export class UluOpsClient {
    * @throws {IntegrityError} If a supplied pin does not match the resolved definition.
    */
   async startPipeline(name: string, input: ExecutionInput, options?: ResolvePinOptions): Promise<PipelineHandle> {
+    this.warnIgnoredThinking('startPipeline', options);
     const resolved = await this.resolveByRef(name, 'pipeline', toPins(options));
 
     if (resolved.type !== 'pipeline') {
@@ -870,6 +900,17 @@ export function resolveAIConfig(ai: AIConfig | undefined, env: NodeJS.ProcessEnv
         openRouterDataCollection: hit?.value ?? 'deny',
         openRouterDataCollectionSource: hit === undefined ? 'default' : hit.layer === 0 ? 'config' : 'env',
       } as const;
+    })(),
+    // Extended thinking: off unless set. A malformed value is 'off' at the layer that set it and is
+    // reported back for a warning at construction (this function has no logger). Spec §5.2, OD-6.
+    ...(() => {
+      // EXTERNAL-OK: allowlisted by resolveThinkingMode (only 'on'/'off' survive; anything else is 'off').
+      const t = resolveThinkingMode(ai?.extendedThinking, env['ULUOPS_EXTENDED_THINKING']);
+      return {
+        extendedThinkingMode: t.mode,
+        extendedThinkingSource: t.source,
+        ...(t.malformed ? { extendedThinkingMalformed: t.malformed } : {}),
+      };
     })(),
   };
 }

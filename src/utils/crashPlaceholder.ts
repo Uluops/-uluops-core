@@ -1,3 +1,4 @@
+import { thinkingOutcomeOf } from '../ai/thinking.js';
 import type { AgentResult } from '../types/agent.js';
 import type { CommandResult } from '../types/command.js';
 import type { DegradationMarker } from '../types/degradation.js';
@@ -88,7 +89,15 @@ export function crashPlaceholder(
     // never a fabricated $0. Elapsed time is knowable even when tokens are not.
     durationMs: metrics.durationMs,
     metrics,
+    // What the crashed run executed under (spec §3), from the carrier AgentExecutor attached.
+    ...runConditionsOf(reason),
   };
+}
+
+/** The run conditions a thrown error carries, as a spreadable field (empty when it carries none). */
+function runConditionsOf(reason: unknown): Pick<AgentResult, 'runConditions'> {
+  const runConditions = thinkingOutcomeOf(reason)?.runConditions;
+  return runConditions ? { runConditions } : {};
 }
 
 /**
@@ -169,6 +178,7 @@ export function abortedPlaceholder(
     metrics,
     degradationMarkers: [runStoppedMarker()],
     completeness: 'failed',
+    ...runConditionsOf(reason),
   };
 }
 

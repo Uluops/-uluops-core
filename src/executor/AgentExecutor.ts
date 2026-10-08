@@ -25,6 +25,11 @@ import type { Logger } from '@uluops/sdk-core';
 import { DEFAULT_PASS_THRESHOLD, DEFAULT_WARN_THRESHOLD, DEFAULT_MAX_STEPS, DEFAULT_MAX_TOKENS, DEFAULT_MODEL_ALIAS, DEFAULT_TEMPERATURE, EXTRACTION_CONFIDENCE_THRESHOLD, SHELL_COMMAND_TIMEOUT_MS, DEFAULT_REQUEST_TIMEOUT_MS, DEFAULT_CONTEXT_BUDGET } from '../constants.js';
 import type { ProviderOptions } from '@ai-sdk/provider-utils';
 import { agentCost } from '../utils/costRollup.js';
+import {
+  perRunThinking, buildRunConditions, thinkingNotice, thinkingOutcomeOf, attachThinking, reasonsByDefault,
+  type ThinkingDecision,
+} from '../ai/thinking.js';
+import type { ResolvedModel } from '../ai/ModelCatalog.js';
 
 /**
  * Maximum bytes retained from the LLM's raw text output on AgentResult.rawOutput.
@@ -89,6 +94,66 @@ export class AgentExecutor {
     input: ExecutionInput,
     options?: ExecutionOptions,
   ): Promise<AgentResult> {
+    const decision = this.resolveThinking(options);
+    // The model generate() runs on, once known — needed to say whether "off" is the provider default.
+    const seen: { model?: ResolvedModel } = {};
+    // The one catch in this executor (spec §3 item 1). It is the only place that holds both halves of
+    // the run-condition record: the decision (here) and what the builder did (AIProvider's carrier).
+    // It attaches the full record to the SAME error object and rethrows it unchanged — no wrapping —
+    // so runAgent, trackThrownRun and the executor placeholders all still see the original error.
+    let result: AgentResult;
+    try {
+      result = await this.executeInner(resolved, input, options, decision, seen);
+    } catch (error) {
+      const carrier = thinkingOutcomeOf(error);
+      const runConditions = carrier?.runConditions
+        ?? buildRunConditions(decision, carrier, undefined, seen.model ? reasonsByDefault(seen.model) : false);
+      attachThinking(error, {
+        ...(carrier ?? { applied: runConditions.thinkingApplied, notAppliedReason: runConditions.thinkingNotAppliedReason }),
+        runConditions,
+      });
+      this.emitThinkingNotice(runConditions);
+      throw error;
+    }
+    if (result.runConditions) this.emitThinkingNotice(result.runConditions);
+    return result;
+  }
+
+  /**
+   * Resolve the thinking decision: per-run (`runAgent` only) > client config > env > off (spec §5.2).
+   * A non-boolean per-run value is off at that layer with a warning, and does not fall through (OD-6).
+   */
+  private resolveThinking(options?: ExecutionOptions): ThinkingDecision {
+    const mode = this.config.ai.extendedThinkingMode ?? 'off';
+    const perRun = perRunThinking(options?.extendedThinking);
+    if (perRun.set) {
+      if (perRun.malformed) {
+        // EXTERNAL-OK: the raw per-run value, truncated for display in the warning below; it decides
+        // nothing — perRunThinking has already resolved it to off.
+        const shown = `${typeof options?.extendedThinking} "${String(options?.extendedThinking).slice(0, 40)}"`;
+        this.logger.warn(
+          `Extended thinking is OFF for this run: extendedThinking must be true or false (got ${shown}). `
+          + 'A malformed per-run value does not fall through to the client setting.',
+        );
+      }
+      return { requested: perRun.value, mode, source: 'request' };
+    }
+    return { requested: mode === 'on', mode, source: this.config.ai.extendedThinkingSource ?? 'default' };
+  }
+
+  /** The applied-keyed notice (spec §3): once per agent run, only when thinking was requested. */
+  private emitThinkingNotice(runConditions: AgentResult['runConditions']): void {
+    const notice = runConditions ? thinkingNotice(runConditions) : undefined;
+    if (notice) this.logger[notice.level](notice.text);
+  }
+
+  private async executeInner(
+    resolved: ResolvedDefinition,
+    input: ExecutionInput,
+    options: ExecutionOptions | undefined,
+    decision: ThinkingDecision,
+    seen: { model?: ResolvedModel },
+  ): Promise<AgentResult> {
     const startTime = Date.now();
     const agentType = resolved.agentType ?? 'validator';
 
@@ -106,6 +171,7 @@ export class AgentExecutor {
     // window — and thus the effective budget — matches what generate() enforces.
     const budgetModelInput = this.config.ai.modelOverride ?? context.model;
     const resolvedForBudget = await this.aiProvider.resolveModel(budgetModelInput);
+    seen.model = resolvedForBudget;
     const effectiveBudget = deriveContextBudget({
       modelWindow: resolvedForBudget.contextWindow,
       // EXTERNAL-OK: routed through usableBudget at both readers (deriveContextBudget and the eviction trigger);
@@ -129,6 +195,8 @@ export class AgentExecutor {
       tools: toolAdapter.adapter.getTools(),
       maxTokens: context.maxTokens,
       maxSteps: context.maxSteps,
+      // Resolved here (per-run > config > env > off); AIProvider gates it per provider and reports back.
+      extendedThinking: decision.requested,
       timeoutMs: context.timeoutMs,
       temperature: context.temperature,
       // Threaded from ExecutionOptions, not from `context`: a cancel is a per-RUN event
@@ -154,6 +222,14 @@ export class AgentExecutor {
         : { output: { schema: agentOutputSchema, name: 'AgentResult' } }),
     });
 
+    // The record of what this run executed under (spec §7.3), on every path below.
+    const runConditions = buildRunConditions(
+      decision,
+      result.thinking,
+      result.usage.reasoning_tokens ?? result.usage.thinking_tokens,
+      reasonsByDefault(resolvedForBudget),
+    );
+
     // 3. Parse and extract output
     const rawText = result.text ?? '';
     this.logRawOutput(rawText, result.finishReason);
@@ -169,13 +245,17 @@ export class AgentExecutor {
       // generate() whose tokens and cost are in hand; discarding them here is how the
       // most expensive run class core produces came to be recorded as zero tokens by the
       // rejection handlers downstream. The error is the only channel those handlers have.
-      throw new MaxStepsExhaustedError(
+      const exhausted = new MaxStepsExhaustedError(
         `Agent '${resolved.name}' exhausted the ${context.maxSteps}-step tool loop while still calling tools and produced no output. ` +
           `Raise maxSteps, narrow the target, or lower the context budget so wrap-up triggers earlier.`,
         result.steps,
         result.finishReason,
         this.buildMetrics(result, Date.now() - startTime),
       );
+      // Thrown here, after a successful generate(), so the provider never saw it: carry the run
+      // conditions from the result in hand. The most expensive thinking-on run class (spec §3 item 3).
+      attachThinking(exhausted, { ...(result.thinking ?? { applied: runConditions.thinkingApplied }), runConditions });
+      throw exhausted;
     }
 
     const { parsed, extraction } = this.parseOutput(result, agentType);
@@ -224,7 +304,10 @@ export class AgentExecutor {
     // derived completeness — see deriveCompleteness().
     const executionMarkers = this.collectExecutionMarkers(result, rawText, extraction, toolAdapter.budgetTracker, toolAdapter.shellSchemaFallback);
 
-    return this.buildResult(resolved, agentType, context, parsed, effectiveDecision, extraction, recommendations, durationMs, metrics, decisionCategory, rawText, executionMarkers);
+    return {
+      ...this.buildResult(resolved, agentType, context, parsed, effectiveDecision, extraction, recommendations, durationMs, metrics, decisionCategory, rawText, executionMarkers),
+      runConditions,
+    };
   }
 
   /**
@@ -730,8 +813,9 @@ export class AgentExecutor {
 
     return {
       model: options?.model ?? defaults?.model ?? this.config.ai.modelOverride ?? DEFAULT_MODEL_ALIAS,
-      // EXTERNAL-OK: forwarded to the AI SDK as a generation option; it bounds the PROVIDER call, not any
-      // arithmetic here, and the SDK rejects a malformed value at its own boundary.
+      // EXTERNAL-OK: forwarded raw; no arithmetic here. AIProvider's thinking caps DO compute on it
+      // (Google half-cap, OpenRouter max_tokens + budget) and seam it through finitePositive first —
+      // agent YAML `max_tokens: "8000"` arrives as a string (thinking-capability-restore spec §4.2 item 5).
       maxTokens: options?.maxTokens ?? defaults?.maxTokens ?? DEFAULT_MAX_TOKENS,
       // NOT external-ok, and the waiver that used to sit here was false. It claimed the
       // value "reaches no arithmetic and no threshold" and goes "straight to a client that

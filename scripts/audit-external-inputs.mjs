@@ -108,7 +108,7 @@ const CHANNELS = [
     // was absent from this instrument — the seam and the guard, written in one sitting,
     // disagreed about what the surface is. Both of pass 7's new criticals (Semaphore(NaN),
     // TokenBudgetTracker.update(NaN)) live in the channel that was dropped.
-    re: /\bconstructor\s*\([^)]*\b(?:permits|budget|maxConcurrency|timeout|limit|max[A-Z]\w*)\b|\bconfig\s*\.\s*(?:maxConcurrency|timeout|maxRetries|contextBudget|defaultThinkingBudget)\b|\boptions\s*\?\.\s*(?:maxTokens|timeoutMs|temperature|maxSteps|maxRetries)\b/,
+    re: /\bconstructor\s*\([^)]*\b(?:permits|budget|maxConcurrency|timeout|limit|max[A-Z]\w*)\b|\bconfig\s*\.\s*(?:maxConcurrency|timeout|maxRetries|contextBudget|defaultThinkingBudget)\b|\boptions\s*\?\.\s*(?:maxTokens|timeoutMs|temperature|maxSteps|maxRetries|thinkingBudget|extendedThinking)\b|\bai\s*\?\.\s*extendedThinking\b/,
   },
   {
     id: 'dynamic-import',
@@ -289,6 +289,9 @@ if (process.argv.includes('--control')) {
     "export const j = (result: any) => result.totalUsage;",
     // public-api-arg: a library consumer's value crossing into the package.
     "export class K { constructor(permits: number) { this.n = permits; } n = 0; }",
+    // public-api-arg: the extended-thinking switch at the per-run and client-config layers (T14).
+    "export const m = (options: any) => options?.extendedThinking;",
+    "export const n = (ai: any) => ai?.extendedThinking;",
     // PARTIALLY GUARDED — one read inside a seam call, one raw, on the SAME LINE.
     //
     // The only plant that exercises `fullyGuarded`. Every line above is seamless, so all ten
