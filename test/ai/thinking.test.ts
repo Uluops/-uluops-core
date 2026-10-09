@@ -118,6 +118,9 @@ describe('planThinking — the per-provider gate', () => {
     requested: true, provider: 'google', providerModelId: 'gemini-2.5-flash', capable: true,
     callerNative: false, budget: 10_000, maxTokens: 16_384,
   };
+  /** Shared builder for the repeated OpenRouter gate-input shape (provider + providerModelId over `base`). */
+  const orBase = (providerModelId: string, overrides: Partial<ThinkingGateInput> = {}): ThinkingGateInput =>
+    ({ ...base, provider: 'openrouter', providerModelId, ...overrides });
 
   it('reasons, first that applies wins: not-requested → not-capable → no-mapping → invalid-budget', () => {
     expect(planThinking({ ...base, requested: false, capable: false, provider: 'mistral' })).toEqual({ applied: false, reason: 'not-requested' });
@@ -157,13 +160,13 @@ describe('planThinking — the per-provider gate', () => {
     expect(planThinking({ ...base, maxTokens: 2048 })).toMatchObject({ applied: true, budget: 1024 });
     expect(planThinking({ ...base, maxTokens: 2046 })).toEqual({ applied: false, reason: 'invalid-budget' });
     // OpenRouter non-anthropic (OD-25 half floor): 2048 − ceil(2048/2) = 1024 accepted; 2047 − 1024 = 1023 refused.
-    const or = { ...base, provider: 'openrouter', providerModelId: 'deepseek/deepseek-r1', budget: 5000 };
+    const or = orBase('deepseek/deepseek-r1', { budget: 5000 });
     expect(planThinking({ ...or, maxTokens: 2048 })).toMatchObject({ applied: true, budget: 1024 });
     expect(planThinking({ ...or, maxTokens: 2047 })).toEqual({ applied: false, reason: 'invalid-budget' });
   });
 
   it('OpenRouter anthropic/: max_tokens raised by the budget, capped at the model limit, beta sent (T16, probes P4/P6F)', () => {
-    const or = { ...base, provider: 'openrouter', providerModelId: 'anthropic/claude-sonnet-4.5' };
+    const or = orBase('anthropic/claude-sonnet-4.5');
     expect(planThinking({ ...or, maxOutputTokens: 64_000 }))
       .toEqual({ applied: true, native: false, kind: 'budget', budget: 10_000, maxOutputTokens: 26_384, interleaved: true });
     expect(planThinking({ ...or, maxOutputTokens: 20_000 })).toMatchObject({ budget: 10_000, maxOutputTokens: 20_000 });
@@ -177,7 +180,7 @@ describe('planThinking — the per-provider gate', () => {
   it('OpenRouter other upstreams: max_tokens untouched, the answer keeps half (OD-25), no beta', () => {
     // NC (review: code-auditor, P7, F1): the old rule kept only budget < max_tokens — 20000 → 16383,
     // one visible token. Now budget ≤ 16384 − 8192 = 8192.
-    const or = { ...base, provider: 'openrouter', providerModelId: 'deepseek/deepseek-r1' };
+    const or = orBase('deepseek/deepseek-r1');
     expect(planThinking(or)).toEqual({ applied: true, native: false, kind: 'budget', budget: 8192, capped: true });
     expect(planThinking({ ...or, budget: 20_000 })).toMatchObject({ budget: 8192 });
     expect(planThinking({ ...or, budget: 4000 })).toEqual({ applied: true, native: false, kind: 'budget', budget: 4000 });

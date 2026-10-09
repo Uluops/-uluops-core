@@ -6,6 +6,11 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) 
 
 ## [Unreleased]
 
+### Changed
+
+- Docs: the `listModels` JSDoc example and the README's `CapabilityError` row named the deprecated
+  capability `extendedThinking`; both now show `reasoning`, the name the registry serves.
+
 ## [0.51.0] - 2026-10-08
 
 Extended thinking becomes an explicit, working opt-in (thinking-capability-restore spec v0.7.0).

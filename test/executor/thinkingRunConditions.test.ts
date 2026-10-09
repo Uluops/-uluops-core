@@ -15,10 +15,40 @@ import { AgentExecutor } from '../../src/executor/AgentExecutor.js';
 import { MaxStepsExhaustedError, hasBilledMetrics } from '../../src/errors/index.js';
 import { attachThinking, thinkingOutcomeOf } from '../../src/ai/thinking.js';
 import { crashPlaceholder, abortedPlaceholder } from '../../src/utils/crashPlaceholder.js';
-import type { AIProvider } from '../../src/ai/AIProvider.js';
+import { AIProvider } from '../../src/ai/AIProvider.js';
+import type { ModelCatalog } from '../../src/ai/ModelCatalog.js';
 import type { ResolvedConfig } from '../../src/types/config.js';
 import type { ResolvedDefinition, AgentRuntime } from '../../src/types/registry.js';
 import type { Logger } from '@uluops/sdk-core';
+
+// T5 (thinking-capability-restore v0.7.0 §10): the two tests below build a REAL AIProvider
+// (only the underlying `ai` SDK call and the bundled provider factories are mocked, exactly as
+// test/ai/thinking.test.ts does) so the actual buildOpenAIOptions/buildGoogleOptions run through
+// AgentExecutor, rather than through the fully-stubbed `ai()` AIProvider used by every other
+// test in this file. Every provider factory is mocked (not just openai/google) so this mirrors
+// the established pattern exactly, even though only openai/google credentials are configured below.
+vi.mock('ai', async (importOriginal) => ({
+  ...(await importOriginal<typeof import('ai')>()),
+  generateText: vi.fn(),
+  stepCountIs: vi.fn((n: number) => ({ type: 'stepCount', count: n })),
+  tool: vi.fn((t: unknown) => t),
+  Output: { object: vi.fn((schema: unknown) => ({ type: 'output-object', schema })) },
+}));
+const { fakeFactory } = vi.hoisted(() => ({
+  fakeFactory: (kind: string) => vi.fn(() => {
+    const p = vi.fn((modelId: string) => ({ modelId, type: kind })) as unknown as Record<string, unknown>;
+    p['tools'] = {};
+    return p;
+  }),
+}));
+vi.mock('@ai-sdk/anthropic', () => ({ createAnthropic: fakeFactory('anthropic') }));
+vi.mock('@ai-sdk/openai', () => ({ createOpenAI: fakeFactory('openai') }));
+vi.mock('@ai-sdk/google', () => ({ createGoogleGenerativeAI: fakeFactory('google') }));
+vi.mock('@openrouter/ai-sdk-provider', () => ({ createOpenRouter: fakeFactory('openrouter') }));
+
+const { generateText: realGenerateText } = await import('ai');
+const mockGenerateText = vi.mocked(realGenerateText);
+const lastRealCall = () => mockGenerateText.mock.calls.at(-1)![0] as Record<string, any>;
 
 const baseConfig: ResolvedConfig = {
   apiKey: 'k',
@@ -72,6 +102,32 @@ function ai(generate: () => Promise<unknown>, resolveModel: () => Promise<unknow
 
 const sentThinking = (p: AIProvider) =>
   ((p.generate as ReturnType<typeof vi.fn>).mock.calls[0]![0] as { extendedThinking?: boolean }).extendedThinking;
+
+// ── T5 fixtures: resolved models for the other two mapped providers (MAPPED_THINKING_PROVIDERS) ──
+const reasoningOpenAI = {
+  provider: 'openai', modelId: 'gpt-5', providerModelId: 'gpt-5',
+  tier: 'reasoning', capabilities: { tools: true, reasoning: true, extendedThinking: true },
+  contextWindow: 400_000, maxOutputTokens: 128_000, registered: true, resolvedFrom: 'gpt-5',
+};
+const reasoningGoogle = {
+  provider: 'google', modelId: 'gemini-2.5-flash', providerModelId: 'gemini-2.5-flash',
+  tier: 'reasoning', capabilities: { tools: true, reasoning: true, extendedThinking: true },
+  contextWindow: 1_000_000, maxOutputTokens: 65_536, registered: true, resolvedFrom: 'gemini-2.5-flash',
+};
+
+/** A REAL AIProvider (only `ai`'s generateText and the bundled factories are mocked) resolving to `resolved`. */
+function realAIProvider(resolved: unknown, cfg: ResolvedConfig): AIProvider {
+  const catalog = { resolve: vi.fn().mockResolvedValue(resolved) } as unknown as ModelCatalog;
+  return new AIProvider(cfg, catalog, logger());
+}
+
+function realOk(reasoningTokens: number) {
+  mockGenerateText.mockResolvedValueOnce({
+    text: JSON.stringify({ decision: 'PASS', score: 90, maxScore: 100, categories: [] }),
+    usage: { inputTokens: 10, outputTokens: 900, outputTokenDetails: { reasoningTokens } },
+    steps: [], finishReason: 'stop', providerMetadata: {},
+  } as never);
+}
 
 describe('AgentExecutor — run conditions and the thinking decision', () => {
   let target: string;
@@ -227,5 +283,40 @@ describe("T10 (0.51.0 form): the agent's own preference is not read; 'declared' 
     const r = resolveAIConfig({ providers: {}, extendedThinking: 'declared' as never }, {});
     expect(r.extendedThinkingMode).toBe('off');
     expect(r.extendedThinkingMalformed).toEqual({ layer: 'config', value: 'declared' });
+  });
+});
+
+describe('T5: the gate exercised through a REAL AIProvider, per mapped provider (not only openrouter)', () => {
+  let target: string;
+  beforeEach(async () => {
+    target = await fs.mkdtemp(path.join(os.tmpdir(), 'thinking-rc-t5-'));
+    await fs.writeFile(path.join(target, 'index.ts'), 'export const x = 1;\n');
+  });
+  afterEach(async () => { await fs.rm(target, { recursive: true, force: true }); });
+
+  it('OpenAI: reasoningEffort is sent (effort kind, no budget); runConditions records it applied', async () => {
+    const cfg = {
+      ...baseConfig,
+      ai: { ...baseConfig.ai, providers: { ...baseConfig.ai.providers, openai: { apiKey: 'o' } }, extendedThinkingMode: 'on' as const, extendedThinkingSource: 'config' as const },
+    };
+    const provider = realAIProvider(reasoningOpenAI, cfg);
+    realOk(400);
+    const result = await new AgentExecutor(cfg, provider, logger()).execute(def, { target });
+    expect(lastRealCall()['providerOptions']?.openai?.reasoningEffort).toBe('medium');
+    expect(result.runConditions).toMatchObject({ extendedThinking: true, thinkingApplied: true, thinkingObserved: 'yes' });
+    expect(result.runConditions).not.toHaveProperty('thinkingBudget');
+  });
+
+  it('Google: thinkingConfig.thinkingBudget is sent, capped at half maxTokens; runConditions records the budget', async () => {
+    const cfg = {
+      ...baseConfig,
+      ai: { ...baseConfig.ai, providers: { ...baseConfig.ai.providers, google: { apiKey: 'g' } }, extendedThinkingMode: 'on' as const, extendedThinkingSource: 'config' as const },
+    };
+    const provider = realAIProvider(reasoningGoogle, cfg);
+    realOk(500);
+    const result = await new AgentExecutor(cfg, provider, logger()).execute(def, { target });
+    // 8192 = floor(16384 / 2): the default budget 10_000 exceeds half the default maxTokens (T16, mirrors thinking.test.ts).
+    expect(lastRealCall()['providerOptions']?.google?.thinkingConfig).toEqual({ thinkingBudget: 8_192 });
+    expect(result.runConditions).toMatchObject({ extendedThinking: true, thinkingApplied: true, thinkingBudget: 8_192, thinkingObserved: 'yes' });
   });
 });

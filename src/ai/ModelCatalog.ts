@@ -294,7 +294,7 @@ export class ModelCatalog {
    * List available models, optionally filtered.
    *
    * @param filter - Optional filters: `provider`, `tier`, and `capability`
-   *   (a key of {@link ModelCapabilities}, e.g. `'tools'`, `'extendedThinking'`).
+   *   (a key of {@link ModelCapabilities}, e.g. `'tools'`, `'reasoning'`).
    * @returns The matching array of {@link Model} entries from the registry.
    */
   async listModels(filter?: {
