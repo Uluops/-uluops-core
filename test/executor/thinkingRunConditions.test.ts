@@ -128,6 +128,14 @@ describe('AgentExecutor — run conditions and the thinking decision', () => {
     expect(log.warn).toHaveBeenCalledWith(expect.stringContaining('requested (by this run\'s extendedThinking option) but not applied: no-mapping'));
   });
 
+  it("T12: requested but 'invalid-budget' warns end-to-end, naming the reason", async () => {
+    const log = logger();
+    const p = ai(async () => ({ ...passing, thinking: { applied: false, notAppliedReason: 'invalid-budget' } }));
+    const result = await new AgentExecutor(baseConfig, p, log).execute(def, { target }, { extendedThinking: true });
+    expect(result.runConditions).toMatchObject({ thinkingApplied: false, thinkingNotAppliedReason: 'invalid-budget' });
+    expect(log.warn).toHaveBeenCalledWith(expect.stringContaining('but not applied: invalid-budget'));
+  });
+
   it('thrown provider error: rethrown as the SAME object, with the full record attached', async () => {
     const provErr = new Error('No endpoints found');
     attachThinking(provErr, { applied: true, budget: 10_000, interleaved: true });

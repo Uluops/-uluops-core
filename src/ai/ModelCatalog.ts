@@ -126,6 +126,12 @@ export interface ResolveOptions {
   preferredProvider?: string;
 }
 
+/** A registry token limit as a whole number, or undefined (finite and positive first; a fractional limit would reach the wire as a fractional max_tokens). */
+function wholeTokens(value: unknown): number | undefined {
+  const n = finitePositive(value);
+  return n === undefined ? undefined : Math.floor(n);
+}
+
 const VALID_TIERS: readonly string[] = ['budget', 'standard', 'premium', 'reasoning'];
 
 // Capabilities assumed for models ABSENT from the registry — reached only on two
@@ -346,7 +352,7 @@ export class ModelCatalog {
       tier: model.tier,
       capabilities: model.capabilities,
       contextWindow: model.limits?.context || undefined,
-      maxOutputTokens: finitePositive(model.limits?.output),
+      maxOutputTokens: wholeTokens(model.limits?.output),
       cost: sanitizeModelCost(model.cost),
       registered: true,
       resolvedFrom: providerModelId,
@@ -391,7 +397,7 @@ export class ModelCatalog {
       tier: model.tier,
       capabilities: model.capabilities,
       contextWindow: model.limits?.context || undefined,
-      maxOutputTokens: finitePositive(model.limits?.output),
+      maxOutputTokens: wholeTokens(model.limits?.output),
       cost: sanitizeModelCost(model.cost),
       registered: true,
       resolvedFrom: tier,
@@ -501,7 +507,7 @@ export class ModelCatalog {
       tier: model?.tier ?? 'standard',
       capabilities: model?.capabilities ?? DEFAULT_CAPABILITIES,
       contextWindow: model?.limits?.context || undefined,
-      maxOutputTokens: finitePositive(model?.limits?.output),
+      maxOutputTokens: wholeTokens(model?.limits?.output),
       cost: sanitizeModelCost(model?.cost),
       // The alias resolved, but the response may carry no model object; only
       // the object's presence proves a catalog row exists.

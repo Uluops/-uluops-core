@@ -461,12 +461,13 @@ export interface AgentTone {
  * Base agent result fields shared by both validator and executor results
  */
 /**
- * Why a requested thinking run sent no thinking option. Single-valued; the first that applies wins
- * (not-requested → not-capable → no-mapping → invalid-budget). `pre-build-failure`: the run threw
- * before any provider builder ran, so nothing was decided.
+ * Why a run sent no thinking option. Single-valued; the first that applies wins (caller-native →
+ * not-requested → not-capable → no-mapping → invalid-budget). `caller-native`: the caller's own
+ * provider-native option explicitly turned thinking OFF (e.g. Anthropic `thinking: {type:'disabled'}`).
+ * `pre-build-failure`: the run threw before any provider builder ran, so nothing was decided.
  */
 export type ThinkingNotAppliedReason =
-  | 'not-requested' | 'not-capable' | 'no-mapping' | 'invalid-budget' | 'pre-build-failure';
+  | 'caller-native' | 'not-requested' | 'not-capable' | 'no-mapping' | 'invalid-budget' | 'pre-build-failure';
 
 /** Run conditions (spec §7.3). See {@link AgentResult.runConditions}. */
 export interface RunConditions {

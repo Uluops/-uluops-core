@@ -50,7 +50,7 @@ import { usableBudget, resolveRequestTimeoutMs, finitePositive, finiteNonNegativ
 import { firstDataCollection } from '../utils/dataCollection.js';
 import { isDeadlineSignal } from '../utils/runStop.js';
 import {
-  canThink, planThinking, outcomeOf, attachThinking, hasNativeThinking, thinkingRequestShape,
+  canThink, planThinking, outcomeOf, attachThinking, hasNativeThinking, nativeThinkingDisabled, thinkingRequestShape,
   type ThinkingPlan, type ThinkingOutcome,
 } from './thinking.js';
 
@@ -593,6 +593,7 @@ export class AIProvider {
       providerModelId: resolved.providerModelId,
       capable: canThink(resolved),
       callerNative: hasNativeThinking(resolved.provider, options.providerOptions),
+      callerNativeOff: nativeThinkingDisabled(resolved.provider, options.providerOptions),
       // EXTERNAL-OK: seamed inside planThinking (finitePositive, then the per-provider caps and the
       // 1024 floor); a malformed budget becomes 'invalid-budget' and sends nothing.
       budget: this.config.defaultThinkingBudget,
@@ -604,6 +605,14 @@ export class AIProvider {
       this.googleCapNoticeShown = true;
     }
     const thinking = outcomeOf(thinkingPlan);
+    // One max_tokens for the plan and the wire (core 0.51.0 review: code-auditor, anxiety F10). The
+    // OpenRouter raise replaces the caller's value only when that value is absent or a positive
+    // integer. A malformed one (agent YAML `max_tokens: "8000"`, a fraction) goes out raw and fails at
+    // the SDK exactly as it does with thinking off — never silently repaired into a larger cap.
+    const requestShape = thinkingRequestShape(thinkingPlan);
+    const callerMaxTokensUsable = options.maxTokens === undefined
+      || (finitePositive(options.maxTokens) !== undefined && Number.isInteger(options.maxTokens));
+    if (!callerMaxTokensUsable) delete requestShape.maxOutputTokens;
     const providerOptions = this.buildProviderOptions(resolved, options.providerOptions, options.contextBudget, thinkingPlan);
     const system = this.buildSystemMessage(resolved.provider, options.system);
     // ASSUMPTION (2026-04-16): the model catalog's capability flags
@@ -634,7 +643,7 @@ export class AIProvider {
     const stepTotals = emptyStepTotals();
     let result;
     try {
-      result = await this.executeGeneration(options, languageModel, system, providerOptions, useStructuredOutput, isReasoning, stepTotals, thinkingRequestShape(thinkingPlan));
+      result = await this.executeGeneration(options, languageModel, system, providerOptions, useStructuredOutput, isReasoning, stepTotals, requestShape);
     } catch (error) {
       return this.handleGenerateError(error, resolved, useStructuredOutput, resolveRequestTimeoutMs(options.timeoutMs, this.config.timeout), stepTotals, options.abortSignal, thinking);
     }

@@ -135,15 +135,31 @@ describe('planThinking — the per-provider gate', () => {
     expect(planThinking({ ...base, provider: 'anthropic', callerNative: true })).toEqual({ applied: true, native: true });
   });
 
+  it("a native block that turns thinking OFF is recorded as not applied, reason 'caller-native' (review P2/F4)", () => {
+    expect(planThinking({ ...base, callerNative: true, callerNativeOff: true }))
+      .toEqual({ applied: false, reason: 'caller-native', native: true });
+  });
+
   it('OpenAI takes an effort, not a budget', () => {
     expect(planThinking({ ...base, provider: 'openai', budget: Number.NaN })).toEqual({ applied: true, native: false, kind: 'effort' });
   });
 
   it('Google: budget capped at half of maxTokens; below the 1024 floor sends nothing, never a capped 0 (T16)', () => {
+    // 8192 = floor(16384 / 2): the default budget 10000 exceeds half the default maxTokens.
     expect(planThinking(base)).toEqual({ applied: true, native: false, kind: 'budget', budget: 8192, capped: true });
     expect(planThinking({ ...base, budget: 5000 })).toEqual({ applied: true, native: false, kind: 'budget', budget: 5000 });
     expect(planThinking({ ...base, maxTokens: 2000 })).toEqual({ applied: false, reason: 'invalid-budget' });
     expect(planThinking({ ...base, budget: 5000.9 })).toMatchObject({ budget: 5000 });
+  });
+
+  it('the 1024 floor is inclusive at exactly 1024, on both floors (boundary — test-architect mutation <→<=)', () => {
+    // Google: maxTokens 2048 → cap 1024 → accepted; 2046 → cap 1023 → refused.
+    expect(planThinking({ ...base, maxTokens: 2048 })).toMatchObject({ applied: true, budget: 1024 });
+    expect(planThinking({ ...base, maxTokens: 2046 })).toEqual({ applied: false, reason: 'invalid-budget' });
+    // OpenRouter non-anthropic: budget kept below max_tokens — 1025 → 1024 accepted; 1024 → 1023 refused.
+    const or = { ...base, provider: 'openrouter', providerModelId: 'deepseek/deepseek-r1', budget: 5000 };
+    expect(planThinking({ ...or, maxTokens: 1025 })).toMatchObject({ applied: true, budget: 1024 });
+    expect(planThinking({ ...or, maxTokens: 1024 })).toEqual({ applied: false, reason: 'invalid-budget' });
   });
 
   it('OpenRouter anthropic/: max_tokens raised by the budget, capped at the model limit, beta sent (T16, probes P4/P6F)', () => {
@@ -162,6 +178,33 @@ describe('planThinking — the per-provider gate', () => {
     // Probe P4's case: budget 1024 over max_tokens 800 — OpenRouter would silently raise the cap and bill past it.
     expect(planThinking({ ...or, budget: 1024, maxTokens: 800 })).toEqual({ applied: false, reason: 'invalid-budget' });
     expect(MIN_THINKING_BUDGET).toBe(1024);
+  });
+});
+
+describe('nativeThinkingDisabled — the explicit-off shapes', () => {
+  it('reads each provider\'s documented off shape; anything else present is on', async () => {
+    const { nativeThinkingDisabled } = await import('../../src/ai/thinking.js');
+    expect(nativeThinkingDisabled('anthropic', { anthropic: { thinking: { type: 'disabled' } } })).toBe(true);
+    expect(nativeThinkingDisabled('anthropic', { anthropic: { thinking: { type: 'enabled', budgetTokens: 2000 } } })).toBe(false);
+    expect(nativeThinkingDisabled('openai', { openai: { reasoningEffort: 'none' } })).toBe(true);
+    expect(nativeThinkingDisabled('openai', { openai: { reasoningEffort: 'minimal' } })).toBe(false);
+    expect(nativeThinkingDisabled('google', { google: { thinkingConfig: { thinkingBudget: 0 } } })).toBe(true);
+    expect(nativeThinkingDisabled('openrouter', { openrouter: { reasoning: { enabled: false } } })).toBe(true);
+    expect(nativeThinkingDisabled('openrouter', { openrouter: { reasoning: { effort: 'none' } } })).toBe(true);
+    expect(nativeThinkingDisabled('openrouter', { openrouter: { reasoning: { effort: 'low' } } })).toBe(false);
+    expect(nativeThinkingDisabled('openai', undefined)).toBe(false);
+  });
+
+  it('through generate(): a disabled native block records caller-native, native, not applied', async () => {
+    const provider = providerFor(routedClaude());
+    ok();
+    const r = await provider.generate({
+      model: 'or', system: 's', prompt: 'p', extendedThinking: true,
+      providerOptions: { openrouter: { reasoning: { enabled: false } } },
+    });
+    expect(r.thinking).toEqual({ applied: false, notAppliedReason: 'caller-native', native: true });
+    expect(buildRunConditions({ requested: true, mode: 'off', source: 'request' }, r.thinking, 0, false))
+      .toMatchObject({ thinkingApplied: false, thinkingNotAppliedReason: 'caller-native', extendedThinkingSource: 'native' });
   });
 });
 
@@ -234,6 +277,16 @@ describe('thrown-path carrier', () => {
     expect(thinkingOutcomeOf(locked)).toBeUndefined();
   });
 
+  it('never overwrites a foreign `thinking` property, but does replace its own carrier', () => {
+    const foreign = Object.assign(new Error('x'), { thinking: 'theirs' });
+    attachThinking(foreign, { applied: true });
+    expect((foreign as unknown as { thinking: unknown }).thinking).toBe('theirs');
+    const ours = new Error('y');
+    attachThinking(ours, { applied: false, notAppliedReason: 'no-mapping' });
+    attachThinking(ours, { applied: true, budget: 2000 });
+    expect(thinkingOutcomeOf(ours)).toEqual({ applied: true, budget: 2000 });
+  });
+
   it('validates shape, not presence: a foreign `thinking` property reads as undefined', () => {
     const foreign = Object.assign(new Error('x'), { thinking: { applied: true } });
     expect(thinkingOutcomeOf(foreign)).toBeUndefined();
@@ -272,8 +325,10 @@ describe('run conditions and the notice', () => {
     expect(buildRunConditions(decision, { applied: true, native: true }, undefined, false).extendedThinkingSource).toBe('native');
   });
 
-  it('no notice when thinking was not requested', () => {
+  it('no notice when thinking was not requested — unless the caller\'s native options turned it on (review P3)', () => {
     expect(thinkingNotice(buildRunConditions({ ...decision, requested: false }, { applied: false, notAppliedReason: 'not-requested' }, 0, false))).toBeUndefined();
+    const native = thinkingNotice(buildRunConditions({ ...decision, requested: false }, { applied: true, native: true }, 50, false));
+    expect(native).toEqual({ level: 'info', text: expect.stringContaining('provider-native options; not capped by core') });
   });
 
   it('reasonsByDefault: OpenAI and always-thinking Claude yes; Sonnet 4.5 direct and via OpenRouter no', () => {
@@ -316,6 +371,7 @@ describe('AIProvider gates, through generate()', () => {
     const call = lastCall();
     expect(call['providerOptions'].openrouter.reasoning).toEqual({ max_tokens: 10_000 });
     expect(call['providerOptions'].openrouter.provider.data_collection).toBe('deny');
+    // 26384 = maxTokens 16384 + budget 10000, under the model's 64000 output limit.
     expect(call['maxOutputTokens']).toBe(26_384);
     expect(call['headers']).toEqual({ 'x-anthropic-beta': 'interleaved-thinking-2025-05-14' });
     expect(r.thinking).toEqual({ applied: true, budget: 10_000, interleaved: true });
@@ -331,12 +387,16 @@ describe('AIProvider gates, through generate()', () => {
     expect(call).not.toHaveProperty('headers');
   });
 
-  it('an agent max_tokens that arrives as a string is seamed before the caps (no NaN budget)', async () => {
+  it('a malformed agent max_tokens is planned safely but NOT repaired on the wire (same failure as thinking off)', async () => {
+    // NC (core 0.51.0 review, code-auditor + anxiety F10): the plan seamed "8000" to the 16384 default and
+    // the raise then SENT 26384 — a cap the definition never set, on the one path where thinking was on.
     const provider = providerFor(routedClaude());
-    ok();
-    const r = await provider.generate({ model: 'or', system: 's', prompt: 'p', extendedThinking: true, maxTokens: '8000' as never });
-    expect(r.thinking).toEqual({ applied: true, budget: 10_000, interleaved: true });
-    expect(lastCall()['maxOutputTokens']).toBe(26_384);
+    for (const bad of ['8000', 8000.5]) {
+      ok();
+      const r = await provider.generate({ model: 'or', system: 's', prompt: 'p', extendedThinking: true, maxTokens: bad as never });
+      expect(r.thinking?.budget).toBe(10_000);
+      expect(lastCall()['maxOutputTokens']).toBe(bad);
+    }
   });
 
   it('client config on (no per-call value): a direct AIProvider caller gets the same rule', async () => {

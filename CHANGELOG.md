@@ -39,22 +39,35 @@ re-arm them — it makes thinking off by default, opt-in, and recorded.
 ### Changed
 
 - **Thinking is off unless opted in, on every provider.** The OpenAI, Google and OpenRouter gates now
-  require the opt-in. **This is a behaviour change only on paper**: the old gates never fired (they read
-  a field that was always undefined), so no run that thought before stops thinking now — but with
-  `@uluops/registry-sdk` 0.61.0 (pinned in this release) they WOULD have fired, unasked, on every
-  reasoning-capable model. The capability-keyed Anthropic block is deleted, not gated: with 0.61.0 it
+  require the opt-in. On core's own path the old gates never fired (they read a field the pinned SDK
+  always returned undefined), so no run resolved through core's catalog stops thinking — and with
+  `@uluops/registry-sdk` 0.61.0 (pinned here) they WOULD have fired, unasked, on every reasoning-capable
+  model. **Two real changes ride along:** an embedder that injected its own catalog or mock reporting
+  `extendedThinking: true` had live gates, and those runs now stop thinking unless opted in; and
+  `requiredCapabilities: ['reasoning']` now resolves, so runs that used to fail with `CapabilityError`
+  now run and bill. The capability-keyed Anthropic block is deleted, not gated: with 0.61.0 it
   would have sent thinking with the forced json tool on every agent run, which Anthropic rejects (400).
 - **Direct Anthropic does not think until core 0.52.0.** An opt-in there records
   `thinkingApplied: false`, reason `'no-mapping'`. 0.52.0 adds the mapping with the structured-output
-  degrade it needs. OpenRouter-routed Claude models think from this release.
+  degrade it needs. OpenRouter-routed Claude models think from this release — **probed on
+  `anthropic/claude-sonnet-4.5` only** (Phase 0 P4/P6F, live check); other `anthropic/` ids are expected
+  to behave the same and are unprobed.
 - **What "on" sends** (Phase 0 probes, 2026-10-08): OpenAI `reasoningEffort: 'medium'`; Google
   `thinkingBudget` capped at half of `maxTokens` (Gemini counts thinking inside `maxOutputTokens`);
   OpenRouter `reasoning.max_tokens` kept strictly below the `max_tokens` sent (OpenRouter silently
   raises the cap and bills past it otherwise) and, on `anthropic/…` models, `max_tokens` raised by the
   budget up to the model's output limit plus the `interleaved-thinking-2025-05-14` beta — without it
   Claude thinks on the first tool step only. Below a 1024 budget after capping, nothing is sent.
-- **"Off" means the provider default, not "no thinking"**: gpt-5.x, Gemini 2.5 and the always-adaptive
-  Claude models reason with nothing sent. Recorded as `offMeans: 'provider-default'`.
+- **"Off" means the provider default, not "no thinking"**: gpt-5 and gpt-5.5 reason with nothing sent
+  (probe P7); Gemini 2.5, DeepSeek/xAI reasoners and the always-thinking Claude models are expected to.
+  Recorded as `offMeans: 'provider-default'` — by a documented heuristic (upstream, plus the provider's
+  always-thinking list), not a measurement; `thinkingObserved` is the measurement.
+- A caller's native option that explicitly turns thinking OFF (`anthropic.thinking: {type:'disabled'}`,
+  `openai.reasoningEffort: 'none'`, `google.thinkingConfig.thinkingBudget: 0`, `openrouter.reasoning:
+  {enabled:false}` / `effort:'none'`) is recorded as not applied, reason `'caller-native'`; any other
+  native thinking option is recorded as applied, source `'native'`, and logs a notice (core does not cap it).
+- A malformed `max_tokens` (an agent YAML `"8000"`, a fraction) is never replaced by the OpenRouter
+  thinking raise: it goes out as given and fails exactly as it does with thinking off.
 - Enabling thinking does **not** change the OpenRouter `data_collection: 'deny'` default (D7).
 - The OpenRouter 402 pre-flight message names the `max_tokens` actually sent (and that it includes the
   thinking budget); the no-endpoint error names `reasoning` and the switch that turns it off.

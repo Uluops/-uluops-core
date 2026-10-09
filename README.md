@@ -684,6 +684,9 @@ without it, so nothing turns it on for you.
 A malformed value at any layer is **off at that layer** and does not fall through. A
 provider-native option you pass yourself (`providerOptions.openai.reasoningEffort`,
 `google.thinkingConfig`, `openrouter.reasoning`, `anthropic.thinking`) always wins and is not capped.
+An explicit native "off" (`thinking: {type:'disabled'}`, `reasoningEffort: 'none'`,
+`thinkingBudget: 0`, `reasoning: {enabled: false}`) is recorded as not applied (`'caller-native'`);
+any other native thinking option is recorded as applied from source `'native'`, and logs a notice.
 
 What "on" sends, per provider, on a model that can think (`capabilities.reasoning`, or the
 `reasoning` tier):
@@ -692,15 +695,17 @@ What "on" sends, per provider, on a model that can think (`capabilities.reasonin
 |---|---|---|
 | OpenAI | `reasoningEffort: 'medium'` | — (effort, not budget; `defaultThinkingBudget` is ignored) |
 | Google | `thinkingConfig.thinkingBudget` | Capped at half of `maxTokens`: Gemini counts thinking inside `maxOutputTokens`, and a budget at the cap leaves almost no answer. |
-| OpenRouter | `reasoning.max_tokens` | Kept strictly below the `max_tokens` sent — OpenRouter does not reject a budget at or above it, it silently raises the cap and bills past it. On `anthropic/…` models `max_tokens` is raised by the budget (up to the model's output limit) and the interleaved-thinking beta is sent, so every tool step thinks, not only the first. |
+| OpenRouter | `reasoning.max_tokens` | Kept strictly below the `max_tokens` sent — OpenRouter does not reject a budget at or above it, it silently raises the cap and bills past it. On `anthropic/…` models `max_tokens` is raised by the budget (up to the model's output limit) and the interleaved-thinking beta is sent, so every tool step thinks, not only the first (probed on `anthropic/claude-sonnet-4.5`; other `anthropic/` ids unprobed). |
 | Anthropic (direct) | nothing in 0.51.0 | Mapped in 0.52.0, with the structured-output degrade it needs (Anthropic rejects thinking with forced tool use). Until then a run records "not applied: no-mapping". |
 | Others | nothing | Recorded "not applied: no-mapping". |
 
 Below a 1024-token budget after capping, nothing is sent and the run records `'invalid-budget'`.
 
-**"Off" means the provider default, not "no thinking".** Off sends nothing — and gpt-5.x, Gemini
-2.5, DeepSeek/xAI reasoners and the always-adaptive Claude models (Sonnet 5.5, Opus 5.5, Fable 5)
-reason anyway. Those runs record `offMeans: 'provider-default'`.
+**"Off" means the provider default, not "no thinking".** Off sends nothing — and gpt-5 and gpt-5.5
+reason anyway (measured); Gemini 2.5, DeepSeek/xAI reasoners and the always-thinking Claude models
+(Sonnet 5.5, Opus 5.5, Fable 5) are expected to. Those runs record `offMeans: 'provider-default'`, by
+heuristic (upstream plus the provider's always-thinking list), not by measurement — read
+`thinkingObserved` for what the tokens showed.
 
 **Every agent result records what happened**, on `result.runConditions`: what was requested, from
 which layer, whether a thinking option was actually sent (`thinkingApplied`) and why not, the budget

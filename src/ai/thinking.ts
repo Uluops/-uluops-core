@@ -92,6 +92,8 @@ export interface ThinkingGateInput {
   capable: boolean;
   /** The caller's own provider-native thinking block is present (it always wins, §5.2). */
   callerNative: boolean;
+  /** …and that block explicitly turns thinking OFF ({@link nativeThinkingDisabled}). */
+  callerNativeOff?: boolean;
   /** `config.defaultThinkingBudget`, raw. */
   budget: unknown;
   maxTokens: number;
@@ -101,7 +103,7 @@ export interface ThinkingGateInput {
 
 /** What the gate decided. The builders emit exactly this; nothing else decides. */
 export type ThinkingPlan =
-  | { applied: false; reason: ThinkingNotAppliedReason }
+  | { applied: false; reason: ThinkingNotAppliedReason; native?: true }
   | { applied: true; native: true }
   | { applied: true; native: false; kind: 'effort' }
   | {
@@ -129,6 +131,9 @@ export function isOpenRouterAnthropic(providerModelId: string): boolean {
  * there (§7.3); it bypasses core's caps, and the record says so by its source.
  */
 export function planThinking(input: ThinkingGateInput): ThinkingPlan {
+  // A native block that turns thinking off is recorded as off, not as "applied" — the record must not
+  // say thinking was on for a run whose caller disabled it (core 0.51.0 review: P2, F4).
+  if (input.callerNative && input.callerNativeOff) return { applied: false, reason: 'caller-native', native: true };
   if (input.callerNative) return { applied: true, native: true };
   if (!input.requested) return { applied: false, reason: 'not-requested' };
   if (!input.capable) return { applied: false, reason: 'not-capable' };
@@ -191,6 +196,27 @@ export function hasNativeThinking(provider: string, providerOptions: unknown): b
   }
 }
 
+/**
+ * Does the caller's native block explicitly turn thinking OFF? The explicit-off shapes each provider
+ * documents; anything else present is treated as "on" (the caller asked for some thinking shape).
+ * `reasoningEffort: 'minimal'` is NOT off — gpt-5 still reasons at minimal.
+ */
+export function nativeThinkingDisabled(provider: string, providerOptions: unknown): boolean {
+  if (!hasNativeThinking(provider, providerOptions)) return false;
+  const b = (providerOptions as Record<string, Record<string, unknown>>)[provider]!;
+  const obj = (v: unknown): Record<string, unknown> => (typeof v === 'object' && v !== null ? v as Record<string, unknown> : {});
+  switch (provider) {
+    case 'anthropic': return obj(b['thinking'])['type'] === 'disabled';
+    case 'openai': return b['reasoningEffort'] === 'none';
+    case 'google': return obj(b['thinkingConfig'])['thinkingBudget'] === 0;
+    case 'openrouter': {
+      const r = obj(b['reasoning']);
+      return r['enabled'] === false || r['effort'] === 'none' || r['max_tokens'] === 0;
+    }
+    default: return false;
+  }
+}
+
 /** The request-level parts of a plan that are not provider options: OpenRouter's raised max_tokens and the beta header. */
 export function thinkingRequestShape(plan: ThinkingPlan): { maxOutputTokens?: number; headers?: Record<string, string> } {
   if (!plan.applied || plan.native || plan.kind !== 'budget') return {};
@@ -215,7 +241,7 @@ export interface ThinkingOutcome {
 
 /** The plan, as the outcome a builder reports back. */
 export function outcomeOf(plan: ThinkingPlan): ThinkingOutcome {
-  if (!plan.applied) return { applied: false, notAppliedReason: plan.reason };
+  if (!plan.applied) return { applied: false, notAppliedReason: plan.reason, ...(plan.native ? { native: true } : {}) };
   if (plan.native) return { applied: true, native: true };
   return {
     applied: true,
@@ -263,7 +289,7 @@ export interface ThinkingCarrier extends ThinkingOutcome {
 }
 
 const REASONS: ReadonlySet<string> = new Set<ThinkingNotAppliedReason>([
-  'not-requested', 'not-capable', 'no-mapping', 'invalid-budget', 'pre-build-failure',
+  'caller-native', 'not-requested', 'not-capable', 'no-mapping', 'invalid-budget', 'pre-build-failure',
 ]);
 
 /**
@@ -273,6 +299,8 @@ const REASONS: ReadonlySet<string> = new Set<ThinkingNotAppliedReason>([
  */
 export function attachThinking(error: unknown, carrier: ThinkingCarrier): void {
   if (typeof error !== 'object' || error === null || !Object.isExtensible(error)) return;
+  // Never overwrite a foreign `thinking` property: only core's own (branded) carrier is replaced.
+  if (Object.prototype.hasOwnProperty.call(error, CARRIER_KEY) && thinkingOutcomeOf(error) === undefined) return;
   try {
     Object.defineProperty(error, CARRIER_KEY, {
       value: { ...carrier, brand: CARRIER_BRAND },
@@ -281,7 +309,8 @@ export function attachThinking(error: unknown, carrier: ThinkingCarrier): void {
       writable: true,
     });
   } catch {
-    // A non-configurable own `thinking` property, or a proxy that refuses: leave the error as it is.
+    // AUDIT-OK(no_empty_catch): the attach is best-effort by contract — a proxy or an exotic object that
+    // refuses the define leaves the original error to propagate without a carrier, never a new error.
   }
 }
 
@@ -349,7 +378,13 @@ export function buildRunConditions(
  * `info` otherwise. One line per agent run.
  */
 export function thinkingNotice(rc: RunConditions): { level: 'warn' | 'info'; text: string } | undefined {
-  if (!rc.extendedThinking) return undefined;
+  if (!rc.extendedThinking) {
+    // Not requested through core, but the caller's own native options turned thinking on: say so —
+    // it is the one thinking path core neither caps nor otherwise reports (core 0.51.0 review: P3).
+    return rc.extendedThinkingSource === 'native' && rc.thinkingApplied
+      ? { level: 'info', text: "Extended thinking on (set by the caller's provider-native options; not capped by core) — thinking tokens are billed as output." }
+      : undefined;
+  }
   const lever = rc.extendedThinkingSource === 'env' ? 'the ULUOPS_EXTENDED_THINKING environment variable'
     : rc.extendedThinkingSource === 'config' ? 'ai.extendedThinking in the client config'
     : rc.extendedThinkingSource === 'request' ? "this run's extendedThinking option"
