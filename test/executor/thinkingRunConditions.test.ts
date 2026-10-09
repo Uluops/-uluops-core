@@ -128,6 +128,22 @@ describe('AgentExecutor — run conditions and the thinking decision', () => {
     expect(log.warn).toHaveBeenCalledWith(expect.stringContaining('requested (by this run\'s extendedThinking option) but not applied: no-mapping'));
   });
 
+  it('OD-27: env-sourced "thinking on" warns once per executor, then debug; not-applied warnings stay per run', async () => {
+    const log = logger();
+    const cfg = { ...baseConfig, ai: { ...baseConfig.ai, extendedThinkingMode: 'on' as const, extendedThinkingSource: 'env' as const } };
+    const exec = new AgentExecutor(cfg, ai(async () => passing), log);
+    await exec.execute(def, { target });
+    await exec.execute(def, { target });
+    const onWarns = log.warn.mock.calls.filter(([m]) => String(m).includes('Extended thinking on'));
+    expect(onWarns).toHaveLength(1);
+    expect(log.debug.mock.calls.filter(([m]) => String(m).includes('Extended thinking on'))).toHaveLength(1);
+
+    const notApplied = new AgentExecutor(cfg, ai(async () => ({ ...passing, thinking: { applied: false, notAppliedReason: 'no-mapping' } })), log);
+    await notApplied.execute(def, { target });
+    await notApplied.execute(def, { target });
+    expect(log.warn.mock.calls.filter(([m]) => String(m).includes('not applied: no-mapping'))).toHaveLength(2);
+  });
+
   it("T12: requested but 'invalid-budget' warns end-to-end, naming the reason", async () => {
     const log = logger();
     const p = ai(async () => ({ ...passing, thinking: { applied: false, notAppliedReason: 'invalid-budget' } }));

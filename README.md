@@ -695,7 +695,7 @@ What "on" sends, per provider, on a model that can think (`capabilities.reasonin
 |---|---|---|
 | OpenAI | `reasoningEffort: 'medium'` | — (effort, not budget; `defaultThinkingBudget` is ignored) |
 | Google | `thinkingConfig.thinkingBudget` | Capped at half of `maxTokens`: Gemini counts thinking inside `maxOutputTokens`, and a budget at the cap leaves almost no answer. |
-| OpenRouter | `reasoning.max_tokens` | Kept strictly below the `max_tokens` sent — OpenRouter does not reject a budget at or above it, it silently raises the cap and bills past it. On `anthropic/…` models `max_tokens` is raised by the budget (up to the model's output limit) and the interleaved-thinking beta is sent, so every tool step thinks, not only the first (probed on `anthropic/claude-sonnet-4.5`; other `anthropic/` ids unprobed). |
+| OpenRouter | `reasoning.max_tokens` | Capped so the answer keeps at least half of `maxTokens` (budget ≤ sent `max_tokens` − ½ `maxTokens`) — OpenRouter counts thinking inside `max_tokens`, and a budget at or above it is not rejected: OpenRouter silently raises the cap and bills past it. On `anthropic/…` models `max_tokens` is raised by the budget (up to the model's output limit) and the interleaved-thinking beta is sent, so tool steps after the first can think too (probed: `claude-sonnet-4.5` thought on every step; the adaptive `claude-sonnet-5`, `claude-opus-4.8` and `claude-haiku-5.5` accepted the request and thought on some steps, choosing how much themselves; other `anthropic/` ids unprobed). |
 | Anthropic (direct) | nothing in 0.51.0 | Mapped in 0.52.0, with the structured-output degrade it needs (Anthropic rejects thinking with forced tool use). Until then a run records "not applied: no-mapping". |
 | Others | nothing | Recorded "not applied: no-mapping". |
 
@@ -709,12 +709,14 @@ heuristic (upstream plus the provider's always-thinking list), not by measuremen
 
 **Every agent result records what happened**, on `result.runConditions`: what was requested, from
 which layer, whether a thinking option was actually sent (`thinkingApplied`) and why not, the budget
-sent, whether the interleaved beta was sent, and whether thinking tokens were observed
-(`thinkingObserved`). Crash and stopped-run placeholders carry it too, from the error
+sent, whether the interleaved beta was sent, the `max_tokens` core sent when it raised it
+(`maxTokensSent` — a thinking-on run that scores better may simply have had more room), and whether
+thinking tokens were observed (`thinkingObserved`). Crash and stopped-run placeholders carry it too, from the error
 (`thinkingOutcomeOf(error)`). It is in-process only: the tracker does not receive it yet.
 
-The applied-keyed notice: a run that requested thinking logs one line — "on" when it was sent, a
-warning naming the reason when it was not, and a warning when the environment turned it on.
+The applied-keyed notice: a run that requested thinking logs one line — "on" when it was sent and a
+warning naming the reason when it was not. Thinking turned on by the environment warns once per client
+(then debug), so a pipeline does not repeat it for every agent.
 
 **Not covered by the switch: the agent's model choice.** An agent definition's `defaults.model`
 outranks the client's model choice, so a definition naming a model that reasons by default is billed

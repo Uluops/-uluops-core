@@ -491,6 +491,12 @@ export interface RunConditions {
   thinkingApplied: boolean;
   /** Anthropic upstream: the interleaved-thinking beta was sent, so every tool step may think (OD-22). */
   thinkingInterleaved?: boolean;
+  /**
+   * The max_tokens core SENT when it raised it for thinking (OpenRouter `anthropic/`: maxTokens + budget,
+   * capped at the model's output limit). Absent when core sent the caller's value. A thinking-on run that
+   * scores better may simply have had more room to answer — this field is how a reader tells (OD-26).
+   */
+  maxTokensSent?: number;
   thinkingNotAppliedReason?: ThinkingNotAppliedReason;
   /** 0.52.0: the run moved to text extraction because thinking conflicts with forced tool use. */
   structuredOutputDegraded?: 'thinking';

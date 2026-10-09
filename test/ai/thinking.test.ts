@@ -156,10 +156,10 @@ describe('planThinking — the per-provider gate', () => {
     // Google: maxTokens 2048 → cap 1024 → accepted; 2046 → cap 1023 → refused.
     expect(planThinking({ ...base, maxTokens: 2048 })).toMatchObject({ applied: true, budget: 1024 });
     expect(planThinking({ ...base, maxTokens: 2046 })).toEqual({ applied: false, reason: 'invalid-budget' });
-    // OpenRouter non-anthropic: budget kept below max_tokens — 1025 → 1024 accepted; 1024 → 1023 refused.
+    // OpenRouter non-anthropic (OD-25 half floor): 2048 − ceil(2048/2) = 1024 accepted; 2047 − 1024 = 1023 refused.
     const or = { ...base, provider: 'openrouter', providerModelId: 'deepseek/deepseek-r1', budget: 5000 };
-    expect(planThinking({ ...or, maxTokens: 1025 })).toMatchObject({ applied: true, budget: 1024 });
-    expect(planThinking({ ...or, maxTokens: 1024 })).toEqual({ applied: false, reason: 'invalid-budget' });
+    expect(planThinking({ ...or, maxTokens: 2048 })).toMatchObject({ applied: true, budget: 1024 });
+    expect(planThinking({ ...or, maxTokens: 2047 })).toEqual({ applied: false, reason: 'invalid-budget' });
   });
 
   it('OpenRouter anthropic/: max_tokens raised by the budget, capped at the model limit, beta sent (T16, probes P4/P6F)', () => {
@@ -169,12 +169,18 @@ describe('planThinking — the per-provider gate', () => {
     expect(planThinking({ ...or, maxOutputTokens: 20_000 })).toMatchObject({ budget: 10_000, maxOutputTokens: 20_000 });
     // Unknown limit: raised uncapped.
     expect(planThinking(or)).toMatchObject({ maxOutputTokens: 26_384 });
+    // The model limit caps the raise: the BUDGET shrinks, not the answer — 12000 − 8192 = 3808 (OD-25, P9).
+    expect(planThinking({ ...or, maxOutputTokens: 12_000 }))
+      .toMatchObject({ budget: 3808, maxOutputTokens: 12_000, capped: true });
   });
 
-  it('OpenRouter other upstreams: max_tokens untouched, budget kept strictly below it, no beta', () => {
+  it('OpenRouter other upstreams: max_tokens untouched, the answer keeps half (OD-25), no beta', () => {
+    // NC (review: code-auditor, P7, F1): the old rule kept only budget < max_tokens — 20000 → 16383,
+    // one visible token. Now budget ≤ 16384 − 8192 = 8192.
     const or = { ...base, provider: 'openrouter', providerModelId: 'deepseek/deepseek-r1' };
-    expect(planThinking(or)).toEqual({ applied: true, native: false, kind: 'budget', budget: 10_000 });
-    expect(planThinking({ ...or, budget: 20_000 })).toMatchObject({ budget: 16_383 });
+    expect(planThinking(or)).toEqual({ applied: true, native: false, kind: 'budget', budget: 8192, capped: true });
+    expect(planThinking({ ...or, budget: 20_000 })).toMatchObject({ budget: 8192 });
+    expect(planThinking({ ...or, budget: 4000 })).toEqual({ applied: true, native: false, kind: 'budget', budget: 4000 });
     // Probe P4's case: budget 1024 over max_tokens 800 — OpenRouter would silently raise the cap and bill past it.
     expect(planThinking({ ...or, budget: 1024, maxTokens: 800 })).toEqual({ applied: false, reason: 'invalid-budget' });
     expect(MIN_THINKING_BUDGET).toBe(1024);
@@ -374,7 +380,9 @@ describe('AIProvider gates, through generate()', () => {
     // 26384 = maxTokens 16384 + budget 10000, under the model's 64000 output limit.
     expect(call['maxOutputTokens']).toBe(26_384);
     expect(call['headers']).toEqual({ 'x-anthropic-beta': 'interleaved-thinking-2025-05-14' });
-    expect(r.thinking).toEqual({ applied: true, budget: 10_000, interleaved: true });
+    expect(r.thinking).toEqual({ applied: true, budget: 10_000, interleaved: true, maxTokensSent: 26_384 });
+    // OD-26: the record says how much room the run had (review P1).
+    expect(buildRunConditions({ requested: true, mode: 'off', source: 'request' }, r.thinking, 812, false).maxTokensSent).toBe(26_384);
   });
 
   it('OpenRouter off: no reasoning, default max_tokens, no header', async () => {
@@ -417,7 +425,7 @@ describe('AIProvider gates, through generate()', () => {
     const err = await provider.generate({ model: 'or', system: 's', prompt: 'p', extendedThinking: true }).catch((e: unknown) => e);
     expect(err).toBeInstanceOf(ProviderCreditError);
     expect((err as Error).message).toContain('max_tokens sent: 26384, which includes the extended-thinking budget');
-    expect(thinkingOutcomeOf(err)).toEqual({ applied: true, budget: 10_000, interleaved: true });
+    expect(thinkingOutcomeOf(err)).toEqual({ applied: true, budget: 10_000, interleaved: true, maxTokensSent: 26_384 });
   });
 
   it('T15 (provider half): a thrown no-endpoint carries the outcome and names reasoning and the lever', async () => {

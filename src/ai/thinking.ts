@@ -115,7 +115,7 @@ export type ThinkingPlan =
       maxOutputTokens?: number;
       /** OpenRouter `anthropic/` upstream: send the interleaved-thinking beta (OD-22). */
       interleaved?: boolean;
-      /** Google only: the budget was lowered to fit half of `maxTokens` (logged once, §6.2). */
+      /** The budget was lowered so the answer keeps at least half of `maxTokens` (logged once, §6.2/§6.4). */
       capped?: boolean;
     };
 
@@ -159,13 +159,16 @@ export function planThinking(input: ThinkingGateInput): ThinkingPlan {
   // OpenRouter counts the budget inside max_tokens (probe P4), and a budget >= max_tokens is not
   // rejected — OpenRouter silently raises the cap to budget + 1 and bills past it. So on the probed
   // upstream, raise max_tokens by the budget (capped at the model's output limit) to keep the visible
-  // allowance the direct route gives; on every upstream, keep the budget strictly below what is sent.
+  // allowance the direct route gives. On EVERY upstream the answer keeps at least half the caller's
+  // allowance (OD-25): budget <= sent max_tokens − ceil(maxTokens / 2). Off anthropic/ that is Google's
+  // half-cap; on an uncapped anthropic/ raise it never binds; when the model limit caps the raise it
+  // shrinks the budget instead of the answer (core 0.51.0 review: code-auditor, P7/P9, F1).
   const anthropicUpstream = isOpenRouterAnthropic(input.providerModelId);
   const raised = input.maxTokens + whole;
   const sentMax = anthropicUpstream
     ? (input.maxOutputTokens !== undefined ? Math.min(raised, input.maxOutputTokens) : raised)
     : input.maxTokens;
-  const sent = Math.min(whole, sentMax - 1);
+  const sent = Math.min(whole, sentMax - Math.ceil(input.maxTokens / 2));
   if (sent < MIN_THINKING_BUDGET) return { applied: false, reason: 'invalid-budget' };
   return {
     applied: true,
@@ -174,6 +177,7 @@ export function planThinking(input: ThinkingGateInput): ThinkingPlan {
     budget: sent,
     ...(sentMax !== input.maxTokens ? { maxOutputTokens: sentMax } : {}),
     ...(anthropicUpstream ? { interleaved: true } : {}),
+    ...(sent < whole ? { capped: true } : {}),
   };
 }
 
@@ -236,6 +240,8 @@ export interface ThinkingOutcome {
   /** The budget core sent; absent for effort/adaptive shapes and when nothing was sent. */
   budget?: number;
   interleaved?: boolean;
+  /** The max_tokens core actually sent when it raised it for thinking (OpenRouter `anthropic/`). */
+  maxTokensSent?: number;
   structuredOutputDegraded?: 'thinking';
 }
 
@@ -366,6 +372,7 @@ export function buildRunConditions(
     ...(o.applied ? {} : { thinkingNotAppliedReason: o.notAppliedReason ?? 'not-requested' }),
     ...(o.budget !== undefined ? { thinkingBudget: o.budget } : {}),
     ...(o.interleaved ? { thinkingInterleaved: true } : {}),
+    ...(o.maxTokensSent !== undefined ? { maxTokensSent: o.maxTokensSent } : {}),
     ...(o.structuredOutputDegraded ? { structuredOutputDegraded: o.structuredOutputDegraded } : {}),
     thinkingObserved: reasoningTokens === undefined ? 'unknown' : reasoningTokens > 0 ? 'yes' : 'no',
     ...(!o.applied && reasonsByDefault ? { offMeans: 'provider-default' as const } : {}),

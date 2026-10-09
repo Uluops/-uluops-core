@@ -138,7 +138,8 @@ describe('S4: OpenRouter provider options', () => {
 
   it('maps the thinking budget to reasoning.max_tokens when thinking is requested on a capable model', () => {
     const opts = build(model({ capabilities: { tools: true, extendedThinking: true } as ResolvedModel['capabilities'] }), undefined, true);
-    expect(opts?.['reasoning']).toEqual({ max_tokens: 10_000 });
+    // deepseek/ upstream: the answer keeps half of maxTokens (OD-25) — 16384 − 8192 = 8192.
+    expect(opts?.['reasoning']).toEqual({ max_tokens: 8192 });
   });
 
   it('NC (auto-enable): a capable model with thinking NOT requested sends no reasoning option', () => {
@@ -157,7 +158,7 @@ describe('S4: OpenRouter provider options', () => {
       { openrouter: { reasoning: null } },
       true,
     );
-    expect(opts?.['reasoning']).toEqual({ max_tokens: 10_000 });
+    expect(opts?.['reasoning']).toEqual({ max_tokens: 8192 });
   });
 
   it('sends no reasoning option when the configured thinking budget is not finite and positive', () => {

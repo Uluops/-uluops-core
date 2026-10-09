@@ -6,6 +6,8 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) 
 
 ## [Unreleased]
 
+## [0.51.0] - 2026-10-08
+
 Extended thinking becomes an explicit, working opt-in (thinking-capability-restore spec v0.7.0).
 Before this release every thinking gate in core read `capabilities.extendedThinking`, which the
 registry SDK always returned as `undefined` (the registry serves `reasoning`): the gates never fired
@@ -25,14 +27,15 @@ re-arm them — it makes thinking off by default, opt-in, and recorded.
   (`thinkingApplied`) and why not (`not-requested`, `not-capable`, `no-mapping`, `invalid-budget`,
   `pre-build-failure`), the budget sent, `thinkingInterleaved`, `thinkingObserved` (from reasoning or
   thinking tokens), and `offMeans: 'provider-default'` when nothing was sent on a model that reasons
-  anyway. Set on success, on structured-output fallbacks, and on thrown errors in-process
+  anyway, and `maxTokensSent` when core raised `max_tokens` for thinking. Set on success, on structured-output fallbacks, and on thrown errors in-process
   (`thinkingOutcomeOf(error)`); crash and stopped-run placeholders carry it. **Not submitted to the
   tracker** (issue 862356e6).
 - **`AIGenerateOptions.extendedThinking`** and **`AIGenerateResult.thinking`** for direct
   `AIProvider` callers (undefined resolves from the client config/env, the same rule).
 - **`ResolvedModel.maxOutputTokens`** (registry `limits.output`; absent when unknown, never invented).
 - A notice per agent run that requested thinking: "on (set by …)" at info, or a warning naming the
-  reason when it was not applied, and a warning when the environment turned it on.
+  reason when it was not applied. Thinking turned on by the environment warns once per client, then logs
+  at debug; native thinking options in effect without a core request log at info.
 - `src/ai/thinking.ts`: `canThink`, the gate (`planThinking`), the thrown-error carrier
   (`thinkingOutcomeOf`), and the record builder.
 
@@ -49,15 +52,17 @@ re-arm them — it makes thinking off by default, opt-in, and recorded.
   would have sent thinking with the forced json tool on every agent run, which Anthropic rejects (400).
 - **Direct Anthropic does not think until core 0.52.0.** An opt-in there records
   `thinkingApplied: false`, reason `'no-mapping'`. 0.52.0 adds the mapping with the structured-output
-  degrade it needs. OpenRouter-routed Claude models think from this release — **probed on
-  `anthropic/claude-sonnet-4.5` only** (Phase 0 P4/P6F, live check); other `anthropic/` ids are expected
-  to behave the same and are unprobed.
+  degrade it needs. OpenRouter-routed Claude models think from this release — probed on
+  `anthropic/claude-sonnet-4.5` (P4/P6F, live check: thinks on every tool step) and on the adaptive
+  `claude-sonnet-5`, `claude-opus-4.8`, `claude-haiku-5.5` (P8: accepted, thought on some steps, choosing
+  how much themselves); other `anthropic/` ids are unprobed.
 - **What "on" sends** (Phase 0 probes, 2026-10-08): OpenAI `reasoningEffort: 'medium'`; Google
   `thinkingBudget` capped at half of `maxTokens` (Gemini counts thinking inside `maxOutputTokens`);
-  OpenRouter `reasoning.max_tokens` kept strictly below the `max_tokens` sent (OpenRouter silently
-  raises the cap and bills past it otherwise) and, on `anthropic/…` models, `max_tokens` raised by the
-  budget up to the model's output limit plus the `interleaved-thinking-2025-05-14` beta — without it
-  Claude thinks on the first tool step only. Below a 1024 budget after capping, nothing is sent.
+  OpenRouter `reasoning.max_tokens` capped so the answer keeps at least half of `maxTokens` (budget ≤
+  sent `max_tokens` − ½ `maxTokens`; OpenRouter counts thinking inside `max_tokens` and silently raises
+  the cap and bills past it otherwise) and, on `anthropic/…` models, `max_tokens` raised by the budget up
+  to the model's output limit plus the `interleaved-thinking-2025-05-14` beta — without it Claude thinks
+  on the first tool step only. Below a 1024 budget after capping, nothing is sent.
 - **"Off" means the provider default, not "no thinking"**: gpt-5 and gpt-5.5 reason with nothing sent
   (probe P7); Gemini 2.5, DeepSeek/xAI reasoners and the always-thinking Claude models are expected to.
   Recorded as `offMeans: 'provider-default'` — by a documented heuristic (upstream, plus the provider's

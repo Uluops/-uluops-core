@@ -600,9 +600,9 @@ export class AIProvider {
       maxTokens: Math.floor(finitePositive(options.maxTokens) ?? DEFAULT_MAX_TOKENS),
       maxOutputTokens: resolved.maxOutputTokens,
     });
-    if (thinkingPlan.applied && !thinkingPlan.native && thinkingPlan.kind === 'budget' && thinkingPlan.capped && !this.googleCapNoticeShown) {
-      this.logger.info(`Google thinking budget capped to ${thinkingPlan.budget} tokens (half of maxTokens) so the answer keeps room; budget and thinking share Gemini's output allowance.`);
-      this.googleCapNoticeShown = true;
+    if (thinkingPlan.applied && !thinkingPlan.native && thinkingPlan.kind === 'budget' && thinkingPlan.capped && !this.thinkingCapNoticeShown) {
+      this.logger.info(`Thinking budget capped to ${thinkingPlan.budget} tokens so the answer keeps at least half of maxTokens (${resolved.provider} counts thinking inside the output allowance).`);
+      this.thinkingCapNoticeShown = true;
     }
     const thinking = outcomeOf(thinkingPlan);
     // One max_tokens for the plan and the wire (core 0.51.0 review: code-auditor, anxiety F10). The
@@ -613,6 +613,7 @@ export class AIProvider {
     const callerMaxTokensUsable = options.maxTokens === undefined
       || (finitePositive(options.maxTokens) !== undefined && Number.isInteger(options.maxTokens));
     if (!callerMaxTokensUsable) delete requestShape.maxOutputTokens;
+    if (requestShape.maxOutputTokens !== undefined) thinking.maxTokensSent = requestShape.maxOutputTokens;
     const providerOptions = this.buildProviderOptions(resolved, options.providerOptions, options.contextBudget, thinkingPlan);
     const system = this.buildSystemMessage(resolved.provider, options.system);
     // ASSUMPTION (2026-04-16): the model catalog's capability flags
@@ -677,8 +678,8 @@ export class AIProvider {
     }
   }
 
-  /** Whether the Google budget-cap notice has been logged by this AIProvider (once, at info — spec §6.2). */
-  private googleCapNoticeShown = false;
+  /** Whether the thinking budget-cap notice has been logged by this AIProvider (once, at info — spec §6.2/§6.4). */
+  private thinkingCapNoticeShown = false;
 
   /**
    * Log pre-generation context for debugging.

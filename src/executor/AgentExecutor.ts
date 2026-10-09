@@ -141,11 +141,26 @@ export class AgentExecutor {
     return { requested: mode === 'on', mode, source: this.config.ai.extendedThinkingSource ?? 'default' };
   }
 
-  /** The applied-keyed notice (spec §3): once per agent run, only when thinking was requested. */
+  /**
+   * The applied-keyed notice (spec §3): once per agent run, only when thinking was requested. The one
+   * exception is thinking turned ON by the environment: identical on every agent of a pipeline, it warns
+   * once per client and is debug after that (OD-27) — twenty identical warnings train people to silence
+   * the channel that carries "requested but not applied", which stays per run.
+   */
   private emitThinkingNotice(runConditions: AgentResult['runConditions']): void {
     const notice = runConditions ? thinkingNotice(runConditions) : undefined;
-    if (notice) this.logger[notice.level](notice.text);
+    if (!notice) return;
+    const envOn = runConditions?.thinkingApplied && runConditions.extendedThinkingSource === 'env';
+    if (envOn && this.envThinkingNoticeShown) {
+      this.logger.debug(notice.text);
+      return;
+    }
+    this.logger[notice.level](notice.text);
+    if (envOn) this.envThinkingNoticeShown = true;
   }
+
+  /** Whether the env-sourced "thinking on" warning has been printed by this executor (OD-27). */
+  private envThinkingNoticeShown = false;
 
   private async executeInner(
     resolved: ResolvedDefinition,
