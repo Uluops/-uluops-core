@@ -715,8 +715,9 @@ thinking tokens were observed (`thinkingObserved`). Crash and stopped-run placeh
 (`thinkingOutcomeOf(error)`). It is in-process only: the tracker does not receive it yet.
 
 The applied-keyed notice: a run that requested thinking logs one line — "on" when it was sent and a
-warning naming the reason when it was not. Thinking turned on by the environment warns once per client
-(then debug), so a pipeline does not repeat it for every agent.
+warning naming the reason when it was not. Thinking turned on by the environment, or by your own
+provider-native options, warns once per client (then debug), so a pipeline does not repeat it for every
+agent. The info-level "on" line for request- and config-sourced thinking shows only with `debug: true`.
 
 **Not covered by the switch: the agent's model choice.** An agent definition's `defaults.model`
 outranks the client's model choice, so a definition naming a model that reasons by default is billed

@@ -150,17 +150,20 @@ export class AgentExecutor {
   private emitThinkingNotice(runConditions: AgentResult['runConditions']): void {
     const notice = runConditions ? thinkingNotice(runConditions) : undefined;
     if (!notice) return;
-    const envOn = runConditions?.thinkingApplied && runConditions.extendedThinkingSource === 'env';
-    if (envOn && this.envThinkingNoticeShown) {
+    // Sticky levers — the environment, or the caller's native options — read the same on every agent:
+    // warn once per client per lever, then debug (OD-27). "Requested but not applied" stays per run.
+    const source = runConditions?.extendedThinkingSource;
+    const sticky = runConditions?.thinkingApplied && (source === 'env' || source === 'native') ? source : undefined;
+    if (sticky && this.stickyThinkingNoticeShown.has(sticky)) {
       this.logger.debug(notice.text);
       return;
     }
     this.logger[notice.level](notice.text);
-    if (envOn) this.envThinkingNoticeShown = true;
+    if (sticky) this.stickyThinkingNoticeShown.add(sticky);
   }
 
-  /** Whether the env-sourced "thinking on" warning has been printed by this executor (OD-27). */
-  private envThinkingNoticeShown = false;
+  /** Sticky thinking levers whose "on" warning this executor has printed (OD-27). */
+  private readonly stickyThinkingNoticeShown = new Set<'env' | 'native'>();
 
   private async executeInner(
     resolved: ResolvedDefinition,

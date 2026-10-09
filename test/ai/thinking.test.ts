@@ -334,7 +334,8 @@ describe('run conditions and the notice', () => {
   it('no notice when thinking was not requested — unless the caller\'s native options turned it on (review P3)', () => {
     expect(thinkingNotice(buildRunConditions({ ...decision, requested: false }, { applied: false, notAppliedReason: 'not-requested' }, 0, false))).toBeUndefined();
     const native = thinkingNotice(buildRunConditions({ ...decision, requested: false }, { applied: true, native: true }, 50, false));
-    expect(native).toEqual({ level: 'info', text: expect.stringContaining('provider-native options; not capped by core') });
+    // warn, not info: core's default logger drops info (live check, 2026-10-08), and this path must be seen.
+    expect(native).toEqual({ level: 'warn', text: expect.stringContaining('provider-native options; not capped by core') });
   });
 
   it('reasonsByDefault: OpenAI and always-thinking Claude yes; Sonnet 4.5 direct and via OpenRouter no', () => {

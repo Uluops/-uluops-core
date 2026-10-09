@@ -382,14 +382,17 @@ export function buildRunConditions(
 /**
  * The applied-keyed notice, or undefined when thinking was not requested (§3). `warn` when not
  * applied, or when the source is the environment — a sticky lever an operator may not know is set;
- * `info` otherwise. One line per agent run.
+ * `info` otherwise — core's default logger prints warn, not info. One line per agent run; the sticky
+ * levers (env, native) are de-duplicated per client by AgentExecutor (OD-27).
  */
 export function thinkingNotice(rc: RunConditions): { level: 'warn' | 'info'; text: string } | undefined {
   if (!rc.extendedThinking) {
     // Not requested through core, but the caller's own native options turned thinking on: say so —
     // it is the one thinking path core neither caps nor otherwise reports (core 0.51.0 review: P3).
+    // `warn`, not `info`: core's default logger drops info (debug off), and this path exists to be seen.
+    // AgentExecutor prints it once per client, then at debug (OD-27's mechanism).
     return rc.extendedThinkingSource === 'native' && rc.thinkingApplied
-      ? { level: 'info', text: "Extended thinking on (set by the caller's provider-native options; not capped by core) — thinking tokens are billed as output." }
+      ? { level: 'warn', text: "Extended thinking on (set by the caller's provider-native options; not capped by core) — thinking tokens are billed as output." }
       : undefined;
   }
   const lever = rc.extendedThinkingSource === 'env' ? 'the ULUOPS_EXTENDED_THINKING environment variable'

@@ -144,6 +144,15 @@ describe('AgentExecutor — run conditions and the thinking decision', () => {
     expect(log.warn.mock.calls.filter(([m]) => String(m).includes('not applied: no-mapping'))).toHaveLength(2);
   });
 
+  it('native thinking options in effect without a request warn once per executor (visible at the default level)', async () => {
+    const log = logger();
+    const exec = new AgentExecutor(baseConfig, ai(async () => ({ ...passing, thinking: { applied: true, native: true } })), log);
+    await exec.execute(def, { target });
+    await exec.execute(def, { target });
+    expect(log.warn.mock.calls.filter(([m]) => String(m).includes("provider-native options"))).toHaveLength(1);
+    expect(log.debug.mock.calls.filter(([m]) => String(m).includes("provider-native options"))).toHaveLength(1);
+  });
+
   it("T12: requested but 'invalid-budget' warns end-to-end, naming the reason", async () => {
     const log = logger();
     const p = ai(async () => ({ ...passing, thinking: { applied: false, notAppliedReason: 'invalid-budget' } }));

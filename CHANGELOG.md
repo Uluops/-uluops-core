@@ -34,8 +34,10 @@ re-arm them — it makes thinking off by default, opt-in, and recorded.
   `AIProvider` callers (undefined resolves from the client config/env, the same rule).
 - **`ResolvedModel.maxOutputTokens`** (registry `limits.output`; absent when unknown, never invented).
 - A notice per agent run that requested thinking: "on (set by …)" at info, or a warning naming the
-  reason when it was not applied. Thinking turned on by the environment warns once per client, then logs
-  at debug; native thinking options in effect without a core request log at info.
+  reason when it was not applied. Thinking turned on by the environment, or by the caller's native
+  provider options without a core request, warns once per client, then logs at debug. (Core's default
+  logger prints warnings, not info: the "on" line for request- and config-sourced thinking is visible
+  only with `debug: true`; the run record always carries it.)
 - `src/ai/thinking.ts`: `canThink`, the gate (`planThinking`), the thrown-error carrier
   (`thinkingOutcomeOf`), and the record builder.
 
