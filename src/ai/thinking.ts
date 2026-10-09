@@ -99,6 +99,12 @@ export interface ThinkingGateInput {
   maxTokens: number;
   /** Registry `limits.output`; undefined = unknown. */
   maxOutputTokens?: number;
+  /**
+   * OpenRouter: the caller's own `providerOptions.openrouter.max_tokens`, raw, when set
+   * ({@link openRouterCallerMaxTokens}). The provider spreads that block over its own args, so this
+   * value — not core's — is the `max_tokens` OpenRouter receives (spec §6.4).
+   */
+  callerMaxTokens?: unknown;
 }
 
 /** What the gate decided. The builders emit exactly this; nothing else decides. */
@@ -164,6 +170,28 @@ export function planThinking(input: ThinkingGateInput): ThinkingPlan {
   // half-cap; on an uncapped anthropic/ raise it never binds; when the model limit caps the raise it
   // shrinks the budget instead of the answer (core 0.51.0 review: code-auditor, P7/P9, F1).
   const anthropicUpstream = isOpenRouterAnthropic(input.providerModelId);
+
+  // A caller-set max_tokens replaces core's on the wire (§6.4), so the budget is sized against IT and
+  // core raises nothing — sizing against core's own raised value let the caller's smaller cap push the
+  // budget past the answer's half, or past the cap itself (P4: OpenRouter then bills past it), while
+  // the record named a max_tokens that was never sent (tracker 06dae199). The answer keeps half of
+  // the caller's cap (OD-25). A value that is not a positive integer is sent raw and core cannot know
+  // what OpenRouter will enforce, so it sends no budget: this is a cost guard, as in §6.4.
+  if (input.callerMaxTokens !== undefined) {
+    const cap = input.callerMaxTokens;
+    if (typeof cap !== 'number' || !Number.isInteger(cap) || cap <= 0) return { applied: false, reason: 'invalid-budget' };
+    const sent = Math.min(whole, cap - Math.ceil(cap / 2));
+    if (sent < MIN_THINKING_BUDGET) return { applied: false, reason: 'invalid-budget' };
+    return {
+      applied: true,
+      native: false,
+      kind: 'budget',
+      budget: sent,
+      ...(anthropicUpstream ? { interleaved: true } : {}),
+      ...(sent < whole ? { capped: true } : {}),
+    };
+  }
+
   const raised = input.maxTokens + whole;
   const sentMax = anthropicUpstream
     ? (input.maxOutputTokens !== undefined ? Math.min(raised, input.maxOutputTokens) : raised)
@@ -198,6 +226,19 @@ export function hasNativeThinking(provider: string, providerOptions: unknown): b
     case 'openrouter': return b['reasoning'] != null;
     default: return false;
   }
+}
+
+/**
+ * The caller's `providerOptions.openrouter.max_tokens`, raw, or undefined when unset. `null` counts as
+ * unset, as `reasoning: null` and a null `data_collection` do; `AIProvider.buildOpenRouterOptions`
+ * drops such a key so core's own `max_tokens` stays on the wire.
+ */
+export function openRouterCallerMaxTokens(providerOptions: unknown): unknown {
+  if (typeof providerOptions !== 'object' || providerOptions === null) return undefined;
+  const block = (providerOptions as Record<string, unknown>)['openrouter'];
+  if (typeof block !== 'object' || block === null) return undefined;
+  const value = (block as Record<string, unknown>)['max_tokens'];
+  return value ?? undefined;
 }
 
 /**

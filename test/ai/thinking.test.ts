@@ -188,6 +188,26 @@ describe('planThinking — the per-provider gate', () => {
     expect(planThinking({ ...or, budget: 1024, maxTokens: 800 })).toEqual({ applied: false, reason: 'invalid-budget' });
     expect(MIN_THINKING_BUDGET).toBe(1024);
   });
+
+  it('OpenRouter caller max_tokens: the budget is sized against the caller cap, core raises nothing (06dae199)', () => {
+    // NC: core 0.51.0 sized the budget against its own raised 26384 and returned budget 10000 — over
+    // the caller's 4000 on the wire, which OpenRouter answers by silently raising the cap (P4).
+    const or = { ...base, provider: 'openrouter', providerModelId: 'anthropic/claude-sonnet-4.5', maxOutputTokens: 64_000 };
+    expect(planThinking({ ...or, callerMaxTokens: 4000 }))
+      .toEqual({ applied: true, native: false, kind: 'budget', budget: 2000, interleaved: true, capped: true });
+    // A cap large enough for the whole budget: sent as is, still no raise (the caller's value wins).
+    expect(planThinking({ ...or, callerMaxTokens: 40_000 }))
+      .toEqual({ applied: true, native: false, kind: 'budget', budget: 10_000, interleaved: true });
+    // Half of the cap below the floor: no budget at all.
+    expect(planThinking({ ...or, callerMaxTokens: 2000 })).toEqual({ applied: false, reason: 'invalid-budget' });
+    // Other upstreams take the same rule.
+    expect(planThinking({ ...or, providerModelId: 'deepseek/deepseek-r1', callerMaxTokens: 3000 }))
+      .toEqual({ applied: true, native: false, kind: 'budget', budget: 1500, capped: true });
+    // Not a positive integer: core cannot know what OpenRouter enforces, so it sends no budget.
+    for (const bad of ['4000', 1.5, 0, -5, Number.NaN, true]) {
+      expect(planThinking({ ...or, callerMaxTokens: bad })).toEqual({ applied: false, reason: 'invalid-budget' });
+    }
+  });
 });
 
 describe('nativeThinkingDisabled — the explicit-off shapes', () => {
@@ -387,6 +407,54 @@ describe('AIProvider gates, through generate()', () => {
     expect(r.thinking).toEqual({ applied: true, budget: 10_000, interleaved: true, maxTokensSent: 26_384 });
     // OD-26: the record says how much room the run had (review P1).
     expect(buildRunConditions({ requested: true, mode: 'off', source: 'request' }, r.thinking, 812, false).maxTokensSent).toBe(26_384);
+  });
+
+  it('OpenRouter caller max_tokens on: budget fits the caller cap, max_tokens not raised, no maxTokensSent (06dae199)', async () => {
+    // NC: core 0.51.0 sent reasoning 10000 under the caller's 4000 and recorded maxTokensSent 26384,
+    // a value the provider replaced with the caller's before the request left (dist index.mjs:3598).
+    const provider = providerFor(routedClaude());
+    ok();
+    const r = await provider.generate({
+      model: 'or', system: 's', prompt: 'p', extendedThinking: true,
+      providerOptions: { openrouter: { max_tokens: 4000 } },
+    });
+    const call = lastCall();
+    expect(call['providerOptions'].openrouter.max_tokens).toBe(4000);
+    expect(call['providerOptions'].openrouter.reasoning).toEqual({ max_tokens: 2000 });
+    expect(call['maxOutputTokens']).toBe(16_384);
+    expect(r.thinking).toEqual({ applied: true, budget: 2000, interleaved: true });
+  });
+
+  it('OpenRouter caller max_tokens null or undefined is unset: dropped, core raise stands (thinking on and off)', async () => {
+    // NC: core 0.51.0 spread the bare key, and the provider's spread replaced core's max_tokens with nothing.
+    for (const value of [null, undefined]) {
+      const provider = providerFor(routedClaude());
+      ok();
+      const r = await provider.generate({
+        model: 'or', system: 's', prompt: 'p', extendedThinking: true,
+        providerOptions: { openrouter: { max_tokens: value } },
+      });
+      expect('max_tokens' in lastCall()['providerOptions'].openrouter).toBe(false);
+      expect(lastCall()['maxOutputTokens']).toBe(26_384);
+      expect(r.thinking).toMatchObject({ applied: true, budget: 10_000, maxTokensSent: 26_384 });
+      ok();
+      await provider.generate({ model: 'or', system: 's', prompt: 'p', providerOptions: { openrouter: { max_tokens: value } } });
+      expect('max_tokens' in lastCall()['providerOptions'].openrouter).toBe(false);
+    }
+  });
+
+  it('OpenRouter malformed caller max_tokens: sent raw, no reasoning, recorded invalid-budget', async () => {
+    const provider = providerFor(routedClaude());
+    ok();
+    const r = await provider.generate({
+      model: 'or', system: 's', prompt: 'p', extendedThinking: true,
+      providerOptions: { openrouter: { max_tokens: '4000' } },
+    });
+    const call = lastCall();
+    expect(call['providerOptions'].openrouter.max_tokens).toBe('4000');
+    expect(call['providerOptions'].openrouter.reasoning).toBeUndefined();
+    expect(call).not.toHaveProperty('headers');
+    expect(r.thinking).toEqual({ applied: false, notAppliedReason: 'invalid-budget' });
   });
 
   it('OpenRouter off: no reasoning, default max_tokens, no header', async () => {

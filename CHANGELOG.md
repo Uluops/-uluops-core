@@ -11,6 +11,13 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) 
 - Docs: the `listModels` JSDoc example and the README's `CapabilityError` row named the deprecated
   capability `extendedThinking`; both now show `reasoning`, the name the registry serves.
 
+### Fixed
+
+- **OpenRouter: a caller-set `providerOptions.openrouter.max_tokens` no longer breaks the thinking budget or the run record** (tracker `06dae199`, spec §6.4). The OpenRouter provider spreads the caller's `openrouter` block over its own arguments, so the caller's `max_tokens` is the one OpenRouter receives. 0.51.0 still sized the budget against core's own raised value and recorded that value as `runConditions.maxTokensSent`. With `max_tokens: 4000` and the default 10,000 budget it sent `reasoning.max_tokens: 10000` under a 4,000 cap, which OpenRouter answers by silently raising the cap and billing past it (probe P4), and recorded `maxTokensSent: 26384`, a value never sent. Now:
+  - a positive-integer caller `max_tokens` is the cap the budget is sized against, with the answer keeping at least half (OD-25: 4,000 → budget 2,000); core raises nothing and `maxTokensSent` is absent, its documented meaning for "core sent the caller's value";
+  - a value that is not a positive integer is still sent as given, but no budget is sent with it and the run records `thinkingNotAppliedReason: 'invalid-budget'`. Core cannot know what OpenRouter enforces for such a value, so this is a cost guard.
+- **OpenRouter: `max_tokens: null` or `undefined` in `providerOptions.openrouter` is treated as unset**, as `reasoning: null` and a null `data_collection` already were. The bare key used to replace core's `max_tokens` with nothing, so the request went out with no `max_tokens` at all, thinking on or off (shown against the real provider, 2026-10-09).
+
 ## [0.51.0] - 2026-10-08
 
 Extended thinking becomes an explicit, working opt-in (thinking-capability-restore spec v0.7.0).

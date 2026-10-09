@@ -51,7 +51,7 @@ import { firstDataCollection } from '../utils/dataCollection.js';
 import { isDeadlineSignal } from '../utils/runStop.js';
 import {
   canThink, planThinking, outcomeOf, attachThinking, hasNativeThinking, nativeThinkingDisabled, thinkingRequestShape,
-  type ThinkingPlan, type ThinkingOutcome,
+  openRouterCallerMaxTokens, type ThinkingPlan, type ThinkingOutcome,
 } from './thinking.js';
 
 /**
@@ -599,6 +599,8 @@ export class AIProvider {
       budget: this.config.defaultThinkingBudget,
       maxTokens: Math.floor(finitePositive(options.maxTokens) ?? DEFAULT_MAX_TOKENS),
       maxOutputTokens: resolved.maxOutputTokens,
+      // EXTERNAL-OK: seamed inside planThinking (positive integer or no budget is sent).
+      callerMaxTokens: resolved.provider === 'openrouter' ? openRouterCallerMaxTokens(options.providerOptions) : undefined,
     });
     if (thinkingPlan.applied && !thinkingPlan.native && thinkingPlan.kind === 'budget' && thinkingPlan.capped && !this.thinkingCapNoticeShown) {
       this.logger.info(`Thinking budget capped to ${thinkingPlan.budget} tokens so the answer keeps at least half of maxTokens (${resolved.provider} counts thinking inside the output allowance).`);
@@ -1270,6 +1272,9 @@ export class AIProvider {
   private buildOpenRouterOptions(_resolved: ResolvedModel, userOptions: ProviderOptions | undefined, thinking: ThinkingPlan): ProviderOptions {
     const user = (userOptions?.['openrouter'] as Record<string, unknown> | undefined) ?? {};
     const orOpts: Record<string, unknown> = { ...user };
+    // A null or undefined `max_tokens` key is unset, not a value: the provider spreads this block over
+    // its own args, so the bare key would replace core's max_tokens with nothing (thinking on or off).
+    if ('max_tokens' in orOpts && orOpts['max_tokens'] == null) delete orOpts['max_tokens'];
     // A caller block that is not a plain object (a string, an array) is replaced, not spread:
     // spreading a string yields index keys, and the forced flags must land on a real object.
     // `data_collection` (D7): the caller's per-request value if set, else the configured default,
