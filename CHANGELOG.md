@@ -8,6 +8,7 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) 
 
 ### Changed
 
+- **`@uluops/registry-sdk` 0.61.0 → 0.62.0** (exact pin). Additive: `RenderResult` stops stripping the renderer fields registry-api returns (`factoryVersion`, `renderStack`, `normalizedYaml`, and on ADL renders `resolvedProfile`, `scaffolding`, `declaredOutputShape`), so `RegistryClient`'s `render.preview` call now receives them. No core API changes. This release is the one the `ulu` CLI waits on: the CLI pins registry-sdk exactly, so bumping it to 0.62.0 while core still pinned 0.61.0 would nest a second SDK copy, with two `RegistryClient` and error-class identities in one process.
 - Docs: the `listModels` JSDoc example and the README's `CapabilityError` row named the deprecated
   capability `extendedThinking`; both now show `reasoning`, the name the registry serves.
 
