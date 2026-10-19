@@ -6,6 +6,12 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) 
 
 ## [Unreleased]
 
+## [0.51.2] - 2026-10-19
+
+### Changed
+
+- **`@uluops/ops-sdk` 6.14.0 → 6.17.0** (exact pin). Additive on core's surface: optional `actorKind` and `describeAuditActor` (audit feed), typed `RunEditCapabilities` on run reads, `projects.getLog({format: 'actionable'})`, `effectiveDescription` on issue reads, and an sdk-core lockfile checksum repair. 6.17.0 uses the same sdk-core (0.18.1), so there is still one copy. Why now: `@uluops/cli` pins ops-sdk 6.17.0, and core's 6.14.0 pin installed a second ops-sdk copy beside it. Errors raised inside core's copy then failed the CLI's `instanceof OpsApiError` check and fell through to its generic handler. With both on 6.17.0 the tree dedupes.
+
 ## [0.51.1] - 2026-10-16
 
 Patch release: two OpenRouter fixes to the 0.51.0 thinking opt-in (tracker `06dae199`, live-checked
