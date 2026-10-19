@@ -6,6 +6,10 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) 
 
 ## [Unreleased]
 
+### Fixed
+
+- **Correction to the 0.51.2 entry below, which is left as written.** It said core's ops-sdk 6.14.0 pin installed a second ops-sdk copy in `@uluops/cli`, and that "errors raised inside core's copy then failed the CLI's `instanceof OpsApiError` check". **The second half was wrong.** `OpsApiError` is ops-sdk's re-export of sdk-core's `SdkApiError` (`@uluops/ops-sdk/dist/errors/errors.js:6`), and sdk-core was a single copy (0.18.1) throughout, so both ops-sdk copies exported the same class. Checked 2026-10-19 against the published `@uluops/cli` 0.39.2 install, which nests 6.14.0 under core beside a root 6.17.0: `OpsApiError` from the two copies is `===`. A split would affect only the classes ops-sdk defines itself (`AnalysisEchoMismatchError`, `MfaRequiredError`, `UnsupportedContractError`, `InputValidationError`), and the CLI checks `instanceof` on none of them. The 0.51.2 alignment stands: it dedupes the tree. Only its stated consequence was overclaimed.
+
 ## [0.51.2] - 2026-10-19
 
 ### Changed
