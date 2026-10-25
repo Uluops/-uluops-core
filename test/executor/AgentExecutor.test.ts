@@ -434,6 +434,63 @@ describe('AgentExecutor', () => {
 
       expect(result.threshold).toBe(70);
     });
+
+    // runAgent thresholds gate decisionCategory (0.53.0), consistent with CommandExecutor's
+    // score bands (>= pass positive, >= warn conditional, else negative) and its cap-never-promote
+    // rule. The agent's own decision string is never rewritten (the non-destructive rule above
+    // buildResult). Control: the 'caps' cases fail on 0.52.x, where thresholds were echoed only.
+    describe('thresholds gate decisionCategory', () => {
+      const run = async (decision: string, score: number | null, thresholds?: { pass?: number; warn?: number }) => {
+        const ai = mockAIProvider({ text: JSON.stringify({ decision, score, maxScore: score === null ? null : 100 }) });
+        const executor = new AgentExecutor(baseConfig, ai, noopLogger);
+        return executor.execute(makeValidatorDef(), { target: tmpDir }, thresholds ? { thresholds } : undefined);
+      };
+
+      it('caps a positive verdict below pass to conditional, keeping the decision string', async () => {
+        const r = await run('PASS', 65, { pass: 80, warn: 60 });
+        expect([r.decision, r.decisionCategory]).toEqual(['PASS', 'conditional']);
+      });
+
+      it('caps a positive verdict below warn to negative', async () => {
+        const r = await run('PASS', 50, { pass: 80, warn: 60 });
+        expect([r.decision, r.decisionCategory]).toEqual(['PASS', 'negative']);
+      });
+
+      it('caps a conditional verdict below warn to negative', async () => {
+        const r = await run('WARN', 50, { pass: 80, warn: 60 });
+        expect(r.decisionCategory).toBe('negative');
+      });
+
+      it('fills a missing warn from the default, as commands do', async () => {
+        const r = await run('PASS', 70, { pass: 80 });
+        expect(r.decisionCategory).toBe('conditional');
+      });
+
+      it('leaves a positive verdict at or above pass untouched', async () => {
+        const r = await run('PASS', 80, { pass: 80, warn: 60 });
+        expect(r.decisionCategory).toBe('positive');
+      });
+
+      it('never promotes: a negative verdict above pass stays negative', async () => {
+        const r = await run('FAIL', 95, { pass: 80, warn: 60 });
+        expect([r.decision, r.decisionCategory]).toEqual(['FAIL', 'negative']);
+      });
+
+      it('fails open on a null score, as workflow and pipeline gates do', async () => {
+        const r = await run('PASS', null, { pass: 80, warn: 60 });
+        expect(r.decisionCategory).toBe('positive');
+      });
+
+      it('never caps a neutral (non-verdict) category', async () => {
+        const r = await run('UNKNOWN', 20, { pass: 80, warn: 60 });
+        expect(r.decisionCategory).toBe('neutral');
+      });
+
+      it('changes nothing when no thresholds are passed', async () => {
+        const r = await run('PASS', 50);
+        expect(r.decisionCategory).toBe('positive');
+      });
+    });
   });
 
   describe('executor execution', () => {

@@ -410,7 +410,7 @@ export function buildRunConditions(
     extendedThinkingMode: decision.mode,
     // 'native' only when the caller's native block actually decided (turned thinking on). A native
     // block that turns it OFF vetoes a request it did not make: keep the requesting layer, and let
-    // thinkingNotAppliedReason 'caller-native' carry the veto (0.52.1; was 'native' in both cases).
+    // thinkingNotAppliedReason 'caller-native' carry the veto (0.53.0; was 'native' in both cases).
     extendedThinkingSource: o.native && o.applied ? 'native' : decision.source,
     thinkingApplied: o.applied,
     ...(o.applied ? {} : { thinkingNotAppliedReason: o.notAppliedReason ?? 'not-requested' }),

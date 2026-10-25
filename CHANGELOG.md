@@ -6,7 +6,37 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) 
 
 ## [Unreleased]
 
-## [0.52.1] - 2026-10-25
+## [0.53.0] - 2026-10-25
+
+0.52.1 was prepared but never published; its fixes ship here, with the behaviour change below that
+makes this a minor release.
+
+### Changed
+
+- **`runAgent`'s `thresholds` now gate `decisionCategory`.** They were resolved and echoed into
+  `result.threshold`, and nothing compared them to the score, so the README's own quick start
+  (`thresholds: { pass: 80 }`, then reading the decision) gated nothing, and neither did the CLI's
+  `--threshold-pass` / `--threshold-warn` on `exec agent`. They now cap the category with a
+  multi-agent command's bands: below `warn` → `'negative'`, and a `'positive'` below `pass` →
+  `'conditional'`. Consistent with the other execution paths in two ways: the bands are
+  `CommandExecutor.aggregateResults`', and it is a cap that can lower a category but never raise
+  it, like the scored-lens-negative caps in `CommandExecutor` and `WorkflowExecutor`. A null
+  score fails open, as workflow and pipeline gates do.
+  - **Not changed:** the agent's own `decision` string (the executor never rewrites a parsed
+    decision: a `PASS` at 65 under `pass: 80` stays `"PASS"`, category `'conditional'`); a
+    `'neutral'` category (ABORTED, unclassified); runs with no `thresholds`.
+  - **What changes for you (same types, different values):** a caller that passes `thresholds` and
+    reads `decisionCategory` now sees `'conditional'` or `'negative'` for a below-threshold score
+    where it saw the agent's own category. A **single-agent command** with CDL
+    `execution.thresholds` changes the same way, because it runs through the agent path;
+    multi-agent commands already gated. The CLI's `exec agent` with `--threshold-*` starts doing
+    what the flags say.
+  - ADL `decisions.thresholds` are not part of this: they are rendered into the agent's prompt and
+    the model applies them itself. (Separately, `RegistryClient` copies them into
+    `runtime.config.threshold`, which nothing reads; tracked as an open issue.)
+  - `capByThresholds` in `AgentExecutor.ts`; `test/executor/AgentExecutor.test.ts` "thresholds gate
+    decisionCategory": the four cap cases fail on the previous code, where thresholds were echoed
+    only.
 
 ### Fixed
 
@@ -20,7 +50,7 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) 
   - registry-sdk 0.64.x adds the registry's ADL v1.20 response fields (P0d). They are additive;
     against a registry without them they are absent.
   - Consumers that pin core get one copy of each SDK only if their own pins match these
-    versions. A consumer pinning ops-sdk 7.0.0 beside core 0.52.1 gets two copies.
+    versions. A consumer pinning ops-sdk 7.0.0 beside core 0.53.0 gets two copies.
 - **Docs no longer promise direct-Anthropic thinking "from 0.52.0".** The thinking-capability-restore
   plan named 0.52.0 for the direct-Anthropic mapping (OD-13). The zod-4 release took that number, and
   the mapping is not built: `MAPPED_THINKING_PROVIDERS` is OpenAI, Google and OpenRouter, and a direct

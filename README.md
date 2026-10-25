@@ -290,6 +290,13 @@ console.log(`Score: ${result.score} | Decision: ${result.decision}`);
 console.log(`Recommendations: ${result.recommendations.length}`);
 ```
 
+`thresholds` gates the run's `decisionCategory`, with the same bands a multi-agent command uses:
+below `warn` it is `'negative'`, and a `'positive'` below `pass` becomes `'conditional'`. It only
+ever lowers the category the agent's own decision resolves to; it does not rewrite `decision`
+(a `PASS` at 65 under `pass: 80` stays `"PASS"`, category `'conditional'`), leaves a `'neutral'`
+decision alone, and does nothing when the agent reports no score. Gate on `decisionCategory`, not
+the decision string. Without `thresholds`, the category is the agent's own.
+
 #### Operator Prompt
 
 Pass a `prompt` to give the agent a directive or focus. Especially useful for generators and executors that need to know *what* to create:

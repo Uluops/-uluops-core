@@ -237,7 +237,7 @@ describe('nativeThinkingDisabled — the explicit-off shapes', () => {
   });
 
   // A native block that turns thinking OFF vetoes a request; it did not make one. The record keeps
-  // the requesting layer, and the veto is carried by thinkingNotAppliedReason. Until 0.52.1 the
+  // the requesting layer, and the veto is carried by thinkingNotAppliedReason. Until 0.53.0 the
   // record said 'native', so the notice credited the vetoing options as the requester.
   // Control: every case fails with `o.native ? 'native' : decision.source`.
   it.each([

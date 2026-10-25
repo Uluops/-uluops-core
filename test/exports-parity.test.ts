@@ -1,6 +1,6 @@
 /**
  * The `./types` entry point is a deliberate SUBSET of `.` (types only, for tree-shaking; README
- * "Type-only imports"). Two properties keep it usable, and both drifted before 0.52.1
+ * "Type-only imports"). Two properties keep it usable, and both drifted before 0.53.0
  * (consumer-validate, public-interface-validator):
  *
  * 1. Subset: every name `./types` exports is also exported from `.`. `GateDefinition` was

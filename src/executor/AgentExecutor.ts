@@ -790,6 +790,7 @@ export class AgentExecutor {
       score = Math.max(0, Math.min(100, score));
     }
     const maxScore = score === null ? null : (parsed.maxScore ?? 100);
+    const gatedCategory = capByThresholds(decisionCategory, score, context.thresholds);
 
     return {
       type: 'agent',
@@ -799,7 +800,7 @@ export class AgentExecutor {
       definitionHash: resolved.hash,
       minSubscription: resolved.minSubscription,
       decision: effectiveDecision,
-      decisionCategory,
+      decisionCategory: gatedCategory,
       score,
       maxScore,
       threshold: context.thresholds?.pass,
@@ -1134,4 +1135,31 @@ export class AgentExecutor {
  */
 function sameTool(a: unknown, b: string): boolean {
   return typeof a === 'string' && a.trim().toLowerCase() === b.trim().toLowerCase();
+}
+
+/**
+ * Caller thresholds gate an agent's decisionCategory (0.53.0). Same bands as a multi-agent command
+ * (CommandExecutor.aggregateResults: score >= pass positive, >= warn conditional, else negative),
+ * applied as a CAP: a threshold can lower the agent's own category, never raise it, the rule the
+ * scored-lens-negative caps in CommandExecutor and WorkflowExecutor already follow. The decision
+ * STRING is untouched (the non-destructive rule in execute()): an agent's PASS at 65 under
+ * pass 80 stays "PASS" with category 'conditional'. A null score fails open, as workflow and
+ * pipeline gates do, and a 'neutral' category (not a verdict) is never capped. Before 0.53.0
+ * thresholds were only echoed into `result.threshold`.
+ *
+ * Thresholds come from ExecutionOptions (runAgent, and a single-agent command's CDL
+ * execution.thresholds) via resolveContext. ADL decisions.thresholds do not reach here: they are
+ * rendered into the prompt and the model applies them itself.
+ */
+function capByThresholds(
+  category: DecisionCategory | undefined,
+  score: number | null,
+  thresholds: { pass: number; warn: number } | undefined,
+): DecisionCategory | undefined {
+  // Only verdict categories are capped. 'negative' cannot go lower; 'neutral' is not a verdict
+  // (EXPLORED, ABORTED, unclassified) and a score gate does not turn it into one.
+  if (!thresholds || score === null || (category !== 'positive' && category !== 'conditional')) return category;
+  if (score < thresholds.warn) return 'negative';
+  if (score < thresholds.pass && category === 'positive') return 'conditional';
+  return category;
 }

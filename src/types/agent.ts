@@ -636,7 +636,7 @@ export interface AgentResult extends AgentResultBase {
   /** Maximum possible score, or null iff score is null */
   maxScore: number | null;
 
-  /** Pass threshold used (if applicable) */
+  /** The pass threshold the run was gated with (`ExecutionOptions.thresholds.pass`, resolved), when thresholds were given. */
   threshold?: number;
 
   /** Scored categories with findings */

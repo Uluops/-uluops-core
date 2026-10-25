@@ -403,7 +403,14 @@ export interface ExecutionOptions {
    */
   shellTimeoutMs?: number;
 
-  /** Threshold overrides for validators */
+  /**
+   * Score gate for this run (0.53.0; before that it was only echoed into `result.threshold`).
+   * Caps `decisionCategory` with a multi-agent command's bands: below `warn` → `'negative'`, below
+   * `pass` a `'positive'` → `'conditional'`. A cap: it never raises a category, never rewrites the
+   * agent's own `decision` string, leaves `'neutral'` alone, and does nothing on a null score. A
+   * missing half takes its default (`DEFAULT_PASS_THRESHOLD` 75 / `DEFAULT_WARN_THRESHOLD` 50).
+   * A single-agent command passes its CDL `execution.thresholds` here.
+   */
   thresholds?: {
     pass?: number;
     warn?: number;
