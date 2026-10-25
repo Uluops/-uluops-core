@@ -224,7 +224,8 @@ export interface UluOpsConfig {
    * intentional, gate-satisfying state — see types/degradation.ts for the
    * decision record (issue fdaa0b24).
    *
-   * @default 200000
+   * @default the resolved model's context window (registry `limits.context`); 200000 only when
+   * the window is unknown. When set, the budget is `min(contextBudget, modelWindow)`.
    */
   contextBudget?: number;
 

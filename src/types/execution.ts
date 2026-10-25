@@ -271,11 +271,11 @@ export interface ExecutionMetrics {
    */
   cachedInputTokens?: number;
 
-  /** OpenAI reasoning tokens. Subset of GROSS outputTokens — stored, NOT added to totalEffectiveTokens. */
+  /** Reasoning tokens from every non-Google model family (OpenAI, OpenRouter-routed `anthropic/*`, …). Subset of GROSS outputTokens — stored, NOT added to totalEffectiveTokens. */
   reasoningOutputTokens?: number;
 
   /**
-   * Google Gemini thinking tokens (Gemini 2.5+).
+   * Thinking tokens from Google-family models (Gemini 2.5+), direct or `google/*` through OpenRouter.
    * The AI SDK folds these INTO gross outputTokens — a subset, stored for
    * cost/analytics and NOT re-added to totalEffectiveTokens (would double-count). §3.2.
    */

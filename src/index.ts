@@ -113,6 +113,7 @@ export type {
   PipelineResult,
   PipelineMetrics,
   StageDefinition,
+  GateDefinition,
   StageResult,
   StepDefinition,
   StepResult,

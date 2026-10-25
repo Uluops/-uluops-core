@@ -612,7 +612,7 @@ console.log(`Harness: ${metrics.harness ?? 'unknown'}`); // producing runtime ('
 // and writes. It is NOT the provider's headline input count (AI SDK v6 reports that as a
 // cache-INCLUSIVE total); do not subtract a cached figure from it again, or you undercount.
 // cachedInputTokens is a recorded component only and no longer participates in the total.
-// reasoningOutputTokens (OpenAI) and thinkingTokens (Google) are subsets of gross
+// reasoningOutputTokens (non-Google families) and thinkingTokens (Google family, direct or via OpenRouter) are subsets of gross
 // outputTokens — exposed for cost breakdown only, NEVER added (the AI SDK already folds them in).
 if (metrics.cachedInputTokens) console.log(`Cached input: ${metrics.cachedInputTokens}`);
 if (metrics.reasoningOutputTokens) console.log(`Reasoning: ${metrics.reasoningOutputTokens}`);
@@ -712,8 +712,8 @@ heuristic (upstream plus the provider's always-thinking list), not by measuremen
 which layer, whether a thinking option was actually sent (`thinkingApplied`) and why not, the budget
 sent, whether the interleaved beta was sent, the `max_tokens` core sent when it raised it
 (`maxTokensSent` — a thinking-on run that scores better may simply have had more room), and whether
-thinking tokens were observed (`thinkingObserved`). Crash and stopped-run placeholders carry it too, from the error
-(`thinkingOutcomeOf(error)`). It is in-process only: the tracker does not receive it yet.
+thinking tokens were observed (`thinkingObserved`). Crash and stopped-run placeholders carry it too
+(core reads it off the thrown error; there is no public reader). It is in-process only: the tracker does not receive it yet.
 
 The applied-keyed notice: a run that requested thinking logs one line — "on" when it was sent and a
 warning naming the reason when it was not. Thinking turned on by the environment, or by your own
@@ -724,7 +724,7 @@ agent. The info-level "on" line for request- and config-sourced thinking shows o
 outranks the client's model choice, so a definition naming a model that reasons by default is billed
 reasoning even with thinking off. The counter is `ai.modelOverride`. Thinking cost appears in
 `costUsd` like any output (see [Cost](#cost)); reasoning tokens are in `reasoning_tokens`
-(OpenAI, OpenRouter, Anthropic) or `thinking_tokens` (Google).
+(every non-Google model family) or `thinking_tokens` (Google-family models, direct or `google/*` through OpenRouter).
 
 **Release order.** `@uluops/registry-sdk` 0.61.0 started surfacing the `reasoning` capability that
 the registry always served. Core 0.50.0 and older auto-enable thinking wherever that capability is
@@ -934,6 +934,10 @@ import { isAbortedRecord, isStoppedResult } from '@uluops/core';
 const stoppedAgents = result.stages.flatMap(s => s.agentResults ?? []).filter(isAbortedRecord);
 const stoppedStages = result.stages.filter(s => s.result && isStoppedResult(s.result));
 ```
+
+The decision string itself is exported as `ABORTED_DECISION` (`'ABORTED'`), for code that has to
+name it — a filter over stored records, say. Prefer the predicates to comparing against it: a
+model can output the same word.
 
 **Crash decides.** Once a run stop has reached anything inside a command, stage, workflow phase or
 workflow, that container gives no quality verdict: it is negative (`FAIL`, phase `'blocked'`,
@@ -1269,7 +1273,7 @@ The SDK provides a structured error hierarchy:
 | `PreflightError` | `CommandExecutor` (preflight phase) | Preflight check failed — missing env var, file not found, command unavailable |
 | `ExecutionError` | `AgentExecutor.execute()`, `CommandExecutor.execute()` | Agent execution failure or definition type mismatch. `error.partialResult` is typed `unknown` — no producer in this package populates it; do not rely on it |
 | `CancelledError` | `AIProvider.generate()` (reached via any executor) | The run stopped because the CALLER asked it to — `PipelineHandle.cancel()`, or an `abortSignal` you supplied on `ExecutionOptions`. Subclass of `ExecutionError` (code `CANCELLED`). Check it BEFORE `ExecutionError`, and note it is deliberately **not** a `TimeoutError`: a cancel names no elapsed duration, so treating the two alike sends you to raise a timeout that was never the cause, and makes timeout-keyed retry logic retry work you asked to stop |
-| `MaxStepsExhaustedError` | `AgentExecutor.execute()` | The tool loop hit the `maxSteps` ceiling while the model was still calling tools, leaving empty output. Subclass of `ExecutionError` (code `MAX_STEPS_EXHAUSTED`); carries `error.steps`, `error.finishReason`, and `error.billedMetrics?` (typed `ExecutionMetricsLike`) — the tokens and cost ALREADY BILLED before the ceiling was hit. A step-ceiling run is by construction the longest run the engine produces, so read `billedMetrics` rather than recording the run as free; it is **absent**, never zero, when nothing is known (absent is an admission, zero is a claim). Raise `maxSteps`, narrow the target, or lower the context budget so wrap-up triggers earlier |
+| `MaxStepsExhaustedError` | `AgentExecutor.execute()` | The tool loop hit the `maxSteps` ceiling while the model was still calling tools, leaving empty output. Subclass of `ExecutionError` (code `MAX_STEPS_EXHAUSTED`); carries `error.steps`, `error.finishReason`, and `error.billedMetrics?` (typed `ExecutionMetricsLike`) — the tokens and cost ALREADY BILLED before the ceiling was hit. A step-ceiling run is by construction the longest run the engine produces, so read `billedMetrics` rather than recording the run as free; it is **absent**, never zero, when nothing is known (absent is an admission, zero is a claim). Where two copies of core can share a tree, read it with `hasBilledMetrics(error)` from `@uluops/core/errors` rather than `instanceof`, which is false across copies. Raise `maxSteps`, narrow the target, or lower the context budget so wrap-up triggers earlier |
 | `ParseError` | `OutputExtractor.extractWithMetadata()` | LLM output could not be parsed as structured JSON. Check `error.contentPreview` for raw output |
 | `SubmissionError` | `SubmissionClient` methods | The tracker rejected a submission. Use `SubmissionErrorCodes` to narrow by code |
 | `WorkflowError` | `WorkflowExecutor.execute()` | Phase gate failure. `error.context.partialResult` is `Partial<WorkflowResult> \| CommandResult[] \| undefined` — a partial aggregate object, a raw array of completed command results, or absent, depending which internal path threw |

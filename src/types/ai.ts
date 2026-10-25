@@ -37,8 +37,8 @@ export interface UsageMetrics {
    * OpenAI/Google cached input now both arrive as `inputTokenDetails.cacheReadTokens`.
    */
   cached_input_tokens?: number;
-  /** OpenAI reasoning model internal reasoning tokens (o1, o3, o4-mini). Subset of gross output_tokens. */
+  /** Reasoning tokens from every non-Google model family (OpenAI o-series, OpenRouter-routed models such as `anthropic/*`). Subset of gross output_tokens. Bucketed by model family, not provider. */
   reasoning_tokens?: number;
-  /** Google Gemini thinking tokens (Gemini 2.5+ with thinkingConfig enabled). Subset of gross output_tokens. */
+  /** Thinking tokens from Google-family models (Gemini 2.5+), direct or `google/*` through OpenRouter. Subset of gross output_tokens. */
   thinking_tokens?: number;
 }

@@ -28,6 +28,27 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) 
   `defaultThinkingBudget` comment and the JSDoc on `ai.extendedThinking` / `defaultThinkingBudget`
   (which editors show) said "from 0.52.0"; they now say "not mapped yet". No behaviour changes. The
   0.51.0 entry below keeps its original wording.
+- **Docs now match the code in four more places** (consumer-validate run before publish).
+  - `contextBudget`'s JSDoc said `@default 200000`. When unset, the budget is the resolved model's
+    real context window (registry `limits.context`); 200,000 applies only when the window is
+    unknown (`deriveContextBudget`, `DEFAULT_CONTEXT_BUDGET`). The README already said so.
+  - `reasoning_tokens` / `reasoningOutputTokens` and `thinking_tokens` / `thinkingTokens` were
+    labelled "OpenAI" and "Google". Tokens are bucketed by model family: a Google-family model
+    (direct, or `google/*` through OpenRouter) reports `thinking_tokens`, and every other model
+    `reasoning_tokens`. The type docs and README now say so.
+  - The README named `thinkingOutcomeOf(error)`, which is not exported; it now describes the
+    mechanism without pointing consumers at an internal function.
+  - The 0.52.0 entry below listed Security before Fixed; reordered.
+- **`.` and `@uluops/core/types` agree on the pipeline and cost types.** `GateDefinition` was
+  exported only from `./types`; `StepDefinition`, `StepResult` and `CostBasis` only from `.`. Each
+  is the type of a field on an interface both entry points export (`StageDefinition.gate`,
+  `StageDefinition.steps`, `StageResult.steps`, `ExecutionMetrics.costBasis`), so a consumer using
+  one entry point could not name it. All four are now exported from both; additive, type-only.
+  `test/exports-parity.test.ts` asserts `./types` stays a subset of `.` and pins the four; it fails
+  on 0.52.0's export lists.
+- **README names the two exported helpers it left out:** `ABORTED_DECISION` (beside the stop
+  predicates) and `hasBilledMetrics` (in the `MaxStepsExhaustedError` row, as the copy-safe way to
+  read `billedMetrics`).
 
 ## [0.52.0] - 2026-10-24
 
@@ -75,6 +96,10 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) 
   of `z.`, `.parse(` and `.safeParse(` match, except +1 `z.` in `outputSchemas.ts` from the
   rewritten header comment.
 
+### Fixed
+
+- **Correction to the 0.51.2 entry below, which is left as written.** It said core's ops-sdk 6.14.0 pin installed a second ops-sdk copy in `@uluops/cli`, and that "errors raised inside core's copy then failed the CLI's `instanceof OpsApiError` check". **The second half was wrong.** `OpsApiError` is ops-sdk's re-export of sdk-core's `SdkApiError` (`@uluops/ops-sdk/dist/errors/errors.js:6`), and sdk-core was a single copy (0.18.1) throughout, so both ops-sdk copies exported the same class. Checked 2026-10-19 against the published `@uluops/cli` 0.39.2 install, which nests 6.14.0 under core beside a root 6.17.0: `OpsApiError` from the two copies is `===`. A split would affect only the classes ops-sdk defines itself (`AnalysisEchoMismatchError`, `MfaRequiredError`, `UnsupportedContractError`, `InputValidationError`), and the CLI checks `instanceof` on none of them. The 0.51.2 alignment stands: it dedupes the tree. Only its stated consequence was overclaimed.
+
 ### Security
 
 - **Production audit: 4 high → 0.** Three were the zod chain (GHSA-mrhx-c7xc-m3w5, via zod and
@@ -83,10 +108,6 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) 
   `@ai-sdk/provider-utils`; `npm audit fix` without `--force` moved it to 6.29.1, lockfile only.
   Still open, dev-only and outside the publish gate (`--omit=dev`): a critical in `tinypool` via
   `vitest` 3.2.6, whose fix is a vitest major (5.x). Left for its own change.
-
-### Fixed
-
-- **Correction to the 0.51.2 entry below, which is left as written.** It said core's ops-sdk 6.14.0 pin installed a second ops-sdk copy in `@uluops/cli`, and that "errors raised inside core's copy then failed the CLI's `instanceof OpsApiError` check". **The second half was wrong.** `OpsApiError` is ops-sdk's re-export of sdk-core's `SdkApiError` (`@uluops/ops-sdk/dist/errors/errors.js:6`), and sdk-core was a single copy (0.18.1) throughout, so both ops-sdk copies exported the same class. Checked 2026-10-19 against the published `@uluops/cli` 0.39.2 install, which nests 6.14.0 under core beside a root 6.17.0: `OpsApiError` from the two copies is `===`. A split would affect only the classes ops-sdk defines itself (`AnalysisEchoMismatchError`, `MfaRequiredError`, `UnsupportedContractError`, `InputValidationError`), and the CLI checks `instanceof` on none of them. The 0.51.2 alignment stands: it dedupes the tree. Only its stated consequence was overclaimed.
 
 ## [0.51.2] - 2026-10-19
 
