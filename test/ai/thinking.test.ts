@@ -233,7 +233,27 @@ describe('nativeThinkingDisabled — the explicit-off shapes', () => {
     });
     expect(r.thinking).toEqual({ applied: false, notAppliedReason: 'caller-native', native: true });
     expect(buildRunConditions({ requested: true, mode: 'off', source: 'request' }, r.thinking, 0, false))
-      .toMatchObject({ thinkingApplied: false, thinkingNotAppliedReason: 'caller-native', extendedThinkingSource: 'native' });
+      .toMatchObject({ thinkingApplied: false, thinkingNotAppliedReason: 'caller-native', extendedThinkingSource: 'request' });
+  });
+
+  // A native block that turns thinking OFF vetoes a request; it did not make one. The record keeps
+  // the requesting layer, and the veto is carried by thinkingNotAppliedReason. Until 0.52.1 the
+  // record said 'native', so the notice credited the vetoing options as the requester.
+  // Control: every case fails with `o.native ? 'native' : decision.source`.
+  it.each([
+    ['request', "this run's extendedThinking option"],
+    ['config', 'ai.extendedThinking in the client config'],
+    ['env', 'the ULUOPS_EXTENDED_THINKING environment variable'],
+  ] as const)('a native veto keeps the requesting layer (%s) on the record and in the notice', (source, lever) => {
+    const veto = { applied: false, notAppliedReason: 'caller-native', native: true } as const;
+    const rc = buildRunConditions({ requested: true, mode: 'on', source }, veto, 0, false);
+    expect(rc).toMatchObject({ thinkingApplied: false, thinkingNotAppliedReason: 'caller-native', extendedThinkingSource: source });
+    expect(thinkingNotice(rc)?.text).toBe(`Extended thinking requested (by ${lever}) but not applied: caller-native.`);
+  });
+
+  it('a native block that turns thinking ON still records native as the deciding layer', () => {
+    const rc = buildRunConditions({ requested: true, mode: 'on', source: 'config' }, { applied: true, native: true }, 10, false);
+    expect(rc).toMatchObject({ thinkingApplied: true, extendedThinkingSource: 'native' });
   });
 });
 

@@ -46,6 +46,17 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) 
   one entry point could not name it. All four are now exported from both; additive, type-only.
   `test/exports-parity.test.ts` asserts `./types` stays a subset of `.` and pins the four; it fails
   on 0.52.0's export lists.
+- **`runConditions.extendedThinkingSource` no longer blames a native veto for the request.** When
+  thinking was requested (per run, client config or `ULUOPS_EXTENDED_THINKING`) and the caller's own
+  provider-native options turned it off, the record said `'native'`. So the notice read "Extended
+  thinking requested (by the caller's provider-native thinking options) but not applied:
+  caller-native": it credited the layer that vetoed thinking with requesting it, and lost the layer
+  that did. The field now keeps the requesting layer in that case, and the veto stays where it
+  already was, `thinkingNotAppliedReason: 'caller-native'`. `'native'` still appears when a native
+  block turns thinking on. **What changes for you:** only the value of `extendedThinkingSource`
+  (and the notice text) for an active request plus a native off-switch; it is visible in
+  `ulu exec agent --json`. The tracker never received `runConditions`. Tests per requesting layer
+  fail on the previous line (`thinking.ts`, `buildRunConditions`).
 - **README names the two exported helpers it left out:** `ABORTED_DECISION` (beside the stop
   predicates) and `hasBilledMetrics` (in the `MaxStepsExhaustedError` row, as the copy-safe way to
   read `billedMetrics`).

@@ -476,8 +476,10 @@ export interface RunConditions {
   /** The client mode in effect. `'declared'` is reserved (OD-18). */
   extendedThinkingMode: 'off' | 'on';
   /**
-   * The layer that decided. `'native'`: the caller's own provider-native thinking block, which
-   * always wins and bypasses core's caps. `'agent'` is reserved (OD-18). A value read from a `.env`
+   * The layer that set thinking: the one that requested it (`request`/`config`/`env`), or
+   * `'native'` when the caller's own provider-native block turned thinking ON, which always wins and
+   * bypasses core's caps. A native block that turns thinking OFF is a veto, not a request: the
+   * requesting layer stays here and the veto is `thinkingNotAppliedReason: 'caller-native'`. `'agent'` is reserved (OD-18). A value read from a `.env`
    * file the CLI loaded is `'env'` — core cannot tell (OD-21); the CLI says so itself.
    */
   extendedThinkingSource: 'request' | 'config' | 'env' | 'native' | 'default';
