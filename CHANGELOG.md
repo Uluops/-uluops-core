@@ -6,6 +6,12 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) 
 
 ## [Unreleased]
 
+## [0.53.1] - 2026-10-25
+
+### Changed
+
+- **`@uluops/ops-sdk` 7.0.1 → 7.1.0 (exact).** No code change here. 7.1.0 adds `runs.findLatest()` and makes `runs.getLatest()` throw the documented `NotFoundError` (code `NO_RUNS`) when a project has no runs, instead of `SDK_RESPONSE_SHAPE_MISMATCH`. Core does not call either. **Why a release:** `@uluops/cli` pins core and ops-sdk exactly and keeps one copy of each in its tree. The CLI needs ops-sdk 7.1.0 for `ulu runs latest`, and with core still pinning 7.0.1 its tree would hold two ops-sdk copies. Errors from sdk-core stay shared, but classes ops-sdk defines itself (`InputValidationError`, `AnalysisEchoMismatchError`) would exist twice in one process, and `instanceof` across them fails silently.
+
 ## [0.53.0] - 2026-10-25
 
 0.52.1 was prepared but never published; its fixes ship here, with the behaviour change below that
