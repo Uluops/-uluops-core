@@ -6,6 +6,22 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) 
 
 ## [Unreleased]
 
+## [0.52.1] - 2026-10-25
+
+### Fixed
+
+- **`@uluops/ops-sdk` 7.0.0 → 7.0.1 and `@uluops/registry-sdk` 0.63.0 → 0.64.1 (exact).** Both SDKs
+  validated ids with zod 4's RFC-strict `.uuid()`, which refuses ids production stores (the
+  `system` org, two users, issue and pipeline-run authors, definition lineages; census
+  2026-10-25). The patches use `z.guid()`, as both APIs and platform do. **What this fixes here:**
+  the run-save path parses the server's write echo, whose `authorId` was `.uuid()`. A run saved
+  by an author with such an id was written, and then the save threw. ops-sdk 7.0.1 also makes its
+  discovery errors real `Error`s (tracker `2daed86c`).
+  - registry-sdk 0.64.x adds the registry's ADL v1.20 response fields (P0d). They are additive;
+    against a registry without them they are absent.
+  - Consumers that pin core get one copy of each SDK only if their own pins match these
+    versions. A consumer pinning ops-sdk 7.0.0 beside core 0.52.1 gets two copies.
+
 ## [0.52.0] - 2026-10-24
 
 ### Changed
