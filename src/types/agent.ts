@@ -498,7 +498,7 @@ export interface RunConditions {
    */
   maxTokensSent?: number;
   thinkingNotAppliedReason?: ThinkingNotAppliedReason;
-  /** 0.52.0: the run moved to text extraction because thinking conflicts with forced tool use. */
+  /** The run moved to text extraction because thinking conflicts with forced tool use. Reserved for the direct-Anthropic mapping (OD-13, not built): nothing sets it yet. */
   structuredOutputDegraded?: 'thinking';
 }
 

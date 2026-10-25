@@ -21,6 +21,13 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) 
     against a registry without them they are absent.
   - Consumers that pin core get one copy of each SDK only if their own pins match these
     versions. A consumer pinning ops-sdk 7.0.0 beside core 0.52.1 gets two copies.
+- **Docs no longer promise direct-Anthropic thinking "from 0.52.0".** The thinking-capability-restore
+  plan named 0.52.0 for the direct-Anthropic mapping (OD-13). The zod-4 release took that number, and
+  the mapping is not built: `MAPPED_THINKING_PROVIDERS` is OpenAI, Google and OpenRouter, and a direct
+  Anthropic opt-in records `no-mapping`, as it did in 0.51.x. The README provider table, the
+  `defaultThinkingBudget` comment and the JSDoc on `ai.extendedThinking` / `defaultThinkingBudget`
+  (which editors show) said "from 0.52.0"; they now say "not mapped yet". No behaviour changes. The
+  0.51.0 entry below keeps its original wording.
 
 ## [0.52.0] - 2026-10-24
 

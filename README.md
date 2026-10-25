@@ -697,7 +697,7 @@ What "on" sends, per provider, on a model that can think (`capabilities.reasonin
 | OpenAI | `reasoningEffort: 'medium'` | — (effort, not budget; `defaultThinkingBudget` is ignored) |
 | Google | `thinkingConfig.thinkingBudget` | Capped at half of `maxTokens`: Gemini counts thinking inside `maxOutputTokens`, and a budget at the cap leaves almost no answer. |
 | OpenRouter | `reasoning.max_tokens` | Capped so the answer keeps at least half of `maxTokens` (budget ≤ sent `max_tokens` − ½ `maxTokens`) — OpenRouter counts thinking inside `max_tokens`, and a budget at or above it is not rejected: OpenRouter silently raises the cap and bills past it. On `anthropic/…` models `max_tokens` is raised by the budget (up to the model's output limit) and the interleaved-thinking beta is sent, so tool steps after the first can think too (probed: `claude-sonnet-4.5` thought on every step; the adaptive `claude-sonnet-5`, `claude-opus-4.8` and `claude-haiku-5.5` accepted the request and thought on some steps, choosing how much themselves; other `anthropic/` ids unprobed). A `max_tokens` you set in `providerOptions.openrouter` replaces core's on the wire, so core does not raise it and sizes the budget against yours (the answer keeps at least half); a value that is not a positive integer gets no budget. |
-| Anthropic (direct) | nothing in 0.51.0 | Mapped in 0.52.0, with the structured-output degrade it needs (Anthropic rejects thinking with forced tool use). Until then a run records "not applied: no-mapping". |
+| Anthropic (direct) | nothing | Not mapped yet: it needs the structured-output degrade (Anthropic rejects thinking with forced tool use), which is planned but not built. A run records "not applied: no-mapping". Use an `openrouter:anthropic/…` model for Claude thinking. |
 | Others | nothing | Recorded "not applied: no-mapping". |
 
 Below a 1024-token budget after capping, nothing is sent and the run records `'invalid-budget'`.
@@ -1081,7 +1081,7 @@ const client = new UluOpsClient({
   defaultProject: 'my-project',       // Default project for result submission
   debug: false,                       // Detailed execution logging (or ULUOPS_DEBUG)
   defaultThinkingBudget: 10000,       // Thinking budget when ai.extendedThinking is on (Google, OpenRouter;
-                                      // direct Anthropic from 0.52.0). Capped per provider; see Extended Thinking
+                                      // not direct Anthropic yet). Capped per provider; see Extended Thinking
   contextBudget: 200000,              // Optional cap on the context budget (forces wrap-up at 80%, Anthropic eviction at 50%).
                                       // ⚠ The 80% wrap-up brake does NOT apply to Anthropic structured-output runs — see below.
                                       // When unset, the engine uses the resolved model's real context window

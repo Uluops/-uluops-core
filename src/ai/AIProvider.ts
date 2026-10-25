@@ -424,7 +424,7 @@ export interface AIGenerateOptions {
  * - Unified generation with automatic tool loops
  * - Automatic prompt caching for Anthropic system messages
  * - Opt-in extended thinking (`ai.extendedThinking` / per-call `extendedThinking`): OpenAI effort,
- *   Google and OpenRouter budget; direct Anthropic from 0.52.0. Off by default — see thinking.ts
+ *   Google and OpenRouter budget; direct Anthropic not mapped yet. Off by default — see thinking.ts
  * - Provider-defined tool support (Anthropic bash, OpenAI shell), and a schema-fallback `bash`
  *   function tool for providers without one (OpenRouter; SHELL_SCHEMA_FALLBACK_PROVIDERS)
  * - Error mapping to UluOps error types
@@ -1250,7 +1250,7 @@ export class AIProvider {
     string,
     (resolved: ResolvedModel, userOptions: ProviderOptions | undefined, effectiveBudget: number | undefined, thinking: ThinkingPlan) => ProviderOptions | undefined
   > = {
-    // Anthropic has no thinking mapping until core 0.52.0 (OD-13): the plan is 'no-mapping' there.
+    // Anthropic has no thinking mapping yet (OD-13; planned with the degrade): the plan is 'no-mapping' there.
     anthropic: (r, o, b) => this.buildAnthropicOptions(r, o, b),
     openai: (r, o, _b, t) => this.buildOpenAIOptions(r, o, t),
     google: (r, o, _b, t) => this.buildGoogleOptions(r, o, t),
@@ -1340,8 +1340,8 @@ export class AIProvider {
 
   /**
    * Anthropic-specific provider options.
-   * - No thinking option: direct Anthropic thinking is mapped in core 0.52.0, with the structured-
-   *   output degrade it needs (spec OD-13). A caller's own `thinking` block still passes through.
+   * - No thinking option: direct Anthropic thinking is not mapped yet; it needs the structured-
+   *   output degrade (spec OD-13), planned but not built. A caller's own `thinking` block still passes through.
    * - Auto-injects context management (clear old tool uses at 100K tokens)
    */
   private buildAnthropicOptions(
@@ -1371,7 +1371,7 @@ export class AIProvider {
     // The capability-keyed thinking block that stood here is deleted, not gated (spec §4.2 item 4):
     // it read no opt-in, and once registry-sdk 0.61.0 normalizes `extendedThinking` from `reasoning`
     // it would have fired on every reasoning-capable Claude run — thinking plus the forced json tool
-    // below (a 400, probe P1) on agent runs, billed thinking in report mode. Mapped in 0.52.0.
+    // below (a 400, probe P1) on agent runs, billed thinking in report mode. Not mapped yet (OD-13).
 
     // Auto-inject context management to clear old tool uses when context grows large.
     // Trigger at 50% of the effective context budget (the model's real window, or

@@ -83,8 +83,8 @@ export interface AIConfig {
    * means the PROVIDER DEFAULT, not "no thinking". Also read from `ULUOPS_EXTENDED_THINKING`; this
    * field wins over the variable, and `runAgent`'s per-run `extendedThinking` wins over both. Any
    * other value — booleans included — is `'off'` at the layer that set it, with a warning; it does
-   * not fall through. Mapped in this release: OpenAI, Google, OpenRouter. Direct Anthropic is mapped
-   * in core 0.52.0; until then it records "not applied: no-mapping". Each run records what was
+   * not fall through. Mapped in this release: OpenAI, Google, OpenRouter. Direct Anthropic is not
+   * mapped yet (planned with the structured-output degrade); it records "not applied: no-mapping". Each run records what was
    * requested and applied on `AgentResult.runConditions`.
    * @default 'off'
    */
@@ -192,7 +192,7 @@ export interface UluOpsConfig {
 
   /**
    * Thinking budget in tokens, used when extended thinking is ON (see `ai.extendedThinking`) on a
-   * provider that takes a budget (Google, OpenRouter; Anthropic from core 0.52.0). OpenAI takes an
+   * provider that takes a budget (Google, OpenRouter; not direct Anthropic yet). OpenAI takes an
    * effort instead and ignores it. Capped per provider so the visible answer keeps room (Google: half
    * of `maxTokens`; OpenRouter: below the `max_tokens` sent); below 1024 after capping, no thinking is
    * sent and the run records `'invalid-budget'`. Has no effect while thinking is off.

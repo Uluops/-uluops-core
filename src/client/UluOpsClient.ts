@@ -835,7 +835,7 @@ export function resolveConfig(config: UluOpsConfig, env: NodeJS.ProcessEnv = pro
     defaultProject: config.defaultProject ?? env['ULUOPS_PROJECT'],
     // EXTERNAL-OK: the raw value is only forwarded here; it is seamed through finitePositive and capped
     // by planThinking (src/ai/thinking.ts) before use, never read arithmetically on this line. Direct
-    // Anthropic has no thinking mapping until 0.52.0 — until then an opt-in there records 'no-mapping',
+    // Anthropic has no thinking mapping yet (OD-13) — an opt-in there records 'no-mapping',
     // like any unmapped provider; this value does not reach the Anthropic provider at all in that case.
     defaultThinkingBudget: config.defaultThinkingBudget ?? 10_000,
     debug: config.debug ?? (env['ULUOPS_DEBUG'] === 'true'),
