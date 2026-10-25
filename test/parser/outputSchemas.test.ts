@@ -458,11 +458,16 @@ describe('outputSchemas — numeric fields reject non-finite values', () => {
     ...baseOutput,
   };
 
-  it('proves the control: bare z.number() DOES accept Infinity', () => {
-    // If this ever starts failing, zod changed its default and the `.finite()` calls below
-    // may be redundant — but verify before removing them.
-    expect(z.number().safeParse(Infinity).success).toBe(true);
+  it('proves the control: bare z.number() REJECTS Infinity on zod 4 (it accepted it on zod 3)', () => {
+    // zod 3.25.76 accepted ±Infinity here, which is why every numeric field in
+    // outputSchemas.ts carries `.finite()`. zod 4 rejects non-finite numbers by default
+    // (measured on 4.6.7, 2026-10-24), so those calls are now redundant and kept as an
+    // explicit statement. If this starts failing, zod's default changed BACK and the
+    // `.finite()` calls are load-bearing again: do not remove them while it can fail.
+    expect(z.number().safeParse(Infinity).success).toBe(false);
+    expect(z.number().safeParse(-Infinity).success).toBe(false);
     expect(z.number().safeParse(NaN).success).toBe(false);
+    expect(z.number().safeParse(5.5).success).toBe(true);
   });
 
   it.each([[Infinity], [-Infinity]])('rejects a non-finite top-level score (%s)', (bad) => {

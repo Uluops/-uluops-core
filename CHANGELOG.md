@@ -6,6 +6,61 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) 
 
 ## [Unreleased]
 
+## [0.52.0] - 2026-10-24
+
+### Changed
+
+- **BREAKING: zod 3 → zod 4, and zod is now a peer dependency (`^4.6.7`).** zod-4 release train
+  (cross-repo spec v0.2.1, T3), which clears GHSA-mrhx-c7xc-m3w5 (zod < 4.6.6; no zod 3 fix).
+  `dependencies.zod 3.25.76` is removed; `peerDependencies.zod ^4.6.7` and an exact
+  `devDependencies.zod 4.6.7` replace it. **What breaks:** a consumer on zod 3 gets `ERESOLVE`.
+  Validation messages and issue codes follow zod 4 (`invalid_enum_value` → `invalid_value`).
+- **`@uluops/ops-sdk` 6.17.0 → 7.0.0, `@uluops/registry-sdk` 0.62.0 → 0.63.0, `@uluops/sdk-core`
+  0.18.1 → 0.19.0 (all exact, in one change, spec D7).** The SDKs are the T1 releases that
+  peer-depend on zod; the installed tree now holds one zod (4.6.7, was 3.25.76 plus two nested
+  4.3.6) and one sdk-core. sdk-core moves with ops-sdk because a split sdk-core gives two
+  `SdkApiError` classes and `instanceof` stops matching (CLAUDE.md, tracker `bfb1575e`).
+- **What providers receive is unchanged, and measured, not assumed.** Core hands its zod schemas
+  to the AI SDK, which converts them to JSON Schema per request; under zod 4 that conversion
+  runs zod's own `toJSONSchema` instead of the bundled zod-3 converter. Diffed through `ai`'s
+  `zodSchema()` (ai 6.0.300, both majors):
+  - `agentOutputSchema`: same `required`, same 12 union parameters (Anthropic's limit is 16;
+    `schemaUnionBudget.test.ts` passes), no `minimum`/`maximum`. The only change: nullable numbers
+    render as `type: ["number","null"]` instead of `anyOf: [{number},{null}]`, the same constraint
+    and the same union count.
+  - Tool schemas: zod 4's `.int()` adds `minimum`/`maximum` of ±(2^53−1). **Kept off the wire**
+    with a `toolInteger()` helper in `ToolAdapter.ts` (5 sites), so every tool schema is byte-identical to 0.51.x
+    (key order aside). Live probe, 2026-10-24: Anthropic (claude-haiku-4-5) accepts the bounds in
+    a plain tool, with a control (an invalid schema) refused 400 before the model ran; OpenAI and
+    Gemini could not be probed because their keys were rejected. One provider of four is not enough to ship
+    a wire change, hence the helper; `test/ai/ToolAdapter.wire-schema.test.ts` pins it (fails with
+    the helper reverted to `.int()`).
+- **Parse behaviour, measured on a corpus of model outputs** (null fields, missing optional keys,
+  `Infinity`, an out-of-set enum, an unknown key): identical results on both majors except issue
+  code names. `optionalNullTolerant` (`z.preprocess` around an optional) keeps its keys
+  optional under zod 4 — the risk class where zod 4 makes such keys required did not apply.
+- **`.finite()` is now redundant and kept.** zod 4's bare `z.number()` rejects `±Infinity` and
+  `NaN`. The control in `test/parser/outputSchemas.test.ts` asserted the zod-3 behaviour (bare
+  `z.number()` accepts `Infinity`) and said to verify before removing anything; it now asserts
+  the zod-4 behaviour, so it fails if zod's default ever reverts and the calls are load-bearing
+  again. The `outputSchemas.ts` header says the same.
+- **D4 census (spec §2.2).** `.default(`: 0 sites, so Z4 is N/A (search:
+  `grep -rnE '\.default\(' src`, tests excluded, 2026-10-24). `z.any()`/`z.unknown()` keys,
+  `z.record(`, `required_error`, `ZodIssueCode`, `errorMap`, `.uuid(`, `_def`/`_zod`: 0 code sites
+  (every hit is a comment). `.errors` at `AIProvider.ts:2249` is the AI SDK's `RetryError`, not
+  zod. `ZodTypeAny` (`outputSchemas.ts:54`) still exists in zod 4; `tsc` is clean. Per-file counts
+  of `z.`, `.parse(` and `.safeParse(` match, except +1 `z.` in `outputSchemas.ts` from the
+  rewritten header comment.
+
+### Security
+
+- **Production audit: 4 high → 0.** Three were the zod chain (GHSA-mrhx-c7xc-m3w5, via zod and
+  the two SDKs' nested copies), cleared by the bump above. The fourth was `undici` 6.29.0
+  (GHSA-4qv8-2p9j-2685, EventSource-parser memory DoS, and siblings), reached through
+  `@ai-sdk/provider-utils`; `npm audit fix` without `--force` moved it to 6.29.1, lockfile only.
+  Still open, dev-only and outside the publish gate (`--omit=dev`): a critical in `tinypool` via
+  `vitest` 3.2.6, whose fix is a vitest major (5.x). Left for its own change.
+
 ### Fixed
 
 - **Correction to the 0.51.2 entry below, which is left as written.** It said core's ops-sdk 6.14.0 pin installed a second ops-sdk copy in `@uluops/cli`, and that "errors raised inside core's copy then failed the CLI's `instanceof OpsApiError` check". **The second half was wrong.** `OpsApiError` is ops-sdk's re-export of sdk-core's `SdkApiError` (`@uluops/ops-sdk/dist/errors/errors.js:6`), and sdk-core was a single copy (0.18.1) throughout, so both ops-sdk copies exported the same class. Checked 2026-10-19 against the published `@uluops/cli` 0.39.2 install, which nests 6.14.0 under core beside a root 6.17.0: `OpsApiError` from the two copies is `===`. A split would affect only the classes ops-sdk defines itself (`AnalysisEchoMismatchError`, `MfaRequiredError`, `UnsupportedContractError`, `InputValidationError`), and the CLI checks `instanceof` on none of them. The 0.51.2 alignment stands: it dedupes the tree. Only its stated consequence was overclaimed.

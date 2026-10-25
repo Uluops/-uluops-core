@@ -4,8 +4,14 @@ import type { Issue } from '../types/command.js';
 /**
  * ── Why every `z.number()` here carries `.finite()` ────────────────────────────────────
  *
- * **`z.number()` ACCEPTS `Infinity` and `-Infinity`.** Verified against the pinned zod
- * (3.25.76) with a control that proves the probe is not vacuous — `NaN` IS rejected, so the
+ * **Since 0.52.0 (zod 4) the `.finite()` calls are redundant, and kept.** zod 4's bare
+ * `z.number()` rejects `Infinity`, `-Infinity` and `NaN` itself (measured on 4.6.7,
+ * 2026-10-24); `test/parser/outputSchemas.test.ts` pins that, so it fails if zod's default
+ * ever reverts and the calls become load-bearing again. Everything below records why they
+ * were added, and still describes the hazard they guard against.
+ *
+ * **On zod 3, `z.number()` ACCEPTED `Infinity` and `-Infinity`.** Verified against the then-pinned
+ * zod (3.25.76) with a control that proves the probe is not vacuous — `NaN` IS rejected, so the
  * schema is running:
  *
  *     Infinity   ACCEPTED -> Infinity

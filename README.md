@@ -15,6 +15,7 @@ The foundational execution engine for UluOps. Orchestrates AI-powered code analy
 ## Prerequisites
 
 - **Node.js 20.3+** with an ESM project (`"type": "module"` in package.json)
+- **zod 4.6.7+** — a peer dependency since 0.52.0. npm 7+ installs it when your project has none; a project on zod 3 gets `ERESOLVE` and should upgrade (`npm install zod@^4.6.7`), not pass `--legacy-peer-deps`
 - **[tsx](https://github.com/privatenumber/tsx)** for running TypeScript examples: `npm install -D tsx`
 - **UluOps API key** — get one at [app.uluops.ai](https://app.uluops.ai), or use bundled starter agents offline (see below)
 - **AI provider key** — at least one of `ANTHROPIC_API_KEY`, `OPENAI_API_KEY`, or `GOOGLE_API_KEY`
@@ -1498,7 +1499,7 @@ Per-step results (`name`, `status`, `exitCode`, `output`, `durationMs`) are retu
 |---------|---------|
 | `@uluops/sdk-core` | Shared HTTP infrastructure (HttpClient, errors, auth) |
 | `@uluops/registry-sdk` | Registry API client for definitions, models, and server-side normalization (`?normalize=true`) |
-| `@uluops/ops-sdk` | Tracker API client (6.x) — runs, findings, issues, analytics |
+| `@uluops/ops-sdk` | Tracker API client (7.x) — runs, findings, issues, analytics |
 | `@uluops/taxonomy` | The failure taxonomy (4 domains, 28 modes, 5 severities); `isCanonicalMode` guards failure codes at submission |
 | `ai` | Vercel AI SDK v6 - LLM communication and tool loops |
 | `@ai-sdk/anthropic` | Anthropic provider for AI SDK |
@@ -1506,7 +1507,7 @@ Per-step results (`name`, `status`, `exitCode`, `output`, `durationMs`) are retu
 | `@ai-sdk/google` | Google/Gemini provider for AI SDK |
 | `yaml` | YAML parsing for local definitions |
 | `glob` | File globbing for ToolHandler |
-| `zod` | Schema validation for AI SDK tools |
+| `zod` (peer, `^4.6.7`) | Schema validation for AI SDK tools and structured output; one copy, owned by the application |
 
 ## Development
 

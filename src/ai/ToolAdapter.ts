@@ -4,6 +4,24 @@ import type { ToolHandler } from '../executor/ToolHandler.js';
 import type { TokenBudgetTracker } from './TokenBudgetTracker.js';
 import { ExecutionError } from '../errors/index.js';
 
+/**
+ * An integer tool parameter whose JSON Schema is exactly what zod 3's `.int()` emitted:
+ * `{ "type": "integer" }`, with no bounds.
+ *
+ * WHY not `z.number().int()` (0.52.0, zod 4): zod 4's `.int()` is a safe-integer format
+ * and renders as `type: integer` PLUS `minimum`/`maximum` of +/-(2^53 - 1). Those bounds are
+ * new on the wire to every provider these tools are offered to (AgentExecutor offers them on
+ * every tool-using run). The structured-output spike (0a) found providers rejecting min/max
+ * in structured mode. Probed live on 2026-10-24 (0.52.0 CHANGELOG): Anthropic accepts the
+ * bounds in a plain tool (control: an invalid schema got a 400 before the model ran); OpenAI
+ * and Gemini could not be probed (their keys were rejected). Rather than ship a wire change
+ * verified on one provider of four, this keeps the 0.51.x schema byte for byte (key order
+ * aside) and the 0.51.x parse result (an integer beyond 2^53 is accepted, as zod 3 accepted
+ * it). `test/ai/ToolAdapter.wire-schema.test.ts` pins both. Switching to plain `.int()` is
+ * safe once OpenAI and Google accept the bounds in the same probe.
+ */
+const toolInteger = () => z.number().refine(Number.isInteger, 'Expected an integer').meta({ type: 'integer' });
+
 /** Strip undefined values from an object to avoid passing them as tool input. */
 function stripUndefined(obj: Record<string, unknown>): Record<string, unknown> {
   const result: Record<string, unknown> = {};
@@ -52,8 +70,8 @@ export class ToolAdapter {
           'Read the contents of a file. Use start_line/end_line for large files to avoid reading the entire file.',
         inputSchema: z.object({
           path: z.string().describe('File path relative to target directory'),
-          start_line: z.number().int().optional().describe('First line to read (1-based). Default: 1'),
-          end_line: z.number().int().optional().describe('Last line to read (1-based). Default: end of file'),
+          start_line: toolInteger().optional().describe('First line to read (1-based). Default: 1'),
+          end_line: toolInteger().optional().describe('Last line to read (1-based). Default: end of file'),
         }),
         execute: async (input) => this.executeTool('read_file', stripUndefined(input)),
       }),
@@ -64,7 +82,7 @@ export class ToolAdapter {
         inputSchema: z.object({
           path: z.string().describe('Directory path relative to target'),
           pattern: z.string().optional().describe('Glob pattern (e.g., "**/*.ts")'),
-          max_results: z.number().int().optional().describe('Maximum files to return. Default: 200'),
+          max_results: toolInteger().optional().describe('Maximum files to return. Default: 200'),
         }),
         execute: async (input) => this.executeTool('list_files', stripUndefined(input)),
       }),
@@ -80,9 +98,7 @@ export class ToolAdapter {
             .enum(['matches', 'files', 'count'])
             .optional()
             .describe('"matches" (default), "files" (paths only), "count" (per-file counts)'),
-          context_lines: z
-            .number()
-            .int()
+          context_lines: toolInteger()
             .optional()
             .describe('Lines of context before/after each match (0-5). Default: 0'),
         }),
@@ -103,7 +119,7 @@ export class ToolAdapter {
           'Get a hierarchical view of a directory with file counts and sizes. More structured than list_files.',
         inputSchema: z.object({
           path: z.string().describe('Directory path relative to target'),
-          max_depth: z.number().int().optional().describe('Maximum depth to traverse. Default: 3'),
+          max_depth: toolInteger().optional().describe('Maximum depth to traverse. Default: 3'),
           include_sizes: z.boolean().optional().describe('Include file sizes. Default: true'),
         }),
         execute: async (input) => this.executeTool('get_directory_tree', stripUndefined(input)),
