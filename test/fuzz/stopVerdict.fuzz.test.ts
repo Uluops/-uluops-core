@@ -181,7 +181,7 @@ function genPlCase(seed: number): PlCase {
 const iface = (name: string) => ({ name, version: '1.0.0', displayName: name, description: 'd', domain: 'software' });
 function agentDef(name: string) {
   return { type: 'agent', name, version: '1.0.0', hash: `sha256:${name}`, yaml: '', domain: 'software', agentType: 'validator', definition: {},
-    runtime: { prompt: 'p', defaults: { model: 'sonnet', timeout: 30000 }, config: { maxScore: 100, threshold: 75, categories: [], outputSchema: 'json' } } };
+    runtime: { prompt: 'p', defaults: { model: 'sonnet', timeout: 30000 }, config: { maxScore: 100, categories: [], outputSchema: 'json' } } };
 }
 function cmdDef(s: CmdStep) {
   const agents = s.kind === 'cmd1' ? [s.agent.name] : s.agents.map(a => a.name);

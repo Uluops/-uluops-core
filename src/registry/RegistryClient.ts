@@ -9,7 +9,7 @@ import type { ResolvedDefinition, DefinitionSummary } from '../types/registry.js
 import { ConfigurationError, SubscriptionRequiredError, IntegrityError, isApiErrorLike } from '../errors/index.js';
 import { normalizeDefinition, DefinitionValidationError } from './normalize.js';
 import { formatErrorMessage } from '../utils/formatError.js';
-import { DEFAULT_PASS_THRESHOLD, DEFAULT_MODEL_ALIAS } from '../constants.js';
+import { DEFAULT_MODEL_ALIAS } from '../constants.js';
 import type { Logger } from '@uluops/sdk-core';
 import { computeHash, computePromptHash, verifyHash, verifyPromptHash } from '@uluops/sdk-core';
 
@@ -811,10 +811,8 @@ export class RegistryClient {
    */
   private buildAgentConfig(agent: AgentDefinition['agent']): Record<string, unknown> {
     if (agent.interface.agentType === 'validator' && agent.scoring) {
-      const passThreshold = agent.decisions?.thresholds?.find(t => t.decision === 'positive');
       return {
         maxScore: agent.scoring.maxScore,
-        threshold: passThreshold?.min_score ?? DEFAULT_PASS_THRESHOLD,
         categories: agent.scoring.categories.map(c => ({
           name: c.name,
           weight: c.weight,

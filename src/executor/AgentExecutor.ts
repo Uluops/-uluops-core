@@ -857,10 +857,7 @@ export class AgentExecutor {
       // EXTERNAL-OK: forwarded to the AI SDK as a generation option; it bounds the PROVIDER call, not any
       // arithmetic here, and the SDK rejects a malformed value at its own boundary.
       maxSteps: options?.maxSteps ?? DEFAULT_MAX_STEPS,
-      thresholds: this.resolveThresholds(
-        options?.thresholds,
-        defaults && 'thresholds' in defaults ? defaults.thresholds : undefined,
-      ),
+      thresholds: this.resolveThresholds(options?.thresholds),
       trackResults: options?.trackResults ?? this.config.trackingEnabled,
       reportMode: options?.reportMode ?? false,
       project: options?.project ?? this.config.defaultProject,
@@ -874,12 +871,16 @@ export class AgentExecutor {
     return resolved.runtime as AgentRuntime | ExecutorRuntime;
   }
 
+  /**
+   * The caller's thresholds, with a missing half defaulted. Only ExecutionOptions supplies them: ADL
+   * decisions.thresholds are rendered into the prompt, and the runtime carried no thresholds field
+   * that any resolve path wrote (removed after 0.53.0, tracker 5f71197f).
+   */
   private resolveThresholds(
     optThresholds?: { pass?: number; warn?: number },
-    defThresholds?: { pass?: number; warn?: number },
   ): { pass: number; warn: number } | undefined {
-    const pass = optThresholds?.pass ?? defThresholds?.pass;
-    const warn = optThresholds?.warn ?? defThresholds?.warn;
+    const pass = optThresholds?.pass;
+    const warn = optThresholds?.warn;
     if (pass === undefined && warn === undefined) return undefined;
     return { pass: pass ?? DEFAULT_PASS_THRESHOLD, warn: warn ?? DEFAULT_WARN_THRESHOLD };
   }

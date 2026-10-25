@@ -70,7 +70,7 @@ const def = {
   runtime: {
     prompt: 'You are a test validator.',
     defaults: { model: 'or', timeout: 30_000 },
-    config: { maxScore: 100, threshold: 75, categories: [], outputSchema: 'json' },
+    config: { maxScore: 100, categories: [], outputSchema: 'json' },
   } as AgentRuntime,
   domain: 'software', agentType: 'validator',
 } as ResolvedDefinition;

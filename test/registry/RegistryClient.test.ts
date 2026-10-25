@@ -883,7 +883,9 @@ describe('RegistryClient', () => {
       expect(runtime.defaults.timeout).toBe(300000);
       // Config populated from scoring
       expect(runtime.config.maxScore).toBe(100);
-      expect(runtime.config.threshold).toBe(70);
+      // ADL decisions.thresholds are rendered into the prompt; the runtime no longer carries a
+      // copy that nothing read (removed after 0.53.0, tracker 5f71197f). Fails with the copy back.
+      expect('threshold' in runtime.config).toBe(false);
     });
 
     it('renders command prompt with agent refs', async () => {

@@ -6,6 +6,19 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) 
 
 ## [Unreleased]
 
+### Removed
+
+- **`AgentRuntime.defaults.thresholds` and `AgentRuntime.config.threshold`** (tracker `5f71197f`).
+  Neither was a working threshold. `defaults.thresholds` was declared and read by
+  `AgentExecutor.resolveContext`, but no resolve path ever wrote it. `config.threshold` was the ADL
+  `decisions.thresholds` positive band's `min_score`, copied in by `RegistryClient` and read by
+  nothing. ADL bands reach the model through the rendered prompt, and the only thresholds that gate
+  are `ExecutionOptions.thresholds` (0.53.0). **Type-level breaking** for code that names either
+  field on `ResolvedDefinition.runtime`; a search of every repo's `src/` here on 2026-10-25 found no
+  reader. The test "propagates threshold from definition defaults" is gone; it passed only because
+  it built a runtime shape `RegistryClient` never produces. `RegistryClient.test.ts` now asserts the
+  copy is absent; it fails with the copy restored.
+
 ## [0.53.1] - 2026-10-25
 
 ### Changed

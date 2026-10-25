@@ -113,13 +113,11 @@ export interface AgentRuntime extends BaseRuntime {
     timeout: number;
     maxTokens?: number;
     temperature?: number;
-    thresholds?: { pass?: number; warn?: number };
   };
 
   /** Scoring configuration */
   config: {
     maxScore: number;
-    threshold: number;
     categories: CategoryConfig[];
     outputSchema: string;
   };

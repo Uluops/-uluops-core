@@ -108,7 +108,7 @@ function makeValidatorDef(overrides?: Partial<ResolvedDefinition>): ResolvedDefi
     runtime: {
       prompt: 'You are a test validator. Analyze the code.',
       defaults: { model: 'sonnet', timeout: 30000 },
-      config: { maxScore: 100, threshold: 75, categories: [], outputSchema: 'json' },
+      config: { maxScore: 100, categories: [], outputSchema: 'json' },
     } as AgentRuntime,
     domain: 'software',
     agentType: 'validator',
@@ -418,23 +418,6 @@ describe('AgentExecutor', () => {
       }
     });
 
-    it('propagates threshold from definition defaults when no options override', async () => {
-      const ai = mockAIProvider();
-      const executor = new AgentExecutor(baseConfig, ai, noopLogger);
-
-      const def = makeValidatorDef({
-        runtime: {
-          prompt: 'You are a test validator.',
-          defaults: { model: 'sonnet', timeout: 30000, thresholds: { pass: 70, warn: 50 } },
-          config: { maxScore: 100, threshold: 75, categories: [], outputSchema: 'json' },
-        } as AgentRuntime,
-      });
-
-      const result = await executor.execute(def, { target: tmpDir });
-
-      expect(result.threshold).toBe(70);
-    });
-
     // runAgent thresholds gate decisionCategory (0.53.0), consistent with CommandExecutor's
     // score bands (>= pass positive, >= warn conditional, else negative) and its cap-never-promote
     // rule. The agent's own decision string is never rewritten (the non-destructive rule above
@@ -560,7 +543,7 @@ describe('AgentExecutor', () => {
         runtime: {
           prompt: 'test',
           defaults: { model: undefined as unknown as string, timeout: 30000 },
-          config: { maxScore: 100, threshold: 75, categories: [], outputSchema: 'json' },
+          config: { maxScore: 100, categories: [], outputSchema: 'json' },
         } as AgentRuntime,
       });
 
@@ -613,7 +596,7 @@ describe('AgentExecutor', () => {
         runtime: {
           prompt: 'test',
           defaults: { model: 'sonnet', timeout: 30000 },
-          config: { maxScore: 100, threshold: 75, categories: [], outputSchema: 'json' },
+          config: { maxScore: 100, categories: [], outputSchema: 'json' },
           interface: { tools: ['bash'] },
         } as unknown as AgentRuntime,
       });
@@ -693,7 +676,7 @@ describe('AgentExecutor', () => {
         runtime: {
           prompt: 'test',
           defaults: { model: 'sonnet', timeout: 30000 },
-          config: { maxScore: 100, threshold: 75, categories: [], outputSchema: 'json' },
+          config: { maxScore: 100, categories: [], outputSchema: 'json' },
           interface: { tools: ['bash'] },
         } as unknown as AgentRuntime,
       });

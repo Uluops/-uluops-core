@@ -38,7 +38,7 @@ function defWithVocab(): ResolvedDefinition {
     runtime: {
       prompt: 'p',
       defaults: { model: 'sonnet', timeout: 30000 },
-      config: { maxScore: 100, threshold: 75, categories: [], outputSchema: 'json' },
+      config: { maxScore: 100, categories: [], outputSchema: 'json' },
     } as AgentRuntime,
     domain: 'software', agentType: 'validator',
   } as ResolvedDefinition;
