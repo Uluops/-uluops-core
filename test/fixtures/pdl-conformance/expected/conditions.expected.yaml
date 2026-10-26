@@ -1,0 +1,199 @@
+# Oracle for ../cases/conditions.cases.yaml. Format: ../README.md, "Expected format".
+expected:
+  - id: conditions/params-root-true
+    outcome: ran
+    stages:
+      a: { status: PASSED, passed: true, launched: [stub-gate-a], agents: { stub-gate-a: positive } }
+    all_gates_passed: true
+    run_decision: PASS
+    warnings: []
+
+  - id: conditions/params-root-false
+    outcome: ran
+    stages:
+      a: { status: SKIPPED, passed: false, launched: [] }
+      b:
+        status: PASSED
+        passed: true
+        launched: [stub-gate-b]
+        agents: { stub-gate-b: positive }
+        upstream: [{ stage: a, absent: condition_not_met }]
+    all_gates_passed: true
+    run_decision: PASS
+    warnings: []
+
+  - id: conditions/params-default-bound-first
+    outcome: ran
+    stages:
+      a: { status: PASSED, passed: true, launched: [stub-gate-a], agents: { stub-gate-a: positive } }
+    all_gates_passed: true
+    run_decision: PASS
+    warnings: []
+
+  - id: conditions/absent-parameter
+    outcome: ran
+    stages:
+      ne: { status: PASSED, passed: true, launched: [stub-gate-a], agents: { stub-gate-a: positive } }
+      eq-empty: { status: SKIPPED, passed: false, launched: [] }
+      bare: { status: SKIPPED, passed: false, launched: [] }
+    all_gates_passed: true
+    run_decision: PASS
+    warnings: []
+
+  - id: conditions/stages-passed-root
+    outcome: ran
+    stages:
+      a: { status: FAILED, passed: false, launched: [stub-gate-a], agents: { stub-gate-a: negative } }
+      if-passed: { status: SKIPPED, passed: false, launched: [] }
+      if-not-passed: { status: PASSED, passed: true, launched: [stub-gate-c], agents: { stub-gate-c: positive } }
+    all_gates_passed: false
+    run_decision: FAIL
+    warnings: []
+
+  - id: conditions/stages-passed-false-for-warned-and-skipped
+    outcome: ran
+    stages:
+      warned: { status: WARNED, passed: false, launched: [stub-gate-a], agents: { stub-gate-a: positive } }
+      skipped: { status: SKIPPED, passed: false, launched: [] }
+      reads-warned: { status: SKIPPED, passed: false, launched: [] }
+      reads-skipped: { status: SKIPPED, passed: false, launched: [] }
+    all_gates_passed: true
+    run_decision: WARN
+    warnings: []
+
+  - id: conditions/step-output-root
+    outcome: ran
+    stages:
+      pre: { status: PASSED, passed: true, launched: [] }
+      on-detect: { status: PASSED, passed: true, launched: [stub-gate-a], agents: { stub-gate-a: positive } }
+      on-miss: { status: SKIPPED, passed: false, launched: [] }
+    steps:
+      pre:
+        Detect: { status: passed, output: DETECTED }
+    all_gates_passed: true
+    run_decision: PASS
+    warnings: []
+
+  - id: conditions/agentref-condition-on-step-output
+    outcome: ran
+    stages:
+      pre: { status: PASSED, passed: true, launched: [] }
+      review:
+        status: PASSED
+        passed: true
+        launched: [stub-gate-a]
+        agents: { stub-gate-a: positive, stub-docs-a: skipped }
+    all_gates_passed: true
+    run_decision: PASS
+    warnings: []
+
+  - id: conditions/truthiness
+    outcome: ran
+    stages:
+      pre: { status: PASSED, passed: true, launched: [] }
+      t-zero: { status: SKIPPED, passed: false, launched: [] }
+      t-false: { status: SKIPPED, passed: false, launched: [] }
+      t-empty: { status: SKIPPED, passed: false, launched: [] }
+      t-word: { status: PASSED, passed: true, launched: [stub-lens-a], agents: { stub-lens-a: positive } }
+    all_gates_passed: true
+    run_decision: PASS
+    warnings: []
+
+  - id: conditions/precedence-and-binds-tighter
+    outcome: ran
+    stages:
+      no-parens: { status: PASSED, passed: true, launched: [stub-gate-a], agents: { stub-gate-a: positive } }
+      parens: { status: SKIPPED, passed: false, launched: [] }
+    all_gates_passed: true
+    run_decision: PASS
+    warnings: []
+
+  - id: conditions/transitive-ancestor-evaluates
+    outcome: ran
+    stages:
+      pre: { status: PASSED, passed: true, launched: [] }
+      one: { status: PASSED, passed: true, launched: [stub-gate-a], agents: { stub-gate-a: positive } }
+      two: { status: PASSED, passed: true, launched: [stub-gate-b], agents: { stub-gate-b: positive } }
+      three: { status: PASSED, passed: true, launched: [stub-gate-c], agents: { stub-gate-c: positive } }
+    all_gates_passed: true
+    run_decision: PASS
+    warnings: []
+
+  - id: conditions/kleene-and-absorbs-error
+    outcome: ran
+    stages:
+      pre: { status: PASSED, passed: true, launched: [] }
+      security: { status: SKIPPED, passed: false, launched: [] }
+    steps:
+      pre:
+        Detect security surface: { status: failed, output: "" }
+    all_gates_passed: true
+    run_decision: PASS
+    warnings: []
+
+  - id: conditions/kleene-or-absorbs-error
+    outcome: ran
+    stages:
+      pre: { status: PASSED, passed: true, launched: [] }
+      security: { status: PASSED, passed: true, launched: [stub-security-a], agents: { stub-security-a: positive } }
+    all_gates_passed: true
+    run_decision: PASS
+    warnings: []
+
+  - id: conditions/kleene-error-propagates-through-and
+    outcome: ran
+    stages:
+      pre: { status: PASSED, passed: true, launched: [] }
+      security: { status: ERRORED, passed: false, launched: [] }
+    all_gates_passed: false
+    run_decision: FAIL
+    warnings: [{ code: STAGE_ERRORED, stage: security, reason: condition_error }]
+
+  - id: conditions/kleene-error-propagates-through-or
+    outcome: ran
+    stages:
+      pre: { status: PASSED, passed: true, launched: [] }
+      security: { status: ERRORED, passed: false, launched: [] }
+    all_gates_passed: true
+    run_decision: WARN
+    warnings: [{ code: STAGE_ERRORED, stage: security, reason: condition_error }]
+
+  - id: conditions/kleene-negation-of-error
+    outcome: ran
+    stages:
+      pre: { status: PASSED, passed: true, launched: [] }
+      a: { status: ERRORED, passed: false, launched: [] }
+    all_gates_passed: false
+    run_decision: FAIL
+    warnings: [{ code: STAGE_ERRORED, stage: a, reason: condition_error }]
+
+  - id: conditions/step-skipped-after-hard-failure
+    outcome: ran
+    stages:
+      pre: { status: WARNED, passed: false, launched: [] }
+      reads-first: { status: ERRORED, passed: false, launched: [] }
+      reads-second: { status: ERRORED, passed: false, launched: [] }
+    steps:
+      pre:
+        first: { status: failed, output: "" }
+        second: { status: skipped, output: "" }
+    all_gates_passed: false
+    run_decision: FAIL
+    warnings: [{ code: STAGE_ERRORED, stage: reads-first, reason: condition_error }, { code: STAGE_ERRORED, stage: reads-second, reason: condition_error }]
+
+  - id: conditions/agentref-condition-reads-failed-step
+    outcome: ran
+    stages:
+      pre: { status: PASSED, passed: true, launched: [] }
+      review:
+        status: ERRORED
+        passed: false
+        launched: [stub-gate-a]
+        agents: { stub-gate-a: positive, stub-docs-a: errored }
+    all_gates_passed: false
+    run_decision: FAIL
+    warnings: [{ code: STAGE_ERRORED, stage: review, reason: condition_error }]
+
+  - id: conditions/step-output-with-steps-disabled
+    outcome: refused
+    refused: { code: STEP_OUTPUT_STEPS_DISABLED, stages: [a] }

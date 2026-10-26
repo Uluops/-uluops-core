@@ -1,0 +1,129 @@
+# Run control and forwarding: stops (cancel, a stage in flight), dependency satisfaction (D3),
+# labelled absence, forwarding-only reducers.
+# Spec v0.8.0 §3.1 "Stops, in order", §3.3, §3.5, D3. Expected: ../expected/run-control.expected.yaml
+#
+# `events` fire on a runtime transition. "stage:<id>:running" fires once every agent in <id>
+# has started; "stage:<id>:done" fires when <id> reaches a terminal status and before any
+# later stage launches. The only action is `cancel` (core: stopRun / the run's AbortSignal).
+cases:
+  - id: run-control/cancel-with-two-agents-in-flight
+    covers: ["§3.1 stops", "§6 item 9"]
+    applies_to: [core]
+    stubs:
+      stub-gate-a: { hang: true }
+      stub-gate-b: { hang: true }
+      stub-gate-c: { decision: PROCEED, score: 90 }
+    events:
+      - { when: "stage:review:running", do: cancel }
+    pipeline:
+      stages:
+        - id: review
+          parallel: true
+          agents: [{ ref: stub-gate-a }, { ref: stub-gate-b }]
+          gate: { threshold: 80, on_failure: fail }
+        - { id: after, depends_on: [review], agents: [{ ref: stub-gate-c }], gate: { threshold: 80, on_failure: fail } }
+    note: >
+      A cancel is an external stop, not a gate abort: it exists to stop spending, so both
+      in-flight agents are aborted and keep core's ABORTED records. The stage does not
+      evaluate its gate and ends ERRORED. Core today records the stage completed.
+
+  - id: run-control/cancel-after-a-passing-stage
+    covers: ["§3.1 stops", "§3.1 all_gates_passed", "§7 control: renderer abort-gates text"]
+    applies_to: [core]
+    stubs:
+      stub-gate-a: { decision: PROCEED, score: 90 }
+      stub-gate-b: { decision: PROCEED, score: 90 }
+    events:
+      - { when: "stage:a:done", do: cancel }
+    pipeline:
+      stages:
+        - { id: a, agents: [{ ref: stub-gate-a }], gate: { threshold: 80, on_failure: abort } }
+        - { id: b, depends_on: [a], agents: [{ ref: stub-gate-b }], gate: { threshold: 80, on_failure: abort } }
+    note: >
+      Every gate that ran passed, and the run is still not passed: the stop sets
+      all_gates_passed false before b is marked SKIPPED. The renderer's "true if all
+      abort-gates passed" reports true here.
+
+  - id: run-control/skipped-conditional-upstream-of-synthesis
+    covers: [D3, "§3.3 satisfaction", "§3.3 labelled absence", "§7 control: core cascade-skips"]
+    applies_to: [core, skill]
+    params: { security: "off" }
+    stubs:
+      stub-gate-a: { decision: PROCEED, score: 90 }
+      stub-security-a: { decision: SECURE, score: 90 }
+      stub-lens-a: { decision: EFFECTUAL, score: 90 }
+    pipeline:
+      parameters: [{ name: security, type: string, default: auto }]
+      stages:
+        - { id: review, agents: [{ ref: stub-gate-a }], gate: { threshold: 80, on_failure: fail } }
+        - { id: security, depends_on: [review], condition: "params.security != 'off'", agents: [{ ref: stub-security-a }], gate: { threshold: 85, on_failure: fail } }
+        - { id: persist, depends_on: [review, security], agents: [{ ref: stub-lens-a }], gate: { threshold: 70, on_failure: warn } }
+    note: Any terminal status satisfies depends_on, SKIPPED included. Core today cascade-skips persist.
+
+  - id: run-control/failed-dependency-forwards-its-output
+    covers: [D3, "§3.8 reducers read a failed stage 1", "§3.5"]
+    applies_to: [core, skill]
+    stubs:
+      stub-gate-a: { decision: REVISE, score: 90 }
+      stub-lens-a: { decision: EFFECTUAL, score: 90 }
+    pipeline:
+      stages:
+        - { id: review, forward: full, agents: [{ ref: stub-gate-a }], gate: { threshold: 80, on_failure: fail } }
+        - { id: essentialism, depends_on: [review], agents: [{ ref: stub-lens-a }], gate: { threshold: 70, on_failure: warn } }
+
+  - id: run-control/forwarding-only-reducer
+    covers: ["§3.5 forwarding", "§3.3 labelled absence"]
+    applies_to: [core, skill]
+    params: { lenses: "off" }
+    stubs:
+      stub-gate-a: { decision: PROCEED, score: 90 }
+      stub-gate-b: { decision: PROCEED, score: 90 }
+      stub-lens-a: { decision: EFFECTUAL, score: 90 }
+      stub-lens-b: { decision: EFFECTUAL, score: 90 }
+    pipeline:
+      parameters: [{ name: lenses, type: string, default: "off" }]
+      stages:
+        - { id: review, forward: full, agents: [{ ref: stub-gate-a }], gate: { threshold: 80, on_failure: fail } }
+        - { id: quiet, depends_on: [review], forward: none, agents: [{ ref: stub-gate-b }], gate: { threshold: 80, on_failure: fail } }
+        - { id: lens, depends_on: [review], condition: "params.lenses == 'on'", forward: full, agents: [{ ref: stub-lens-a }], gate: { threshold: 70, on_failure: warn } }
+        - { id: reducer, depends_on: [review, quiet, lens], agents: [{ ref: stub-lens-b }], gate: { threshold: 70, on_failure: warn } }
+    note: >
+      The reducer has no condition and gates only on warn; its job is to read what it is
+      forwarded. `forward: none` contributes no entry; a skipped producer contributes a
+      labelled absence.
+
+  - id: run-control/abort-with-an-independent-sibling-in-flight
+    covers: ["§3.1 stops", "§3.2 failure modes (abort)", "§3.3 concurrency"]
+    applies_to: [core, skill]
+    stubs:
+      stub-gate-a: { decision: REVISE, score: 90 }
+      stub-gate-b: { decision: PROCEED, score: 90 }
+    pipeline:
+      stages:
+        - { id: a, agents: [{ ref: stub-gate-a }], gate: { threshold: 80, on_failure: abort } }
+        - { id: b, agents: [{ ref: stub-gate-b }], gate: { threshold: 80, on_failure: fail } }
+    note: >
+      a and b are independent. An abort skips only a's dependents (D1, revised 0.7.0), so b
+      runs: core launches it after a, the skill may already be running it, and it finishes
+      and is judged either way. Before 0.7.0 the spec contradicted itself here (Q2).
+
+  - id: run-control/abort-skips-only-dependents
+    covers: ["§3.2 failure modes (abort)", D1, "§3.3 concurrency"]
+    applies_to: [core, skill]
+    stubs:
+      stub-gate-a: { decision: REVISE, score: 90 }
+      stub-gate-b: { decision: PROCEED, score: 90 }
+      stub-gate-c: { decision: PROCEED, score: 90 }
+      stub-lens-a: { decision: EFFECTUAL, score: 90 }
+      stub-lens-b: { decision: EFFECTUAL, score: 90 }
+    pipeline:
+      stages:
+        - { id: a, agents: [{ ref: stub-gate-a }], gate: { threshold: 80, on_failure: abort } }
+        - { id: child, depends_on: [a], agents: [{ ref: stub-gate-b }], gate: { threshold: 80, on_failure: fail } }
+        - { id: grandchild, depends_on: [child], agents: [{ ref: stub-lens-a }], gate: { threshold: 70, on_failure: warn } }
+        - { id: independent, agents: [{ ref: stub-gate-c }], gate: { threshold: 80, on_failure: fail } }
+        - { id: synthesis, depends_on: [independent, a], agents: [{ ref: stub-lens-b }], gate: { threshold: 70, on_failure: warn } }
+    note: >
+      Every transitive dependent of a is skipped, including a synthesis that also depends on
+      an independent stage. The independent stage runs. Use `fail` when downstream stages
+      should still run after a failure.

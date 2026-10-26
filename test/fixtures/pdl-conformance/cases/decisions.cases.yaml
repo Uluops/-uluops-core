@@ -1,0 +1,967 @@
+# Decisions: where the decision is read, the token rule, conflicts, neutral and absent
+# decisions, core's fallbacks, real rendered agent output, and the vocabulary pre-check.
+# Spec v0.8.0 §3.2 items 1-6, D6, D9, D12, D13, D23, D24. Expected: ../expected/decisions.expected.yaml
+#
+# Unless a case says otherwise, each case is one stage `review` behind
+# `gate: { threshold: 80, on_failure: fail }` (75 for the docs stub), so a passing score is
+# fixed and the decision alone moves the outcome.
+#
+# The four `real/*` cases carry agent output copied from the rendered corpus markdown at
+# commit be0a5c48: agents/v3/pre-implementation-architect-agent.md (its "JSON Output"
+# example) and agents/v3/docs-validator-agent.md (its "JSON OUTPUT" template). The `-85` and
+# `-filled` variants change only the values named in their notes. Re-copy them when either
+# agent's output section changes shape.
+cases:
+  # ── Token rule (§3.2 item 3) ──────────────────────────────────────────
+  - id: decisions/token-bold-with-parenthetical
+    covers: ["§3.2 item 3"]
+    applies_to: [core, skill]
+    stubs:
+      stub-gate-a: { decision: "**REVISE** (Score: 85)", score: 90 }
+    pipeline:
+      stages:
+        - { id: review, agents: [{ ref: stub-gate-a }], gate: { threshold: 80, on_failure: fail } }
+
+  - id: decisions/token-leading-glyph
+    covers: ["§3.2 item 3"]
+    applies_to: [core, skill]
+    stubs:
+      stub-gate-a: { decision: "✅ PROCEED", score: 90 }
+    pipeline:
+      stages:
+        - { id: review, agents: [{ ref: stub-gate-a }], gate: { threshold: 80, on_failure: fail } }
+
+  - id: decisions/token-trailing-period
+    covers: ["§3.2 item 3"]
+    applies_to: [core, skill]
+    stubs:
+      stub-gate-a: { decision: "REVISE.", score: 90 }
+    pipeline:
+      stages:
+        - { id: review, agents: [{ ref: stub-gate-a }], gate: { threshold: 80, on_failure: fail } }
+
+  - id: decisions/token-parenthetical
+    covers: ["§3.2 item 3"]
+    applies_to: [core, skill]
+    stubs:
+      stub-gate-a: { decision: "REVISE (pending AF-003)", score: 90 }
+    pipeline:
+      stages:
+        - { id: review, agents: [{ ref: stub-gate-a }], gate: { threshold: 80, on_failure: fail } }
+
+  - id: decisions/token-lowercase
+    covers: ["§3.2 item 3"]
+    applies_to: [core, skill]
+    stubs:
+      stub-gate-a: { decision: "revise", score: 90 }
+    pipeline:
+      stages:
+        - { id: review, agents: [{ ref: stub-gate-a }], gate: { threshold: 80, on_failure: fail } }
+
+  - id: decisions/token-not-secure
+    covers: ["§3.2 item 3", D6]
+    applies_to: [core, skill]
+    stubs:
+      stub-security-a: { decision: "NOT SECURE", score: 90 }
+    pipeline:
+      stages:
+        - { id: review, agents: [{ ref: stub-security-a }], gate: { threshold: 85, on_failure: fail } }
+
+  - id: decisions/token-secure-with-conditions
+    covers: ["§3.2 item 3", D6, "§7 control: core reads SECURE"]
+    applies_to: [core, skill]
+    stubs:
+      stub-security-a: { decision: "SECURE WITH CONDITIONS", score: 90 }
+    pipeline:
+      stages:
+        - { id: review, agents: [{ ref: stub-security-a }], gate: { threshold: 85, on_failure: fail } }
+    note: >
+      H1 from the run #5 re-check. Neutral, not SECURE (core today takes the first word) and not CONDITIONAL (a model reading the phrase): all_gates_passed stays true.
+
+  - id: decisions/token-partially-documented-with-space
+    covers: ["§3.2 item 3", "circumvention A5"]
+    applies_to: [core, skill]
+    stubs:
+      stub-docs-a: { decision: "PARTIALLY DOCUMENTED", score: 80 }
+    pipeline:
+      stages:
+        - { id: review, agents: [{ ref: stub-docs-a }], gate: { threshold: 75, on_failure: fail } }
+    note: >
+      A CONDITIONAL lost to neutral, accepted (A5). The score decides and all_gates_passed stays true.
+
+  - id: decisions/token-unfilled-placeholder
+    covers: ["§3.2 item 3"]
+    applies_to: [core, skill]
+    stubs:
+      stub-docs-a: { decision: "[DOCUMENTED|PARTIALLY_DOCUMENTED|UNDERDOCUMENTED]", score: 80 }
+    pipeline:
+      stages:
+        - { id: review, agents: [{ ref: stub-docs-a }], gate: { threshold: 75, on_failure: fail } }
+
+  - id: decisions/token-strikethrough
+    covers: ["§3.2 item 3"]
+    applies_to: [core, skill]
+    stubs:
+      stub-gate-a: { decision: "~~PROCEED~~ REVISE", score: 90 }
+    pipeline:
+      stages:
+        - { id: review, agents: [{ ref: stub-gate-a }], gate: { threshold: 80, on_failure: fail } }
+
+  - id: decisions/token-beyond-200-chars
+    covers: ["§3.2 item 3"]
+    applies_to: [core, skill]
+    stubs:
+      stub-gate-a: { decision: "********************************************************************************************************************************************************************************************************REVISE", score: 90 }
+    pipeline:
+      stages:
+        - { id: review, agents: [{ ref: stub-gate-a }], gate: { threshold: 80, on_failure: fail } }
+    note: >
+      The value is cut to 200 characters before leading non-letters are dropped, so nothing is left: neutral, not REVISE.
+
+  - id: decisions/token-core-register-without-vocabulary
+    covers: ["§3.2 item 4"]
+    applies_to: [core, skill]
+    stubs:
+      stub-gate-a: { decision: FAIL, score: 90 }
+    pipeline:
+      stages:
+        - { id: review, agents: [{ ref: stub-gate-a }], gate: { threshold: 80, on_failure: fail } }
+    note: >
+      FAIL is not in the stub's PROCEED/REVISE vocabulary; core-register tokens classify without one.
+
+  # ── Where the decision is read (§3.2 item 1) ──────────────────────────
+  - id: decisions/path-result-before-top-level
+    covers: ["§3.2 item 1", "§6 item 8"]
+    applies_to: [core, skill]
+    stubs:
+      stub-gate-a: { json: { decision: PROCEED, result: { score: 90, max_score: 100, decision: REVISE } } }
+    pipeline:
+      stages:
+        - { id: review, agents: [{ ref: stub-gate-a }], gate: { threshold: 80, on_failure: fail } }
+    note: >
+      result.decision is read first. Core today reads the top level first and would pass.
+
+  - id: decisions/path-top-level-only
+    covers: ["§3.2 item 1"]
+    applies_to: [core, skill]
+    stubs:
+      stub-gate-a: { json: { decision: REVISE, result: { score: 90, max_score: 100 } } }
+    pipeline:
+      stages:
+        - { id: review, agents: [{ ref: stub-gate-a }], gate: { threshold: 80, on_failure: fail } }
+
+  - id: decisions/path-line-only
+    covers: ["§3.2 item 1"]
+    applies_to: [core, skill]
+    stubs:
+      stub-gate-a: { score: 90, line: REVISE }
+    pipeline:
+      stages:
+        - { id: review, agents: [{ ref: stub-gate-a }], gate: { threshold: 80, on_failure: fail } }
+
+  - id: decisions/path-fallback-only
+    covers: ["§3.2 item 1", D13]
+    applies_to: [core, skill]
+    stubs:
+      stub-gate-a: { json: { summary: { decision: REVISE }, result: { score: 90, max_score: 100 } } }
+    pipeline:
+      stages:
+        - { id: review, agents: [{ ref: stub-gate-a }], gate: { threshold: 80, on_failure: fail } }
+    note: >
+      summary.decision is one of core's wider sources, outside the contract: gated as absent, so the score decides. The skill never reads it.
+
+  - id: decisions/path-status-fallback-only
+    covers: ["§3.2 item 1", D13]
+    applies_to: [core, skill]
+    stubs:
+      stub-gate-a: { json: { status: REVISE, result: { score: 90, max_score: 100 } } }
+    pipeline:
+      stages:
+        - { id: review, agents: [{ ref: stub-gate-a }], gate: { threshold: 80, on_failure: fail } }
+
+  # ── Conflicts (§3.2 item 2) ───────────────────────────────────────────
+  - id: decisions/conflict-both-classify
+    covers: ["§3.2 item 2"]
+    applies_to: [core, skill]
+    stubs:
+      stub-gate-a: { decision: PROCEED, score: 90, line: REVISE }
+    pipeline:
+      stages:
+        - { id: review, agents: [{ ref: stub-gate-a }], gate: { threshold: 80, on_failure: fail } }
+
+  - id: decisions/conflict-neutral-json-classifiable-line
+    covers: ["§3.2 item 2"]
+    applies_to: [core, skill]
+    stubs:
+      stub-gate-a: { decision: "[PROCEED|REVISE]", score: 90, line: REVISE }
+    pipeline:
+      stages:
+        - { id: review, agents: [{ ref: stub-gate-a }], gate: { threshold: 80, on_failure: fail } }
+
+  - id: decisions/conflict-classifiable-json-neutral-line
+    covers: ["§3.2 item 2"]
+    applies_to: [core, skill]
+    stubs:
+      stub-gate-a: { decision: REVISE, score: 90, line: MAYBE }
+    pipeline:
+      stages:
+        - { id: review, agents: [{ ref: stub-gate-a }], gate: { threshold: 80, on_failure: fail } }
+
+  # ── Neutral and absent (§3.2 item 5, D6, D12) ─────────────────────────
+  - id: decisions/neutral-with-passing-score
+    covers: ["§3.2 item 5", D6]
+    applies_to: [core, skill]
+    stubs:
+      stub-gate-a: { decision: MAYBE, score: 90 }
+    pipeline:
+      stages:
+        - { id: review, agents: [{ ref: stub-gate-a }], gate: { threshold: 80, on_failure: fail } }
+
+  - id: decisions/neutral-with-failing-score
+    covers: ["§3.2 item 5", D6]
+    applies_to: [core, skill]
+    stubs:
+      stub-gate-a: { decision: MAYBE, score: 70 }
+    pipeline:
+      stages:
+        - { id: review, agents: [{ ref: stub-gate-a }], gate: { threshold: 80, on_failure: fail } }
+
+  - id: decisions/neutral-without-score
+    covers: ["§3.2 item 5", "§3.1 ERRORED"]
+    applies_to: [core, skill]
+    stubs:
+      stub-gate-a: { decision: MAYBE }
+    pipeline:
+      stages:
+        - { id: review, agents: [{ ref: stub-gate-a }], gate: { threshold: 80, on_failure: fail } }
+
+  - id: decisions/absent-with-passing-score
+    covers: ["§3.2 item 5", D12]
+    applies_to: [core, skill]
+    stubs:
+      stub-gate-a: { score: 90 }
+    pipeline:
+      stages:
+        - { id: review, agents: [{ ref: stub-gate-a }], gate: { threshold: 80, on_failure: fail } }
+    note: >
+      The interim D12 rule: the score decides. Re-measure issue ced3416c may turn this ERRORED.
+
+  - id: decisions/absent-with-failing-score
+    covers: ["§3.2 item 5", D12]
+    applies_to: [core, skill]
+    stubs:
+      stub-gate-a: { score: 70 }
+    pipeline:
+      stages:
+        - { id: review, agents: [{ ref: stub-gate-a }], gate: { threshold: 80, on_failure: fail } }
+
+  - id: decisions/absent-without-score
+    covers: ["§3.1 ERRORED"]
+    applies_to: [core, skill]
+    stubs:
+      stub-gate-a: { raw: "The agent wrote prose and no JSON." }
+    pipeline:
+      stages:
+        - { id: review, agents: [{ ref: stub-gate-a }], gate: { threshold: 80, on_failure: fail } }
+
+  - id: decisions/classifiable-without-score-at-threshold
+    covers: ["§3.1 ERRORED", "§3.2 item 5", D24]
+    applies_to: [core, skill]
+    stubs:
+      stub-gate-a: { decision: PROCEED }
+    pipeline:
+      stages:
+        - { id: review, agents: [{ ref: stub-gate-a }], gate: { threshold: 80, on_failure: fail } }
+    note: >
+      Q11. A classifiable decision cannot stand in for a missing score at a gate with a threshold:
+      the agent cannot be judged against it, so it is unjudgeable, as with no decision at all.
+
+  - id: decisions/classifiable-without-score-decision-only
+    covers: ["§3.1 ERRORED", "§3.2 aggregate mode (decision-only)", D24]
+    applies_to: [core, skill]
+    stubs:
+      stub-gate-b: { decision: PROCEED }
+    pipeline:
+      stages:
+        - { id: review, agents: [{ ref: stub-gate-b }], gate: { on_failure: fail } }
+    note: The complement of Q11. At a gate with no threshold the decision suffices.
+
+  # ── Real rendered output (§3.7) ───────────────────────────────────────
+  - id: decisions/real-architect-verbatim
+    covers: ["§3.7 real rendered shapes"]
+    applies_to: [core, skill]
+    stubs:
+      stub-gate-a:
+        raw: |
+          Review complete; machine-readable result follows.
+
+          ## JSON Output
+
+          ```json
+          {
+            "schema_version": "1.5.0",
+            "agent": { "name": "pre-implementation-architect", "version": "1.9.0", "model": "opus", "type": "validator" },
+            "target": "docs/designs/order-management-overhaul.md",
+            "timestamp": "2026-01-17T10:00:00Z",
+            "result": { "score": 60, "max_score": 100, "decision": "REVISE", "threshold": 80 },
+            "categories": [
+              { "name": "Architectural Fit", "score": 15, "max_points": 25, "findings": [
+                { "criterion": "follows_patterns", "points_earned": 2, "points_possible": 10, "issues": [
+                  { "title": "Three pattern deviations with one-line reasons", "priority": "critical", "type": "deficiency", "failure_code": "PRA-MAT/H", "file_path": "docs/designs/order-management-overhaul.md", "line_number": 31, "description": "Each deviation states a reason (AF-001 clears); none names the requirement the existing pattern fails" }
+                ] },
+                { "criterion": "no_unnecessary_changes", "points_earned": 3, "points_possible": 5, "issues": [
+                  { "title": "Reformats inventory module not in scope", "priority": "backlog", "type": "deficiency", "failure_code": "PRA-EFF/L", "file_path": "docs/designs/order-management-overhaul.md", "line_number": 140, "description": "No requirement trace for the inventory reformat" }
+                ] }
+              ] },
+              { "name": "Design Quality", "score": 16, "max_points": 25, "findings": [
+                { "criterion": "separation_of_concerns", "points_earned": 0, "points_possible": 5, "issues": [
+                  { "title": "Discount rules computed in the HTTP controller", "priority": "suggested", "type": "deficiency", "failure_code": "PRA-MAT/M", "file_path": "docs/designs/order-management-overhaul.md", "line_number": 58, "description": "Business rule lives in the transport layer" }
+                ] },
+                { "criterion": "abstraction_balance", "points_earned": 1, "points_possible": 5, "issues": [
+                  { "title": "OrderStrategy interface with one implementation", "priority": "suggested", "type": "deficiency", "failure_code": "PRA-EFF/M", "file_path": "docs/designs/order-management-overhaul.md", "line_number": 72, "description": "Premature abstraction; no second strategy named" }
+                ] }
+              ] },
+              { "name": "Scope & Complexity", "score": 14, "max_points": 25, "findings": [
+                { "criterion": "appropriate_scope", "points_earned": 4, "points_possible": 10, "issues": [
+                  { "title": "Estimate is a single total", "priority": "critical", "type": "deficiency", "failure_code": "PRA-EFF/H", "file_path": "docs/designs/order-management-overhaul.md", "line_number": 20, "description": "~1500 LOC stated with no per-file breakdown; deduction is for the unitemised estimate, not the size (AF-003 already fired)" }
+                ] },
+                { "criterion": "alternatives_considered", "points_earned": 0, "points_possible": 5, "issues": [
+                  { "title": "No alternatives documented", "priority": "backlog", "type": "deficiency", "failure_code": "SEM-COM/L", "file_path": "docs/designs/order-management-overhaul.md", "line_number": 14, "description": "Rewrite presented as the only option; incremental extraction never considered" }
+                ] }
+              ] },
+              { "name": "Completeness", "score": 15, "max_points": 25, "findings": [
+                { "criterion": "api_contracts", "points_earned": 0, "points_possible": 5, "issues": [
+                  { "title": "Every contract field typed any", "priority": "suggested", "type": "deficiency", "failure_code": "STR-OMI/M", "file_path": "docs/designs/order-management-overhaul.md", "line_number": 95, "description": "Shapes present (AF-005 clears); no field carries a specific type" }
+                ] },
+                { "criterion": "edge_cases_identified", "points_earned": 0, "points_possible": 5, "issues": [
+                  { "title": "One edge case for a feature with at least six", "priority": "suggested", "type": "deficiency", "failure_code": "SEM-COM/M", "file_path": "docs/designs/order-management-overhaul.md", "line_number": 120, "description": "Only 'empty cart' listed; partial refund, duplicate submit, inventory race, currency change, cancelled-while-paying absent" }
+                ] }
+              ] }
+            ],
+            "auto_fail": {
+              "triggered": true,
+              "conditions": ["AF-002", "AF-003", "AF-004"],
+              "fired": [
+                { "id": "AF-002", "failure_code": "SEM-COM/C", "evidence": "design.md:88-104 - order mutation and payment capture paths document no failure handling" },
+                { "id": "AF-003", "failure_code": "PRA-EFF/C", "evidence": "design.md:20 - ~1500 LOC, 15 new files, 4 new deps; every axis over the ceiling" },
+                { "id": "AF-004", "failure_code": "STR-MAL/C", "evidence": "design.md:66,79 - order-service imports payment-service and payment-service imports order-service" }
+              ]
+            },
+            "summary": { "total_issues": 8, "by_priority": { "critical": 2, "suggested": 4, "backlog": 2 }, "by_severity": { "high": 2, "medium": 4, "low": 2 } }
+          }
+          ```
+
+    pipeline:
+      stages:
+        - { id: review, agents: [{ ref: stub-gate-a }], gate: { threshold: 80, on_failure: fail } }
+    note: >
+      The architect example as rendered: score 60, REVISE, three auto-fails. Fails on score and decision alike, so it pins the shape, not the decision path; the -85 variant pins the path.
+
+  - id: decisions/real-architect-85
+    covers: ["§3.7 real rendered shapes", "§7 control: skill top-level read"]
+    applies_to: [core, skill]
+    stubs:
+      stub-gate-a:
+        raw: |
+          Review complete; machine-readable result follows.
+
+          ## JSON Output
+
+          ```json
+          {
+            "schema_version": "1.5.0",
+            "agent": { "name": "pre-implementation-architect", "version": "1.9.0", "model": "opus", "type": "validator" },
+            "target": "docs/designs/order-management-overhaul.md",
+            "timestamp": "2026-01-17T10:00:00Z",
+            "result": { "score": 85, "max_score": 100, "decision": "REVISE", "threshold": 80 },
+            "categories": [
+              { "name": "Architectural Fit", "score": 15, "max_points": 25, "findings": [
+                { "criterion": "follows_patterns", "points_earned": 2, "points_possible": 10, "issues": [
+                  { "title": "Three pattern deviations with one-line reasons", "priority": "critical", "type": "deficiency", "failure_code": "PRA-MAT/H", "file_path": "docs/designs/order-management-overhaul.md", "line_number": 31, "description": "Each deviation states a reason (AF-001 clears); none names the requirement the existing pattern fails" }
+                ] },
+                { "criterion": "no_unnecessary_changes", "points_earned": 3, "points_possible": 5, "issues": [
+                  { "title": "Reformats inventory module not in scope", "priority": "backlog", "type": "deficiency", "failure_code": "PRA-EFF/L", "file_path": "docs/designs/order-management-overhaul.md", "line_number": 140, "description": "No requirement trace for the inventory reformat" }
+                ] }
+              ] },
+              { "name": "Design Quality", "score": 16, "max_points": 25, "findings": [
+                { "criterion": "separation_of_concerns", "points_earned": 0, "points_possible": 5, "issues": [
+                  { "title": "Discount rules computed in the HTTP controller", "priority": "suggested", "type": "deficiency", "failure_code": "PRA-MAT/M", "file_path": "docs/designs/order-management-overhaul.md", "line_number": 58, "description": "Business rule lives in the transport layer" }
+                ] },
+                { "criterion": "abstraction_balance", "points_earned": 1, "points_possible": 5, "issues": [
+                  { "title": "OrderStrategy interface with one implementation", "priority": "suggested", "type": "deficiency", "failure_code": "PRA-EFF/M", "file_path": "docs/designs/order-management-overhaul.md", "line_number": 72, "description": "Premature abstraction; no second strategy named" }
+                ] }
+              ] },
+              { "name": "Scope & Complexity", "score": 14, "max_points": 25, "findings": [
+                { "criterion": "appropriate_scope", "points_earned": 4, "points_possible": 10, "issues": [
+                  { "title": "Estimate is a single total", "priority": "critical", "type": "deficiency", "failure_code": "PRA-EFF/H", "file_path": "docs/designs/order-management-overhaul.md", "line_number": 20, "description": "~1500 LOC stated with no per-file breakdown; deduction is for the unitemised estimate, not the size (AF-003 already fired)" }
+                ] },
+                { "criterion": "alternatives_considered", "points_earned": 0, "points_possible": 5, "issues": [
+                  { "title": "No alternatives documented", "priority": "backlog", "type": "deficiency", "failure_code": "SEM-COM/L", "file_path": "docs/designs/order-management-overhaul.md", "line_number": 14, "description": "Rewrite presented as the only option; incremental extraction never considered" }
+                ] }
+              ] },
+              { "name": "Completeness", "score": 15, "max_points": 25, "findings": [
+                { "criterion": "api_contracts", "points_earned": 0, "points_possible": 5, "issues": [
+                  { "title": "Every contract field typed any", "priority": "suggested", "type": "deficiency", "failure_code": "STR-OMI/M", "file_path": "docs/designs/order-management-overhaul.md", "line_number": 95, "description": "Shapes present (AF-005 clears); no field carries a specific type" }
+                ] },
+                { "criterion": "edge_cases_identified", "points_earned": 0, "points_possible": 5, "issues": [
+                  { "title": "One edge case for a feature with at least six", "priority": "suggested", "type": "deficiency", "failure_code": "SEM-COM/M", "file_path": "docs/designs/order-management-overhaul.md", "line_number": 120, "description": "Only 'empty cart' listed; partial refund, duplicate submit, inventory race, currency change, cancelled-while-paying absent" }
+                ] }
+              ] }
+            ],
+            "auto_fail": {
+              "triggered": true,
+              "conditions": ["AF-002", "AF-003", "AF-004"],
+              "fired": [
+                { "id": "AF-002", "failure_code": "SEM-COM/C", "evidence": "design.md:88-104 - order mutation and payment capture paths document no failure handling" },
+                { "id": "AF-003", "failure_code": "PRA-EFF/C", "evidence": "design.md:20 - ~1500 LOC, 15 new files, 4 new deps; every axis over the ceiling" },
+                { "id": "AF-004", "failure_code": "STR-MAL/C", "evidence": "design.md:66,79 - order-service imports payment-service and payment-service imports order-service" }
+              ]
+            },
+            "summary": { "total_issues": 8, "by_priority": { "critical": 2, "suggested": 4, "backlog": 2 }, "by_severity": { "high": 2, "medium": 4, "low": 2 } }
+          }
+          ```
+
+    pipeline:
+      stages:
+        - { id: review, agents: [{ ref: stub-gate-a }], gate: { threshold: 80, on_failure: fail } }
+    note: >
+      The same output with result.score 60 changed to 85: the auto-fail REVISE at a passing score. A runtime that reads only the top level finds no decision and passes it on score.
+
+  - id: decisions/real-docs-validator-unfilled
+    covers: ["§3.7 real rendered shapes", "§3.1 ERRORED"]
+    applies_to: [core, skill]
+    stubs:
+      stub-docs-a:
+        raw: |
+          Review complete; machine-readable result follows.
+
+          ## JSON Output
+
+          ```json
+          {
+            "schema_version": "1.5.0",
+            "agent": {
+              "name": "docs-validator",
+              "model": "sonnet",
+              "type": "validator",
+              "tokens": {
+                "input_tokens": 0,
+                "output_tokens": 0,
+                "cache_creation_tokens": 0,
+                "cache_read_tokens": 0,
+                "cached_input_tokens": 0,
+                "reasoning_output_tokens": 0,
+                "thinking_tokens": 0,
+                "tool_tokens": 0,
+                "total_effective_tokens": 0
+              }
+            },
+            "target": "[path/to/target]",
+            "timestamp": "[ISO 8601 timestamp]",
+            "result": {
+              "score": "[X]",
+              "max_score": 100,
+              "decision": "[DOCUMENTED|PARTIALLY_DOCUMENTED|UNDERDOCUMENTED]",
+              "threshold": 75,
+              "decision_vocabulary": "DOCUMENTED/PARTIALLY_DOCUMENTED/UNDERDOCUMENTED",
+              "auto_fail_triggered": "[true|false]",
+              "auto_fail_reason": "[which condition fired and what triggered it, naming one of: AF-001, AF-002, AF-003 — omit when auto_fail_triggered is false]"
+            },
+            "categories": [
+              {
+                "name": "JSDoc/TSDoc Coverage",
+                "score": "[X]",
+                "max_points": 30,
+                "findings": [
+                  {
+                    "criterion": "[criterion name from framework]",
+                    "points_earned": "[X]",
+                    "points_possible": "[X]",
+                    "issues": [
+                      {
+                        "title": "[Short issue title]",
+                        "priority": "[critical|suggested|backlog]",
+                        "type": "[feature|bug|refactor|config|docs|infra|security|test|observation|deficiency|ambiguity]",
+                        "failure_code": "[DOMAIN-MODE/SEVERITY]",
+                        "file_path": "[path/to/file]",
+                        "line_number": "[N]",
+                        "description": "[Full explanation]"
+                      }
+                    ]
+                  }
+                ]
+              },
+              {
+                "name": "API Documentation",
+                "score": "[X]",
+                "max_points": 25,
+                "findings": [
+                  {
+                    "criterion": "[criterion name from framework]",
+                    "points_earned": "[X]",
+                    "points_possible": "[X]",
+                    "issues": [
+                      {
+                        "title": "[Short issue title]",
+                        "priority": "[critical|suggested|backlog]",
+                        "type": "[feature|bug|refactor|config|docs|infra|security|test|observation|deficiency|ambiguity]",
+                        "failure_code": "[DOMAIN-MODE/SEVERITY]",
+                        "file_path": "[path/to/file]",
+                        "line_number": "[N]",
+                        "description": "[Full explanation]"
+                      }
+                    ]
+                  }
+                ]
+              },
+              {
+                "name": "Changelog Quality",
+                "score": "[X]",
+                "max_points": 15,
+                "findings": [
+                  {
+                    "criterion": "[criterion name from framework]",
+                    "points_earned": "[X]",
+                    "points_possible": "[X]",
+                    "issues": [
+                      {
+                        "title": "[Short issue title]",
+                        "priority": "[critical|suggested|backlog]",
+                        "type": "[feature|bug|refactor|config|docs|infra|security|test|observation|deficiency|ambiguity]",
+                        "failure_code": "[DOMAIN-MODE/SEVERITY]",
+                        "file_path": "[path/to/file]",
+                        "line_number": "[N]",
+                        "description": "[Full explanation]"
+                      }
+                    ]
+                  }
+                ]
+              },
+              {
+                "name": "Markdown Quality",
+                "score": "[X]",
+                "max_points": 15,
+                "findings": [
+                  {
+                    "criterion": "[criterion name from framework]",
+                    "points_earned": "[X]",
+                    "points_possible": "[X]",
+                    "issues": [
+                      {
+                        "title": "[Short issue title]",
+                        "priority": "[critical|suggested|backlog]",
+                        "type": "[feature|bug|refactor|config|docs|infra|security|test|observation|deficiency|ambiguity]",
+                        "failure_code": "[DOMAIN-MODE/SEVERITY]",
+                        "file_path": "[path/to/file]",
+                        "line_number": "[N]",
+                        "description": "[Full explanation]"
+                      }
+                    ]
+                  }
+                ]
+              },
+              {
+                "name": "Documentation Organization",
+                "score": "[X]",
+                "max_points": 15,
+                "findings": [
+                  {
+                    "criterion": "[criterion name from framework]",
+                    "points_earned": "[X]",
+                    "points_possible": "[X]",
+                    "issues": [
+                      {
+                        "title": "[Short issue title]",
+                        "priority": "[critical|suggested|backlog]",
+                        "type": "[feature|bug|refactor|config|docs|infra|security|test|observation|deficiency|ambiguity]",
+                        "failure_code": "[DOMAIN-MODE/SEVERITY]",
+                        "file_path": "[path/to/file]",
+                        "line_number": "[N]",
+                        "description": "[Full explanation]"
+                      }
+                    ]
+                  }
+                ]
+              }
+            ],
+            "summary": {
+              "total_issues": "[N]",
+              "by_priority": {
+                "critical": "[N]",
+                "suggested": "[N]",
+                "backlog": "[N]"
+              },
+              "by_severity": {
+                "critical": "[N]",
+                "high": "[N]",
+                "medium": "[N]",
+                "low": "[N]",
+                "info": "[N]"
+              },
+              "by_type": {
+                "feature": "[N]",
+                "bug": "[N]",
+                "refactor": "[N]",
+                "config": "[N]",
+                "docs": "[N]",
+                "infra": "[N]",
+                "security": "[N]",
+                "test": "[N]",
+                "observation": "[N]",
+                "deficiency": "[N]",
+                "ambiguity": "[N]"
+              }
+            }
+          }
+          ```
+
+    pipeline:
+      stages:
+        - { id: review, agents: [{ ref: stub-docs-a }], gate: { threshold: 75, on_failure: fail } }
+    note: >
+      The docs-validator template exactly as rendered, placeholders unfilled: result.score is "[X]" (no score) and the decision is the placeholder (neutral), so the agent is ERRORED.
+
+  - id: decisions/real-docs-validator-filled
+    covers: ["§3.7 real rendered shapes"]
+    applies_to: [core, skill]
+    stubs:
+      stub-docs-a:
+        raw: |
+          Review complete; machine-readable result follows.
+
+          ## JSON Output
+
+          ```json
+          {
+            "schema_version": "1.5.0",
+            "agent": {
+              "name": "docs-validator",
+              "model": "sonnet",
+              "type": "validator",
+              "tokens": {
+                "input_tokens": 0,
+                "output_tokens": 0,
+                "cache_creation_tokens": 0,
+                "cache_read_tokens": 0,
+                "cached_input_tokens": 0,
+                "reasoning_output_tokens": 0,
+                "thinking_tokens": 0,
+                "tool_tokens": 0,
+                "total_effective_tokens": 0
+              }
+            },
+            "target": "[path/to/target]",
+            "timestamp": "[ISO 8601 timestamp]",
+            "result": {
+              "score": 80,
+              "max_score": 100,
+              "decision": "UNDERDOCUMENTED",
+              "threshold": 75,
+              "decision_vocabulary": "DOCUMENTED/PARTIALLY_DOCUMENTED/UNDERDOCUMENTED",
+              "auto_fail_triggered": "[true|false]",
+              "auto_fail_reason": "[which condition fired and what triggered it, naming one of: AF-001, AF-002, AF-003 — omit when auto_fail_triggered is false]"
+            },
+            "categories": [
+              {
+                "name": "JSDoc/TSDoc Coverage",
+                "score": "[X]",
+                "max_points": 30,
+                "findings": [
+                  {
+                    "criterion": "[criterion name from framework]",
+                    "points_earned": "[X]",
+                    "points_possible": "[X]",
+                    "issues": [
+                      {
+                        "title": "[Short issue title]",
+                        "priority": "[critical|suggested|backlog]",
+                        "type": "[feature|bug|refactor|config|docs|infra|security|test|observation|deficiency|ambiguity]",
+                        "failure_code": "[DOMAIN-MODE/SEVERITY]",
+                        "file_path": "[path/to/file]",
+                        "line_number": "[N]",
+                        "description": "[Full explanation]"
+                      }
+                    ]
+                  }
+                ]
+              },
+              {
+                "name": "API Documentation",
+                "score": "[X]",
+                "max_points": 25,
+                "findings": [
+                  {
+                    "criterion": "[criterion name from framework]",
+                    "points_earned": "[X]",
+                    "points_possible": "[X]",
+                    "issues": [
+                      {
+                        "title": "[Short issue title]",
+                        "priority": "[critical|suggested|backlog]",
+                        "type": "[feature|bug|refactor|config|docs|infra|security|test|observation|deficiency|ambiguity]",
+                        "failure_code": "[DOMAIN-MODE/SEVERITY]",
+                        "file_path": "[path/to/file]",
+                        "line_number": "[N]",
+                        "description": "[Full explanation]"
+                      }
+                    ]
+                  }
+                ]
+              },
+              {
+                "name": "Changelog Quality",
+                "score": "[X]",
+                "max_points": 15,
+                "findings": [
+                  {
+                    "criterion": "[criterion name from framework]",
+                    "points_earned": "[X]",
+                    "points_possible": "[X]",
+                    "issues": [
+                      {
+                        "title": "[Short issue title]",
+                        "priority": "[critical|suggested|backlog]",
+                        "type": "[feature|bug|refactor|config|docs|infra|security|test|observation|deficiency|ambiguity]",
+                        "failure_code": "[DOMAIN-MODE/SEVERITY]",
+                        "file_path": "[path/to/file]",
+                        "line_number": "[N]",
+                        "description": "[Full explanation]"
+                      }
+                    ]
+                  }
+                ]
+              },
+              {
+                "name": "Markdown Quality",
+                "score": "[X]",
+                "max_points": 15,
+                "findings": [
+                  {
+                    "criterion": "[criterion name from framework]",
+                    "points_earned": "[X]",
+                    "points_possible": "[X]",
+                    "issues": [
+                      {
+                        "title": "[Short issue title]",
+                        "priority": "[critical|suggested|backlog]",
+                        "type": "[feature|bug|refactor|config|docs|infra|security|test|observation|deficiency|ambiguity]",
+                        "failure_code": "[DOMAIN-MODE/SEVERITY]",
+                        "file_path": "[path/to/file]",
+                        "line_number": "[N]",
+                        "description": "[Full explanation]"
+                      }
+                    ]
+                  }
+                ]
+              },
+              {
+                "name": "Documentation Organization",
+                "score": "[X]",
+                "max_points": 15,
+                "findings": [
+                  {
+                    "criterion": "[criterion name from framework]",
+                    "points_earned": "[X]",
+                    "points_possible": "[X]",
+                    "issues": [
+                      {
+                        "title": "[Short issue title]",
+                        "priority": "[critical|suggested|backlog]",
+                        "type": "[feature|bug|refactor|config|docs|infra|security|test|observation|deficiency|ambiguity]",
+                        "failure_code": "[DOMAIN-MODE/SEVERITY]",
+                        "file_path": "[path/to/file]",
+                        "line_number": "[N]",
+                        "description": "[Full explanation]"
+                      }
+                    ]
+                  }
+                ]
+              }
+            ],
+            "summary": {
+              "total_issues": "[N]",
+              "by_priority": {
+                "critical": "[N]",
+                "suggested": "[N]",
+                "backlog": "[N]"
+              },
+              "by_severity": {
+                "critical": "[N]",
+                "high": "[N]",
+                "medium": "[N]",
+                "low": "[N]",
+                "info": "[N]"
+              },
+              "by_type": {
+                "feature": "[N]",
+                "bug": "[N]",
+                "refactor": "[N]",
+                "config": "[N]",
+                "docs": "[N]",
+                "infra": "[N]",
+                "security": "[N]",
+                "test": "[N]",
+                "observation": "[N]",
+                "deficiency": "[N]",
+                "ambiguity": "[N]"
+              }
+            }
+          }
+          ```
+
+    pipeline:
+      stages:
+        - { id: review, agents: [{ ref: stub-docs-a }], gate: { threshold: 75, on_failure: fail } }
+    note: >
+      The template with result.score set to 80 and result.decision to UNDERDOCUMENTED; every other placeholder left as rendered. Negative at a passing score.
+
+  # ── One register (§3.2 item 4, D17) ──────────────────────────────────
+  - id: decisions/synonym-reject-reads-neutral
+    covers: ["§3.2 item 4", D17]
+    applies_to: [core, skill]
+    stubs:
+      stub-gate-a: { decision: REJECT, score: 90 }
+    pipeline:
+      stages:
+        - { id: review, agents: [{ ref: stub-gate-a }], gate: { threshold: 80, on_failure: fail } }
+    note: >
+      REJECT is a core OutputNormalizer synonym for FAIL, not a register token. It does not gate. Core today reads it as FAIL for a validator.
+
+  - id: decisions/synonym-ok-reads-neutral
+    covers: ["§3.2 item 4", D17]
+    applies_to: [core, skill]
+    stubs:
+      stub-gate-a: { decision: OK, score: 70 }
+    pipeline:
+      stages:
+        - { id: review, agents: [{ ref: stub-gate-a }], gate: { threshold: 80, on_failure: fail } }
+    note: >
+      OK is a synonym for PASS, not a register token: neutral, so the failing score decides.
+
+  - id: decisions/register-token-classifies
+    covers: ["§3.2 item 4", D17]
+    applies_to: [core, skill]
+    stubs:
+      stub-gate-a: { decision: HOLD, score: 90 }
+    pipeline:
+      stages:
+        - { id: review, agents: [{ ref: stub-gate-a }], gate: { threshold: 80, on_failure: fail } }
+    note: >
+      HOLD is in the register (conditional) and in no stub vocabulary: it classifies without one, and the default gate accepts the CONDITIONAL.
+
+  # ── Where the score is read (§3.2 item 1, D16) ───────────────────────
+  - id: decisions/score-result-before-top-level
+    covers: ["§3.2 item 1 (score)", D16]
+    applies_to: [core, skill]
+    stubs:
+      stub-gate-a: { json: { score: 90, result: { score: 70, max_score: 100, decision: MAYBE } } }
+    pipeline:
+      stages:
+        - { id: review, agents: [{ ref: stub-gate-a }], gate: { threshold: 80, on_failure: fail } }
+    note: >
+      result.score is read first. Core today reads the top level first (90) and passes. A neutral decision keeps the score in charge.
+
+  - id: decisions/score-top-level-only
+    covers: ["§3.2 item 1 (score)", D16]
+    applies_to: [core, skill]
+    stubs:
+      stub-gate-a: { json: { score: 90, result: { decision: MAYBE } } }
+    pipeline:
+      stages:
+        - { id: review, agents: [{ ref: stub-gate-a }], gate: { threshold: 80, on_failure: fail } }
+    note: >
+      No corpus agent writes a top-level score (census 2026-10-25); it is the second path, as for the decision.
+
+  - id: decisions/score-line-only
+    covers: ["§3.2 item 1 (score)", D16]
+    applies_to: [core, skill]
+    stubs:
+      stub-gate-a: { raw: "Review complete.\n\n**Score:** 85/100\nDecision: MAYBE\n" }
+    pipeline:
+      stages:
+        - { id: review, agents: [{ ref: stub-gate-a }], gate: { threshold: 80, on_failure: fail } }
+    note: >
+      No JSON at all: the score comes from the Score line and the decision from the Decision line.
+
+  - id: decisions/score-in-category-only
+    covers: ["§3.2 item 1 (score)", D16]
+    applies_to: [core, skill]
+    stubs:
+      stub-gate-a: { json: { result: { decision: MAYBE }, categories: [{ name: Fit, score: 90, max_points: 100 }] } }
+    pipeline:
+      stages:
+        - { id: review, agents: [{ ref: stub-gate-a }], gate: { threshold: 80, on_failure: fail } }
+    note: >
+      A category score is not the agent's score. The skill today takes the first "score": anywhere and reads 90.
+
+  - id: decisions/score-fallback-only
+    covers: ["§3.2 item 1 (score)", D16]
+    applies_to: [core, skill]
+    stubs:
+      stub-gate-a: { json: { summary: { score: 90 }, result: { decision: MAYBE } } }
+    pipeline:
+      stages:
+        - { id: review, agents: [{ ref: stub-gate-a }], gate: { threshold: 80, on_failure: fail } }
+    note: >
+      summary.score is one of core's wider sources: outside the contract it counts as no score. Core today reads 90 and passes.
+
+  - id: decisions/score-out-of-range
+    covers: ["§3.2 item 1 (score)", D16]
+    applies_to: [core, skill]
+    stubs:
+      stub-gate-a: { json: { result: { score: 150, max_score: 100, decision: MAYBE } } }
+    pipeline:
+      stages:
+        - { id: review, agents: [{ ref: stub-gate-a }], gate: { threshold: 80, on_failure: fail } }
+    note: >
+      Outside 0-100 is no score, with a warning.
+
+  - id: decisions/score-numeric-string
+    covers: ["§3.2 item 1 (score)", D16]
+    applies_to: [core, skill]
+    stubs:
+      stub-gate-a: { json: { result: { score: "85", max_score: 100, decision: PROCEED } } }
+    pipeline:
+      stages:
+        - { id: review, agents: [{ ref: stub-gate-a }], gate: { threshold: 80, on_failure: fail } }
+    note: >
+      A string of digits is accepted as the number.
+
+  # ── Pre-launch vocabulary check (§3.2 item 6, D9) ─────────────────────
+  - id: decisions/precheck-refuses-missing-vocabulary
+    covers: ["§3.2 item 6", D9]
+    applies_to: [core]
+    stubs:
+      stub-gate-a: { decision: PROCEED, score: 90 }
+      stub-novocab-a: { decision: PASS, score: 90 }
+    pipeline:
+      stages:
+        - { id: a, agents: [{ ref: stub-gate-a }], gate: { threshold: 80, on_failure: fail } }
+        - { id: b, depends_on: [a], agents: [{ ref: stub-novocab-a }], gate: { threshold: 80, on_failure: fail } }
+    note: >
+      Refused before stage a launches, although a is fine: the check runs over every
+      blocking-gated stage first. Binds the skill from P6b (S1), when its check is enabled.
+
+  - id: decisions/precheck-passes-explorer
+    covers: ["§3.2 item 6", D9]
+    applies_to: [core]
+    stubs:
+      stub-explorer-a: { decision: EXPLORED }
+    pipeline:
+      stages:
+        - { id: map, agents: [{ ref: stub-explorer-a }], gate: { on_failure: abort } }
+    note: Binds the skill from P6b (S1).
+
+  - id: decisions/precheck-ignores-warn-gated-stages
+    covers: ["§3.2 item 6", D9]
+    applies_to: [core]
+    stubs:
+      stub-gate-a: { decision: PROCEED, score: 90 }
+      stub-novocab-a: { decision: PASS, score: 90 }
+    pipeline:
+      stages:
+        - { id: a, agents: [{ ref: stub-gate-a }], gate: { threshold: 80, on_failure: fail } }
+        - { id: b, depends_on: [a], agents: [{ ref: stub-novocab-a }], gate: { threshold: 70, on_failure: warn } }
+    note: >
+      The check covers blocking-gated stages only. A check that refuses this run is over-broad.
+      Binds the skill from P6b (S1).

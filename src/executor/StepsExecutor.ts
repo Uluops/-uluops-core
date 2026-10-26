@@ -12,20 +12,26 @@
  * mirroring the bash-tool blocked-by-default precedent. There is no command
  * allowlist in v0.1.x: the opt-in is the boundary.
  *
- * Template substitution: `{{ params.<name> }}` (with optional `|| default`)
- * is resolved against `input.params` (plus `target` from input.target) and
- * shell-quoted before interpolation (CWE-78, same idiom as preflight's
- * $ARGUMENTS handling). A command with unresolved templates FAILS the step
- * rather than executing literal braces.
+ * Where steps run (PDL 1.6.0, Execution Semantics → Steps): in the target directory, resolved with
+ * `realpath`; for a file target, in the real file's parent. `{{ params.target }}` is that absolute,
+ * resolved path. Until 1.6.0 cwd was `path.resolve(target)`, so a file target failed every step with
+ * ENOTDIR, and `{{ params.target }}` was whatever relative path the caller gave.
+ *
+ * Templates (`stepTemplates.ts`): `{{ params.<name> }}` becomes an environment reference,
+ * `"${ULU_P_<NAME>}"`, and the value travels in the step's environment, so the shell never re-parses
+ * it. Until 1.6.0 values were shell-quoted into the command, and inside the author's double quotes
+ * those quotes were literal (tracker 2595e1a8). A misplaced template, or a command with an
+ * unresolved one, FAILS the step rather than running it.
  */
 
 import { execFile } from 'node:child_process';
 import { promisify } from 'node:util';
-import { realpath } from 'node:fs/promises';
+import { realpath, stat } from 'node:fs/promises';
 import * as path from 'node:path';
 import type { Logger } from '@uluops/sdk-core';
 import type { StepDefinition, StepResult } from '../types/pipeline.js';
 import type { ExecutionInput } from '../types/execution.js';
+import { substituteStepTemplates } from './stepTemplates.js';
 import { checkRegexPatternSafety } from '../utils/regexSafety.js';
 import { clampModelBound, externalInt } from '../utils/externalValue.js';
 import { scrubSecretEnv } from '../utils/secretEnv.js';
@@ -48,62 +54,25 @@ const MAX_RETRY_DELAY = 60_000;
 /** step.env may not override loader/interpreter hijack vectors or PATH. */
 const BLOCKED_STEP_ENV_RE = /^(LD_|DYLD_)|^(NODE_OPTIONS|PATH)$/;
 
-function shellQuote(s: string): string {
-  return "'" + s.replace(/'/g, "'\\''") + "'";
-}
-
 function truncate(s: string): string {
   return s.length > MAX_OUTPUT_CHARS ? s.slice(0, MAX_OUTPUT_CHARS) + '…[truncated]' : s;
 }
 
-/** Matches any {{ … }} template span; the inner text is parsed in plain JS
- *  (name + optional || fallback) to keep this pattern star-height 1 for
- *  safe-regex2. Exported for test/executor/regex-safety.test.ts. */
-export const TEMPLATE_RE = /\{\{([^}]*)\}\}/g;
-
-const PARAM_NAME_RE = /^params\.([A-Za-z_]\w*)$/;
-
 /**
- * Substitute `{{ params.x }}` / `{{ params.x || fallback }}` in a step command.
- * Values are shell-quoted. Returns null when a template cannot be resolved —
- * the caller fails the step instead of running literal braces.
+ * Where a run's steps execute, and what `{{ params.target }}` names (spec, Where steps run).
+ * `realpath` first, so a symlinked file target runs beside the real file. A target that does not
+ * resolve keeps the pre-1.6.0 behaviour (`path.resolve`): its steps then fail on the missing
+ * directory, which is the error the caller needs to see.
  */
-export function substituteStepTemplates(
-  command: string,
-  input: ExecutionInput,
-): { command: string } | { unresolved: string } {
-  const params: Record<string, unknown> = { target: input.target, ...(input.params ?? {}) };
-  let unresolved: string | undefined;
-  const substituted = command.replace(TEMPLATE_RE, (whole, innerRaw: string) => {
-    // Inner text parsed in plain JS: `params.<name>` with optional `|| fallback`.
-    // Anything else inside {{ }} is an unsupported construct — fail the step.
-    const inner = innerRaw.trim();
-    const sep = inner.indexOf('||');
-    const pathPart = (sep < 0 ? inner : inner.slice(0, sep)).trim();
-    const fallbackPart = sep < 0 ? undefined : inner.slice(sep + 2).trim();
-    const nameMatch = PARAM_NAME_RE.exec(pathPart);
-    if (!nameMatch) {
-      unresolved = whole;
-      return whole;
-    }
-    let value = params[nameMatch[1]!];
-    if (value === undefined && fallbackPart !== undefined) {
-      // Fallback is a YAML-side literal: strip matching quotes if present.
-      const quoted = /^(['"])(.*)\1$/.exec(fallbackPart);
-      value = quoted ? quoted[2] : fallbackPart;
-    }
-    if (value === undefined) {
-      unresolved = whole;
-      return whole;
-    }
-    return shellQuote(String(value));
-  });
-  if (unresolved) return { unresolved };
-  // Any leftover template syntax is a construct we don't support — fail loud.
-  if (/\{\{.*\}\}/.test(substituted)) {
-    return { unresolved: substituted.match(/\{\{.*?\}\}/)?.[0] ?? '{{…}}' };
+export async function resolveStepRoot(target: string): Promise<{ root: string; targetPath: string }> {
+  try {
+    const real = await realpath(target);
+    const isDir = (await stat(real)).isDirectory();
+    return { root: isDir ? real : path.dirname(real), targetPath: real };
+  } catch {
+    const resolved = path.resolve(target);
+    return { root: resolved, targetPath: resolved };
   }
-  return { command: substituted };
 }
 
 export class StepsExecutor {
@@ -115,7 +84,10 @@ export class StepsExecutor {
    */
   async execute(steps: StepDefinition[], input: ExecutionInput): Promise<StepResult[]> {
     const results: StepResult[] = [];
-    const targetRoot = path.resolve(input.target);
+    const { root: targetRoot, targetPath } = await resolveStepRoot(input.target);
+    // `target` is the resolved target, whatever input.params says (spec: params.target is the
+    // absolute, resolved target path). Until 1.6.0 a params.target overrode input.target here.
+    const params: Record<string, unknown> = { ...(input.params ?? {}), target: targetPath };
     // Secret-class env vars are scrubbed (src/utils/secretEnv.ts, shared with the agent shell):
     // steps do not receive operator credentials.
     const baseEnv = scrubSecretEnv(process.env);
@@ -135,7 +107,7 @@ export class StepsExecutor {
         continue;
       }
 
-      const result = await this.runStep(step, input, targetRoot, baseEnv);
+      const result = await this.runStep(step, params, targetRoot, baseEnv);
       results.push(result);
       if (result.status === 'failed' && !step.continue_on_error) {
         hardFailed = true;
@@ -145,7 +117,7 @@ export class StepsExecutor {
     return results;
   }
 
-  private async runStep(step: StepDefinition, input: ExecutionInput, targetRoot: string, baseEnv: NodeJS.ProcessEnv): Promise<StepResult> {
+  private async runStep(step: StepDefinition, params: Record<string, unknown>, targetRoot: string, baseEnv: NodeJS.ProcessEnv): Promise<StepResult> {
     const start = Date.now();
     const fail = (error: string, extra?: Partial<StepResult>): StepResult => ({
       name: step.name,
@@ -157,12 +129,23 @@ export class StepsExecutor {
       ...extra,
     });
 
-    const substituted = substituteStepTemplates(step.command, input);
+    const substituted = substituteStepTemplates(step.command, params);
+    if ('misplaced' in substituted) {
+      // Load validation refuses this (template_placement); refused here too for callers that run
+      // steps without loading a pipeline.
+      return fail(`template_placement: ${substituted.misplaced} must be a whole double-quoted word or a whole bare word, ` +
+        'not the first word, outside single quotes, $(…), backticks, process substitution and heredocs');
+    }
     if ('unresolved' in substituted) {
       return fail(`Unresolved template in step command: ${substituted.unresolved}. ` +
         'Pass the parameter via input.params or add a || fallback in the step.');
     }
     const command = substituted.command;
+    const nulName = Object.entries(substituted.env).find(([, v]) => v.includes('\0'))?.[0];
+    if (nulName) {
+      // Refused before launch (PARAM_NUL); an environment value cannot hold NUL.
+      return fail(`PARAM_NUL: the value for ${nulName} contains NUL`);
+    }
 
     // step.env may not override loader/interpreter hijack vectors or PATH.
     const blockedKey = step.env && Object.keys(step.env).find(k => BLOCKED_STEP_ENV_RE.test(k));
@@ -213,7 +196,7 @@ export class StepsExecutor {
       if (attempt > 1 && retryDelay > 0) {
         await new Promise(resolve => setTimeout(resolve, retryDelay));
       }
-      lastResult = await this.attempt(step, command, cwd, timeout, start, baseEnv);
+      lastResult = await this.attempt(step, command, cwd, timeout, start, baseEnv, substituted.env);
       if (lastResult.status === 'passed') return lastResult;
       this.logger.debug(`Step "${step.name}" attempt ${attempt}/${maxAttempts} failed`);
     }
@@ -238,6 +221,7 @@ export class StepsExecutor {
     timeout: number,
     start: number,
     baseEnv: NodeJS.ProcessEnv,
+    paramEnv: Record<string, string>,
   ): Promise<StepResult> {
     let stdout = '';
     let exitCode = 0;
@@ -247,7 +231,8 @@ export class StepsExecutor {
       const out = await execFileAsync('sh', ['-c', command], {
         cwd,
         timeout,
-        env: step.env ? { ...baseEnv, ...step.env } : baseEnv,
+        // Parameter variables last: a step's own env cannot shadow the value the caller passed.
+        env: { ...baseEnv, ...(step.env ?? {}), ...paramEnv },
         maxBuffer: 1024 * 1024,
       });
       stdout = out.stdout;

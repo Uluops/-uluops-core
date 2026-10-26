@@ -1,0 +1,94 @@
+# Oracle for ../cases/run-control.cases.yaml. Format: ../README.md, "Expected format".
+expected:
+  - id: run-control/cancel-with-two-agents-in-flight
+    outcome: ran
+    stages:
+      review:
+        status: ERRORED
+        passed: false
+        launched: [stub-gate-a, stub-gate-b]
+        agents: { stub-gate-a: errored, stub-gate-b: errored }
+      after: { status: SKIPPED, passed: false, launched: [] }
+    aborted_records: [stub-gate-a, stub-gate-b]
+    all_gates_passed: false
+    run_decision: FAIL
+    warnings: [{ code: STAGE_ERRORED, stage: review, reason: stopped }]
+
+  - id: run-control/cancel-after-a-passing-stage
+    outcome: ran
+    stages:
+      a: { status: PASSED, passed: true, launched: [stub-gate-a], agents: { stub-gate-a: positive } }
+      b: { status: SKIPPED, passed: false, launched: [] }
+    all_gates_passed: false
+    run_decision: FAIL
+    warnings: []
+
+  - id: run-control/skipped-conditional-upstream-of-synthesis
+    outcome: ran
+    stages:
+      review: { status: PASSED, passed: true, launched: [stub-gate-a], agents: { stub-gate-a: positive } }
+      security: { status: SKIPPED, passed: false, launched: [] }
+      persist:
+        status: PASSED
+        passed: true
+        launched: [stub-lens-a]
+        agents: { stub-lens-a: positive }
+        upstream:
+          - { stage: review, agent: stub-gate-a }
+          - { stage: security, absent: condition_not_met }
+    all_gates_passed: true
+    run_decision: PASS
+    warnings: []
+
+  - id: run-control/failed-dependency-forwards-its-output
+    outcome: ran
+    stages:
+      review: { status: FAILED, passed: false, launched: [stub-gate-a], agents: { stub-gate-a: negative } }
+      essentialism:
+        status: PASSED
+        passed: true
+        launched: [stub-lens-a]
+        agents: { stub-lens-a: positive }
+        upstream: [{ stage: review, agent: stub-gate-a }]
+    all_gates_passed: false
+    run_decision: FAIL
+    warnings: []
+
+  - id: run-control/forwarding-only-reducer
+    outcome: ran
+    stages:
+      review: { status: PASSED, passed: true, launched: [stub-gate-a], agents: { stub-gate-a: positive } }
+      quiet: { status: PASSED, passed: true, launched: [stub-gate-b], agents: { stub-gate-b: positive } }
+      lens: { status: SKIPPED, passed: false, launched: [] }
+      reducer:
+        status: PASSED
+        passed: true
+        launched: [stub-lens-b]
+        agents: { stub-lens-b: positive }
+        upstream:
+          - { stage: review, agent: stub-gate-a }
+          - { stage: lens, absent: condition_not_met }
+    all_gates_passed: true
+    run_decision: PASS
+    warnings: []
+
+  - id: run-control/abort-with-an-independent-sibling-in-flight
+    outcome: ran
+    stages:
+      a: { status: FAILED, passed: false, launched: [stub-gate-a], agents: { stub-gate-a: negative } }
+      b: { status: PASSED, passed: true, launched: [stub-gate-b], agents: { stub-gate-b: positive } }
+    all_gates_passed: false
+    run_decision: FAIL
+    warnings: []
+
+  - id: run-control/abort-skips-only-dependents
+    outcome: ran
+    stages:
+      a: { status: FAILED, passed: false, launched: [stub-gate-a], agents: { stub-gate-a: negative } }
+      child: { status: SKIPPED, passed: false, launched: [] }
+      grandchild: { status: SKIPPED, passed: false, launched: [] }
+      independent: { status: PASSED, passed: true, launched: [stub-gate-c], agents: { stub-gate-c: positive } }
+      synthesis: { status: SKIPPED, passed: false, launched: [] }
+    all_gates_passed: false
+    run_decision: FAIL
+    warnings: []

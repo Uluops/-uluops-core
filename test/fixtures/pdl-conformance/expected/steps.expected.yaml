@@ -1,0 +1,99 @@
+# Oracle for ../cases/steps.cases.yaml. Format: ../README.md, "Expected format".
+expected:
+  - id: steps/directory-target
+    outcome: ran
+    stages:
+      pre: { status: PASSED, passed: true, launched: [] }
+    steps:
+      pre:
+        where: { status: passed, output: AT_TARGET }
+    all_gates_passed: true
+    run_decision: PASS
+    warnings: []
+
+  - id: steps/file-target-runs-in-parent
+    outcome: ran
+    stages:
+      pre: { status: PASSED, passed: true, launched: [] }
+    steps:
+      pre:
+        where: { status: passed, output: IN_PARENT }
+        target-is-file: { status: passed, output: TARGET_FILE }
+    all_gates_passed: true
+    run_decision: PASS
+    warnings: []
+
+  - id: steps/symlinked-file-target-runs-in-real-parent
+    outcome: ran
+    stages:
+      pre: { status: PASSED, passed: true, launched: [] }
+    steps:
+      pre:
+        where: { status: passed, output: REAL_PARENT }
+    all_gates_passed: true
+    run_decision: PASS
+    warnings: []
+
+  - id: steps/target-template-is-absolute
+    outcome: ran
+    stages:
+      pre: { status: PASSED, passed: true, launched: [] }
+    steps:
+      pre:
+        absolute: { status: passed, output: ABSOLUTE }
+        resolves: { status: passed, output: RESOLVES }
+    all_gates_passed: true
+    run_decision: PASS
+    warnings: []
+
+  - id: steps/corpus-detector-shape-detects
+    outcome: ran
+    stages:
+      preflight: { status: PASSED, passed: true, launched: [] }
+      security: { status: PASSED, passed: true, launched: [stub-security-a], agents: { stub-security-a: positive } }
+    steps:
+      preflight:
+        Detect security surface: { status: passed, output: DETECTED }
+    all_gates_passed: true
+    run_decision: PASS
+    warnings: []
+
+  - id: steps/template-value-with-shell-syntax
+    outcome: ran
+    stages:
+      pre: { status: PASSED, passed: true, launched: [] }
+    steps:
+      pre:
+        echo: { status: passed, output: "x$(touch PWNED)y" }
+        found: { status: passed, output: LITERAL_MATCH }
+        canary: { status: passed, output: CLEAN }
+    all_gates_passed: true
+    run_decision: PASS
+    warnings: []
+
+  - id: steps/template-value-with-quote-characters
+    outcome: ran
+    stages:
+      pre: { status: PASSED, passed: true, launched: [] }
+    steps:
+      pre:
+        echo: { status: passed, output: "a\"b`c\\d$HOME'e" }
+    all_gates_passed: true
+    run_decision: PASS
+    warnings: []
+
+  - id: steps/bare-word-template-is-one-word
+    outcome: ran
+    stages:
+      pre: { status: PASSED, passed: true, launched: [] }
+    steps:
+      pre:
+        count: { status: passed, output: "1" }
+        echo: { status: passed, output: "two  words; echo INJECTED" }
+    all_gates_passed: true
+    run_decision: PASS
+    warnings: []
+
+  - id: steps/nul-in-parameter-refused
+    outcome: refused
+    refused: { code: PARAM_NUL, param: value }

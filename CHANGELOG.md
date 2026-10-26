@@ -6,6 +6,62 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) 
 
 ## [Unreleased]
 
+**PDL 1.6.0, build unit P3a: where steps run and how parameters reach them** (design spec pdl-1_6_0
+v0.8.3, D15, D20, D22, D38, D39; normative text `uluops-pdl-spec-v1.6.0.md`, *Execution Semantics →
+Steps*; checklist v0.1.3 §P3a). The rest of PDL 1.6.0 lands in P3b (conditions, load validation),
+P4a and P4b (decisions, gates, status) before R-core.
+
+### Upgrade impact
+
+- **Consumer code:** `PipelineError.context` gains `loadErrors` (`PipelineLoadError[]`) and `refusal`
+  (`PipelineRefusal`), both new exports; `TriggerDefinition` gains `parameters`. Additive. A consumer
+  that matched step failures on the text "Unresolved template" still matches; a misplaced template
+  now fails the step with text beginning `template_placement`.
+- **Step behaviour (behaviour change, no signature change):**
+  - a **file target** runs its steps in the real file's parent. Before, every step failed with ENOTDIR;
+  - `{{ params.target }}` is the **absolute, resolved** target, and `input.params.target` no longer
+    overrides it. Before, it was the path as the caller gave it, so a relative target resolved against
+    the step's own working directory;
+  - a template's value reaches the shell as an **environment variable**, not as a quoted string in the
+    command. Before, the value was single-quoted into the command; every corpus site writes the
+    template inside double quotes, where those single quotes are literal, so `grep … "{{ params.target }}"`
+    searched for a path beginning with `'`, and `$(…)` in a value **executed** (tracker 2595e1a8). A
+    pipeline that relied on the old quoting (a template inside single quotes, say) now fails to load;
+  - parameter names may contain `-` (`{{ params.security-lens }}`), as the spec and the factory allow.
+    Before, they were "Unresolved template".
+- **Runs refused that used to start:** a pipeline whose step template sits outside the two allowed
+  placements, or whose declared parameters collide on `ULU_P_<NAME>`, throws from `start()`; so does a
+  run whose parameter value contains NUL. **Zero** of the 81 corpus pipelines (57 steps) and 224 registry
+  pipeline versions (170 steps; the S6 snapshot, read as `ululabs`) trip either load check, measured
+  2026-10-26 with this release's `checkStepTemplateRules`, D38 and D39 included; a planted misplaced
+  template and a planted collision were both found.
+- **Runtime:** none measurable. One scan per step command at start, linear in its length.
+
+### Security
+
+- **A run parameter could execute in a step** (tracker 2595e1a8). `{{ params.x }}` was replaced by the
+  single-quoted value, and every corpus template sits inside double quotes, where single quotes quote
+  nothing: a value `x$(touch PWNED)y` ran `touch`. Reach: steps enabled (`allowStageSteps`), and a
+  caller who supplies run parameters. Values now travel in the environment
+  (`src/executor/stepTemplates.ts`); the fixture `steps/template-value-with-shell-syntax` fails on
+  0.53.1 and passes here, and its canary asserts no `PWNED` file appears.
+
+### Added
+
+- **`src/executor/stepTemplates.ts`:** `parameterEnvName`, `misplacedTemplate` (the placement scan,
+  ported from the factory's `pdl-load-rules.ts` so both runtimes answer every `load-errors/placement-*`
+  fixture alike), `checkStepTemplateRules` (the two load errors), `nulParameter`, and
+  `substituteStepTemplates`, moved here from `StepsExecutor`. P3b's load validator calls the load checks.
+- **Tests:** `test/executor/pdl-conformance.test.ts` runs the vendored PDL 1.6.0 conformance fixtures
+  (`test/fixtures/pdl-conformance/`, `SOURCE` names corpus `60403c35`) that P3a owns: the eight `steps`
+  cases that run, through `StepsExecutor` against a copy of `targets/`; the NUL refusal through
+  `start()`; the placement and collision load errors at their locations; and, for every other case, no
+  step-template error. On 0.53.1, 7 of the 8 steps cases and the refusal fail. `StepsExecutor.test.ts`
+  adds the file-target `working_dir`, env shadowing, resolved `params.target`, hyphenated names, a
+  misplaced template, and `start()`'s load errors; each fails on 0.53.1. `regex-safety.test.ts` now
+  asserts each entry is a `RegExp` (moving `TEMPLATE_RE` left its old import `undefined`, which
+  `safe-regex2` accepts) and gates the placement pattern too.
+
 ### Removed
 
 - **`AgentRuntime.defaults.thresholds` and `AgentRuntime.config.threshold`** (tracker `5f71197f`).

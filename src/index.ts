@@ -210,6 +210,9 @@ export {
   type SubmissionErrorCode,
   WorkflowError,
   PipelineError,
+  // PDL 1.6.0 (P3a): the load errors and refusal a PipelineError carries in `context`.
+  type PipelineLoadError,
+  type PipelineRefusal,
   ParseError,
   SubscriptionRequiredError,
   IntegrityError,

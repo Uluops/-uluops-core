@@ -1,0 +1,30 @@
+# Stub agents for the PDL 1.6.0 conformance fixtures (spec v0.6.0 §3.7).
+#
+# Each stub carries only the fields a runtime reads when it gates: the agent type and the
+# declared decision vocabulary, in the ADL shape (`decisions.vocabulary`). A stub has no
+# prompt of its own worth testing. What it outputs is fixed per case by the case's
+# `stubs:` map (see ../README.md, "Stub outputs"), so one stub name can say PROCEED in one
+# case and REVISE in the next.
+#
+# A case uses each stub name at most once, so a runtime can key outputs by agent name
+# alone. Cases that need two agents with the same vocabulary use the -a/-b/-c variants.
+# The check script enforces both rules.
+#
+# Vocabularies mirror real corpus agents so the token rule is exercised on real tokens:
+#   gate      pre-implementation-architect  PROCEED / REVISE (no conditional)
+#   docs      docs-validator                DOCUMENTED / UNDERDOCUMENTED / PARTIALLY_DOCUMENTED
+#   security  security-analyst              SECURE / BLOCKED / CONDITIONAL
+#   lens      machiavelli-analyst           EFFECTUAL / IDEALIZED (no conditional)
+#   explorer  any explorer                  no vocabulary; EXPLORED is core-register
+#   novocab   (none)                        no vocabulary and not an explorer: the pre-check refuses it
+
+stubs:
+  - { name: stub-gate-a, agentType: validator, decisions: { vocabulary: { positive: PROCEED, negative: REVISE } } }
+  - { name: stub-gate-b, agentType: validator, decisions: { vocabulary: { positive: PROCEED, negative: REVISE } } }
+  - { name: stub-gate-c, agentType: validator, decisions: { vocabulary: { positive: PROCEED, negative: REVISE } } }
+  - { name: stub-docs-a, agentType: validator, decisions: { vocabulary: { positive: DOCUMENTED, negative: UNDERDOCUMENTED, conditional: PARTIALLY_DOCUMENTED } } }
+  - { name: stub-security-a, agentType: analyst, decisions: { vocabulary: { positive: SECURE, negative: BLOCKED, conditional: CONDITIONAL } } }
+  - { name: stub-lens-a, agentType: analyst, decisions: { vocabulary: { positive: EFFECTUAL, negative: IDEALIZED } } }
+  - { name: stub-lens-b, agentType: analyst, decisions: { vocabulary: { positive: EFFECTUAL, negative: IDEALIZED } } }
+  - { name: stub-explorer-a, agentType: explorer }
+  - { name: stub-novocab-a, agentType: validator }

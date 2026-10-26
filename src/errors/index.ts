@@ -345,12 +345,38 @@ export class WorkflowError extends UluOpsError {
 }
 
 /** Thrown when a pipeline stage fails or a pipeline-level error occurs. */
+/**
+ * A PDL load error, in the conformance fixtures' shape: the spec's code and where it was found
+ * (`stage:<id>`, `stage:<id>/step:<name>`, `param:<name>`). PDL 1.6.0 P3a reports the step-template
+ * codes (`template_placement`, `parameter_env_collision`); P3b's load validator adds the rest.
+ */
+export interface PipelineLoadError {
+  code: string;
+  at: string;
+  message: string;
+}
+
+/** A PDL refusal: the run was refused before any stage launched (PDL 1.6.0 spec, Codes → Refusals). */
+export interface PipelineRefusal {
+  code: 'PARAM_NUL';
+  /** The parameter whose value holds NUL. */
+  param: string;
+}
+
 export class PipelineError extends UluOpsError {
   readonly code = 'PIPELINE_ERROR' as const;
 
   constructor(
     message: string,
-    public readonly context: { partialResult?: PipelineResult; stageName?: string; stageIndex?: number },
+    public readonly context: {
+      partialResult?: PipelineResult;
+      stageName?: string;
+      stageIndex?: number;
+      /** Set when the pipeline failed load validation; nothing ran. */
+      loadErrors?: PipelineLoadError[];
+      /** Set when the run was refused before launch; nothing ran. */
+      refusal?: PipelineRefusal;
+    },
   ) {
     super(message);
     this.name = 'PipelineError';

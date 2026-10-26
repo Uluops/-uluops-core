@@ -1,0 +1,341 @@
+# Gates and stage status: failure modes, thresholds, gate decisions, ERRORED, all-skipped.
+# Spec v0.8.0 §3.1, §3.2. Expected outcomes: ../expected/gates.expected.yaml
+cases:
+  # ── Failure modes (D1) ────────────────────────────────────────────────
+  - id: gates/abort-skips-dependent
+    covers: ["§3.2 failure modes", D1]
+    applies_to: [core, skill]
+    stubs:
+      stub-gate-a: { decision: REVISE, score: 90 }
+      stub-gate-b: { decision: PROCEED, score: 90 }
+    pipeline:
+      stages:
+        - { id: a, agents: [{ ref: stub-gate-a }], gate: { threshold: 80, on_failure: abort } }
+        - { id: b, depends_on: [a], agents: [{ ref: stub-gate-b }], gate: { threshold: 80, on_failure: abort } }
+
+  - id: gates/absent-on-failure-is-abort
+    covers: ["§3.1 blocking class"]
+    applies_to: [core, skill]
+    stubs:
+      stub-gate-a: { decision: PROCEED, score: 70 }
+      stub-gate-b: { decision: PROCEED, score: 90 }
+    pipeline:
+      stages:
+        - { id: a, agents: [{ ref: stub-gate-a }], gate: { threshold: 80 } }
+        - { id: b, depends_on: [a], agents: [{ ref: stub-gate-b }], gate: { threshold: 80 } }
+
+  - id: gates/fail-continues
+    covers: ["§3.2 failure modes", D1, D3]
+    applies_to: [core, skill]
+    stubs:
+      stub-gate-a: { decision: REVISE, score: 90 }
+      stub-gate-b: { decision: PROCEED, score: 90 }
+    pipeline:
+      stages:
+        - { id: a, agents: [{ ref: stub-gate-a }], gate: { threshold: 80, on_failure: fail } }
+        - { id: b, depends_on: [a], agents: [{ ref: stub-gate-b }], gate: { threshold: 80, on_failure: fail } }
+
+  - id: gates/warn-warns
+    covers: ["§3.2 failure modes"]
+    applies_to: [core, skill]
+    stubs:
+      stub-gate-a: { decision: PROCEED, score: 70 }
+      stub-gate-b: { decision: PROCEED, score: 90 }
+    pipeline:
+      stages:
+        - { id: a, agents: [{ ref: stub-gate-a }], gate: { threshold: 80, on_failure: warn } }
+        - { id: b, depends_on: [a], agents: [{ ref: stub-gate-b }], gate: { threshold: 80, on_failure: abort } }
+
+  - id: gates/skip-is-fail
+    covers: ["§3.2 failure modes", D1]
+    applies_to: [core, skill]
+    stubs:
+      stub-gate-a: { decision: REVISE, score: 90 }
+      stub-gate-b: { decision: PROCEED, score: 90 }
+    pipeline:
+      stages:
+        - { id: a, agents: [{ ref: stub-gate-a }], gate: { threshold: 80, on_failure: skip } }
+        - { id: b, depends_on: [a], agents: [{ ref: stub-gate-b }], gate: { threshold: 80, on_failure: abort } }
+    note: >
+      Core today skips every remaining stage on `skip`; 1.6.0 reads it as `fail`, so b runs.
+
+  # ── Decision at a blocking gate (gate-decision D1-D3) ─────────────────
+  - id: gates/auto-fail-revise-at-passing-score
+    covers: ["§3.2 decision", "gate-decision D3", "§7 control: skill passes auto-fail-at-85"]
+    applies_to: [core, skill]
+    stubs:
+      stub-gate-a: { decision: REVISE, score: 85 }
+      stub-gate-b: { decision: PROCEED, score: 90 }
+    pipeline:
+      stages:
+        - { id: a, agents: [{ ref: stub-gate-a }], gate: { threshold: 80, on_failure: fail } }
+        - { id: b, depends_on: [a], agents: [{ ref: stub-gate-b }], gate: { threshold: 80, on_failure: fail } }
+    note: >
+      The architect's own rule: score >= 80 with an auto-fail fired is REVISE. A runtime that
+      gates on score alone passes this stage.
+
+  - id: gates/conditional-at-default-gate
+    covers: ["gate-decision D2", "gate-decision D3", "§3.1 all_gates_passed"]
+    applies_to: [core, skill]
+    stubs:
+      stub-docs-a: { decision: PARTIALLY_DOCUMENTED, score: 80 }
+      stub-gate-b: { decision: PROCEED, score: 90 }
+    pipeline:
+      stages:
+        - { id: a, agents: [{ ref: stub-docs-a }], gate: { threshold: 75, on_failure: fail } }
+        - { id: b, depends_on: [a], agents: [{ ref: stub-gate-b }], gate: { threshold: 80, on_failure: fail } }
+
+  - id: gates/conditional-at-positive-gate
+    covers: ["gate-decision D1", "§3.6 gate decision"]
+    applies_to: [core, skill]
+    stubs:
+      stub-docs-a: { decision: PARTIALLY_DOCUMENTED, score: 80 }
+    pipeline:
+      stages:
+        - { id: a, agents: [{ ref: stub-docs-a }], gate: { threshold: 75, on_failure: fail, decision: positive } }
+
+  - id: gates/decision-ignore-at-blocking-gate
+    covers: ["gate-decision D1"]
+    applies_to: [core, skill]
+    stubs:
+      stub-gate-a: { decision: REVISE, score: 90 }
+    pipeline:
+      stages:
+        - { id: a, agents: [{ ref: stub-gate-a }], gate: { threshold: 80, on_failure: fail, decision: ignore } }
+    note: The lint flags this site in the corpus (§3.7); the runtime still honours it.
+
+  # ── Warn gates and the saved verdict (D13) ────────────────────────────
+  - id: gates/warn-negative-default-ignore
+    covers: ["gate-decision D3", "§3.1 all_gates_passed", D13]
+    applies_to: [core, skill]
+    stubs:
+      stub-gate-a: { decision: PROCEED, score: 90 }
+      stub-lens-a: { decision: IDEALIZED, score: 80 }
+    pipeline:
+      stages:
+        - { id: review, agents: [{ ref: stub-gate-a }], gate: { threshold: 80, on_failure: fail } }
+        - { id: lens, depends_on: [review], agents: [{ ref: stub-lens-a }], gate: { threshold: 70, on_failure: warn } }
+    note: >
+      A warn gate's decision default is `ignore`, so a negative at a passing score passes the
+      gate. Core today saves all_gates_passed false for this run (§7 control).
+
+  - id: gates/warn-negative-not-negative
+    covers: ["§3.1 all_gates_passed", D13]
+    applies_to: [core, skill]
+    stubs:
+      stub-gate-a: { decision: PROCEED, score: 90 }
+      stub-lens-a: { decision: IDEALIZED, score: 80 }
+    pipeline:
+      stages:
+        - { id: review, agents: [{ ref: stub-gate-a }], gate: { threshold: 80, on_failure: fail } }
+        - { id: lens, depends_on: [review], agents: [{ ref: stub-lens-a }], gate: { threshold: 70, on_failure: warn, decision: not_negative } }
+
+  # ── ERRORED agents and stages (§3.1) ──────────────────────────────────
+  - id: gates/errored-behind-abort
+    covers: ["§3.1 ERRORED", "§3.1 gate mode"]
+    applies_to: [core, skill]
+    stubs:
+      stub-gate-a: { decision: MAYBE }
+      stub-gate-b: { decision: PROCEED, score: 90 }
+    pipeline:
+      stages:
+        - { id: a, agents: [{ ref: stub-gate-a }], gate: { threshold: 80, on_failure: abort } }
+        - { id: b, depends_on: [a], agents: [{ ref: stub-gate-b }], gate: { threshold: 80, on_failure: abort } }
+    note: No score and a neutral token is "no score and no classifiable decision".
+
+  - id: gates/errored-behind-fail
+    covers: ["§3.1 ERRORED", "§3.1 gate mode"]
+    applies_to: [core, skill]
+    stubs:
+      stub-gate-a: { decision: MAYBE }
+      stub-gate-b: { decision: PROCEED, score: 90 }
+    pipeline:
+      stages:
+        - { id: a, agents: [{ ref: stub-gate-a }], gate: { threshold: 80, on_failure: fail } }
+        - { id: b, depends_on: [a], agents: [{ ref: stub-gate-b }], gate: { threshold: 80, on_failure: fail } }
+
+  - id: gates/errored-behind-warn
+    covers: ["§3.1 ERRORED", "§3.1 gate mode"]
+    applies_to: [core, skill]
+    stubs:
+      stub-gate-a: { decision: PROCEED, score: 90 }
+      stub-lens-a: { decision: MAYBE }
+    pipeline:
+      stages:
+        - { id: review, agents: [{ ref: stub-gate-a }], gate: { threshold: 80, on_failure: fail } }
+        - { id: lens, depends_on: [review], agents: [{ ref: stub-lens-a }], gate: { threshold: 70, on_failure: warn } }
+
+  - id: gates/errored-by-timeout
+    covers: ["§3.1 ERRORED (a timeout included)"]
+    applies_to: [core]
+    stubs:
+      stub-gate-a: { timeout: true }
+      stub-gate-b: { decision: PROCEED, score: 90 }
+    pipeline:
+      stages:
+        - { id: a, agents: [{ ref: stub-gate-a, timeout: 1000 }], gate: { threshold: 80, on_failure: fail } }
+        - { id: b, depends_on: [a], agents: [{ ref: stub-gate-b }], gate: { threshold: 80, on_failure: fail } }
+
+  - id: gates/one-errored-agent-errors-the-stage
+    covers: ["§3.1 ERRORED"]
+    applies_to: [core, skill]
+    stubs:
+      stub-gate-a: { decision: PROCEED, score: 90 }
+      stub-gate-b: { decision: MAYBE }
+    pipeline:
+      stages:
+        - { id: a, parallel: true, agents: [{ ref: stub-gate-a }, { ref: stub-gate-b }], gate: { threshold: 80, on_failure: fail } }
+
+  # ── All agents skipped (D10) ──────────────────────────────────────────
+  - id: gates/all-agents-skipped
+    covers: ["§3.2 all agents skipped", D10]
+    applies_to: [core, skill]
+    params: { mode: fast }
+    stubs:
+      stub-gate-a: { decision: PROCEED, score: 90 }
+      stub-gate-b: { decision: PROCEED, score: 90 }
+      stub-gate-c: { decision: PROCEED, score: 90 }
+    pipeline:
+      parameters: [{ name: mode, type: string, default: fast }]
+      stages:
+        - id: checks
+          parallel: true
+          agents:
+            - { ref: stub-gate-a, condition: "params.mode == 'deep'" }
+            - { ref: stub-gate-b, condition: "params.mode == 'full'" }
+          gate: { threshold: 80, on_failure: abort }
+        - { id: after, depends_on: [checks], agents: [{ ref: stub-gate-c }], gate: { threshold: 80, on_failure: abort } }
+    note: Core today fails the gate here (`verifiedNothing`).
+
+  - id: gates/one-agent-skipped
+    covers: ["§3.2 gate evaluates unskipped agents"]
+    applies_to: [core, skill]
+    params: { mode: fast }
+    stubs:
+      stub-gate-a: { decision: PROCEED, score: 90 }
+      stub-gate-b: { decision: REVISE, score: 90 }
+    pipeline:
+      parameters: [{ name: mode, type: string, default: fast }]
+      stages:
+        - id: checks
+          parallel: true
+          agents:
+            - { ref: stub-gate-a }
+            - { ref: stub-gate-b, condition: "params.mode == 'deep'" }
+          gate: { threshold: 80, on_failure: fail }
+
+  # ── Thresholds (D5) ───────────────────────────────────────────────────
+  - id: gates/per-agent-threshold-binds
+    covers: ["§3.2 threshold mode", D5, D8]
+    applies_to: [core, skill]
+    stubs:
+      stub-gate-a: { decision: PROCEED, score: 78 }
+      stub-docs-a: { decision: DOCUMENTED, score: 76 }
+    pipeline:
+      stages:
+        - id: review
+          parallel: true
+          agents:
+            - { ref: stub-gate-a, threshold: 80 }
+            - { ref: stub-docs-a, threshold: 75 }
+          gate: { on_failure: fail }
+    note: 78 clears the docs threshold but not the architect's; one agent below its own threshold fails the stage.
+
+  - id: gates/per-agent-falls-back-to-gate-threshold
+    covers: ["§3.2 threshold mode", D5]
+    applies_to: [core, skill]
+    stubs:
+      stub-gate-a: { decision: PROCEED, score: 85 }
+      stub-gate-b: { decision: PROCEED, score: 68 }
+    pipeline:
+      stages:
+        - id: review
+          parallel: true
+          agents:
+            - { ref: stub-gate-a, threshold: 80 }
+            - { ref: stub-gate-b }
+          gate: { threshold: 70, on_failure: fail }
+    note: stub-gate-b has no threshold of its own, so the gate's 70 applies to it and 68 fails.
+
+  - id: gates/aggregate-mode-unchanged
+    covers: ["§3.2 aggregate mode"]
+    applies_to: [core, skill]
+    stubs:
+      stub-gate-a: { decision: PROCEED, score: 80 }
+      stub-gate-b: { decision: PROCEED, score: 70 }
+    pipeline:
+      stages:
+        - id: review
+          parallel: true
+          agents: [{ ref: stub-gate-a }, { ref: stub-gate-b }]
+          gate: { threshold: 75, aggregate: min, on_failure: fail }
+
+  - id: gates/decision-only-gate-passes
+    covers: ["§3.2 aggregate mode (decision-only)"]
+    applies_to: [core, skill]
+    stubs:
+      stub-explorer-a: { decision: EXPLORED }
+    pipeline:
+      stages:
+        - { id: map, agents: [{ ref: stub-explorer-a }], gate: { on_failure: abort } }
+    note: An explorer emits no score; a threshold-less gate is decision-only (poppers-horn/map).
+
+  - id: gates/decision-only-gate-fails-on-negative
+    covers: ["§3.2 aggregate mode (decision-only)"]
+    applies_to: [core, skill]
+    stubs:
+      stub-gate-a: { decision: REVISE, score: 95 }
+    pipeline:
+      stages:
+        - { id: a, agents: [{ ref: stub-gate-a }], gate: { on_failure: fail } }
+
+  # ── Steps-only stages (§3.1 PASSED / FAILED) ──────────────────────────
+  - id: gates/steps-only-continue-on-error
+    covers: ["§3.1 PASSED", "§3.1 FAILED"]
+    applies_to: [core, skill]
+    pipeline:
+      stages:
+        - id: pre
+          steps:
+            - { name: ok, command: "echo fine" }
+            - { name: broken, command: "exit 3", continue_on_error: true }
+          gate: { on_failure: warn }
+
+  - id: gates/steps-only-hard-failure-fail-gate
+    covers: ["§3.1 FAILED"]
+    applies_to: [core, skill]
+    stubs:
+      stub-gate-a: { decision: PROCEED, score: 90 }
+    pipeline:
+      stages:
+        - id: pre
+          steps:
+            - { name: broken, command: "exit 3" }
+          gate: { on_failure: fail }
+        - { id: b, depends_on: [pre], agents: [{ ref: stub-gate-a }], gate: { threshold: 80, on_failure: fail } }
+
+  - id: gates/steps-only-hard-failure-no-gate
+    covers: ["§3.1 FAILED", "§3.2 failure modes"]
+    applies_to: [core, skill]
+    stubs:
+      stub-gate-a: { decision: PROCEED, score: 90 }
+    pipeline:
+      stages:
+        - id: pre
+          steps:
+            - { name: broken, command: "exit 3" }
+        - { id: b, depends_on: [pre], agents: [{ ref: stub-gate-a }], gate: { threshold: 80, on_failure: fail } }
+    note: >
+      §3.1 makes pre FAILED, so all_gates_passed is false. Whether b launches depends on which
+      failure mode governs a stage that has no gate at all, and the spec names one only for a
+      gate with no on_failure (abort). Pending (open question Q4).
+
+  - id: gates/steps-only-hard-failure-warn-gate
+    covers: ["§3.1 FAILED (a step failure behind a warn gate gives WARNED)"]
+    applies_to: [core, skill]
+    pipeline:
+      stages:
+        - id: pre
+          steps:
+            - { name: broken, command: "exit 3" }
+          gate: { on_failure: warn }

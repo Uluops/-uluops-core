@@ -1,0 +1,590 @@
+# Load-time validation: condition references and syntax, ordering, thresholds, strictness, and
+# D15's template placement rule. Every case is decided before anything runs, so the factory
+# (validatePDLSemantics), core (its own parser, local YAML included) and the skill (Phase 0)
+# all owe the same answer. Spec v0.8.0 §3.2, §3.3, §3.4 "Validation at load time", §3.6, D15, D20, D25.
+# Expected: ../expected/load-errors.expected.yaml
+cases:
+  - id: load-errors/unknown-root
+    covers: ["§3.4 validation", "§7 control"]
+    applies_to: [factory, core, skill]
+    pipeline:
+      parameters: [{ name: a, type: string, default: x }]
+      stages:
+        - id: pre
+          steps:
+            - { name: Detect, command: "echo DETECTED", continue_on_error: true }
+          gate: { on_failure: warn }
+        - { id: a, depends_on: [pre], condition: "context.has_src", agents: [{ ref: stub-gate-a }], gate: { threshold: 80, on_failure: fail } }
+
+  - id: load-errors/unknown-path-stage-score
+    covers: ["§3.4 context", D2]
+    applies_to: [factory, core, skill]
+    pipeline:
+      parameters: [{ name: a, type: string, default: x }]
+      stages:
+        - id: pre
+          steps:
+            - { name: Detect, command: "echo DETECTED", continue_on_error: true }
+          gate: { on_failure: warn }
+        - { id: a, depends_on: [pre], condition: "stages.pre.score == '90'", agents: [{ ref: stub-gate-a }], gate: { threshold: 80, on_failure: fail } }
+    note: >
+      stages.<id>.score was removed in 0.4.0 (D2). The root is known; the path is not.
+
+  - id: load-errors/undeclared-parameter
+    covers: ["§3.4 validation", "§7 control"]
+    applies_to: [factory, core, skill]
+    pipeline:
+      parameters: [{ name: a, type: string, default: x }]
+      stages:
+        - id: pre
+          steps:
+            - { name: Detect, command: "echo DETECTED", continue_on_error: true }
+          gate: { on_failure: warn }
+        - { id: a, depends_on: [pre], condition: "params.nope == 'x'", agents: [{ ref: stub-gate-a }], gate: { threshold: 80, on_failure: fail } }
+
+  - id: load-errors/unknown-stage
+    covers: ["§3.4 validation"]
+    applies_to: [factory, core, skill]
+    pipeline:
+      parameters: [{ name: a, type: string, default: x }]
+      stages:
+        - id: pre
+          steps:
+            - { name: Detect, command: "echo DETECTED", continue_on_error: true }
+          gate: { on_failure: warn }
+        - { id: a, depends_on: [pre], condition: "stages.ghost.passed", agents: [{ ref: stub-gate-a }], gate: { threshold: 80, on_failure: fail } }
+
+  - id: load-errors/non-ancestor-sibling
+    covers: ["§3.4 validation", "§7 control"]
+    applies_to: [factory, core, skill]
+    pipeline:
+      parameters: [{ name: a, type: string, default: x }]
+      stages:
+        - id: pre
+          steps:
+            - { name: Detect, command: "echo DETECTED", continue_on_error: true }
+          gate: { on_failure: warn }
+        - { id: a, depends_on: [pre], agents: [{ ref: stub-gate-a }], gate: { threshold: 80, on_failure: fail } }
+        - { id: b, depends_on: [pre], condition: "stages.a.passed", agents: [{ ref: stub-gate-b }], gate: { threshold: 80, on_failure: fail } }
+
+  - id: load-errors/non-ancestor-self
+    covers: ["§3.4 validation"]
+    applies_to: [factory, core, skill]
+    pipeline:
+      parameters: [{ name: a, type: string, default: x }]
+      stages:
+        - id: pre
+          steps:
+            - { name: Detect, command: "echo DETECTED", continue_on_error: true }
+          gate: { on_failure: warn }
+        - { id: a, depends_on: [pre], condition: "stages.a.passed", agents: [{ ref: stub-gate-a }], gate: { threshold: 80, on_failure: fail } }
+
+  - id: load-errors/non-ancestor-own-steps-from-agentref
+    covers: ["§3.4 validation", "§3.4 scope: agentRef conditions"]
+    applies_to: [factory, core, skill]
+    pipeline:
+      parameters: [{ name: a, type: string, default: x }]
+      stages:
+        - id: a
+          steps:
+            - { name: Detect, command: "echo DETECTED", continue_on_error: true }
+          agents:
+            - { ref: stub-gate-a, condition: "stages.a.steps['Detect'].output == 'DETECTED'" }
+          gate: { threshold: 80, on_failure: fail }
+    note: >
+      A stage is not its own ancestor, so an agentRef condition cannot read its own stage's steps, even though core runs a stage's steps before its agents. The rule as written; flagged as Q8 in case that is not intended.
+
+  - id: load-errors/transitive-ancestor-accepted
+    covers: ["§3.4 validation"]
+    applies_to: [factory, core, skill]
+    pipeline:
+      parameters: [{ name: a, type: string, default: x }]
+      stages:
+        - id: pre
+          steps:
+            - { name: Detect, command: "echo DETECTED", continue_on_error: true }
+          gate: { on_failure: warn }
+        - { id: one, depends_on: [pre], agents: [{ ref: stub-gate-a }], gate: { threshold: 80, on_failure: fail } }
+        - { id: two, depends_on: [one], agents: [{ ref: stub-gate-b }], gate: { threshold: 80, on_failure: fail } }
+        - { id: three, depends_on: [two], condition: "stages.pre.steps['Detect'].output == 'DETECTED' && stages.one.passed", agents: [{ ref: stub-gate-c }], gate: { threshold: 80, on_failure: fail } }
+
+  - id: load-errors/undeclared-step
+    covers: ["§3.4 validation"]
+    applies_to: [factory, core, skill]
+    pipeline:
+      parameters: [{ name: a, type: string, default: x }]
+      stages:
+        - id: pre
+          steps:
+            - { name: Detect, command: "echo DETECTED", continue_on_error: true }
+          gate: { on_failure: warn }
+        - { id: a, depends_on: [pre], condition: "stages.pre.steps['Missing'].output == 'DETECTED'", agents: [{ ref: stub-gate-a }], gate: { threshold: 80, on_failure: fail } }
+
+  - id: load-errors/syntax-dangling-operator
+    covers: ["§3.4 validation"]
+    applies_to: [factory, core, skill]
+    pipeline:
+      parameters: [{ name: a, type: string, default: x }]
+      stages:
+        - id: pre
+          steps:
+            - { name: Detect, command: "echo DETECTED", continue_on_error: true }
+          gate: { on_failure: warn }
+        - { id: a, depends_on: [pre], condition: "params.a ==", agents: [{ ref: stub-gate-a }], gate: { threshold: 80, on_failure: fail } }
+
+  - id: load-errors/syntax-unbalanced-parenthesis
+    covers: ["§3.4 validation"]
+    applies_to: [factory, core, skill]
+    pipeline:
+      parameters: [{ name: a, type: string, default: x }]
+      stages:
+        - id: pre
+          steps:
+            - { name: Detect, command: "echo DETECTED", continue_on_error: true }
+          gate: { on_failure: warn }
+        - { id: a, depends_on: [pre], condition: "(params.a == 'x'", agents: [{ ref: stub-gate-a }], gate: { threshold: 80, on_failure: fail } }
+
+  - id: load-errors/syntax-single-equals
+    covers: ["§3.4 grammar"]
+    applies_to: [factory, core, skill]
+    pipeline:
+      parameters: [{ name: a, type: string, default: x }]
+      stages:
+        - id: pre
+          steps:
+            - { name: Detect, command: "echo DETECTED", continue_on_error: true }
+          gate: { on_failure: warn }
+        - { id: a, depends_on: [pre], condition: "params.a = 'x'", agents: [{ ref: stub-gate-a }], gate: { threshold: 80, on_failure: fail } }
+
+  - id: load-errors/syntax-negated-comparison
+    covers: ["§3.4 grammar", "PDL 1.6.0 spec: `!` precedes a path or a parenthesised expression (Alex, 2026-10-26)"]
+    applies_to: [factory, core, skill]
+    pipeline:
+      parameters: [{ name: a, type: string, default: x }]
+      stages:
+        - { id: a, condition: "!params.a == 'x'", agents: [{ ref: stub-gate-a }], gate: { threshold: 80, on_failure: fail } }
+    note: >
+      Core reads this as !(params.a == 'x'); C-style precedence reads (!params.a) == 'x'. Zero of
+      97 corpus and fixture conditions used the form when it was ruled, so it is refused at load
+      rather than given either meaning. `!(params.a == 'x')` is the accepted spelling.
+
+  - id: load-errors/syntax-bare-boolean
+    covers: ["§3.4 grammar (number and boolean literals)", "PDL 1.6.0 spec: a bare true or false is a syntax error, not an unknown root"]
+    applies_to: [factory, core, skill]
+    pipeline:
+      stages:
+        - { id: a, condition: "true", agents: [{ ref: stub-gate-a }], gate: { threshold: 80, on_failure: fail } }
+    note: >
+      PDL 1.5.0's own examples wrote `condition: "true"` for "always run". Core evaluates it as
+      true today. Under 1.6.0 it is a boolean literal, so the code is condition_syntax rather than
+      unknown_root; omit the condition to always run.
+
+  - id: load-errors/syntax-ordering-operator
+    covers: ["§3.4 grammar", "§6 item 5", "§7 control"]
+    applies_to: [factory, core, skill]
+    pipeline:
+      parameters: [{ name: a, type: string, default: x }]
+      stages:
+        - id: pre
+          steps:
+            - { name: Detect, command: "echo DETECTED", continue_on_error: true }
+          gate: { on_failure: warn }
+        - { id: a, depends_on: [pre], condition: "params.a > '1'", agents: [{ ref: stub-gate-a }], gate: { threshold: 80, on_failure: fail } }
+
+  - id: load-errors/syntax-number-literal
+    covers: ["§3.4 grammar", "§6 item 5"]
+    applies_to: [factory, core, skill]
+    pipeline:
+      parameters: [{ name: a, type: string, default: x }]
+      stages:
+        - id: pre
+          steps:
+            - { name: Detect, command: "echo DETECTED", continue_on_error: true }
+          gate: { on_failure: warn }
+        - { id: a, depends_on: [pre], condition: "params.a == 1", agents: [{ ref: stub-gate-a }], gate: { threshold: 80, on_failure: fail } }
+
+  - id: load-errors/syntax-boolean-literal
+    covers: ["§3.4 grammar", "§6 item 5"]
+    applies_to: [factory, core, skill]
+    pipeline:
+      parameters: [{ name: a, type: string, default: x }]
+      stages:
+        - id: pre
+          steps:
+            - { name: Detect, command: "echo DETECTED", continue_on_error: true }
+          gate: { on_failure: warn }
+        - { id: a, depends_on: [pre], condition: "stages.pre.passed == true", agents: [{ ref: stub-gate-a }], gate: { threshold: 80, on_failure: fail } }
+
+  - id: load-errors/length-512-accepted
+    covers: ["§3.4 grammar"]
+    applies_to: [factory, core, skill]
+    pipeline:
+      parameters: [{ name: a, type: string, default: x }]
+      stages:
+        - id: pre
+          steps:
+            - { name: Detect, command: "echo DETECTED", continue_on_error: true }
+          gate: { on_failure: warn }
+        - { id: a, depends_on: [pre], condition: "params.a == 'xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx'", agents: [{ ref: stub-gate-a }], gate: { threshold: 80, on_failure: fail } }
+    note: >
+      Exactly 512 characters.
+
+  - id: load-errors/length-513-rejected
+    covers: ["§3.4 validation"]
+    applies_to: [factory, core, skill]
+    pipeline:
+      parameters: [{ name: a, type: string, default: x }]
+      stages:
+        - id: pre
+          steps:
+            - { name: Detect, command: "echo DETECTED", continue_on_error: true }
+          gate: { on_failure: warn }
+        - { id: a, depends_on: [pre], condition: "params.a == 'xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx'", agents: [{ ref: stub-gate-a }], gate: { threshold: 80, on_failure: fail } }
+    note: >
+      Exactly 513 characters.
+
+  - id: load-errors/forward-reference
+    covers: ["§3.3 ordering at load time"]
+    applies_to: [factory, core, skill]
+    pipeline:
+      parameters: [{ name: a, type: string, default: x }]
+      stages:
+        - { id: a, depends_on: [b], agents: [{ ref: stub-gate-a }], gate: { threshold: 80, on_failure: fail } }
+        - { id: b, agents: [{ ref: stub-gate-b }], gate: { threshold: 80, on_failure: fail } }
+
+  - id: load-errors/per-agent-missing-threshold
+    covers: ["§3.2 missing thresholds", D5]
+    applies_to: [factory, core, skill]
+    pipeline:
+      parameters: [{ name: a, type: string, default: x }]
+      stages:
+        - id: review
+          parallel: true
+          agents:
+            - { ref: stub-gate-a, threshold: 80 }
+            - { ref: stub-gate-b }
+          gate: { on_failure: fail }
+
+  - id: load-errors/per-agent-with-aggregate
+    covers: ["§3.2 threshold mode", D5]
+    applies_to: [factory, core, skill]
+    pipeline:
+      parameters: [{ name: a, type: string, default: x }]
+      stages:
+        - id: review
+          parallel: true
+          agents:
+            - { ref: stub-gate-a, threshold: 80 }
+            - { ref: stub-gate-b, threshold: 70 }
+          gate: { threshold: 70, aggregate: min, on_failure: fail }
+
+  - id: load-errors/decision-only-gate-accepted
+    covers: ["§3.2 aggregate mode (decision-only)", D5]
+    applies_to: [factory, core, skill]
+    pipeline:
+      parameters: [{ name: a, type: string, default: x }]
+      stages:
+        - { id: map, agents: [{ ref: stub-explorer-a }], gate: { on_failure: abort } }
+
+  - id: load-errors/unknown-key-stage
+    covers: ["§3.6 strictness", D7, "§7 control: condtion"]
+    applies_to: [factory, core, skill]
+    pipeline:
+      parameters: [{ name: a, type: string, default: x }]
+      stages:
+        - { id: a, condtion: "params.a == 'x'", agents: [{ ref: stub-gate-a }], gate: { threshold: 80, on_failure: abort } }
+    note: >
+      Validates on 1.5.0 (the strictness control).
+
+  - id: load-errors/unknown-key-gate
+    covers: ["§3.6 strictness", D7]
+    applies_to: [factory, core, skill]
+    pipeline:
+      parameters: [{ name: a, type: string, default: x }]
+      stages:
+        - { id: a, agents: [{ ref: stub-gate-a }], gate: { thresold: 80, on_failure: abort } }
+
+  - id: load-errors/unknown-key-agentref
+    covers: ["§3.6 strictness", D7]
+    applies_to: [factory, core, skill]
+    pipeline:
+      parameters: [{ name: a, type: string, default: x }]
+      stages:
+        - { id: a, agents: [{ ref: stub-gate-a, treshold: 80 }], gate: { threshold: 80, on_failure: abort } }
+
+  - id: load-errors/skip-loads-with-warning
+    covers: ["§3.2 failure modes", D1]
+    applies_to: [factory, core, skill]
+    pipeline:
+      parameters: [{ name: a, type: string, default: x }]
+      stages:
+        - { id: a, agents: [{ ref: stub-gate-a }], gate: { threshold: 80, on_failure: skip } }
+
+  - id: load-errors/placement-single-quotes
+    covers: ["§3.4 D15 placement rule"]
+    applies_to: [factory, core, skill]
+    pipeline:
+      parameters: [{ name: x, type: string, default: v }]
+      stages:
+        - id: pre
+          steps:
+            - name: probe
+              command: "grep -q pattern '{{ params.x }}' && echo Y || echo N"
+          gate: { on_failure: warn }
+
+  - id: load-errors/placement-command-substitution
+    covers: ["§3.4 D15 placement rule"]
+    applies_to: [factory, core, skill]
+    pipeline:
+      parameters: [{ name: x, type: string, default: v }]
+      stages:
+        - id: pre
+          steps:
+            - name: probe
+              command: "echo $(cat \"{{ params.x }}\")"
+          gate: { on_failure: warn }
+
+  - id: load-errors/placement-backticks
+    covers: ["§3.4 D15 placement rule"]
+    applies_to: [factory, core, skill]
+    pipeline:
+      parameters: [{ name: x, type: string, default: v }]
+      stages:
+        - id: pre
+          steps:
+            - name: probe
+              command: "echo `cat \"{{ params.x }}\"`"
+          gate: { on_failure: warn }
+
+  - id: load-errors/placement-part-of-quoted-string
+    covers: ["§3.4 D15 placement rule"]
+    applies_to: [factory, core, skill]
+    pipeline:
+      parameters: [{ name: x, type: string, default: v }]
+      stages:
+        - id: pre
+          steps:
+            - name: probe
+              command: "echo \"prefix-{{ params.x }}\""
+          gate: { on_failure: warn }
+
+  - id: load-errors/placement-part-of-bare-word
+    covers: ["§3.4 D15 placement rule"]
+    applies_to: [factory, core, skill]
+    pipeline:
+      parameters: [{ name: x, type: string, default: v }]
+      stages:
+        - id: pre
+          steps:
+            - name: probe
+              command: "echo prefix-{{ params.x }}"
+          gate: { on_failure: warn }
+
+  - id: load-errors/placement-heredoc
+    covers: ["§3.4 D15 placement rule"]
+    applies_to: [factory, core, skill]
+    pipeline:
+      parameters: [{ name: x, type: string, default: v }]
+      stages:
+        - id: pre
+          steps:
+            - name: probe
+              command: "cat <<EOF\n{{ params.x }}\nEOF"
+          gate: { on_failure: warn }
+
+  - id: load-errors/placement-allowed-forms
+    covers: ["§3.4 D15 placement rule"]
+    applies_to: [factory, core, skill]
+    pipeline:
+      parameters: [{ name: x, type: string, default: v }]
+      stages:
+        - id: pre
+          steps:
+            - name: probe
+              command: "printf '%s %s' \"{{ params.x }}\" {{ params.x }}"
+          gate: { on_failure: warn }
+    note: >
+      Both allowed placements in one command: the whole of a double-quoted word, and a whole bare word.
+
+  # ── Rulings folded in spec v0.8.0 (Alex, 2026-10-25) ───────────────────
+  - id: load-errors/param-env-collision
+    covers: ["§3.4 D15", D20]
+    applies_to: [factory, core, skill]
+    pipeline:
+      parameters: [{ name: a-b, type: string, default: x }, { name: a_b, type: string, default: y }]
+      stages:
+        - id: pre
+          steps:
+            - { name: Detect, command: "echo DETECTED", continue_on_error: true }
+          gate: { on_failure: warn }
+    note: >
+      Q6. Both names map to ULU_P_A_B, so one value would silently overwrite the other in
+      core's step environment. Refused at load whether or not either name is used: the
+      collision is a property of the declarations.
+
+  - id: load-errors/skip-if-rejected
+    covers: ["§3.6", "§6 item 26", D25]
+    applies_to: [factory, core, skill]
+    pipeline:
+      parameters: [{ name: a, type: string, default: x }]
+      stages:
+        - id: pre
+          steps:
+            - { name: Detect, command: "echo DETECTED", continue_on_error: true }
+          gate: { on_failure: warn }
+        - { id: a, depends_on: [pre], skip_if: "params.a == 'x'", agents: [{ ref: stub-gate-a }], gate: { threshold: 80, on_failure: abort } }
+    note: >
+      Core evaluates the deprecated skip_if today (PipelineExecutor.ts:217) and proceeds when it
+      cannot read it. Stages are closed, so it is an undeclared key. Corpus and registry: zero uses.
+
+  - id: load-errors/legacy-stage-singular
+    covers: ["§3.4 validation", D25]
+    applies_to: [factory, core, skill]
+    pipeline:
+      parameters: [{ name: a, type: string, default: x }]
+      stages:
+        - id: pre
+          steps:
+            - { name: Detect, command: "echo DETECTED", continue_on_error: true }
+          gate: { on_failure: warn }
+        - { id: a, depends_on: [pre], condition: "stage.pre.passed", agents: [{ ref: stub-gate-a }], gate: { threshold: 80, on_failure: fail } }
+    note: Core's conditions.ts accepts `stage.` (singular) today; 1.6.0 has exactly three roots.
+
+  - id: load-errors/legacy-bare-id
+    covers: ["§3.4 validation", D25]
+    applies_to: [factory, core, skill]
+    pipeline:
+      parameters: [{ name: a, type: string, default: x }]
+      stages:
+        - id: pre
+          steps:
+            - { name: Detect, command: "echo DETECTED", continue_on_error: true }
+          gate: { on_failure: warn }
+        - { id: a, depends_on: [pre], condition: "pre.passed", agents: [{ ref: stub-gate-a }], gate: { threshold: 80, on_failure: fail } }
+    note: Core's conditions.ts accepts a bare `<id>.<field>` today; it is an unknown root in 1.6.0.
+
+  - id: load-errors/placement-process-substitution-in
+    covers: ["\u00a73.4 D15 placement rule", "D38"]
+    applies_to: [factory, core, skill]
+    pipeline:
+      parameters: [{ name: x, type: string, default: v }]
+      stages:
+        - id: pre
+          steps:
+            - name: probe
+              command: "diff <( cat \"{{ params.x }}\" ) /dev/null"
+          gate: { on_failure: warn }
+    note: >
+      The content of <( ) runs as a command, like $( ). D38 adds process substitution to D15's forbidden contexts.
+
+  - id: load-errors/placement-process-substitution-out
+    covers: ["\u00a73.4 D15 placement rule", "D38"]
+    applies_to: [factory, core, skill]
+    pipeline:
+      parameters: [{ name: x, type: string, default: v }]
+      stages:
+        - id: pre
+          steps:
+            - name: probe
+              command: "echo y | tee >( grep -q \"{{ params.x }}\" )"
+          gate: { on_failure: warn }
+    note: >
+      The output form >( ), same rule as <( ).
+
+  - id: load-errors/placement-command-position
+    covers: ["\u00a73.4 D15 placement rule", "D39"]
+    applies_to: [factory, core, skill]
+    pipeline:
+      parameters: [{ name: x, type: string, default: v }]
+      stages:
+        - id: pre
+          steps:
+            - name: probe
+              command: "{{ params.x }} --version"
+          gate: { on_failure: warn }
+    note: >
+      A template may not be the first word of a step command: the parameter would name the program (D39).
+
+  - id: load-errors/placement-command-position-quoted
+    covers: ["\u00a73.4 D15 placement rule", "D39"]
+    applies_to: [factory, core, skill]
+    pipeline:
+      parameters: [{ name: x, type: string, default: v }]
+      stages:
+        - id: pre
+          steps:
+            - name: probe
+              command: "\"{{ params.x }}\" --version"
+          gate: { on_failure: warn }
+    note: >
+      The quoted form in command position is refused too (D39).
+
+  - id: load-errors/syntax-control-char-in-literal
+    covers: ["§3.4 grammar", "D40"]
+    applies_to: [factory, core, skill]
+    pipeline:
+      parameters: [{ name: a, type: string, default: x }]
+      stages:
+        - id: pre
+          steps:
+            - { name: Detect, command: "echo DETECTED", continue_on_error: true }
+          gate: { on_failure: warn }
+        - { id: a, depends_on: [pre], condition: "params.a == 'x\ny'", agents: [{ ref: stub-gate-a }], gate: { threshold: 80, on_failure: fail } }
+    note: >
+      A string literal may not contain a control character (D40). A newline here injected a markdown header into a rendered command (review run #73).
+
+  - id: load-errors/length-astral-within-limit-accepted
+    covers: ["§3.4 grammar", "D41"]
+    applies_to: [factory, core, skill]
+    pipeline:
+      parameters: [{ name: a, type: string, default: x }]
+      stages:
+        - id: pre
+          steps:
+            - { name: Detect, command: "echo DETECTED", continue_on_error: true }
+          gate: { on_failure: warn }
+        - { id: a, depends_on: [pre], condition: "params.a == '😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀'", agents: [{ ref: stub-gate-a }], gate: { threshold: 80, on_failure: fail } }
+    note: >
+      414 code points, 814 UTF-16 units. The bound is 512 code points (D41), so this loads.
+
+  - id: load-errors/length-astral-still-validated
+    covers: ["§3.4 validation", "D41"]
+    applies_to: [factory, core, skill]
+    pipeline:
+      parameters: [{ name: a, type: string, default: x }]
+      stages:
+        - id: pre
+          steps:
+            - { name: Detect, command: "echo DETECTED", continue_on_error: true }
+          gate: { on_failure: warn }
+        - { id: a, depends_on: [pre], condition: "stage.pre.passed || params.a == '😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀'", agents: [{ ref: stub-gate-a }], gate: { threshold: 80, on_failure: fail } }
+    note: >
+      Over 512 UTF-16 units but within 512 code points: the condition is still validated, and its legacy root is an unknown root. Review run #73 found validation skipped here.
+
+  - id: load-errors/length-513-code-points-rejected
+    covers: ["§3.4 validation", "D41"]
+    applies_to: [factory, core, skill]
+    pipeline:
+      parameters: [{ name: a, type: string, default: x }]
+      stages:
+        - id: pre
+          steps:
+            - { name: Detect, command: "echo DETECTED", continue_on_error: true }
+          gate: { on_failure: warn }
+        - { id: a, depends_on: [pre], condition: "params.a == '😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀'", agents: [{ ref: stub-gate-a }], gate: { threshold: 80, on_failure: fail } }
+    note: >
+      Exactly 513 code points (D41).
+
+  - id: load-errors/duplicate-stage-id
+    covers: ["§3.3 ordering at load time", "PDL 1.6.0 spec, Codes: duplicate_stage_id"]
+    applies_to: [factory, core, skill]
+    pipeline:
+      stages:
+        - { id: a, agents: [{ ref: stub-gate-a }], gate: { threshold: 80, on_failure: fail } }
+        - { id: b, depends_on: [a], agents: [{ ref: stub-gate-b }], gate: { threshold: 80, on_failure: fail } }
+        - { id: a, agents: [{ ref: stub-gate-c }], gate: { threshold: 80, on_failure: fail } }
+    note: >
+      Two stages share an id. Every reference to `a` would be ambiguous, and a validator that keeps
+      the last one misreports b's dependency as a forward reference (review run #73). Reported at the
+      second occurrence, before any reference check.
+

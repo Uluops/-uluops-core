@@ -1,0 +1,8 @@
+Copied from uluops-agent-workflows udl/pdl/conformance/ (cases/, expected/, stubs/, targets/, README.md)
+at commit 60403c35 (on main since 9dd2e569, 2026-10-26: 154 cases, D38-D41 and duplicate_stage_id).
+
+These files are the PDL 1.6.0 conformance oracle; the corpus copy is authoritative. Nothing
+detects drift between this copy and the corpus: each core release that touches PDL execution
+re-copies them and updates this commit (PDL 1.6.0 checklist, section S). targets/ is copied
+because core runs steps against it; tests copy it to a temporary directory before running, since
+several cases assert that a file was not created there.

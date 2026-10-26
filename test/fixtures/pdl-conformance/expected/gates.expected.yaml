@@ -1,0 +1,272 @@
+# Oracle for ../cases/gates.cases.yaml. Format: ../README.md, "Expected format".
+expected:
+  - id: gates/abort-skips-dependent
+    outcome: ran
+    stages:
+      a: { status: FAILED, passed: false, launched: [stub-gate-a], agents: { stub-gate-a: negative } }
+      b: { status: SKIPPED, passed: false, launched: [] }
+    all_gates_passed: false
+    run_decision: FAIL
+    warnings: []
+
+  - id: gates/absent-on-failure-is-abort
+    outcome: ran
+    stages:
+      a: { status: FAILED, passed: false, launched: [stub-gate-a], agents: { stub-gate-a: positive } }
+      b: { status: SKIPPED, passed: false, launched: [] }
+    all_gates_passed: false
+    run_decision: FAIL
+    warnings: []
+
+  - id: gates/fail-continues
+    outcome: ran
+    stages:
+      a: { status: FAILED, passed: false, launched: [stub-gate-a], agents: { stub-gate-a: negative } }
+      b:
+        status: PASSED
+        passed: true
+        launched: [stub-gate-b]
+        agents: { stub-gate-b: positive }
+        upstream: [{ stage: a, agent: stub-gate-a }]
+    all_gates_passed: false
+    run_decision: FAIL
+    warnings: []
+
+  - id: gates/warn-warns
+    outcome: ran
+    stages:
+      a: { status: WARNED, passed: false, launched: [stub-gate-a], agents: { stub-gate-a: positive } }
+      b: { status: PASSED, passed: true, launched: [stub-gate-b], agents: { stub-gate-b: positive } }
+    all_gates_passed: true
+    run_decision: WARN
+    warnings: []
+
+  - id: gates/skip-is-fail
+    outcome: ran
+    load_warnings: [{ code: SKIP_DEPRECATED, stage: a }]
+    stages:
+      a: { status: FAILED, passed: false, launched: [stub-gate-a], agents: { stub-gate-a: negative } }
+      b: { status: PASSED, passed: true, launched: [stub-gate-b], agents: { stub-gate-b: positive } }
+    all_gates_passed: false
+    run_decision: FAIL
+    warnings: []
+
+  - id: gates/auto-fail-revise-at-passing-score
+    outcome: ran
+    stages:
+      a: { status: FAILED, passed: false, launched: [stub-gate-a], agents: { stub-gate-a: negative } }
+      b: { status: PASSED, passed: true, launched: [stub-gate-b], agents: { stub-gate-b: positive } }
+    all_gates_passed: false
+    run_decision: FAIL
+    warnings: []
+
+  - id: gates/conditional-at-default-gate
+    outcome: ran
+    stages:
+      a: { status: PASSED, passed: true, launched: [stub-docs-a], agents: { stub-docs-a: conditional } }
+      b: { status: PASSED, passed: true, launched: [stub-gate-b], agents: { stub-gate-b: positive } }
+    all_gates_passed: false
+    run_decision: FAIL
+    warnings: [{ code: CONDITIONAL_ACCEPTED, stage: a, agent: stub-docs-a }]
+
+  - id: gates/conditional-at-positive-gate
+    outcome: ran
+    stages:
+      a: { status: FAILED, passed: false, launched: [stub-docs-a], agents: { stub-docs-a: conditional } }
+    all_gates_passed: false
+    run_decision: FAIL
+    warnings: []
+
+  - id: gates/decision-ignore-at-blocking-gate
+    outcome: ran
+    stages:
+      a: { status: PASSED, passed: true, launched: [stub-gate-a], agents: { stub-gate-a: negative } }
+    all_gates_passed: true
+    run_decision: PASS
+    warnings: []
+
+  - id: gates/warn-negative-default-ignore
+    outcome: ran
+    stages:
+      review: { status: PASSED, passed: true, launched: [stub-gate-a], agents: { stub-gate-a: positive } }
+      lens: { status: PASSED, passed: true, launched: [stub-lens-a], agents: { stub-lens-a: negative } }
+    all_gates_passed: true
+    run_decision: PASS
+    warnings: []
+
+  - id: gates/warn-negative-not-negative
+    outcome: ran
+    stages:
+      review: { status: PASSED, passed: true, launched: [stub-gate-a], agents: { stub-gate-a: positive } }
+      lens: { status: WARNED, passed: false, launched: [stub-lens-a], agents: { stub-lens-a: negative } }
+    all_gates_passed: true
+    run_decision: WARN
+    warnings: []
+
+  - id: gates/errored-behind-abort
+    outcome: ran
+    stages:
+      a: { status: ERRORED, passed: false, launched: [stub-gate-a], agents: { stub-gate-a: errored } }
+      b: { status: SKIPPED, passed: false, launched: [] }
+    all_gates_passed: false
+    run_decision: FAIL
+    warnings: [{ code: NEUTRAL_DECISION, agent: stub-gate-a, value: MAYBE }, { code: STAGE_ERRORED, stage: a, reason: agent_unjudgeable }]
+
+  - id: gates/errored-behind-fail
+    outcome: ran
+    stages:
+      a: { status: ERRORED, passed: false, launched: [stub-gate-a], agents: { stub-gate-a: errored } }
+      b: { status: PASSED, passed: true, launched: [stub-gate-b], agents: { stub-gate-b: positive } }
+    all_gates_passed: false
+    run_decision: FAIL
+    warnings: [{ code: NEUTRAL_DECISION, agent: stub-gate-a, value: MAYBE }, { code: STAGE_ERRORED, stage: a, reason: agent_unjudgeable }]
+
+  - id: gates/errored-behind-warn
+    outcome: ran
+    stages:
+      review: { status: PASSED, passed: true, launched: [stub-gate-a], agents: { stub-gate-a: positive } }
+      lens: { status: ERRORED, passed: false, launched: [stub-lens-a], agents: { stub-lens-a: errored } }
+    all_gates_passed: true
+    run_decision: WARN
+    warnings: [{ code: NEUTRAL_DECISION, agent: stub-lens-a, value: MAYBE }, { code: STAGE_ERRORED, stage: lens, reason: agent_unjudgeable }]
+
+  - id: gates/errored-by-timeout
+    outcome: ran
+    stages:
+      a: { status: ERRORED, passed: false, launched: [stub-gate-a], agents: { stub-gate-a: errored } }
+      b:
+        status: PASSED
+        passed: true
+        launched: [stub-gate-b]
+        agents: { stub-gate-b: positive }
+        upstream: [{ stage: a, absent: any }]
+    all_gates_passed: false
+    run_decision: FAIL
+    warnings: [{ code: STAGE_ERRORED, stage: a, reason: agent_unjudgeable }]
+
+  - id: gates/one-errored-agent-errors-the-stage
+    outcome: ran
+    stages:
+      a:
+        status: ERRORED
+        passed: false
+        launched: [stub-gate-a, stub-gate-b]
+        agents: { stub-gate-a: positive, stub-gate-b: errored }
+    all_gates_passed: false
+    run_decision: FAIL
+    warnings: [{ code: NEUTRAL_DECISION, agent: stub-gate-b, value: MAYBE }, { code: STAGE_ERRORED, stage: a, reason: agent_unjudgeable }]
+
+  - id: gates/all-agents-skipped
+    outcome: ran
+    stages:
+      checks:
+        status: SKIPPED
+        passed: false
+        launched: []
+        agents: { stub-gate-a: skipped, stub-gate-b: skipped }
+      after: { status: PASSED, passed: true, launched: [stub-gate-c], agents: { stub-gate-c: positive } }
+    all_gates_passed: true
+    run_decision: PASS
+    warnings: []
+
+  - id: gates/one-agent-skipped
+    outcome: ran
+    stages:
+      checks:
+        status: PASSED
+        passed: true
+        launched: [stub-gate-a]
+        agents: { stub-gate-a: positive, stub-gate-b: skipped }
+    all_gates_passed: true
+    run_decision: PASS
+    warnings: []
+
+  - id: gates/per-agent-threshold-binds
+    outcome: ran
+    stages:
+      review:
+        status: FAILED
+        passed: false
+        launched: [stub-gate-a, stub-docs-a]
+        agents: { stub-gate-a: positive, stub-docs-a: positive }
+    all_gates_passed: false
+    run_decision: FAIL
+    warnings: []
+
+  - id: gates/per-agent-falls-back-to-gate-threshold
+    outcome: ran
+    stages:
+      review:
+        status: FAILED
+        passed: false
+        launched: [stub-gate-a, stub-gate-b]
+        agents: { stub-gate-a: positive, stub-gate-b: positive }
+    all_gates_passed: false
+    run_decision: FAIL
+    warnings: []
+
+  - id: gates/aggregate-mode-unchanged
+    outcome: ran
+    stages:
+      review:
+        status: FAILED
+        passed: false
+        launched: [stub-gate-a, stub-gate-b]
+        agents: { stub-gate-a: positive, stub-gate-b: positive }
+    all_gates_passed: false
+    run_decision: FAIL
+    warnings: []
+
+  - id: gates/decision-only-gate-passes
+    outcome: ran
+    stages:
+      map: { status: PASSED, passed: true, launched: [stub-explorer-a], agents: { stub-explorer-a: positive } }
+    all_gates_passed: true
+    run_decision: PASS
+    warnings: []
+
+  - id: gates/decision-only-gate-fails-on-negative
+    outcome: ran
+    stages:
+      a: { status: FAILED, passed: false, launched: [stub-gate-a], agents: { stub-gate-a: negative } }
+    all_gates_passed: false
+    run_decision: FAIL
+    warnings: []
+
+  - id: gates/steps-only-continue-on-error
+    outcome: ran
+    stages:
+      pre: { status: PASSED, passed: true, launched: [] }
+    steps:
+      pre:
+        ok: { status: passed, output: fine }
+        broken: { status: failed, output: "" }
+    all_gates_passed: true
+    run_decision: PASS
+    warnings: []
+
+  - id: gates/steps-only-hard-failure-fail-gate
+    outcome: ran
+    stages:
+      pre: { status: FAILED, passed: false, launched: [] }
+      b: { status: PASSED, passed: true, launched: [stub-gate-a], agents: { stub-gate-a: positive } }
+    all_gates_passed: false
+    run_decision: FAIL
+    warnings: []
+
+  - id: gates/steps-only-hard-failure-no-gate
+    outcome: ran
+    stages:
+      pre: { status: FAILED, passed: false, launched: [] }
+      b: { status: PASSED, passed: true, launched: [stub-gate-a], agents: { stub-gate-a: positive } }
+    all_gates_passed: false
+    run_decision: FAIL
+    warnings: []
+
+  - id: gates/steps-only-hard-failure-warn-gate
+    outcome: ran
+    stages:
+      pre: { status: WARNED, passed: false, launched: [] }
+    all_gates_passed: true
+    run_decision: WARN
+    warnings: []

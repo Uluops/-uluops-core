@@ -1,0 +1,190 @@
+# Oracle for ../cases/load-errors.cases.yaml. Format: ../README.md, "Expected format".
+expected:
+  - id: load-errors/unknown-root
+    outcome: load_error
+    load_error: { code: unknown_root, at: "stage:a" }
+
+  - id: load-errors/unknown-path-stage-score
+    outcome: load_error
+    load_error: { code: unknown_path, at: "stage:a" }
+
+  - id: load-errors/undeclared-parameter
+    outcome: load_error
+    load_error: { code: undeclared_parameter, at: "stage:a" }
+
+  - id: load-errors/unknown-stage
+    outcome: load_error
+    load_error: { code: unknown_stage, at: "stage:a" }
+
+  - id: load-errors/non-ancestor-sibling
+    outcome: load_error
+    load_error: { code: non_ancestor_reference, at: "stage:b" }
+
+  - id: load-errors/non-ancestor-self
+    outcome: load_error
+    load_error: { code: non_ancestor_reference, at: "stage:a" }
+
+  - id: load-errors/non-ancestor-own-steps-from-agentref
+    outcome: load_error
+    load_error: { code: non_ancestor_reference, at: "stage:a/agent:stub-gate-a" }
+
+  - id: load-errors/transitive-ancestor-accepted
+    outcome: load_ok
+    load_warnings: []
+
+  - id: load-errors/undeclared-step
+    outcome: load_error
+    load_error: { code: undeclared_step, at: "stage:a" }
+
+  - id: load-errors/syntax-dangling-operator
+    outcome: load_error
+    load_error: { code: condition_syntax, at: "stage:a" }
+
+  - id: load-errors/syntax-unbalanced-parenthesis
+    outcome: load_error
+    load_error: { code: condition_syntax, at: "stage:a" }
+
+  - id: load-errors/syntax-single-equals
+    outcome: load_error
+    load_error: { code: condition_syntax, at: "stage:a" }
+
+  - id: load-errors/syntax-negated-comparison
+    outcome: load_error
+    load_error: { code: condition_syntax, at: "stage:a" }
+
+  - id: load-errors/syntax-bare-boolean
+    outcome: load_error
+    load_error: { code: condition_syntax, at: "stage:a" }
+
+  - id: load-errors/syntax-ordering-operator
+    outcome: load_error
+    load_error: { code: condition_syntax, at: "stage:a" }
+
+  - id: load-errors/syntax-number-literal
+    outcome: load_error
+    load_error: { code: condition_syntax, at: "stage:a" }
+
+  - id: load-errors/syntax-boolean-literal
+    outcome: load_error
+    load_error: { code: condition_syntax, at: "stage:a" }
+
+  - id: load-errors/length-512-accepted
+    outcome: load_ok
+    load_warnings: []
+
+  - id: load-errors/length-513-rejected
+    outcome: load_error
+    load_error: { code: condition_too_long, at: "stage:a" }
+
+  - id: load-errors/forward-reference
+    outcome: load_error
+    load_error: { code: forward_reference, at: "stage:a" }
+
+  - id: load-errors/per-agent-missing-threshold
+    outcome: load_error
+    load_error: { code: missing_threshold, at: "stage:review/agent:stub-gate-b" }
+
+  - id: load-errors/per-agent-with-aggregate
+    outcome: load_error
+    load_error: { code: aggregate_with_per_agent, at: "stage:review" }
+
+  - id: load-errors/decision-only-gate-accepted
+    outcome: load_ok
+    load_warnings: []
+
+  - id: load-errors/unknown-key-stage
+    outcome: load_error
+    load_error: { code: unknown_key, at: "stage:a" }
+
+  - id: load-errors/unknown-key-gate
+    outcome: load_error
+    load_error: { code: unknown_key, at: "stage:a" }
+
+  - id: load-errors/unknown-key-agentref
+    outcome: load_error
+    load_error: { code: unknown_key, at: "stage:a/agent:stub-gate-a" }
+
+  - id: load-errors/skip-loads-with-warning
+    outcome: load_ok
+    load_warnings: [{ code: SKIP_DEPRECATED, stage: a }]
+
+  - id: load-errors/placement-single-quotes
+    outcome: load_error
+    load_error: { code: template_placement, at: "stage:pre/step:probe" }
+
+  - id: load-errors/placement-command-substitution
+    outcome: load_error
+    load_error: { code: template_placement, at: "stage:pre/step:probe" }
+
+  - id: load-errors/placement-backticks
+    outcome: load_error
+    load_error: { code: template_placement, at: "stage:pre/step:probe" }
+
+  - id: load-errors/placement-part-of-quoted-string
+    outcome: load_error
+    load_error: { code: template_placement, at: "stage:pre/step:probe" }
+
+  - id: load-errors/placement-part-of-bare-word
+    outcome: load_error
+    load_error: { code: template_placement, at: "stage:pre/step:probe" }
+
+  - id: load-errors/placement-heredoc
+    outcome: load_error
+    load_error: { code: template_placement, at: "stage:pre/step:probe" }
+
+  - id: load-errors/placement-allowed-forms
+    outcome: load_ok
+    load_warnings: []
+
+  - id: load-errors/param-env-collision
+    outcome: load_error
+    load_error: { code: parameter_env_collision, at: "param:a_b" }
+
+  - id: load-errors/skip-if-rejected
+    outcome: load_error
+    load_error: { code: unknown_key, at: "stage:a" }
+
+  - id: load-errors/legacy-stage-singular
+    outcome: load_error
+    load_error: { code: unknown_root, at: "stage:a" }
+
+  - id: load-errors/legacy-bare-id
+    outcome: load_error
+    load_error: { code: unknown_root, at: "stage:a" }
+
+  - id: load-errors/placement-process-substitution-in
+    outcome: load_error
+    load_error: { code: template_placement, at: "stage:pre/step:probe" }
+
+  - id: load-errors/placement-process-substitution-out
+    outcome: load_error
+    load_error: { code: template_placement, at: "stage:pre/step:probe" }
+
+  - id: load-errors/placement-command-position
+    outcome: load_error
+    load_error: { code: template_placement, at: "stage:pre/step:probe" }
+
+  - id: load-errors/placement-command-position-quoted
+    outcome: load_error
+    load_error: { code: template_placement, at: "stage:pre/step:probe" }
+
+  - id: load-errors/syntax-control-char-in-literal
+    outcome: load_error
+    load_error: { code: condition_syntax, at: "stage:a" }
+
+  - id: load-errors/length-astral-within-limit-accepted
+    outcome: load_ok
+    load_warnings: []
+
+  - id: load-errors/length-astral-still-validated
+    outcome: load_error
+    load_error: { code: unknown_root, at: "stage:a" }
+
+  - id: load-errors/length-513-code-points-rejected
+    outcome: load_error
+    load_error: { code: condition_too_long, at: "stage:a" }
+
+  - id: load-errors/duplicate-stage-id
+    outcome: load_error
+    load_error: { code: duplicate_stage_id, at: "stage:a" }
+

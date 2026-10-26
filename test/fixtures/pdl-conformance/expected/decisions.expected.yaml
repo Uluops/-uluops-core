@@ -1,0 +1,364 @@
+# Oracle for ../cases/decisions.cases.yaml. Format: ../README.md, "Expected format".
+expected:
+  - id: decisions/token-bold-with-parenthetical
+    outcome: ran
+    stages:
+      review: { status: FAILED, passed: false, launched: [stub-gate-a], agents: { stub-gate-a: { class: negative, saved: "REVISE" } } }
+    all_gates_passed: false
+    run_decision: FAIL
+    warnings: []
+
+  - id: decisions/token-leading-glyph
+    outcome: ran
+    stages:
+      review: { status: PASSED, passed: true, launched: [stub-gate-a], agents: { stub-gate-a: { class: positive, saved: "PROCEED" } } }
+    all_gates_passed: true
+    run_decision: PASS
+    warnings: []
+
+  - id: decisions/token-trailing-period
+    outcome: ran
+    stages:
+      review: { status: FAILED, passed: false, launched: [stub-gate-a], agents: { stub-gate-a: { class: negative, saved: "REVISE" } } }
+    all_gates_passed: false
+    run_decision: FAIL
+    warnings: []
+
+  - id: decisions/token-parenthetical
+    outcome: ran
+    stages:
+      review: { status: FAILED, passed: false, launched: [stub-gate-a], agents: { stub-gate-a: { class: negative, saved: "REVISE" } } }
+    all_gates_passed: false
+    run_decision: FAIL
+    warnings: []
+
+  - id: decisions/token-lowercase
+    outcome: ran
+    stages:
+      review: { status: FAILED, passed: false, launched: [stub-gate-a], agents: { stub-gate-a: { class: negative, saved: "REVISE" } } }
+    all_gates_passed: false
+    run_decision: FAIL
+    warnings: []
+
+  - id: decisions/token-not-secure
+    outcome: ran
+    stages:
+      review: { status: PASSED, passed: true, launched: [stub-security-a], agents: { stub-security-a: { class: neutral, saved: "NOT SECURE" } } }
+    all_gates_passed: true
+    run_decision: PASS
+    warnings: [{ code: NEUTRAL_DECISION, agent: stub-security-a, value: "NOT SECURE" }]
+
+  - id: decisions/token-secure-with-conditions
+    outcome: ran
+    stages:
+      review: { status: PASSED, passed: true, launched: [stub-security-a], agents: { stub-security-a: { class: neutral, saved: "SECURE WITH CONDITIONS" } } }
+    all_gates_passed: true
+    run_decision: PASS
+    warnings: [{ code: NEUTRAL_DECISION, agent: stub-security-a, value: "SECURE WITH CONDITIONS" }]
+
+  - id: decisions/token-partially-documented-with-space
+    outcome: ran
+    stages:
+      review: { status: PASSED, passed: true, launched: [stub-docs-a], agents: { stub-docs-a: { class: neutral, saved: "PARTIALLY DOCUMENTED" } } }
+    all_gates_passed: true
+    run_decision: PASS
+    warnings: [{ code: NEUTRAL_DECISION, agent: stub-docs-a, value: "PARTIALLY DOCUMENTED" }]
+
+  - id: decisions/token-unfilled-placeholder
+    outcome: ran
+    stages:
+      review: { status: PASSED, passed: true, launched: [stub-docs-a], agents: { stub-docs-a: { class: neutral, saved: "[DOCUMENTED|PARTIALLY_DOCUMENTED|UNDERDOCUMENTED]" } } }
+    all_gates_passed: true
+    run_decision: PASS
+    warnings: [{ code: NEUTRAL_DECISION, agent: stub-docs-a, value: "[DOCUMENTED|PARTIALLY_DOCUMENTED|UNDERDOCUMENTED]" }]
+
+  - id: decisions/token-strikethrough
+    outcome: ran
+    stages:
+      review: { status: PASSED, passed: true, launched: [stub-gate-a], agents: { stub-gate-a: { class: neutral, saved: "~~PROCEED~~ REVISE" } } }
+    all_gates_passed: true
+    run_decision: PASS
+    warnings: [{ code: NEUTRAL_DECISION, agent: stub-gate-a, value: "~~PROCEED~~ REVISE" }]
+
+  - id: decisions/token-beyond-200-chars
+    outcome: ran
+    stages:
+      review: { status: PASSED, passed: true, launched: [stub-gate-a], agents: { stub-gate-a: { class: neutral, saved: "*************************************************…" } } }
+    all_gates_passed: true
+    run_decision: PASS
+    warnings: [{ code: NEUTRAL_DECISION, agent: stub-gate-a, value: "*************************************************…" }]
+
+  - id: decisions/token-core-register-without-vocabulary
+    outcome: ran
+    stages:
+      review: { status: FAILED, passed: false, launched: [stub-gate-a], agents: { stub-gate-a: negative } }
+    all_gates_passed: false
+    run_decision: FAIL
+    warnings: []
+
+  - id: decisions/path-result-before-top-level
+    outcome: ran
+    stages:
+      review: { status: FAILED, passed: false, launched: [stub-gate-a], agents: { stub-gate-a: { class: negative, saved: REVISE } } }
+    all_gates_passed: false
+    run_decision: FAIL
+    warnings: []
+
+  - id: decisions/path-top-level-only
+    outcome: ran
+    stages:
+      review: { status: FAILED, passed: false, launched: [stub-gate-a], agents: { stub-gate-a: negative } }
+    all_gates_passed: false
+    run_decision: FAIL
+    warnings: []
+
+  - id: decisions/path-line-only
+    outcome: ran
+    stages:
+      review: { status: FAILED, passed: false, launched: [stub-gate-a], agents: { stub-gate-a: negative } }
+    all_gates_passed: false
+    run_decision: FAIL
+    warnings: []
+
+  - id: decisions/path-fallback-only
+    outcome: ran
+    stages:
+      review: { status: PASSED, passed: true, launched: [stub-gate-a], agents: { stub-gate-a: { class: absent, saved: "UNKNOWN" } } }
+    all_gates_passed: true
+    run_decision: PASS
+    warnings: [{ code: ABSENT_DECISION, agent: stub-gate-a }, { code: FALLBACK_DECISION_SOURCE, agent: stub-gate-a, source: summary.decision, runtimes: [core] }]
+
+  - id: decisions/path-status-fallback-only
+    outcome: ran
+    stages:
+      review: { status: PASSED, passed: true, launched: [stub-gate-a], agents: { stub-gate-a: { class: absent, saved: "UNKNOWN" } } }
+    all_gates_passed: true
+    run_decision: PASS
+    warnings: [{ code: ABSENT_DECISION, agent: stub-gate-a }, { code: FALLBACK_DECISION_SOURCE, agent: stub-gate-a, source: status, runtimes: [core] }]
+
+  - id: decisions/conflict-both-classify
+    outcome: ran
+    stages:
+      review: { status: PASSED, passed: true, launched: [stub-gate-a], agents: { stub-gate-a: positive } }
+    all_gates_passed: true
+    run_decision: PASS
+    warnings: [{ code: DECISION_CONFLICT, agent: stub-gate-a, json: PROCEED, line: REVISE }]
+
+  - id: decisions/conflict-neutral-json-classifiable-line
+    outcome: ran
+    stages:
+      review: { status: FAILED, passed: false, launched: [stub-gate-a], agents: { stub-gate-a: negative } }
+    all_gates_passed: false
+    run_decision: FAIL
+    warnings: []
+
+  - id: decisions/conflict-classifiable-json-neutral-line
+    outcome: ran
+    stages:
+      review: { status: FAILED, passed: false, launched: [stub-gate-a], agents: { stub-gate-a: negative } }
+    all_gates_passed: false
+    run_decision: FAIL
+    warnings: []
+
+  - id: decisions/neutral-with-passing-score
+    outcome: ran
+    stages:
+      review: { status: PASSED, passed: true, launched: [stub-gate-a], agents: { stub-gate-a: { class: neutral, saved: MAYBE } } }
+    all_gates_passed: true
+    run_decision: PASS
+    warnings: [{ code: NEUTRAL_DECISION, agent: stub-gate-a, value: MAYBE }]
+
+  - id: decisions/neutral-with-failing-score
+    outcome: ran
+    stages:
+      review: { status: FAILED, passed: false, launched: [stub-gate-a], agents: { stub-gate-a: { class: neutral, saved: MAYBE } } }
+    all_gates_passed: false
+    run_decision: FAIL
+    warnings: [{ code: NEUTRAL_DECISION, agent: stub-gate-a, value: MAYBE }]
+
+  - id: decisions/neutral-without-score
+    outcome: ran
+    stages:
+      review: { status: ERRORED, passed: false, launched: [stub-gate-a], agents: { stub-gate-a: errored } }
+    all_gates_passed: false
+    run_decision: FAIL
+    warnings: [{ code: NEUTRAL_DECISION, agent: stub-gate-a, value: MAYBE }, { code: STAGE_ERRORED, stage: review, reason: agent_unjudgeable }]
+
+  - id: decisions/absent-with-passing-score
+    outcome: ran
+    stages:
+      review: { status: PASSED, passed: true, launched: [stub-gate-a], agents: { stub-gate-a: { class: absent, saved: "UNKNOWN" } } }
+    all_gates_passed: true
+    run_decision: PASS
+    warnings: [{ code: ABSENT_DECISION, agent: stub-gate-a }]
+
+  - id: decisions/absent-with-failing-score
+    outcome: ran
+    stages:
+      review: { status: FAILED, passed: false, launched: [stub-gate-a], agents: { stub-gate-a: { class: absent, saved: "UNKNOWN" } } }
+    all_gates_passed: false
+    run_decision: FAIL
+    warnings: [{ code: ABSENT_DECISION, agent: stub-gate-a }]
+
+  - id: decisions/absent-without-score
+    outcome: ran
+    stages:
+      review: { status: ERRORED, passed: false, launched: [stub-gate-a], agents: { stub-gate-a: errored } }
+    all_gates_passed: false
+    run_decision: FAIL
+    warnings: [{ code: ABSENT_DECISION, agent: stub-gate-a }, { code: STAGE_ERRORED, stage: review, reason: agent_unjudgeable }]
+
+  - id: decisions/real-architect-verbatim
+    outcome: ran
+    stages:
+      review: { status: FAILED, passed: false, launched: [stub-gate-a], agents: { stub-gate-a: { class: negative, saved: REVISE } } }
+    all_gates_passed: false
+    run_decision: FAIL
+    warnings: []
+
+  - id: decisions/real-architect-85
+    outcome: ran
+    stages:
+      review: { status: FAILED, passed: false, launched: [stub-gate-a], agents: { stub-gate-a: { class: negative, saved: REVISE } } }
+    all_gates_passed: false
+    run_decision: FAIL
+    warnings: []
+
+  - id: decisions/real-docs-validator-unfilled
+    outcome: ran
+    stages:
+      review: { status: ERRORED, passed: false, launched: [stub-docs-a], agents: { stub-docs-a: { class: errored, saved: "[DOCUMENTED|PARTIALLY_DOCUMENTED|UNDERDOCUMENTED]" } } }
+    all_gates_passed: false
+    run_decision: FAIL
+    warnings: [{ code: NEUTRAL_DECISION, agent: stub-docs-a, value: "[DOCUMENTED|PARTIALLY_DOCUMENTED|UNDERDOCUMENTED]" }, { code: STAGE_ERRORED, stage: review, reason: agent_unjudgeable }]
+
+  - id: decisions/real-docs-validator-filled
+    outcome: ran
+    stages:
+      review: { status: FAILED, passed: false, launched: [stub-docs-a], agents: { stub-docs-a: { class: negative, saved: UNDERDOCUMENTED } } }
+    all_gates_passed: false
+    run_decision: FAIL
+    warnings: []
+
+  - id: decisions/synonym-reject-reads-neutral
+    outcome: ran
+    stages:
+      review: { status: PASSED, passed: true, launched: [stub-gate-a], agents: { stub-gate-a: { class: neutral, saved: REJECT } } }
+    all_gates_passed: true
+    run_decision: PASS
+    warnings: [{ code: NEUTRAL_DECISION, agent: stub-gate-a, value: REJECT }]
+
+  - id: decisions/synonym-ok-reads-neutral
+    outcome: ran
+    stages:
+      review: { status: FAILED, passed: false, launched: [stub-gate-a], agents: { stub-gate-a: { class: neutral, saved: OK } } }
+    all_gates_passed: false
+    run_decision: FAIL
+    warnings: [{ code: NEUTRAL_DECISION, agent: stub-gate-a, value: OK }]
+
+  - id: decisions/register-token-classifies
+    outcome: ran
+    stages:
+      review: { status: PASSED, passed: true, launched: [stub-gate-a], agents: { stub-gate-a: { class: conditional, saved: HOLD } } }
+    all_gates_passed: false
+    run_decision: FAIL
+    warnings: [{ code: CONDITIONAL_ACCEPTED, stage: review, agent: stub-gate-a }]
+
+  - id: decisions/score-result-before-top-level
+    outcome: ran
+    stages:
+      review: { status: FAILED, passed: false, launched: [stub-gate-a], agents: { stub-gate-a: { class: neutral, saved: MAYBE } } }
+    all_gates_passed: false
+    run_decision: FAIL
+    warnings: [{ code: NEUTRAL_DECISION, agent: stub-gate-a, value: MAYBE }]
+
+  - id: decisions/score-top-level-only
+    outcome: ran
+    stages:
+      review: { status: PASSED, passed: true, launched: [stub-gate-a], agents: { stub-gate-a: { class: neutral, saved: MAYBE } } }
+    all_gates_passed: true
+    run_decision: PASS
+    warnings: [{ code: NEUTRAL_DECISION, agent: stub-gate-a, value: MAYBE }]
+
+  - id: decisions/score-line-only
+    outcome: ran
+    stages:
+      review: { status: PASSED, passed: true, launched: [stub-gate-a], agents: { stub-gate-a: { class: neutral, saved: MAYBE } } }
+    all_gates_passed: true
+    run_decision: PASS
+    warnings: [{ code: NEUTRAL_DECISION, agent: stub-gate-a, value: MAYBE }]
+
+  - id: decisions/score-in-category-only
+    outcome: ran
+    stages:
+      review: { status: ERRORED, passed: false, launched: [stub-gate-a], agents: { stub-gate-a: errored } }
+    all_gates_passed: false
+    run_decision: FAIL
+    warnings: [{ code: NEUTRAL_DECISION, agent: stub-gate-a, value: MAYBE }, { code: STAGE_ERRORED, stage: review, reason: agent_unjudgeable }]
+
+  - id: decisions/score-fallback-only
+    outcome: ran
+    stages:
+      review: { status: ERRORED, passed: false, launched: [stub-gate-a], agents: { stub-gate-a: errored } }
+    all_gates_passed: false
+    run_decision: FAIL
+    warnings:
+      - { code: NEUTRAL_DECISION, agent: stub-gate-a, value: MAYBE }
+      - { code: FALLBACK_SCORE_SOURCE, agent: stub-gate-a, source: summary.score, runtimes: [core] }
+      - { code: STAGE_ERRORED, stage: review, reason: agent_unjudgeable }
+
+  - id: decisions/score-out-of-range
+    outcome: ran
+    stages:
+      review: { status: ERRORED, passed: false, launched: [stub-gate-a], agents: { stub-gate-a: errored } }
+    all_gates_passed: false
+    run_decision: FAIL
+    warnings:
+      - { code: NEUTRAL_DECISION, agent: stub-gate-a, value: MAYBE }
+      - { code: SCORE_INVALID, agent: stub-gate-a, value: "150" }
+      - { code: STAGE_ERRORED, stage: review, reason: agent_unjudgeable }
+
+  - id: decisions/score-numeric-string
+    outcome: ran
+    stages:
+      review: { status: PASSED, passed: true, launched: [stub-gate-a], agents: { stub-gate-a: { class: positive, saved: PROCEED } } }
+    all_gates_passed: true
+    run_decision: PASS
+    warnings: []
+
+  - id: decisions/precheck-refuses-missing-vocabulary
+    outcome: refused
+    refused: { code: VOCABULARY_MISSING, agents: [stub-novocab-a] }
+
+  - id: decisions/precheck-passes-explorer
+    outcome: ran
+    stages:
+      map: { status: PASSED, passed: true, launched: [stub-explorer-a], agents: { stub-explorer-a: positive } }
+    all_gates_passed: true
+    run_decision: PASS
+    warnings: []
+
+  - id: decisions/precheck-ignores-warn-gated-stages
+    outcome: ran
+    stages:
+      a: { status: PASSED, passed: true, launched: [stub-gate-a], agents: { stub-gate-a: positive } }
+      b: { status: PASSED, passed: true, launched: [stub-novocab-a], agents: { stub-novocab-a: positive } }
+    all_gates_passed: true
+    run_decision: PASS
+    warnings: []
+
+  - id: decisions/classifiable-without-score-at-threshold
+    outcome: ran
+    stages:
+      review: { status: ERRORED, passed: false, launched: [stub-gate-a], agents: { stub-gate-a: errored } }
+    all_gates_passed: false
+    run_decision: FAIL
+    warnings: [{ code: STAGE_ERRORED, stage: review, reason: agent_unjudgeable }]
+
+  - id: decisions/classifiable-without-score-decision-only
+    outcome: ran
+    stages:
+      review: { status: PASSED, passed: true, launched: [stub-gate-b], agents: { stub-gate-b: { class: positive, saved: PROCEED } } }
+    all_gates_passed: true
+    run_decision: PASS
+    warnings: []

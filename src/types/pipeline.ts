@@ -175,6 +175,9 @@ export interface StageDefinition {
 export interface TriggerDefinition {
   type: 'webhook' | 'schedule' | 'event';
   config: Record<string, unknown>;
+  /** Declared run parameters (PDL `triggers[].parameters`). Read by the PDL 1.6.0
+   *  `parameter_env_collision` load check (P3a); the rest of the trigger shape is P3b's. */
+  parameters?: Array<{ name: string; type?: string; default?: unknown; required?: boolean }>;
 }
 
 /**

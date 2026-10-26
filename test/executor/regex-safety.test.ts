@@ -8,7 +8,7 @@ import {
   MAX_CONDITION_LENGTH,
   evaluateConditionExpr,
 } from '../../src/executor/conditions.js';
-import { TEMPLATE_RE } from '../../src/executor/StepsExecutor.js';
+import { TEMPLATE_RE, PARAM_TEMPLATE } from '../../src/executor/stepTemplates.js';
 
 // Standing gate for author-facing regexes (repo convention: all patterns must
 // pass safe-regex2; registry-api precedent test/unit/services/safety/
@@ -23,10 +23,15 @@ describe('regex safety (safe-regex2)', () => {
     ['STEPS_PATH_RE', STEPS_PATH_RE],
     ['STAGE_FIELD_RE', STAGE_FIELD_RE],
     ['TEMPLATE_RE (step commands)', TEMPLATE_RE],
+    ['PARAM_TEMPLATE (step placement)', PARAM_TEMPLATE],
   ];
 
   for (const [name, re] of authorFacing) {
     it(`${name} passes safe-regex2`, () => {
+      // An import that no longer resolves gives `undefined`, which safe-regex2 also passes. The
+      // template pattern moved to stepTemplates.ts in PDL 1.6.0 P3a, and the old import passed
+      // this test with no pattern to check.
+      expect(re).toBeInstanceOf(RegExp);
       expect(safeRegex(re)).toBe(true);
     });
   }

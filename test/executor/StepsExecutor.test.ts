@@ -1,8 +1,11 @@
 import { describe, it, expect, afterEach, vi } from 'vitest';
-import { mkdtempSync, mkdirSync, writeFileSync, rmSync } from 'node:fs';
+import { mkdtempSync, mkdirSync, writeFileSync, rmSync, realpathSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import * as path from 'node:path';
-import { StepsExecutor, substituteStepTemplates } from '../../src/executor/StepsExecutor.js';
+import { StepsExecutor } from '../../src/executor/StepsExecutor.js';
+import { substituteStepTemplates } from '../../src/executor/stepTemplates.js';
+import { PipelineExecutor } from '../../src/executor/PipelineExecutor.js';
+import { PipelineError } from '../../src/errors/index.js';
 import type { Logger } from '@uluops/sdk-core';
 
 const noopLogger: Logger = { debug() {}, info() {}, warn() {}, error() {} };
@@ -22,52 +25,61 @@ afterEach(() => {
   }
 });
 
-describe('substituteStepTemplates', () => {
-  const input = { target: '/tmp/my target' };
+describe('substituteStepTemplates (PDL 1.6.0: environment references, D15)', () => {
+  const params = { target: '/tmp/my target' };
 
-  it('substitutes params.target from input.target with shell quoting', () => {
-    const out = substituteStepTemplates('[ -e {{ params.target }} ] && echo DETECTED', input);
-    expect(out).toEqual({ command: "[ -e '/tmp/my target' ] && echo DETECTED" });
+  it('rewrites a quoted template as a reference to its ULU_P_ variable and passes the value', () => {
+    const out = substituteStepTemplates('[ -e "{{ params.target }}" ] && echo DETECTED', params);
+    expect(out).toEqual({ command: '[ -e "${ULU_P_TARGET}" ] && echo DETECTED', env: { ULU_P_TARGET: '/tmp/my target' } });
   });
 
-  it('substitutes named params', () => {
-    const out = substituteStepTemplates('echo {{ params.mode }}', { ...input, params: { mode: 'deep' } });
-    expect(out).toEqual({ command: "echo 'deep'" });
+  it('quotes a bare template as one word', () => {
+    const out = substituteStepTemplates('echo {{ params.mode }}', { ...params, mode: 'deep' });
+    expect(out).toEqual({ command: 'echo "${ULU_P_MODE}"', env: { ULU_P_MODE: 'deep' } });
   });
 
-  it('uses the fallback when the param is absent', () => {
-    const out = substituteStepTemplates("npm run build --prefix {{ params.dir || '.' }}", input);
-    expect(out).toEqual({ command: "npm run build --prefix '.'" });
+  it('maps every non-alphanumeric character of the name to _', () => {
+    const out = substituteStepTemplates('echo "{{ params.security-lens }}"', { ...params, 'security-lens': 'on' });
+    expect(out).toEqual({ command: 'echo "${ULU_P_SECURITY_LENS}"', env: { ULU_P_SECURITY_LENS: 'on' } });
+  });
+
+  it('uses the fallback when the param is absent (the || form is not 1.6.0, still accepted)', () => {
+    const out = substituteStepTemplates("npm run build --prefix {{ params.dir || '.' }}", params);
+    expect(out).toEqual({ command: 'npm run build --prefix "${ULU_P_DIR}"', env: { ULU_P_DIR: '.' } });
   });
 
   it('prefers the param over the fallback', () => {
-    const out = substituteStepTemplates("echo {{ params.mode || 'default' }}", { ...input, params: { mode: 'x' } });
-    expect(out).toEqual({ command: "echo 'x'" });
+    const out = substituteStepTemplates("echo {{ params.mode || 'default' }}", { ...params, mode: 'x' });
+    expect(out).toEqual({ command: 'echo "${ULU_P_MODE}"', env: { ULU_P_MODE: 'x' } });
   });
 
-  it('shell-quotes values containing quote metacharacters', () => {
-    const out = substituteStepTemplates('echo {{ params.v }}', { ...input, params: { v: "a'; rm -rf /" } });
-    expect(out).toEqual({ command: "echo 'a'\\''; rm -rf /'" });
+  it('never puts the value in the command, whatever it holds', () => {
+    const out = substituteStepTemplates('echo "{{ params.v }}"', { ...params, v: "a'; rm -rf / $(id) `id`" });
+    expect(out).toEqual({ command: 'echo "${ULU_P_V}"', env: { ULU_P_V: "a'; rm -rf / $(id) `id`" } });
+  });
+
+  it('refuses a misplaced template instead of substituting it', () => {
+    expect(substituteStepTemplates("grep x '{{ params.v }}'", { ...params, v: 'y' })).toEqual({ misplaced: '{{ params.v }}' });
   });
 
   it('reports unresolved params instead of substituting empty', () => {
-    const out = substituteStepTemplates('echo {{ params.missing }}', input);
+    const out = substituteStepTemplates('echo {{ params.missing }}', params);
     expect(out).toHaveProperty('unresolved');
   });
 
   it('reports unsupported leftover template syntax', () => {
-    const out = substituteStepTemplates('echo {{ stages.preflight.score }}', input);
+    const out = substituteStepTemplates('echo {{ stages.preflight.score }}', params);
     expect(out).toHaveProperty('unresolved');
   });
 
   it('coerces a non-string param (number) via String()', () => {
-    const out = substituteStepTemplates('echo {{ params.n }}', { ...input, params: { n: 42 } });
-    expect(out).toEqual({ command: "echo '42'" });
+    const out = substituteStepTemplates('echo {{ params.n }}', { ...params, n: 42 });
+    expect(out).toEqual({ command: 'echo "${ULU_P_N}"', env: { ULU_P_N: '42' } });
   });
 
   it('does not treat a `false` param as absent (undefined-check must not swallow false)', () => {
-    const out = substituteStepTemplates('echo {{ params.v }}', { ...input, params: { v: false } });
-    expect(out).toEqual({ command: "echo 'false'" });
+    const out = substituteStepTemplates('echo {{ params.v }}', { ...params, v: false });
+    expect(out).toEqual({ command: 'echo "${ULU_P_V}"', env: { ULU_P_V: 'false' } });
   });
 });
 
@@ -381,4 +393,79 @@ describe('StepsExecutor — authored bounds cannot disable the guards', () => {
     const results = await run({ name: 'fail', command: 'exit 7', retries: 2 });
     expect(results[0]!.status).toBe('failed');
   }, 20_000);
+});
+
+// PDL 1.6.0 P3a: where steps run and how values reach them, beyond what the conformance fixtures
+// pin (test/executor/pdl-conformance.test.ts). Each fails on 98adad5.
+describe('StepsExecutor: PDL 1.6.0 step root and parameter passing (P3a)', () => {
+  const executor = new StepsExecutor(noopLogger);
+
+  it('resolves working_dir against a file target\'s parent (D22)', async () => {
+    const target = makeTarget();
+    mkdirSync(path.join(target, 'sub'));
+    writeFileSync(path.join(target, 'spec.md'), 'x');
+    writeFileSync(path.join(target, 'sub', 'marker'), 'x');
+    const [r] = await executor.execute(
+      [{ name: 'w', command: 'test -f marker && echo IN_SUB', working_dir: 'sub' }],
+      { target: path.join(target, 'spec.md') },
+    );
+    expect(r).toMatchObject({ status: 'passed', output: 'IN_SUB' });
+  });
+
+  it('a step\'s own env cannot shadow a parameter value', async () => {
+    const target = makeTarget();
+    const [r] = await executor.execute(
+      [{ name: 'e', command: 'printf %s "{{ params.mode }}"', env: { ULU_P_MODE: 'shadowed' } }],
+      { target, params: { mode: 'from-caller' } },
+    );
+    expect(r).toMatchObject({ status: 'passed', output: 'from-caller' });
+  });
+
+  it('{{ params.target }} is the resolved target even when input.params carries a target', async () => {
+    const target = makeTarget();
+    const [r] = await executor.execute(
+      [{ name: 't', command: 'printf %s "{{ params.target }}"' }],
+      { target, params: { target: 'elsewhere' } },
+    );
+    expect(r).toMatchObject({ status: 'passed', output: realpathSync(target) });
+  });
+
+  it('resolves a hyphenated parameter name (the factory and the spec allow it)', async () => {
+    const target = makeTarget();
+    const [r] = await executor.execute(
+      [{ name: 'h', command: 'printf %s "{{ params.security-lens }}"' }],
+      { target, params: { 'security-lens': 'on' } },
+    );
+    expect(r).toMatchObject({ status: 'passed', output: 'on' });
+  });
+
+  it('fails a misplaced template rather than running it', async () => {
+    const target = makeTarget();
+    const [r] = await executor.execute(
+      [{ name: 'm', command: "grep -q x '{{ params.mode }}' && echo RAN" }],
+      { target, params: { mode: 'x' } },
+    );
+    expect(r?.status).toBe('failed');
+    expect(r?.error).toMatch(/^template_placement/);
+  });
+});
+
+describe('PipelineExecutor.start: PDL 1.6.0 load errors before launch (P3a)', () => {
+  const executor = new PipelineExecutor({} as never, {} as never, {} as never, {} as never, noopLogger, true);
+  const pipeline = (stages: unknown[], parameters: unknown[] = []) => ({
+    type: 'pipeline',
+    definition: { pipeline: { interface: { name: 'p', version: '1.0.0', displayName: 'p', description: 'p', domain: 'general' }, triggers: [{ type: 'manual', parameters }], stages } },
+  }) as never;
+
+  it('refuses template_placement and parameter_env_collision with their codes and locations', async () => {
+    const err = await executor.start(
+      pipeline([{ id: 'pre', name: 'pre', steps: [{ name: 's', command: 'echo $(cat "{{ params.a-b }}")' }] }], [{ name: 'a-b' }, { name: 'a_b' }]),
+      { target: '.' },
+    ).then(() => undefined, (e: unknown) => e);
+    expect(err).toBeInstanceOf(PipelineError);
+    expect((err as PipelineError).context.loadErrors?.map((e) => [e.code, e.at])).toEqual([
+      ['parameter_env_collision', 'param:a_b'],
+      ['template_placement', 'stage:pre/step:s'],
+    ]);
+  });
 });

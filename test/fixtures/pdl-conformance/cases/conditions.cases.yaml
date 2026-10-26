@@ -1,0 +1,335 @@
+# The condition language at runtime: each root, defaults, absent parameters, truthiness,
+# precedence, Kleene error propagation, failed and unrun steps, steps disabled.
+# Spec v0.8.0 §3.4, D2, D4. Load-time rejections are in load-errors.cases.yaml.
+# Expected: ../expected/conditions.expected.yaml
+cases:
+  # ── Each root ─────────────────────────────────────────────────────────
+  - id: conditions/params-root-true
+    covers: ["§3.4 context: params"]
+    applies_to: [core, skill]
+    params: { mode: deep }
+    stubs:
+      stub-gate-a: { decision: PROCEED, score: 90 }
+    pipeline:
+      parameters: [{ name: mode, type: string, default: fast }]
+      stages:
+        - { id: a, condition: "params.mode == 'deep'", agents: [{ ref: stub-gate-a }], gate: { threshold: 80, on_failure: fail } }
+
+  - id: conditions/params-root-false
+    covers: ["§3.4 context: params", D3]
+    applies_to: [core, skill]
+    params: { mode: fast }
+    stubs:
+      stub-gate-a: { decision: PROCEED, score: 90 }
+      stub-gate-b: { decision: PROCEED, score: 90 }
+    pipeline:
+      parameters: [{ name: mode, type: string, default: fast }]
+      stages:
+        - { id: a, condition: "params.mode == 'deep'", agents: [{ ref: stub-gate-a }], gate: { threshold: 80, on_failure: fail } }
+        - { id: b, depends_on: [a], agents: [{ ref: stub-gate-b }], gate: { threshold: 80, on_failure: fail } }
+
+  - id: conditions/params-default-bound-first
+    covers: ["§3.4 context: params (declared defaults are bound first)"]
+    applies_to: [core, skill]
+    stubs:
+      stub-gate-a: { decision: PROCEED, score: 90 }
+    pipeline:
+      parameters: [{ name: mode, type: string, default: deep }]
+      stages:
+        - { id: a, condition: "params.mode == 'deep'", agents: [{ ref: stub-gate-a }], gate: { threshold: 80, on_failure: fail } }
+
+  - id: conditions/absent-parameter
+    covers: ["§3.4 semantics: absent"]
+    applies_to: [core, skill]
+    stubs:
+      stub-gate-a: { decision: PROCEED, score: 90 }
+      stub-gate-b: { decision: PROCEED, score: 90 }
+      stub-gate-c: { decision: PROCEED, score: 90 }
+    pipeline:
+      parameters: [{ name: flag, type: string }]
+      stages:
+        - { id: ne, condition: "params.flag != 'x'", agents: [{ ref: stub-gate-a }], gate: { threshold: 80, on_failure: fail } }
+        - { id: eq-empty, condition: "params.flag == ''", agents: [{ ref: stub-gate-b }], gate: { threshold: 80, on_failure: fail } }
+        - { id: bare, condition: "params.flag", agents: [{ ref: stub-gate-c }], gate: { threshold: 80, on_failure: fail } }
+    note: An absent value equals nothing (not even '') and is falsy; != is true.
+
+  - id: conditions/stages-passed-root
+    covers: ["§3.4 context: stages.<id>.passed"]
+    applies_to: [core, skill]
+    stubs:
+      stub-gate-a: { decision: REVISE, score: 90 }
+      stub-gate-b: { decision: PROCEED, score: 90 }
+      stub-gate-c: { decision: PROCEED, score: 90 }
+    pipeline:
+      stages:
+        - { id: a, agents: [{ ref: stub-gate-a }], gate: { threshold: 80, on_failure: fail } }
+        - { id: if-passed, depends_on: [a], condition: "stages.a.passed", agents: [{ ref: stub-gate-b }], gate: { threshold: 80, on_failure: fail } }
+        - { id: if-not-passed, depends_on: [a], condition: "!stages.a.passed", agents: [{ ref: stub-gate-c }], gate: { threshold: 80, on_failure: fail } }
+
+  - id: conditions/stages-passed-false-for-warned-and-skipped
+    covers: ["§3.4 context: stages.<id>.passed"]
+    applies_to: [core, skill]
+    params: { mode: fast }
+    stubs:
+      stub-gate-a: { decision: PROCEED, score: 70 }
+      stub-gate-b: { decision: PROCEED, score: 90 }
+      stub-lens-a: { decision: EFFECTUAL, score: 90 }
+      stub-lens-b: { decision: EFFECTUAL, score: 90 }
+    pipeline:
+      parameters: [{ name: mode, type: string, default: fast }]
+      stages:
+        - { id: warned, agents: [{ ref: stub-gate-a }], gate: { threshold: 80, on_failure: warn } }
+        - { id: skipped, condition: "params.mode == 'deep'", agents: [{ ref: stub-gate-b }], gate: { threshold: 80, on_failure: fail } }
+        - { id: reads-warned, depends_on: [warned], condition: "stages.warned.passed", agents: [{ ref: stub-lens-a }], gate: { threshold: 70, on_failure: warn } }
+        - { id: reads-skipped, depends_on: [skipped], condition: "stages.skipped.passed", agents: [{ ref: stub-lens-b }], gate: { threshold: 70, on_failure: warn } }
+
+  - id: conditions/step-output-root
+    covers: ["§3.4 context: step output"]
+    applies_to: [core, skill]
+    stubs:
+      stub-gate-a: { decision: PROCEED, score: 90 }
+      stub-gate-b: { decision: PROCEED, score: 90 }
+    pipeline:
+      stages:
+        - id: pre
+          steps:
+            - { name: Detect, command: "echo '  DETECTED  '", continue_on_error: true }
+          gate: { on_failure: warn }
+        - { id: on-detect, depends_on: [pre], condition: "stages.pre.steps['Detect'].output == 'DETECTED'", agents: [{ ref: stub-gate-a }], gate: { threshold: 80, on_failure: fail } }
+        - { id: on-miss, depends_on: [pre], condition: "stages.pre.steps['Detect'].output == 'NOT_DETECTED'", agents: [{ ref: stub-gate-b }], gate: { threshold: 80, on_failure: fail } }
+    note: Output is trimmed before comparison, so the padded echo still equals 'DETECTED'.
+
+  - id: conditions/agentref-condition-on-step-output
+    covers: ["§3.4 scope: agentRef conditions", "§3.8 docs-validator condition"]
+    applies_to: [core, skill]
+    stubs:
+      stub-gate-a: { decision: PROCEED, score: 90 }
+      stub-docs-a: { decision: DOCUMENTED, score: 90 }
+    pipeline:
+      stages:
+        - id: pre
+          steps:
+            - { name: Detect design docs, command: "echo NOT_DETECTED", continue_on_error: true }
+          gate: { on_failure: warn }
+        - id: review
+          depends_on: [pre]
+          parallel: true
+          agents:
+            - { ref: stub-gate-a, threshold: 80 }
+            - { ref: stub-docs-a, threshold: 75, condition: "stages.pre.steps['Detect design docs'].output == 'DETECTED'" }
+          gate: { on_failure: fail }
+
+  # ── Semantics: truthiness, precedence (§3.4) ──────────────────────────
+  - id: conditions/truthiness
+    covers: ["§3.4 semantics: truthiness"]
+    applies_to: [core, skill]
+    stubs:
+      stub-gate-a: { decision: PROCEED, score: 90 }
+      stub-gate-b: { decision: PROCEED, score: 90 }
+      stub-gate-c: { decision: PROCEED, score: 90 }
+      stub-lens-a: { decision: EFFECTUAL, score: 90 }
+    pipeline:
+      stages:
+        - id: pre
+          steps:
+            - { name: zero, command: "echo 0" }
+            - { name: false-word, command: "echo false" }
+            - { name: empty, command: "true" }
+            - { name: word, command: "echo yes" }
+          gate: { on_failure: warn }
+        - { id: t-zero, depends_on: [pre], condition: "stages.pre.steps['zero'].output", agents: [{ ref: stub-gate-a }], gate: { threshold: 80, on_failure: fail } }
+        - { id: t-false, depends_on: [pre], condition: "stages.pre.steps['false-word'].output", agents: [{ ref: stub-gate-b }], gate: { threshold: 80, on_failure: fail } }
+        - { id: t-empty, depends_on: [pre], condition: "stages.pre.steps['empty'].output", agents: [{ ref: stub-gate-c }], gate: { threshold: 80, on_failure: fail } }
+        - { id: t-word, depends_on: [pre], condition: "stages.pre.steps['word'].output", agents: [{ ref: stub-lens-a }], gate: { threshold: 70, on_failure: warn } }
+
+  - id: conditions/precedence-and-binds-tighter
+    covers: ["§3.4 grammar"]
+    applies_to: [core, skill]
+    params: { a: x, b: n, c: n }
+    stubs:
+      stub-gate-a: { decision: PROCEED, score: 90 }
+      stub-gate-b: { decision: PROCEED, score: 90 }
+    pipeline:
+      parameters: [{ name: a, type: string }, { name: b, type: string }, { name: c, type: string }]
+      stages:
+        - { id: no-parens, condition: "params.a == 'x' || params.b == 'y' && params.c == 'z'", agents: [{ ref: stub-gate-a }], gate: { threshold: 80, on_failure: fail } }
+        - { id: parens, condition: "(params.a == 'x' || params.b == 'y') && params.c == 'z'", agents: [{ ref: stub-gate-b }], gate: { threshold: 80, on_failure: fail } }
+    note: >
+      Core cannot parse parentheses today (§6 item 5). A third stage, `!params.a == 'x'`, was
+      removed at P0a: it could not tell `!(params.a == 'x')` (core's reading) from
+      `(!params.a) == 'x'` (this note's), since both are false at a = x. Alex ruled the form a
+      load error (PDL 1.6.0 spec, condition grammar); load-errors/syntax-negated-comparison
+      carries it.
+
+  - id: conditions/transitive-ancestor-evaluates
+    covers: ["§3.4 validation: ancestors"]
+    applies_to: [core, skill]
+    stubs:
+      stub-gate-a: { decision: PROCEED, score: 90 }
+      stub-gate-b: { decision: PROCEED, score: 90 }
+      stub-gate-c: { decision: PROCEED, score: 90 }
+    pipeline:
+      stages:
+        - id: pre
+          steps:
+            - { name: Detect, command: "echo DETECTED", continue_on_error: true }
+          gate: { on_failure: warn }
+        - { id: one, depends_on: [pre], agents: [{ ref: stub-gate-a }], gate: { threshold: 80, on_failure: fail } }
+        - { id: two, depends_on: [one], agents: [{ ref: stub-gate-b }], gate: { threshold: 80, on_failure: fail } }
+        - { id: three, depends_on: [two], condition: "stages.pre.steps['Detect'].output == 'DETECTED'", agents: [{ ref: stub-gate-c }], gate: { threshold: 80, on_failure: fail } }
+    note: Ship's final-checks reads preflight five hops up; this is the same shape at three.
+
+  # ── Kleene error propagation (§3.4, H3) ───────────────────────────────
+  - id: conditions/kleene-and-absorbs-error
+    covers: ["§3.4 error propagation", "H3"]
+    applies_to: [core, skill]
+    params: { security: "off" }
+    stubs:
+      stub-security-a: { decision: SECURE, score: 90 }
+    pipeline:
+      parameters: [{ name: security, type: string, default: auto }]
+      stages:
+        - id: pre
+          steps:
+            - { name: Detect security surface, command: "exit 2", continue_on_error: true }
+          gate: { on_failure: warn }
+        - id: security
+          depends_on: [pre]
+          condition: "params.security != 'off' && stages.pre.steps['Detect security surface'].output == 'DETECTED'"
+          agents: [{ ref: stub-security-a }]
+          gate: { threshold: 85, on_failure: fail }
+    note: >
+      H3 from the run #5 re-check: false && E is false, so security=off skips the stage
+      even though the detector failed. A runtime that errors on any read of a failed step
+      makes this ERRORED.
+
+  - id: conditions/kleene-or-absorbs-error
+    covers: ["§3.4 error propagation", "H3"]
+    applies_to: [core, skill]
+    params: { security: "on" }
+    stubs:
+      stub-security-a: { decision: SECURE, score: 90 }
+    pipeline:
+      parameters: [{ name: security, type: string, default: auto }]
+      stages:
+        - id: pre
+          steps:
+            - { name: Detect security surface, command: "exit 2", continue_on_error: true }
+          gate: { on_failure: warn }
+        - id: security
+          depends_on: [pre]
+          condition: "params.security == 'on' || stages.pre.steps['Detect security surface'].output == 'DETECTED'"
+          agents: [{ ref: stub-security-a }]
+          gate: { threshold: 85, on_failure: fail }
+    note: true || E is true; the stage runs.
+
+  - id: conditions/kleene-error-propagates-through-and
+    covers: ["§3.4 error propagation", "§3.1 ERRORED"]
+    applies_to: [core, skill]
+    params: { security: auto }
+    stubs:
+      stub-security-a: { decision: SECURE, score: 90 }
+    pipeline:
+      parameters: [{ name: security, type: string, default: auto }]
+      stages:
+        - id: pre
+          steps:
+            - { name: Detect security surface, command: "exit 2", continue_on_error: true }
+          gate: { on_failure: warn }
+        - id: security
+          depends_on: [pre]
+          condition: "params.security != 'off' && stages.pre.steps['Detect security surface'].output == 'DETECTED'"
+          agents: [{ ref: stub-security-a }]
+          gate: { threshold: 85, on_failure: fail }
+    note: true && E is E; the stage is ERRORED and, behind fail, the run is not passed.
+
+  - id: conditions/kleene-error-propagates-through-or
+    covers: ["§3.4 error propagation"]
+    applies_to: [core, skill]
+    params: { security: auto }
+    stubs:
+      stub-security-a: { decision: SECURE, score: 90 }
+    pipeline:
+      parameters: [{ name: security, type: string, default: auto }]
+      stages:
+        - id: pre
+          steps:
+            - { name: Detect security surface, command: "exit 2", continue_on_error: true }
+          gate: { on_failure: warn }
+        - id: security
+          depends_on: [pre]
+          condition: "stages.pre.steps['Detect security surface'].output == 'DETECTED' || params.security == 'on'"
+          agents: [{ ref: stub-security-a }]
+          gate: { threshold: 85, on_failure: warn }
+    note: E || false is E. Behind warn, the ERRORED stage leaves all_gates_passed true.
+
+  - id: conditions/kleene-negation-of-error
+    covers: ["§3.4 error propagation"]
+    applies_to: [core, skill]
+    stubs:
+      stub-gate-a: { decision: PROCEED, score: 90 }
+    pipeline:
+      stages:
+        - id: pre
+          steps:
+            - { name: Detect, command: "exit 2", continue_on_error: true }
+          gate: { on_failure: warn }
+        - { id: a, depends_on: [pre], condition: "!(stages.pre.steps['Detect'].output == 'DETECTED')", agents: [{ ref: stub-gate-a }], gate: { threshold: 80, on_failure: fail } }
+    note: "!E is E: a negated read of a failed step does not become true."
+
+  # ── Failed and unrun steps (§3.4) ─────────────────────────────────────
+  - id: conditions/step-skipped-after-hard-failure
+    covers: ["§3.4 context: step output", "§3.1 ERRORED"]
+    applies_to: [core, skill]
+    stubs:
+      stub-gate-a: { decision: PROCEED, score: 90 }
+      stub-gate-b: { decision: PROCEED, score: 90 }
+    pipeline:
+      stages:
+        - id: pre
+          steps:
+            - { name: first, command: "exit 3" }
+            - { name: second, command: "echo DETECTED" }
+          gate: { on_failure: warn }
+        - { id: reads-first, depends_on: [pre], condition: "stages.pre.steps['first'].output == 'DETECTED'", agents: [{ ref: stub-gate-a }], gate: { threshold: 80, on_failure: fail } }
+        - { id: reads-second, depends_on: [pre], condition: "stages.pre.steps['second'].output == 'DETECTED'", agents: [{ ref: stub-gate-b }], gate: { threshold: 80, on_failure: fail } }
+    note: >
+      `first` fails without continue_on_error, so `second` never runs. Reading either is E.
+      Core today reads '' for both and skips the stages; a runtime that ran `second` anyway
+      runs reads-second.
+
+  - id: conditions/agentref-condition-reads-failed-step
+    covers: ["§3.4 error propagation (agent ERRORED)", "§3.1 ERRORED"]
+    applies_to: [core, skill]
+    stubs:
+      stub-gate-a: { decision: PROCEED, score: 90 }
+      stub-docs-a: { decision: DOCUMENTED, score: 90 }
+    pipeline:
+      stages:
+        - id: pre
+          steps:
+            - { name: Detect design docs, command: "exit 2", continue_on_error: true }
+          gate: { on_failure: warn }
+        - id: review
+          depends_on: [pre]
+          parallel: true
+          agents:
+            - { ref: stub-gate-a, threshold: 80 }
+            - { ref: stub-docs-a, threshold: 75, condition: "stages.pre.steps['Detect design docs'].output == 'DETECTED'" }
+          gate: { on_failure: fail }
+    note: The agent's condition is E, so the agent is ERRORED, and an ERRORED agent makes the stage ERRORED.
+
+  - id: conditions/step-output-with-steps-disabled
+    covers: ["§3.4 step output must exist", "§6 item 2"]
+    applies_to: [core]
+    run: { steps: disabled }
+    stubs:
+      stub-gate-a: { decision: PROCEED, score: 90 }
+    pipeline:
+      stages:
+        - id: pre
+          steps:
+            - { name: Detect, command: "echo DETECTED", continue_on_error: true }
+          gate: { on_failure: warn }
+        - { id: a, depends_on: [pre], condition: "stages.pre.steps['Detect'].output == 'DETECTED'", agents: [{ ref: stub-gate-a }], gate: { threshold: 80, on_failure: fail } }
+    note: Core extends G5 and refuses before launch. Today the condition is unknown and the stage runs.

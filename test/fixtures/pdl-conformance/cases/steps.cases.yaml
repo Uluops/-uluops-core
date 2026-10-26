@@ -1,0 +1,148 @@
+# Where steps run and how templates reach the shell: the target directory, a file target's
+# parent (realpath), an absolute params.target, and D15's environment reference and escaping.
+# Spec v0.8.0 §3.4 "Where steps run", "Template quoting", D15. Placement-rule load errors are
+# in load-errors.cases.yaml. Expected: ../expected/steps.expected.yaml
+#
+# Every step here exits 0 by printing a marker, so a case reads the marker rather than an
+# exit code, and a runtime that ran a step in the wrong place prints the wrong marker.
+cases:
+  - id: steps/directory-target
+    covers: ["§3.4 where steps run"]
+    applies_to: [core, skill]
+    target: dir
+    pipeline:
+      stages:
+        - id: pre
+          steps:
+            - { name: where, command: "test -f docs/design-spec.md && echo AT_TARGET || echo ELSEWHERE" }
+          gate: { on_failure: warn }
+
+  - id: steps/file-target-runs-in-parent
+    covers: ["§3.4 where steps run", "§7 control: core ENOTDIR"]
+    applies_to: [core, skill]
+    target: file
+    pipeline:
+      stages:
+        - id: pre
+          steps:
+            - { name: where, command: "test -f design-spec.md && echo IN_PARENT || echo ELSEWHERE" }
+            - { name: target-is-file, command: "test -f \"{{ params.target }}\" && echo TARGET_FILE || echo TARGET_MISSING" }
+          gate: { on_failure: warn }
+    note: Core today sets cwd to the file itself and every step fails with ENOTDIR.
+
+  - id: steps/symlinked-file-target-runs-in-real-parent
+    covers: ["§3.4 where steps run (realpath)"]
+    applies_to: [core, skill]
+    target: symlink
+    pipeline:
+      stages:
+        - id: pre
+          steps:
+            - { name: where, command: "test -f design-spec.md && test ! -e linked-spec.md && echo REAL_PARENT || echo LINK_PARENT" }
+          gate: { on_failure: warn }
+    note: The symlink lives in targets/; the real file in targets/project/docs. Steps run beside the real file.
+
+  - id: steps/target-template-is-absolute
+    covers: ["§3.4 {{ params.target }} is absolute", "excavator A3"]
+    applies_to: [core, skill]
+    target: dir
+    pipeline:
+      stages:
+        - id: pre
+          steps:
+            - { name: absolute, command: "case \"{{ params.target }}\" in /*) echo ABSOLUTE ;; *) echo RELATIVE ;; esac" }
+            - { name: resolves, command: "test -f \"{{ params.target }}\"/docs/design-spec.md && echo RESOLVES || echo DANGLING" }
+          gate: { on_failure: warn }
+    note: >
+      The harness passes a relative target. Interpolated as given, it would resolve against
+      the step's own working directory and dangle.
+
+  - id: steps/corpus-detector-shape-detects
+    covers: ["§3.4 D15", "§7 control: corpus detectors print NOT_DETECTED"]
+    applies_to: [core, skill]
+    target: dir
+    stubs:
+      stub-security-a: { decision: SECURE, score: 90 }
+    pipeline:
+      stages:
+        - id: preflight
+          steps:
+            - name: Detect security surface
+              command: grep -rqiE --exclude-dir=node_modules --exclude-dir=.git --exclude-dir=dist "(authenticat|authori[sz]|token|credential|secret)" "{{ params.target }}" 2>/dev/null && echo "DETECTED" || echo "NOT_DETECTED"
+              continue_on_error: true
+          gate: { on_failure: warn }
+        - id: security
+          depends_on: [preflight]
+          condition: "stages.preflight.steps['Detect security surface'].output == 'DETECTED'"
+          agents: [{ ref: stub-security-a }]
+          gate: { threshold: 85, on_failure: fail }
+    note: >
+      Pre-implementation 1.4.0's detector, copied with a shortened pattern. The target mentions
+      "authenticate". Under core today the template becomes "'/abs/path'" and grep finds
+      nothing, so security=auto never runs a security read.
+
+  - id: steps/template-value-with-shell-syntax
+    covers: ["§3.4 D15", "circumvention A8"]
+    applies_to: [core, skill]
+    target: dir
+    params: { pattern: "x$(touch PWNED)y" }
+    pipeline:
+      parameters: [{ name: pattern, type: string }]
+      stages:
+        - id: pre
+          steps:
+            - { name: echo, command: "printf '%s' \"{{ params.pattern }}\"" }
+            - { name: found, command: "grep -qF \"{{ params.pattern }}\" pattern.txt && echo LITERAL_MATCH || echo NO_MATCH" }
+            - { name: canary, command: "test -e PWNED && echo PWNED || echo CLEAN" }
+          gate: { on_failure: warn }
+    note: >
+      The value reaches the command as data. pattern.txt holds the literal string, so grep -F
+      matches it, and no PWNED file appears in the step directory. Core 0.52.0 fails all
+      three: its single quotes sit inside the author's double quotes, so `$(touch PWNED)`
+      executes (probed against the real dist 2026-10-24; tracker 2595e1a8).
+
+  - id: steps/template-value-with-quote-characters
+    covers: ["§3.4 D15 (skill escaping)"]
+    applies_to: [core, skill]
+    target: dir
+    params: { value: "a\"b`c\\d$HOME'e" }
+    pipeline:
+      parameters: [{ name: value, type: string }]
+      stages:
+        - id: pre
+          steps:
+            - { name: echo, command: "printf '%s' \"{{ params.value }}\"" }
+          gate: { on_failure: warn }
+    note: >
+      Each character the skill must backslash-escape inside the double-quoted word (`"`, `$`,
+      backtick, `\`), plus a single quote. The output is the value, byte for byte.
+
+  - id: steps/bare-word-template-is-one-word
+    covers: ["§3.4 D15 (bare word)"]
+    applies_to: [core, skill]
+    target: dir
+    params: { words: "two  words; echo INJECTED" }
+    pipeline:
+      parameters: [{ name: words, type: string }]
+      stages:
+        - id: pre
+          steps:
+            - { name: count, command: "set -- {{ params.words }} ; echo $#" }
+            - { name: echo, command: "printf '%s' {{ params.words }}" }
+          gate: { on_failure: warn }
+    note: >
+      A bare-word template is substituted as one quoted word ("${ULU_P_WORDS}" in core, single
+      quotes in the skill): one argument, no word splitting, no command separator.
+
+  - id: steps/nul-in-parameter-refused
+    covers: ["§3.4 D15 (NUL refused)"]
+    applies_to: [core]
+    target: dir
+    params: { value: "a\0b" }
+    pipeline:
+      parameters: [{ name: value, type: string }]
+      stages:
+        - id: pre
+          steps:
+            - { name: echo, command: "printf '%s' \"{{ params.value }}\"" }
+          gate: { on_failure: warn }

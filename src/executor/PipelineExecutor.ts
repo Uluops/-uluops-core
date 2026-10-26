@@ -6,6 +6,7 @@ import type { RegistryClient } from '../registry/RegistryClient.js';
 import type { ResolvedDefinition } from '../types/registry.js';
 import type { PipelineDefinition, StageDefinition, GateDefinition, PipelineResult, StageResult, StepResult, PipelineState, PipelineHandle as IPipelineHandle } from '../types/pipeline.js';
 import { StepsExecutor } from './StepsExecutor.js';
+import { checkStepTemplateRules, nulParameter } from './stepTemplates.js';
 import { evaluateConditionExpr } from './conditions.js';
 import { buildUpstreamContext } from './upstreamContext.js';
 import type { ExecutionInput, ExecutionOptions, UpstreamStageContext } from '../types/execution.js';
@@ -70,6 +71,7 @@ export class PipelineExecutor {
    */
   async start(resolved: ResolvedDefinition, input: ExecutionInput, options?: ExecutionOptions): Promise<PipelineHandle> {
     const def = this.assertPipelineDefinition(resolved);
+    this.refuseBeforeLaunch(def, input);
     const pipelineId = `pipeline_${Date.now()}_${crypto.randomUUID().substring(0, 8)}`;
 
     const state: PipelineState = {
@@ -315,6 +317,30 @@ export class PipelineExecutor {
       } else {
         this.logger.warn(`Stage threw after the run was stopped (keeping ${state.status}): ${formatErrorMessage(error)}`);
       }
+    }
+  }
+
+  /**
+   * PDL 1.6.0 checks that run before anything launches (P3a): the step-template load errors
+   * (`template_placement`, `parameter_env_collision`), then the `PARAM_NUL` refusal. They run
+   * whether or not steps are enabled: the spec makes them properties of the pipeline and the run,
+   * not of a step. Thrown from `start()`, before any state exists, so the caller gets the codes.
+   */
+  private refuseBeforeLaunch(def: PipelineDefinition, input: ExecutionInput): void {
+    const loadErrors = checkStepTemplateRules(def.pipeline);
+    if (loadErrors.length > 0) {
+      throw new PipelineError(
+        `Pipeline "${def.pipeline.interface.name}" failed load validation: ` +
+          loadErrors.map(e => `${e.code} at ${e.at}: ${e.message}`).join('; '),
+        { loadErrors },
+      );
+    }
+    const nul = nulParameter(input.params);
+    if (nul !== undefined) {
+      throw new PipelineError(
+        `Run refused (PARAM_NUL): the value of parameter "${nul}" contains NUL`,
+        { refusal: { code: 'PARAM_NUL', param: nul } },
+      );
     }
   }
 
