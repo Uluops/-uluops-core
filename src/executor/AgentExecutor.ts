@@ -1,4 +1,4 @@
-import { parseExternalNumber, finitePositive } from '../utils/externalValue.js';
+import { parseExternalNumber, finitePositive, externalInt } from '../utils/externalValue.js';
 import type { ToolSet } from 'ai';
 import type { AIProvider, AIGenerateResult } from '../ai/AIProvider.js';
 import { SHELL_SCHEMA_FALLBACK_PROVIDERS } from '../ai/AIProvider.js';
@@ -22,7 +22,7 @@ import { mapCategory } from './mapCategory.js';
 import { renderUpstreamSection } from './upstreamContext.js';
 import type { UsageMetrics } from '../types/ai.js';
 import type { Logger } from '@uluops/sdk-core';
-import { DEFAULT_PASS_THRESHOLD, DEFAULT_WARN_THRESHOLD, DEFAULT_MAX_STEPS, DEFAULT_MAX_TOKENS, DEFAULT_MODEL_ALIAS, DEFAULT_TEMPERATURE, EXTRACTION_CONFIDENCE_THRESHOLD, SHELL_COMMAND_TIMEOUT_MS, DEFAULT_REQUEST_TIMEOUT_MS, DEFAULT_CONTEXT_BUDGET } from '../constants.js';
+import { DEFAULT_PASS_THRESHOLD, DEFAULT_WARN_THRESHOLD, DEFAULT_MAX_STEPS, MAX_STEPS_CEILING, DEFAULT_MAX_TOKENS, DEFAULT_MODEL_ALIAS, DEFAULT_TEMPERATURE, EXTRACTION_CONFIDENCE_THRESHOLD, SHELL_COMMAND_TIMEOUT_MS, DEFAULT_REQUEST_TIMEOUT_MS, DEFAULT_CONTEXT_BUDGET } from '../constants.js';
 import type { ProviderOptions } from '@ai-sdk/provider-utils';
 import { agentCost } from '../utils/costRollup.js';
 import {
@@ -655,21 +655,32 @@ export class AgentExecutor {
       });
     }
 
-    // The budget threshold was crossed while the brake provably could not act (Anthropic
-    // jsonTool overrides toolChoice). INFO, not degraded: nothing was cut short, so the
-    // run really is complete and must not be downgraded to 'partial' — that would
-    // re-introduce the false partial 0.42.0 just removed. What failed is the caller's cost
-    // ceiling, which they configured and are entitled to know did not apply. Marking it
-    // keeps degradation.ts invariant (1) — nothing degrades silently — without lying in
-    // the other direction.
+    // The caller asked for a context budget that is not a usable positive number, so no wrap-up
+    // brake was installed. INFO, not degraded: nothing was cut short. Until 0.54.0 this marker
+    // also covered Anthropic structured output, where the brake set only toolChoice and the
+    // provider overrode it; the brake now withdraws the tools, which holds there, so that
+    // cause is gone and this is the only one left.
     if (budgetTracker.brakeInert) {
       markers.push({
         code: 'budget.brake-inert',
         phase: 'execution',
         severity: 'info',
-        detail: 'Context budget crossed its threshold but the wrap-up brake could not engage '
-          + '(the provider overrode toolChoice for structured output), so tool calls continued. '
-          + 'Coverage is unaffected; the configured cost ceiling did not apply.',
+        detail: 'A context budget was supplied but is not a usable positive number, so no wrap-up brake '
+          + 'was installed. Coverage is unaffected; the configured cost ceiling did not apply.',
+      });
+    }
+
+    // The step-limit wrap-up withdrew the tools before the agent finished exploring. DEGRADED:
+    // the answer rests on what it had read by then, which is coverage cut short — the same
+    // reason `budget.forced-wrap-up` is degraded. Without the wrap-up this run would most
+    // likely have ended with no output at all (tracker c13b7789).
+    if (result.stepWrapUp) {
+      markers.push({
+        code: 'steps.forced-wrap-up',
+        phase: 'execution',
+        severity: 'degraded',
+        detail: `Tools withdrawn at step ${result.stepWrapUp.atStep + 1} of a ${result.stepWrapUp.maxSteps}-step limit `
+          + '(80%); the agent answered from what it had read. Raise maxSteps for this agent or narrow the target.',
       });
     }
 
@@ -856,7 +867,11 @@ export class AgentExecutor {
       temperature: options?.temperature ?? defaults?.temperature ?? DEFAULT_TEMPERATURE,
       // EXTERNAL-OK: forwarded to the AI SDK as a generation option; it bounds the PROVIDER call, not any
       // arithmetic here, and the SDK rejects a malformed value at its own boundary.
-      maxSteps: options?.maxSteps ?? DEFAULT_MAX_STEPS,
+      // Per run, then the client's config (UluOpsConfig.maxSteps / ULUOPS_MAX_STEPS), then the
+      // default; clamped to [1, 500]. The ADL field `agent.defaults.max_steps` joins this chain,
+      // between the run and the config, in the ADL minor after v1.20 (tracker 5570c1c6).
+      maxSteps: externalInt(options?.maxSteps ?? this.config.maxSteps ?? DEFAULT_MAX_STEPS,
+        { min: 1, max: MAX_STEPS_CEILING, fallback: DEFAULT_MAX_STEPS }),
       thresholds: this.resolveThresholds(options?.thresholds),
       trackResults: options?.trackResults ?? this.config.trackingEnabled,
       reportMode: options?.reportMode ?? false,

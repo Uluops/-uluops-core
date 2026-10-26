@@ -1106,6 +1106,19 @@ describe('AgentExecutor', () => {
       expect(result.degradationMarkers?.map(d => d.code)).toContain('steps.near-exhaustion');
     });
 
+    // 0.54.0 (tracker c13b7789). Fails on 0.53.1: no stepWrapUp, no marker.
+    it('a step-limit wrap-up marks the run partial with steps.forced-wrap-up', async () => {
+      const ai = mockAIProvider({ stepWrapUp: { atStep: 80, maxSteps: 100 } });
+      const executor = new AgentExecutor(baseConfig, ai, noopLogger);
+
+      const result = await executor.execute(makeValidatorDef(), { target: tmpDir });
+
+      expect(result.completeness).toBe('partial');
+      const marker = result.degradationMarkers?.find(d => d.code === 'steps.forced-wrap-up');
+      expect(marker).toMatchObject({ phase: 'execution', severity: 'degraded' });
+      expect(marker?.detail).toContain('step 81 of a 100-step limit');
+    });
+
     it('usage shape drift emits an info marker without touching completeness', async () => {
       const ai = mockAIProvider({ usageShapeDrift: ['anthropic'] });
       const executor = new AgentExecutor(baseConfig, ai, noopLogger);
@@ -1373,5 +1386,32 @@ describe('AgentExecutor — cancellation reaches the provider', () => {
 
     const generateArgs = vi.mocked(ai.generate).mock.calls[0]![0]!;
     expect(generateArgs.abortSignal).toBeUndefined();
+  });
+});
+
+// 0.54.0 (tracker c13b7789): the step limit's precedence. Each fails on 0.53.1, where the chain was
+// options.maxSteps ?? 50, unclamped, with no config level.
+describe('AgentExecutor — step limit precedence', () => {
+  let dir: string;
+  beforeEach(async () => { dir = await fs.mkdtemp(path.join(os.tmpdir(), 'steps-prec-')); });
+  afterEach(async () => { await fs.rm(dir, { recursive: true, force: true }); });
+  const stepsSent = async (config: ResolvedConfig, options?: { maxSteps?: number }) => {
+    const ai = mockAIProvider();
+    await new AgentExecutor(config, ai, noopLogger).execute(makeValidatorDef(), { target: dir }, options);
+    return (vi.mocked(ai.generate).mock.calls[0]?.[0] as { maxSteps?: number }).maxSteps;
+  };
+
+  it('defaults to 100', async () => {
+    expect(await stepsSent(baseConfig)).toBe(100);
+  });
+  it('uses the client config when the run sets none', async () => {
+    expect(await stepsSent({ ...baseConfig, maxSteps: 150 })).toBe(150);
+  });
+  it('a per-run value overrides the client config', async () => {
+    expect(await stepsSent({ ...baseConfig, maxSteps: 150 }, { maxSteps: 40 })).toBe(40);
+  });
+  it('clamps a per-run value to [1, 500]', async () => {
+    expect(await stepsSent(baseConfig, { maxSteps: 100_000 })).toBe(500);
+    expect(await stepsSent(baseConfig, { maxSteps: -3 })).toBe(1);
   });
 });

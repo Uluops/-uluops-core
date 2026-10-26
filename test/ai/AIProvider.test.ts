@@ -1120,7 +1120,7 @@ describe('AIProvider', () => {
       expect(tracker.forcedWrapUp).toBe(false);
     });
 
-    it('does not inject prepareStep when no contextBudget', async () => {
+    it('without a contextBudget, installs only the step wrap-up: no brake before the wrap-up step', async () => {
       const { generateText } = await import('ai');
       const mockGenerateText = vi.mocked(generateText);
 
@@ -1141,7 +1141,10 @@ describe('AIProvider', () => {
       });
 
       const call = mockGenerateText.mock.calls[0]?.[0] as any;
-      expect(call.prepareStep).toBeUndefined();
+      // 0.54.0: prepareStep is always installed for the step-limit wrap-up. With no budget it
+      // must not brake on context size: a huge context before the wrap-up step changes nothing.
+      expect(call.prepareStep({ stepNumber: 0, steps: [{ usage: { inputTokens: 10_000_000 } }] })).toEqual({});
+      expect(call.prepareStep({ stepNumber: 79, steps: [] })).toEqual({});
     });
   });
 
@@ -2676,22 +2679,19 @@ describe('AIProvider — CallWarning discriminants and abort names', () => {
 });
 
 /**
- * The wrap-up brake reports only what actually happened.
+ * The context-budget brake engages on Anthropic structured output (0.54.0).
  *
- * `structuredOutputMode: 'jsonTool'` — core's own default for every Anthropic structured-
- * output call — makes the provider HARD-OVERRIDE toolChoice to select its json tool, so
- * `prepareStep`'s `toolChoice: 'none'` never applies. The latch nonetheless marked a
- * forced wrap-up, `collectExecutionMarkers` emitted a `severity: 'degraded'` marker, and
- * `deriveCompleteness` returned 'partial'. A complete run on the dominant provider path
- * was stamped degraded for an event that never occurred.
+ * `structuredOutputMode: 'jsonTool'` — core's default for every Anthropic structured-output
+ * call — makes the provider HARD-OVERRIDE toolChoice, so a brake that set only
+ * `toolChoice: 'none'` never applied there. From 0.42.0 to 0.53.x the latch therefore stopped
+ * claiming a wrap-up on that path and the run carried `budget.brake-inert` instead. The brake now
+ * also withdraws the tools (`activeTools: []`), which the AI SDK applies before the provider sees
+ * the request (probed live on claude-sonnet-5, see WITHDRAW_TOOLS), so it engages, and the latch
+ * reports it on every path.
  *
- * Repairing the brake itself means changing structured-output strategy — a separate
- * decision, deliberately not taken here. What is withdrawn is the false CLAIM.
- *
- * POSITIVE CONTROL: drop the `brakeIsHonored &&` guards and the first test fails with
- * forcedWrapUp === true. Confirmed against the pre-fix code.
+ * NEGATIVE CONTROL: on 0.53.1 the first test fails (no activeTools, forcedWrapUp false).
  */
-describe('AIProvider — the wrap-up latch does not claim a brake that cannot engage', () => {
+describe('AIProvider — the wrap-up brake engages on Anthropic jsonTool structured output', () => {
   beforeEach(async () => {
     vi.clearAllMocks();
     const { generateText } = await import('ai');
@@ -2728,13 +2728,12 @@ describe('AIProvider — the wrap-up latch does not claim a brake that cannot en
     return { tracker, call };
   };
 
-  it('does NOT latch on an Anthropic jsonTool structured-output run', async () => {
+  it('withdraws the tools and latches on an Anthropic jsonTool structured-output run', async () => {
     const { tracker, call } = await runWithBudget({ structured: true });
 
-    // The brake is still attempted — the run's behavior is unchanged.
-    expect(call.prepareStep({ steps: [{ usage: { inputTokens: 85_000 } }] }).toolChoice).toBe('none');
-    // But nothing claims a wrap-up happened, because the provider ignores that toolChoice.
-    expect(tracker.forcedWrapUp).toBe(false);
+    expect(call.prepareStep({ steps: [{ usage: { inputTokens: 85_000 } }] })).toEqual({ toolChoice: 'none', activeTools: [] });
+    expect(tracker.forcedWrapUp).toBe(true);
+    expect(tracker.brakeInert).toBe(false);
   });
 
   it('DOES latch on a non-structured run, where the brake really applies', async () => {
@@ -2748,9 +2747,7 @@ describe('AIProvider — the wrap-up latch does not claim a brake that cannot en
     expect(tracker.forcedWrapUp).toBe(false);
   });
 
-  it('still warns at the budget crossing, so the event stays visible', async () => {
-    // Withdrawing the marker must not make the budget crossing invisible — the operator
-    // still needs to know, and the message says the brake could not engage.
+  it('warns at the budget crossing that tool calls are being stopped', async () => {
     const { generateText } = await import('ai');
     vi.mocked(generateText).mockResolvedValue({
       text: 'done', usage: { inputTokens: 50_000, outputTokens: 2_000 },
@@ -2777,7 +2774,76 @@ describe('AIProvider — the wrap-up latch does not claim a brake that cannot en
     call.prepareStep({ steps: [{ usage: { inputTokens: 85_000 } }] });
 
     expect(warn).toHaveBeenCalledWith(expect.stringContaining('Context budget 80% used'));
-    expect(warn).toHaveBeenCalledWith(expect.stringContaining('cannot engage'));
+    expect(warn).toHaveBeenCalledWith(expect.stringContaining('no more tool calls'));
+    expect(warn).not.toHaveBeenCalledWith(expect.stringContaining('cannot engage'));
+  });
+});
+
+/**
+ * The step limit and its wrap-up (0.54.0, tracker c13b7789). code-validator on claude-sonnet-5
+ * spent all 50 steps re-searching a two-file target and returned no output. Each test fails on
+ * 0.53.1: the default was 50, nothing was clamped, and nothing withdrew the tools before the limit.
+ */
+describe('AIProvider — step limit and step wrap-up', () => {
+  beforeEach(async () => {
+    vi.clearAllMocks();
+    const { generateText } = await import('ai');
+    vi.mocked(generateText).mockReset();
+  });
+
+  const generate = async (opts: { maxSteps?: number; structured?: boolean; prepareAt?: number[] }) => {
+    const { generateText, stepCountIs } = await import('ai');
+    vi.mocked(generateText).mockImplementation((async (args: any) => {
+      // Drive prepareStep the way the SDK does, so the result can report a wrap-up.
+      for (const n of opts.prepareAt ?? []) args.prepareStep({ stepNumber: n, steps: [] });
+      return { text: 'done', usage: { inputTokens: 10, outputTokens: 5 }, steps: [{ toolCalls: [] }], finishReason: 'stop', providerMetadata: {} };
+    }) as never);
+    const catalog = mockCatalog({
+      resolve: vi.fn().mockResolvedValue(makeResolvedModel({
+        capabilities: { tools: true, vision: true, streaming: true, extendedThinking: false, structuredOutput: !!opts.structured } as never,
+      } as never)),
+    } as never);
+    const result = await new AIProvider(mockConfig, catalog, noopLogger).generate({
+      model: 'sonnet', system: 't', prompt: 't',
+      ...(opts.maxSteps !== undefined ? { maxSteps: opts.maxSteps } : {}),
+      ...(opts.structured ? { output: { type: 'output-object', schema: {} } as never } : {}),
+    });
+    const call = vi.mocked(generateText).mock.calls[0]?.[0] as any;
+    return { result, call, stopAt: vi.mocked(stepCountIs).mock.calls.at(-1)?.[0] };
+  };
+
+  it('defaults to 100 steps', async () => {
+    expect((await generate({})).stopAt).toBe(100);
+  });
+
+  it('clamps the limit to [1, 500], and a non-integer falls back to the default', async () => {
+    expect((await generate({ maxSteps: 10_000 })).stopAt).toBe(500);
+    expect((await generate({ maxSteps: 0 })).stopAt).toBe(1);
+    expect((await generate({ maxSteps: Number.NaN })).stopAt).toBe(100);
+  });
+
+  it('keeps the structured-output headroom above the clamped limit', async () => {
+    expect((await generate({ maxSteps: 10_000, structured: true })).stopAt).toBe(502);
+  });
+
+  it('withdraws the tools from 80% of the limit, and not before', async () => {
+    const { call } = await generate({ maxSteps: 10 });
+    expect(call.prepareStep({ stepNumber: 7, steps: [] })).toEqual({});
+    expect(call.prepareStep({ stepNumber: 8, steps: [] })).toEqual({ toolChoice: 'none', activeTools: [] });
+    expect(call.prepareStep({ stepNumber: 9, steps: [] })).toEqual({ toolChoice: 'none', activeTools: [] });
+  });
+
+  it('a one-step limit still gives the first step its tools', async () => {
+    const { call } = await generate({ maxSteps: 1 });
+    expect(call.prepareStep({ stepNumber: 0, steps: [] })).toEqual({});
+    expect(call.prepareStep({ stepNumber: 1, steps: [] })).toEqual({ toolChoice: 'none', activeTools: [] });
+  });
+
+  it('reports the wrap-up on the result, once, at the step it happened', async () => {
+    const { result } = await generate({ maxSteps: 10, prepareAt: [0, 7, 8, 9] });
+    expect(result.stepWrapUp).toEqual({ atStep: 8, maxSteps: 10 });
+    const { result: none } = await generate({ maxSteps: 10, prepareAt: [0, 7] });
+    expect(none.stepWrapUp).toBeUndefined();
   });
 });
 
