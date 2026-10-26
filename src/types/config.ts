@@ -251,6 +251,16 @@ export interface UluOpsConfig {
   maxConcurrency?: number;
 
   /**
+   * Maximum tool-loop steps (model turns) per agent run, for every agent this client runs:
+   * `runAgent`, and the agents inside commands, workflows and pipelines. A per-run
+   * `ExecutionOptions.maxSteps` overrides it. Values are clamped to [1, 500]. Tools are withdrawn
+   * at 80% of the limit so the agent writes its answer. Falls back to the ULUOPS_MAX_STEPS env var,
+   * then 100.
+   * @default 100
+   */
+  maxSteps?: number;
+
+  /**
    * Operator-controlled tool allowlist. Definitions can request tools (e.g., `tools: ['bash']`
    * in agent YAML), but the tool is only granted if it also appears in this allowlist.
    *
@@ -320,6 +330,9 @@ export interface ResolvedConfig {
    *  instance (not per process — see AIProvider.concurrencyLimiter). Always
    *  set after resolution. */
   maxConcurrency: number;
+  /** Resolved {@link UluOpsConfig.maxSteps} (config, else ULUOPS_MAX_STEPS), clamped to [1, 500];
+   *  undefined when neither is set, so the executor's default applies. */
+  maxSteps?: number;
   /** Resolved {@link UluOpsConfig.allowedTools} (config, else ULUOPS_ALLOWED_TOOLS, trimmed and
    *  comma-split). Gates `bash` only; matched case-insensitively; undefined = bash denied. */
   allowedTools?: string[];

@@ -243,6 +243,19 @@ describe('UluOpsClient', () => {
   // directly with an explicit env object — observable behavior, not the args the
   // constructor happens to pass to a collaborator (was: constructorArgs(RegistryClient)).
   describe('resolveConfig', () => {
+    // 0.54.0 (tracker c13b7789): a client-level step limit. Each assertion fails on 0.53.1, which
+    // had no maxSteps in config at all.
+    it('resolves maxSteps from config, else ULUOPS_MAX_STEPS, clamped to [1, 500]', () => {
+      const key = { apiKey: 'ulr_from-config-01234567' };
+      expect(resolveConfig({ ...key, maxSteps: 150 }, { ULUOPS_MAX_STEPS: '250' }).maxSteps).toBe(150);
+      expect(resolveConfig(key, { ULUOPS_MAX_STEPS: '250' }).maxSteps).toBe(250);
+      expect(resolveConfig({ ...key, maxSteps: 9_999 }, {}).maxSteps).toBe(500);
+      expect(resolveConfig(key, { ULUOPS_MAX_STEPS: '0' }).maxSteps).toBe(1);
+      // Unset and non-numeric both leave it undefined, so the executor's default (100) applies.
+      expect(resolveConfig(key, {}).maxSteps).toBeUndefined();
+      expect(resolveConfig(key, { ULUOPS_MAX_STEPS: 'lots' }).maxSteps).toBeUndefined();
+    });
+
     it('throws when no API key is provided from any source', () => {
       expect(() => resolveConfig({}, {})).toThrow('API key is required');
     });

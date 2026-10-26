@@ -52,8 +52,25 @@ export const DEFAULT_GATE_THRESHOLD = 70;
  * See OutputExtractor.ts for where these are assigned. */
 export const EXTRACTION_CONFIDENCE_THRESHOLD = 0.7;
 
-/** Default maximum tool loop steps for agent execution. */
-export const DEFAULT_MAX_STEPS = 50;
+/**
+ * Default maximum tool-loop steps for an agent run. A step is one model turn (which may make
+ * several tool calls), not one tool call. Raised from 50 in 0.54.0 (tracker c13b7789): validators on
+ * claude-sonnet-5 used all 50 on a two-file target and returned nothing. The limit does not track the
+ * model's context window, which bounds what a turn can hold, not how many turns a job needs; input
+ * cost grows roughly with the square of the step count, because each step re-sends the conversation.
+ */
+export const DEFAULT_MAX_STEPS = 100;
+
+/** Hard ceiling on any configured step limit (config, env, or per run): one typo cannot buy an
+ *  unbounded run. A value above it is clamped, not refused. */
+export const MAX_STEPS_CEILING = 500;
+
+/**
+ * Fraction of the step limit after which the tools are withdrawn, so the agent writes its answer
+ * from what it has read instead of exploring until the limit cuts it off with no output. With the
+ * default 100 steps the tools go at step 80, leaving room for the final turn.
+ */
+export const STEP_WRAP_UP_FRACTION = 0.8;
 
 /**
  * Default ceiling on concurrent in-flight LLM generation calls per AIProvider
