@@ -1,4 +1,4 @@
-import { finitePositive } from '../utils/externalValue.js';
+import { finitePositive, externalInt, parseExternalNumber } from '../utils/externalValue.js';
 import { resolveWorkspaceOrg } from '@uluops/ops-sdk';
 import * as path from 'node:path';
 import { RegistryClient, type ResolvePinOptions } from '../registry/RegistryClient.js';
@@ -23,7 +23,7 @@ import type { PipelineHandle, PipelineResult } from '../types/pipeline.js';
 import type { DefinitionSummary, ResolvedDefinition } from '../types/registry.js';
 import type { DefinitionType } from '../types/execution.js';
 import { parseRef } from '../utils/parseRef.js';
-import { DEFAULT_MAX_CONCURRENCY } from '../constants.js';
+import { DEFAULT_MAX_CONCURRENCY, DEFAULT_MAX_STEPS, MAX_STEPS_CEILING } from '../constants.js';
 import type { RunSubmissionResponse, RunHistoryEntry, SubmissionQueryOptions } from '../types/submission.js';
 import { firstDataCollection } from '../utils/dataCollection.js';
 import { resolveThinkingMode } from '../ai/thinking.js';
@@ -852,9 +852,23 @@ export function resolveConfig(config: UluOpsConfig, env: NodeJS.ProcessEnv = pro
       // explicit Number.isFinite + range check before returning.
       ?? parseMaxConcurrency(env['ULUOPS_MAX_CONCURRENCY'])
       ?? DEFAULT_MAX_CONCURRENCY,
+    // EXTERNAL-OK: resolveMaxSteps IS the seam for both values — parseExternalNumber on the env text,
+    // then externalInt clamps to [1, MAX_STEPS_CEILING]; nothing reads them arithmetically here.
+    maxSteps: resolveMaxSteps(config.maxSteps, env['ULUOPS_MAX_STEPS']),
     allowedTools: config.allowedTools ?? parseAllowedTools(env['ULUOPS_ALLOWED_TOOLS']),
     allowStageSteps: config.allowStageSteps ?? (env['ULUOPS_ALLOW_STAGE_STEPS'] === 'true'),
   };
+}
+
+/**
+ * The client-level step limit: config, else the ULUOPS_MAX_STEPS env var, clamped to
+ * [1, MAX_STEPS_CEILING]; undefined when neither is set. A non-numeric env value is ignored, not
+ * turned into a limit.
+ */
+function resolveMaxSteps(configured: unknown, envValue: string | undefined): number | undefined {
+  const raw = configured ?? parseExternalNumber(envValue);
+  if (raw === undefined) return undefined;
+  return externalInt(raw, { min: 1, max: MAX_STEPS_CEILING, fallback: DEFAULT_MAX_STEPS });
 }
 
 /**

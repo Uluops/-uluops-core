@@ -89,6 +89,9 @@ describe('resolutionMarkersFromLegacy', () => {
  * "every coverage reduction emits a marker; nothing degrades silently", and a caller whose
  * configured cost ceiling provably did not apply has something it needs to know.
  *
+ * 0.54.0: the brake now withdraws the tools, which holds under jsonTool, so that cause is gone;
+ * the marker remains for the one left, a contextBudget that is not a usable positive number.
+ *
  * SEVERITY IS `info`, DELIBERATELY, and this is the judgment call: nothing was cut short,
  * so the run is genuinely `complete` and must NOT be downgraded to `partial`. What failed
  * is the caller's cost ceiling, not the agent's coverage. Marking it `degraded` would

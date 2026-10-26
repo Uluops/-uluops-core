@@ -11,7 +11,16 @@ v0.8.3, D15, D20, D22, D38, D39; normative text `uluops-pdl-spec-v1.6.0.md`, *Ex
 Steps*; checklist v0.1.3 §P3a). The rest of PDL 1.6.0 lands in P3b (conditions, load validation),
 P4a and P4b (decisions, gates, status) before R-core.
 
+**Agent step limit: a higher default, a client-level setting, a ceiling, and a wrap-up that makes the
+agent answer** (tracker `c13b7789`). `code-validator` on claude-sonnet-5 spent all 50 steps re-searching
+a two-file target and returned nothing, on 0.53.1 as on the PDL 1.6.0 branch; in a two-agent pipeline
+both agents did, for $1.75 and no scores. Raising the limit alone would make that failure dearer: the
+model was not short of steps, it never stopped exploring. Nothing told it to: there was no step-based
+wrap-up, and the context-budget brake was inert on Claude structured output.
+
 ### Upgrade impact
+
+*PDL 1.6.0 P3a (steps):*
 
 - **Consumer code:** `PipelineError.context` gains `loadErrors` (`PipelineLoadError[]`) and `refusal`
   (`PipelineRefusal`), both new exports; `TriggerDefinition` gains `parameters`. Additive. A consumer
@@ -37,14 +46,31 @@ P4a and P4b (decisions, gates, status) before R-core.
   template and a planted collision were both found.
 - **Runtime:** none measurable. One scan per step command at start, linear in its length.
 
-### Security
+*Agent step limit (c13b7789):*
 
-- **A run parameter could execute in a step** (tracker 2595e1a8). `{{ params.x }}` was replaced by the
-  single-quoted value, and every corpus template sits inside double quotes, where single quotes quote
-  nothing: a value `x$(touch PWNED)y` ran `touch`. Reach: steps enabled (`allowStageSteps`), and a
-  caller who supplies run parameters. Values now travel in the environment
-  (`src/executor/stepTemplates.ts`); the fixture `steps/template-value-with-shell-syntax` fails on
-  0.53.1 and passes here, and its canary asserts no `PWNED` file appears.
+- **Consumer code:** `UluOpsConfig.maxSteps` and `ResolvedConfig.maxSteps` (new, optional);
+  `ULUOPS_MAX_STEPS` env var; `AIGenerateResult.stepWrapUp` (new, optional). Additive.
+- **Behaviour change, no signature change:**
+  - the default step limit is **100** (was 50);
+  - every limit is clamped to **[1, 500]**: per run, config, env, and `AIGenerateOptions.maxSteps`
+    on a direct `AIProvider` call. A non-integer falls back to the default;
+  - at **80% of the limit** the tools are withdrawn, so the agent writes its answer; the run carries
+    a new **`steps.forced-wrap-up`** marker (`degraded`, so `completeness: 'partial'`). Before, the
+    loop ran to the limit and, if the model was still calling tools, threw `MaxStepsExhaustedError`
+    with no output;
+  - the **context-budget brake now engages on Anthropic structured output**. It withdraws the tools
+    (`activeTools: []`) as well as setting `toolChoice: 'none'`; `jsonTool` mode overrides the latter
+    but not the former. So `budget.forced-wrap-up` (`degraded`) now appears on Claude runs that
+    cross 80% of the budget, where 0.42.0–0.53.x emitted `budget.brake-inert` (`info`). A consumer
+    that counted `brake-inert` sees it only for an unusable `contextBudget` now, and sees more
+    `partial` results: each one is a run whose exploration really was cut short.
+- **Cost:** a run that used to die at step 50 can now run to step 80 and answer; one that finished
+  under 50 costs the same. Each extra step re-sends the conversation, so cost grows faster than the
+  step count.
+- **Not yet:** a per-run limit reaches `runAgent` and the inline agents of a directly constructed
+  `PipelineExecutor`, not `runCommand`, `runWorkflow` or `runPipeline` (the client-level setting does
+  reach them). A definition-level `agent.defaults.max_steps` arrives with the ADL minor after v1.20
+  (tracker `5570c1c6`, Alex 2026-10-26).
 
 ### Added
 
@@ -61,6 +87,12 @@ P4a and P4b (decisions, gates, status) before R-core.
   misplaced template, and `start()`'s load errors; each fails on 0.53.1. `regex-safety.test.ts` now
   asserts each entry is a `RegExp` (moving `TEMPLATE_RE` left its old import `undefined`, which
   `safe-regex2` accepts) and gates the placement pattern too.
+- **Tests:** the default, the clamp, the structured-output headroom above the clamped limit, the 80%
+  boundary, a one-step limit keeping its first step's tools, the wrap-up reported once at its step
+  (`AIProvider.test.ts`); the precedence run > config > default and the clamp (`AgentExecutor.test.ts`);
+  config and env resolution (`UluOpsClient.test.ts`); the marker. On 0.53.1, 14 of them fail; the one
+  that passes (a per-run value overrides the config) is the positive control. Three tests that pinned
+  the inert brake now pin the working one.
 
 ### Removed
 
@@ -74,6 +106,29 @@ P4a and P4b (decisions, gates, status) before R-core.
   reader. The test "propagates threshold from definition defaults" is gone; it passed only because
   it built a runtime shape `RegistryClient` never produces. `RegistryClient.test.ts` now asserts the
   copy is absent; it fails with the copy restored.
+
+### Fixed
+
+- **The context-budget wrap-up brake did nothing on Claude runs** (README warned of it from 0.42.0).
+  Probed live 2026-10-26 on claude-sonnet-5 with `structuredOutputMode: 'jsonTool'`: a model told to
+  keep calling a tool that never finishes exhausted a 5-step cap with no output, and did the same with
+  `toolChoice: 'none'` from step 2; with `activeTools: []` from step 2 it tried the withdrawn tool once
+  and returned a valid structured answer at step 4. `WITHDRAW_TOOLS` in `src/ai/AIProvider.ts` records
+  the probe; `isAnthropicJsonToolMode` and the brake-inert branch are gone.
+
+### Security
+
+- **A run parameter could execute in a step** (tracker 2595e1a8). `{{ params.x }}` was replaced by the
+  single-quoted value, and every corpus template sits inside double quotes, where single quotes quote
+  nothing: a value `x$(touch PWNED)y` ran `touch`. Reach: steps enabled (`allowStageSteps`), and a
+  caller who supplies run parameters. Values now travel in the environment
+  (`src/executor/stepTemplates.ts`); the fixture `steps/template-value-with-shell-syntax` fails on
+  0.53.1 and passes here, and its canary asserts no `PWNED` file appears.
+
+### Internal
+
+- `scripts/external-input-census.json`: two entry points move (the env read and the clamped
+  resolution); both are seamed (`parseExternalNumber`, `externalInt`).
 
 ## [0.53.1] - 2026-10-25
 

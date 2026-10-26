@@ -335,19 +335,26 @@ if (result.completeness !== 'complete') {
 ```
 
 - **`completeness`**: `'complete' | 'partial' | 'failed'`, derived from degradation markers (any `critical` ⇒ `failed`; any `degraded` ⇒ `partial`; else `complete`). Absent ⇒ treat as `complete`. **`PASS` + `partial` is a legitimate, gate-satisfying pass** (decided 2026-07-10, recorded in `types/degradation.ts`): the agent passed the scope it could cover — forced wrap-up and context eviction are normal operation on large repos. Gates never downgrade on completeness; consumers that care about evidence span read `completeness` alongside the decision.
-- **`degradationMarkers`**: typed `{ code, phase, severity, detail? }[]`. `code` is the stable contract (e.g. `budget.forced-wrap-up`, `context.evicted`, `steps.near-exhaustion`, `extraction.low-confidence`, `usage.provider-metadata-shape-drift`, `provider.warnings`, `model.unregistered-defaults`, `tools.shell-schema-fallback`, `render.raw-yaml-fallback`); `detail` is human-only — never match on it. `phase` is `'resolution' | 'execution'`.
+- **`degradationMarkers`**: typed `{ code, phase, severity, detail? }[]`. `code` is the stable contract (e.g. `budget.forced-wrap-up`, `steps.forced-wrap-up`, `context.evicted`, `steps.near-exhaustion`, `extraction.low-confidence`, `usage.provider-metadata-shape-drift`, `provider.warnings`, `model.unregistered-defaults`, `tools.shell-schema-fallback`, `render.raw-yaml-fallback`); `detail` is human-only — never match on it. `phase` is `'resolution' | 'execution'`.
 
-  > **`budget.forced-wrap-up` is emitted only when the wrap-up brake could actually engage.**
-  > On an Anthropic structured-output run the provider overrides `toolChoice` to select its
-  > json tool, so the brake is inert — see the `contextBudget` caveat under
-  > [Configuration](#configuration). Before 0.42.0 the marker latched anyway, so a complete
-  > run was reported `partial` for a wrap-up that never happened. It no longer does; the
-  > budget crossing is still logged at `warn`, naming the reason the brake could not act.
+  > **`budget.forced-wrap-up` and `steps.forced-wrap-up`** mean the tools were withdrawn before
+  > the agent finished exploring: the context budget crossed 80%, or the run reached 80% of its
+  > step limit. Both are `degraded`, so the run reads `partial`. Since 0.54.0 the wrap-up
+  > withdraws the tools (`activeTools: []`), which holds on Anthropic structured output too.
+  > From 0.42.0 to 0.53.x it set only `toolChoice: 'none'`, which that path overrides, so the
+  > brake did nothing there and the run carried `budget.brake-inert` instead; that marker now
+  > means only that the configured `contextBudget` was not a usable number.
 - The engine *observes* completeness from how the run actually executed; agents never self-report it. `deriveCompleteness(markers)` is exported if you want to recompute it.
 - **`decisionCategory`**: the vocabulary-resolved category of `decision` (`'positive' | 'negative' | 'conditional' | 'neutral'`), stamped on every result. For custom-vocabulary agents (cognitive lens agents, WDL-remapped workflow decisions) gate on this — or on `resolveDecisionCategory(result)` — instead of the raw decision string. See [Decision Classification](#decision-classification).
 - `degradations: string[]` is the deprecated legacy alias (resolution-phase strings only), retained for compatibility — prefer `degradationMarkers`.
 
-> Empty-output step exhaustion is a thrown [`MaxStepsExhaustedError`](#error-handling), not a marker; near-exhaustion *with* output is the `steps.near-exhaustion` marker.
+> Empty-output step exhaustion is a thrown [`MaxStepsExhaustedError`](#error-handling), not a marker; near-exhaustion *with* output is the `steps.near-exhaustion` marker. With the step wrap-up (0.54.0) both should be rare: at 80% of the limit the tools are withdrawn and the next turn is the answer.
+
+#### Step limit
+
+An agent run gets **100 tool-loop steps** by default; a step is one model turn, which may make several tool calls. Set it per client (`maxSteps` in the config, or `ULUOPS_MAX_STEPS`) or per run (`ExecutionOptions.maxSteps` on `runAgent`); the per-run value wins, and every value is clamped to **1–500**. The client value applies to every agent the client runs, including those inside commands, workflows and pipelines. A per-run value reaches `runAgent` and the inline agents of a `PipelineExecutor` called directly, but not yet `runCommand`, `runWorkflow` or `runPipeline`. An agent definition will be able to declare its own limit once ADL gains `agent.defaults.max_steps` (the minor after v1.20).
+
+At **80% of the limit** the tools are withdrawn, so the agent writes its answer from what it has read instead of being cut off mid-exploration with no output, and the result carries `steps.forced-wrap-up` (`degraded`). The limit is not derived from the model's context window, which bounds what a turn can hold, not how many turns a job needs. Raising it costs more than linearly: each step re-sends the conversation, so input tokens grow roughly with the square of the step count.
 
 ### Command Execution
 
@@ -1093,8 +1100,9 @@ const client = new UluOpsClient({
   debug: false,                       // Detailed execution logging (or ULUOPS_DEBUG)
   defaultThinkingBudget: 10000,       // Thinking budget when ai.extendedThinking is on (Google, OpenRouter;
                                       // not direct Anthropic yet). Capped per provider; see Extended Thinking
+  maxSteps: 100,                      // Tool-loop steps (model turns) per agent run, or ULUOPS_MAX_STEPS; clamped 1-500.
+                                      // Tools are withdrawn at 80% so the agent answers. See Step limit.
   contextBudget: 200000,              // Optional cap on the context budget (forces wrap-up at 80%, Anthropic eviction at 50%).
-                                      // ⚠ The 80% wrap-up brake does NOT apply to Anthropic structured-output runs — see below.
                                       // When unset, the engine uses the resolved model's real context window
                                       // (registry `limits.context`) — e.g. 1M for Opus 4.6+, 128k for many GPT/Gemini —
                                       // falling back to 200k only when the window is unknown. When set, it caps the
@@ -1123,27 +1131,16 @@ const client = new UluOpsClient({
 });
 ```
 
-> ### ⚠️ `contextBudget`'s 80% wrap-up brake is inert on Anthropic structured output
+> ### `contextBudget`'s 80% wrap-up brake (fixed for Anthropic structured output in 0.54.0)
 >
-> The brake works by returning `toolChoice: 'none'` from the AI SDK's `prepareStep`. When
-> Anthropic runs structured output through `structuredOutputMode: 'jsonTool'` — which is
-> what core sets by default for every Anthropic structured-output call — the provider
-> **hard-overrides `toolChoice`** to select its json tool, so the brake never applies and
-> the model keeps calling tools past 80%.
->
-> Two consequences worth knowing before you rely on `contextBudget` as a cost control:
->
-> - **It is not a hard stop on that path.** The eviction half (Anthropic context management
->   at 50%) still works; only the wrap-up half is overridden. If you need a hard ceiling,
->   set a lower `contextBudget`, cap `maxSteps`, or run without structured output.
-> - **The run no longer claims otherwise.** Through 0.41.0 the `budget.forced-wrap-up`
->   marker latched regardless, downgrading a complete run to `partial` completeness for an
->   event that did not occur. As of 0.42.0 the marker is emitted only where the brake can
->   act; the budget crossing is still logged at `warn`, and the message names this reason.
->
-> `providerWarnings` does not surface this — it is a core-internal `toolChoice` override,
-> not something the provider reports. An explicit `providerOptions.anthropic.structuredOutputMode`
-> other than `'jsonTool'` restores both the brake and the marker.
+> The brake returns `{ toolChoice: 'none', activeTools: [] }` from the AI SDK's `prepareStep`
+> once the context crosses 80% of the budget. Through 0.53.x it returned only
+> `toolChoice: 'none'`, and Anthropic's `structuredOutputMode: 'jsonTool'`, core's default for
+> every Claude structured-output call, hard-overrides `toolChoice`, so the brake did nothing on
+> that path and the model kept calling tools. Withdrawing `activeTools` is applied by the AI SDK
+> before the provider builds the request, so it holds there (probed live 2026-10-26 on
+> claude-sonnet-5), and `budget.forced-wrap-up` is now reported wherever the brake engages. The
+> eviction half (Anthropic context management at 50%) is unchanged.
 
 ### Local Definition File Naming
 

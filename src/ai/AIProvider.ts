@@ -28,7 +28,7 @@ import type { ResolvedConfig, ResolvedAIConfig } from '../types/config.js';
 import type { ModelCatalog, ResolvedModel } from './ModelCatalog.js';
 import { TokenBudgetTracker } from './TokenBudgetTracker.js';
 import { Semaphore } from './Semaphore.js';
-import { DEFAULT_MAX_STEPS, DEFAULT_MAX_TOKENS, DEFAULT_TEMPERATURE, ANTHROPIC_BASH_TOOL_VERSION, ANTHROPIC_CONTEXT_MANAGEMENT_TYPE, ANTHROPIC_CONTEXT_KEEP_TOOL_USES, DEFAULT_DYNAMIC_PROVIDERS, DEFAULT_CONTEXT_BUDGET, DEFAULT_MAX_CONCURRENCY } from '../constants.js';
+import { DEFAULT_MAX_STEPS, MAX_STEPS_CEILING, STEP_WRAP_UP_FRACTION, DEFAULT_MAX_TOKENS, DEFAULT_TEMPERATURE, ANTHROPIC_BASH_TOOL_VERSION, ANTHROPIC_CONTEXT_MANAGEMENT_TYPE, ANTHROPIC_CONTEXT_KEEP_TOOL_USES, DEFAULT_DYNAMIC_PROVIDERS, DEFAULT_CONTEXT_BUDGET, DEFAULT_MAX_CONCURRENCY } from '../constants.js';
 import { executeShellAsString, executeShellAsOpenAIResult } from './shellExecutor.js';
 import {
   SdkApiError,
@@ -46,7 +46,7 @@ import {
 import { tripRunFor } from '../utils/runTrip.js';
 import type { ModelCapabilities } from '@uluops/registry-sdk';
 import type { Logger } from '@uluops/sdk-core';
-import { usableBudget, resolveRequestTimeoutMs, finitePositive, finiteNonNegative, parseExternalNumber } from '../utils/externalValue.js';
+import { usableBudget, resolveRequestTimeoutMs, finitePositive, finiteNonNegative, parseExternalNumber, externalInt } from '../utils/externalValue.js';
 import { firstDataCollection } from '../utils/dataCollection.js';
 import { isDeadlineSignal } from '../utils/runStop.js';
 import {
@@ -85,9 +85,25 @@ type MappableUsage =
  * `totalUsage` by summing per-step usage, so summing the same values here reproduces it
  * on the path where the result is gone.
  */
+/**
+ * What a wrap-up returns from prepareStep: no tools for this step, so the model writes its answer.
+ *
+ * `activeTools: []` is the half that works on Anthropic structured output: `jsonTool` mode
+ * hard-overrides `toolChoice`, but the AI SDK drops inactive tools before the provider builds the
+ * request. Probed live 2026-10-26 on claude-sonnet-5 with `structuredOutputMode: 'jsonTool'`: a model
+ * told to keep calling a tool that never finishes exhausted a 5-step cap with no output, and did the
+ * same with `toolChoice: 'none'` from step 2; with `activeTools: []` from step 2 it attempted the
+ * withdrawn tool once, got an unavailable-tool error, and returned a valid structured answer at step 4.
+ * `toolChoice: 'none'` stays for providers that read it.
+ */
+const WITHDRAW_TOOLS = { toolChoice: 'none' as const, activeTools: [] as never[] };
+
 interface StepTotals {
   steps: number;
   toolCalls: number;
+  /** The step at which tools were withdrawn for the step-limit wrap-up, and the limit it served;
+   *  undefined when the run never reached it. Carried here so both result paths report it. */
+  stepWrapUp?: { atStep: number; maxSteps: number };
   inputTokens: number;
   outputTokens: number;
   noCacheTokens: number;
@@ -328,6 +344,10 @@ export interface AIGenerateResult<TOutput = unknown> {
    *  means it ran on fabricated defaults: DEFAULT_CAPABILITIES, the default context budget, and
    *  no cost estimate. AgentExecutor turns that into an info marker (OpenRouter plan 1e). */
   modelRegistered?: boolean;
+
+  /** Set when the step-limit wrap-up withdrew the tools: the step it happened at and the limit.
+   *  AgentExecutor turns it into a `steps.forced-wrap-up` degradation marker. */
+  stepWrapUp?: { atStep: number; maxSteps: number };
 
   /** Provider warnings the AI SDK emitted for this call — unsupported settings, clamped
    *  values, silently-dropped parameters. This is the SDK's OWN drift channel and core
@@ -661,7 +681,7 @@ export class AIProvider {
     // than as a fabricated zero. Both properties are needed: map the error, AND keep the
     // usage, which stepTotals still holds.
     try {
-      return { ...this.buildGenerateResult(result, resolved, useStructuredOutput), thinking };
+      return { ...this.buildGenerateResult(result, resolved, useStructuredOutput, stepTotals.stepWrapUp), thinking };
     } catch (error) {
       // The log states what handleGenerateError will ACTUALLY do, which depends on the
       // run. Only the structured-output branches return a fallback result carrying
@@ -698,7 +718,7 @@ export class AIProvider {
     if (options.tools) {
       this.logger.debug(`Tools: ${Object.keys(options.tools).join(', ')}`);
     }
-    this.logger.debug(`Config: maxTokens=${options.maxTokens ?? DEFAULT_MAX_TOKENS}, maxSteps=${options.maxSteps ?? DEFAULT_MAX_STEPS}, temp=${options.temperature ?? DEFAULT_TEMPERATURE}`);
+    this.logger.debug(`Config: maxTokens=${options.maxTokens ?? DEFAULT_MAX_TOKENS}, maxSteps=${options.maxSteps ?? DEFAULT_MAX_STEPS} (clamped to 1-${MAX_STEPS_CEILING}), temp=${options.temperature ?? DEFAULT_TEMPERATURE}`);
 
     if (options.output && !useStructuredOutput) {
       this.logger.info(
@@ -722,27 +742,14 @@ export class AIProvider {
   ) {
     let stepCount = 0;
     const budgetTracker = options.budgetTracker;
-    // Does `toolChoice: 'none'` actually reach the provider on this run?
-    //
-    // It does not when Anthropic runs structured output through `structuredOutputMode:
-    // 'jsonTool'` — core's own default for every Anthropic structured-output call — because
-    // the provider HARD-OVERRIDES toolChoice to select its json tool. The brake is a no-op
-    // there, on the dominant path.
-    //
-    // Fixing the brake itself means changing structured-output strategy and is a separate
-    // decision. What is fixed here is the REPORT: the latch no longer marks a forced
-    // wrap-up that never happened, so a complete run stops being stamped `degraded` and
-    // downgraded to 'partial' completeness for a non-event. The log line still fires, so
-    // the budget crossing remains visible; only the false claim is withdrawn.
-    const brakeIsHonored = !(useStructuredOutput && this.isAnthropicJsonToolMode(providerOptions));
     // `usableBudget`, not truthiness. AIGenerateOptions.contextBudget is PUBLIC, so a
     // library consumer is an external input source: `contextBudget: 0` is falsy, which
     // meant no prepareStep, no brake — AND markBrakeInert() never reached, so the run
     // reported `complete` with no marker at all. contextBudget.ts names this exact failure
     // and closes it at deriveContextBudget; it was open again one layer above that.
     const requestedBudget = usableBudget(options.contextBudget);
-    const prepareStep = requestedBudget !== undefined
-      ? this.buildBudgetPrepareStep(requestedBudget, budgetTracker, brakeIsHonored)
+    const budgetPrepare = requestedBudget !== undefined
+      ? this.buildBudgetPrepareStep(requestedBudget, budgetTracker)
       : undefined;
     if (options.contextBudget !== undefined && requestedBudget === undefined) {
       // Nothing degrades silently (types/degradation.ts invariant 1): a caller who asked
@@ -753,7 +760,26 @@ export class AIProvider {
       );
       budgetTracker?.markBrakeInert();
     }
-    const maxSteps = options.maxSteps ?? DEFAULT_MAX_STEPS;
+    // AIGenerateOptions.maxSteps is public, so it is clamped here too, not only in AgentExecutor.
+    const maxSteps = externalInt(options.maxSteps ?? DEFAULT_MAX_STEPS, { min: 1, max: MAX_STEPS_CEILING, fallback: DEFAULT_MAX_STEPS });
+    // The step-limit wrap-up (0.54.0, tracker c13b7789). Without it a model that keeps exploring
+    // runs into the limit mid tool call and the run ends with no output at all. From this step on
+    // the tools are withdrawn and the next turn is the answer. At least one step keeps its tools.
+    const wrapUpAt = Math.max(1, Math.floor(maxSteps * STEP_WRAP_UP_FRACTION));
+    const prepareStep = (args: { stepNumber: number; steps: Array<{ usage: { inputTokens?: number; outputTokens?: number } }> }) => {
+      const fromBudget = budgetPrepare?.(args) ?? {};
+      if (args.stepNumber >= wrapUpAt) {
+        if (!stepTotals.stepWrapUp) {
+          stepTotals.stepWrapUp = { atStep: args.stepNumber, maxSteps };
+          this.logger.warn(
+            `Step ${args.stepNumber + 1} of a ${maxSteps}-step limit: withdrawing tools so the agent writes its answer `
+            + `from what it has read (wrap-up at ${Math.round(STEP_WRAP_UP_FRACTION * 100)}%).`,
+          );
+        }
+        return WITHDRAW_TOOLS;
+      }
+      return fromBudget;
+    };
 
     return generateText({
       model: languageModel,
@@ -772,7 +798,7 @@ export class AIProvider {
       // the next one; the value is guarded, not exempted.
       abortSignal: mergeAbortSignals(options, this.config.timeout),
       ...(providerOptions ? { providerOptions } : {}),
-      ...(prepareStep ? { prepareStep } : {}),
+      prepareStep,
       ...(useStructuredOutput ? { output: Output.object(options.output!) } : {}),
       onStepFinish: (step) => {
         // FIRST, before anything that can throw. The SDK's notify() swallows a callback's
@@ -912,6 +938,7 @@ export class AIProvider {
     result: Awaited<ReturnType<typeof generateText>>,
     resolved: ResolvedModel,
     useStructuredOutput: boolean,
+    stepWrapUp?: { atStep: number; maxSteps: number },
   ): AIGenerateResult {
     // EXTERNAL-OK: reads a COUNT or an enum off the SDK result, not a priced quantity. An array length and a
     // finishReason string carry no money and no threshold.
@@ -977,6 +1004,7 @@ export class AIProvider {
       model: `${resolved.provider}:${resolved.modelId}`,
       provider: resolved.provider,
       modelRegistered: resolved.registered,
+      ...(stepWrapUp ? { stepWrapUp } : {}),
       steps: result.steps.length,
       finishReason: result.finishReason,
       costUsd: this.computeCostUsd(usage, resolved.cost),
@@ -1056,6 +1084,7 @@ export class AIProvider {
       model: `${resolved.provider}:${resolved.modelId}`,
       provider: resolved.provider,
       modelRegistered: resolved.registered,
+      ...(stepTotals.stepWrapUp ? { stepWrapUp: stepTotals.stepWrapUp } : {}),
       steps: stepTotals.steps,
       finishReason,
       costUsd: stepTotals.sawUsage ? this.computeCostUsd(usage, resolved.cost) : undefined,
@@ -1500,22 +1529,15 @@ export class AIProvider {
    * Each step's `inputTokens` is the TOTAL input for that API call (the full
    * conversation including cached tokens). The last step's value represents the
    * current context window size. We check that against the budget.
-   */
-  /**
-   * True when this run's provider options put Anthropic into `structuredOutputMode:
-   * 'jsonTool'` — the mode in which the provider hard-overrides `toolChoice` to select its
-   * json tool, making a `toolChoice: 'none'` wrap-up brake inert.
    *
-   * Reads the options object that will actually be SENT, not the config that was intended,
-   * so an explicit caller override of structuredOutputMode is respected: a caller who
-   * selects a different mode gets a working brake and an honest marker.
+   * The brake withdraws the tools (WITHDRAW_TOOLS) rather than only setting
+   * `toolChoice: 'none'`. Until 0.54.0 it set toolChoice alone, which Anthropic's
+   * `jsonTool` structured-output mode, core's default for every Claude agent run,
+   * overrides: the brake did nothing on the dominant path and the run carried a
+   * `budget.brake-inert` marker. Withdrawing `activeTools` is applied by the AI SDK
+   * before the provider sees the request, so it holds on every provider.
    */
-  private isAnthropicJsonToolMode(providerOptions?: ProviderOptions): boolean {
-    const anthropic = providerOptions?.anthropic as Record<string, unknown> | undefined;
-    return anthropic?.['structuredOutputMode'] === 'jsonTool';
-  }
-
-  private buildBudgetPrepareStep(budget: number, budgetTracker?: TokenBudgetTracker, brakeIsHonored = true) {
+  private buildBudgetPrepareStep(budget: number, budgetTracker?: TokenBudgetTracker) {
     // Hysteresis band: latch wrap-up on at 80% of budget, release it only once
     // context falls back below 70%. The lower release threshold prevents the
     // latch from flapping on/off around a single boundary, while still allowing
@@ -1546,7 +1568,7 @@ export class AIProvider {
       // not. Hold the latch state rather than acting on a non-measurement.
       // EXTERNAL-OK: this IS the absent-vs-zero discriminator for the wrap-up brake — the guard itself.
       if (lastStep.usage.inputTokens === undefined) {
-        return wrapUpInjected ? { toolChoice: 'none' as const } : {};
+        return wrapUpInjected ? WITHDRAW_TOOLS : {};
       }
       const contextSize = safeTokenCount(lastStep.usage.inputTokens);
 
@@ -1554,32 +1576,21 @@ export class AIProvider {
         // Release the latch if context has recovered below the lower band.
         if (contextSize < lowerThreshold) {
           wrapUpInjected = false;
-          if (brakeIsHonored) budgetTracker?.markForcedWrapUp(false);
+          budgetTracker?.markForcedWrapUp(false);
           this.logger.info(
             `Context budget recovered (${contextSize}/${budget}, <70%). Releasing wrap-up — tool calls re-enabled.`,
           );
           return {};
         }
         // Still in/above the band — keep forcing output.
-        return { toolChoice: 'none' as const };
+        return WITHDRAW_TOOLS;
       }
 
       if (contextSize >= upperThreshold) {
         wrapUpInjected = true;
-        // Only claim a forced wrap-up when the brake can actually engage — see
-        // brakeIsHonored at the call site. Latching regardless is what made every
-        // Anthropic structured-output run crossing 80% report an event that never
-        // occurred, and carry a 'degraded' marker and 'partial' completeness for it.
-        if (brakeIsHonored) budgetTracker?.markForcedWrapUp(true);
-        else budgetTracker?.markBrakeInert();
-        this.logger.warn(
-          brakeIsHonored
-            ? `Context budget 80% used (${contextSize}/${budget}). Forcing output — no more tool calls.`
-            : `Context budget 80% used (${contextSize}/${budget}). NOTE: the wrap-up brake cannot engage on this run — ` +
-              `Anthropic's jsonTool structured-output mode overrides toolChoice — so tool calls continue. ` +
-              `Lower contextBudget or disable structured output if you need a hard stop.`,
-        );
-        return { toolChoice: 'none' as const };
+        budgetTracker?.markForcedWrapUp(true);
+        this.logger.warn(`Context budget 80% used (${contextSize}/${budget}). Forcing output — no more tool calls.`);
+        return WITHDRAW_TOOLS;
       }
 
       return {};
