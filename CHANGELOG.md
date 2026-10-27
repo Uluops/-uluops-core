@@ -149,8 +149,9 @@ wrap-up, and the context-budget brake was inert on Claude structured output.
     with `skipReason` `agent_unjudgeable: …`, and its gate decides the flow. Before, a threshold over
     an all-scoreless panel was fail-open. **42 corpus stage sites put an explorer, generator or
     executor behind a `warn` gate with a threshold** (70, 60 or 0; uluops-agent-workflows
-    `354ffc81`); each will now end unjudgeable on every run (WARNED under P4b, with `STAGE_ERRORED`),
-    a question raised for the spec owner;
+    `354ffc81`); each would end unjudgeable on every run. Ruled D42 (spec v0.8.4, Alex 2026-10-26): D24
+    stands, and the corpus makes those gates decision-only in P6a (32 drop the threshold; the two
+    stages that mix in scoring agents at threshold 70 are split);
   - **the pre-launch vocabulary check is enabled**: `start()` resolves every inline agent of a
     blocking-gated stage (`abort`, `fail`, `skip`, or no `on_failure`) and refuses with
     `VOCABULARY_MISSING` when one neither declares `decisions.vocabulary` / `completion.vocabulary`
