@@ -315,7 +315,7 @@ cases:
         - { id: b, depends_on: [pre], agents: [{ ref: stub-gate-a }], gate: { threshold: 80, on_failure: fail } }
 
   - id: gates/steps-only-hard-failure-no-gate
-    covers: ["§3.1 FAILED", "§3.2 failure modes"]
+    covers: ["§3.1 WARNED", "§3.2 failure modes", D43]
     applies_to: [core, skill]
     stubs:
       stub-gate-a: { decision: PROCEED, score: 90 }
@@ -326,9 +326,8 @@ cases:
             - { name: broken, command: "exit 3" }
         - { id: b, depends_on: [pre], agents: [{ ref: stub-gate-a }], gate: { threshold: 80, on_failure: fail } }
     note: >
-      §3.1 makes pre FAILED, so all_gates_passed is false. Whether b launches depends on which
-      failure mode governs a stage that has no gate at all, and the spec names one only for a
-      gate with no on_failure (abort). Pending (open question Q4).
+      A stage with no gate never fails the run (D43, revising D19's "behaves as fail", which
+      answered Q4): pre is WARNED, all_gates_passed stays true, and b runs.
 
   - id: gates/steps-only-hard-failure-warn-gate
     covers: ["§3.1 FAILED (a step failure behind a warn gate gives WARNED)"]
