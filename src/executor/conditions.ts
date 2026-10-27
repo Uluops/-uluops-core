@@ -1,287 +1,358 @@
-import { parseExternalNumber } from '../utils/externalValue.js';
 /**
- * Condition-expression evaluation for PDL stages and inline agents
- * (pdl-steps-execution-spec-v0_1_1 Phase 3 / D5).
+ * The PDL 1.6.0 condition language: parser and evaluator for stage and `agentRef` conditions
+ * (build unit P3b).
  *
- * Grammar (deliberately small — no parentheses, no arithmetic):
+ * Normative source: `uluops-pdl-spec-v1.6.0.md`, Execution Semantics → The condition language.
+ * Design record: pdl-1_6_0 spec §3.4, decisions D2 (three roots, total), D4 (a runtime error is an
+ * interpreter defect), D25 (legacy forms removed), D36 (`!` placement), D40 (no control character in
+ * a literal), D41 (the bound counts code points). The conformance fixtures
+ * (`test/fixtures/pdl-conformance/`, `conditions/*` and the condition `load-errors/*`) are the oracle.
  *
- *   expr        := andExpr ('||' andExpr)*
- *   andExpr     := term ('&&' term)*
- *   term        := '!'* (comparison | path)
- *   comparison  := path op literal
- *   op          := '==' | '!=' | '>=' | '<=' | '>' | '<'
- *   literal     := 'str' | "str" | number | true | false
- *                  (string literals are NON-ESCAPABLE — there is no backslash
- *                  escape; to embed one quote style, use the other)
- *   path        := params.<name> | params['<name>']
- *              | stages.<id>.steps['<name>'].<field>
- *              | stages.<id>.<field>
- *              | <id>.<field>                       (legacy, pre-Phase-3 form)
+ * The grammar (EBNF, from the spec):
  *
- * Evaluation is THREE-VALUED (Kleene): true / false / null-unknown. A stage or
- * step path that cannot be resolved (missing stage, or an unsupported
- * namespace such as the PDL spec's `trigger.`/`context.` families) yields
- * unknown, which propagates: unknown || true == true, unknown && false ==
- * false, otherwise unknown survives to the top. Callers treat a top-level
- * unknown as FAIL-OPEN (run the stage/agent, warn) — flipping to fail-closed
- * is a corpus-audited decision deferred to PDL v1.3.0 (spec OQ3).
+ *   condition = or-expr ;                       (at most 512 code points)
+ *   or-expr   = and-expr , { "||" , and-expr } ;
+ *   and-expr  = unary , { "&&" , unary } ;
+ *   unary     = "!" , negand | atom ;
+ *   negand    = reference | "(" , or-expr , ")" ;
+ *   atom      = reference , [ ( "==" | "!=" ) , string ] | "(" , or-expr , ")" ;
+ *   reference = segment , { "." , segment | "[" , string , "]" } ;
+ *   segment   = letter , { letter | digit | "_" | "-" } ;
+ *   string    = "'" , { not "'" } , "'" | '"' , { not '"' } , '"' ;
  *
- * EXCEPTION — the params namespace (spec D5 amendment, live-test finding
- * e9399a31): an ABSENT param is a value, not an unknown. Bare `params.x` with
- * x unset is false, `!params.x` is true, `== literal` is false, `!= literal`
- * is true; only ordering comparators over an absent param stay unknown.
- * Absence of a param is a normal caller state (the corpus gates agents with
- * `params.frontend || <detect>` expecting absent→false); absence of a stage
- * path is a typo signal, where running-anyway is the safety property.
+ * A reference resolves against exactly three roots: `params.<name>`, `stages.<id>.passed` and
+ * `stages.<id>.steps['<name>'].output`.
  *
- * SECOND EXCEPTION — result fields of a non-completed stage (issue 10908362):
- * when the referenced stage EXISTS but crashed or was skipped (status !==
- * 'completed', no result envelope), its result fields are KNOWN-absent, not
- * unknown. A verdict-gating condition like
- * `stages.gate.decisionCategory == 'positive'` must fail CLOSED when the gate
- * stage crashed — the stage genuinely exists and genuinely has no positive
- * verdict, so equality is false, inequality is true, bare truthiness is false.
- * The typo fail-open (stage id not found at all → unknown) is unaffected, as
- * is field absence on a COMPLETED stage (still unknown — could be a field-name
- * typo). This closes the crash hole in the documented verdict-gating idiom;
- * the broader pipeline-level on_failure posture remains a PDL-spec question.
+ * What changed from the pre-1.6.0 evaluator, each a stated upgrade impact (spec §6 items 5, 26,
+ * 31, 32): ordering operators, number and boolean literals, any `stages.<id>.<field>` other than
+ * `passed`, the `stage.` prefix and the bare `<id>.<field>` form are syntax errors or unknown roots;
+ * parentheses parse; the string `0` is falsy; `!params.a == 'x'` and `!!x` are syntax errors. The
+ * old evaluator returned "unknown" for anything it could not read and the stage ran (fail-open);
+ * now the load validator (`pipelineLoad.ts`) refuses such a condition before anything launches,
+ * and the evaluator is total.
+ *
+ * The parser is a port of the factory's (`@uluops/definition-factory`, `src/parser/pdl-conditions.ts`),
+ * extended to build the tree the evaluator walks. Both are held to the same fixtures; a fix to one
+ * is a fix to the other. Linear time: one tokenizing pass and a recursive-descent parse over at most
+ * 512 code points, checked before any work is done (CWE-1333 discipline; this module uses no
+ * backtracking regex on the condition).
  */
 
 import type { StageResult } from '../types/pipeline.js';
 
-export interface ConditionContext {
-  /** Results of stages completed so far (in execution order). */
-  stages: StageResult[];
-  /** Caller-supplied run parameters (ExecutionInput.params). */
-  params?: Record<string, string | number | boolean>;
-}
-
-/** true / false / null = unknown (unresolvable path or unparseable term). */
-export type ConditionVerdict = boolean | null;
-
-/**
- * Sentinel for "the stage exists but did not complete, so this result field is
- * KNOWN-absent" (second exception above). Distinct from `undefined`, which
- * means the path itself could not be resolved (typo / missing stage → unknown).
- */
-const STAGE_RESULT_ABSENT: unique symbol = Symbol('stage-result-absent');
-
-/** Expressions longer than this are rejected as unknown (fail-open) before
- *  any regex runs. Condition strings are definition-controlled and evaluated
- *  WITHOUT any opt-in, so their processing cost must be hard-bounded
- *  (security review: reachable quadratic backtracking, CWE-1333/400).
- *  512 chars is ~4x the longest corpus condition. */
+/** Conditions over this many CODE POINTS are refused before tokenizing (D41). */
 export const MAX_CONDITION_LENGTH = 512;
 
-// REGEX SAFETY: no quantifier here competes with an adjacent quantifier over
-// an overlapping character set — the lazy path capture (.+?) abuts the
-// operator alternation directly (whitespace before the operator lands in the
-// capture and is trimmed by the caller). The earlier `(.+?)\s*(==|…)` shape
-// backtracked quadratically on long whitespace runs. All four patterns are
-// covered by test/executor/regex-safety.test.ts (safe-regex2 + timing).
-export const COMPARISON_RE =
-  /^(.+?)(==|!=|>=|<=|>|<)\s*(?:'([^']*)'|"([^"]*)"|(-?\d+\.\d+|-?\d+)|(true|false))$/;
-
-export const PARAMS_PATH_RE = /^params(?:\.([\w-]+)|\['([^']+)'\]|\["([^"]+)"\])$/;
-
-export const STEPS_PATH_RE =
-  /^(?:stages\.|stage\.)([\w-]+)\.steps\[(?:'([^']+)'|"([^"]+)")\]\.([\w]+)$/;
-
-export const STAGE_FIELD_RE = /^(?:stages\.|stage\.)?([\w-]+)\.([\w]+)$/;
-
-/** Split on a delimiter at top level only (never inside quoted strings). */
-function splitTopLevel(expr: string, delimiter: '||' | '&&'): string[] {
-  const parts: string[] = [];
-  let current = '';
-  let quote: "'" | '"' | null = null;
-  for (let i = 0; i < expr.length; i++) {
-    const ch = expr[i]!;
-    if (quote) {
-      if (ch === quote) quote = null;
-      current += ch;
-      continue;
-    }
-    if (ch === "'" || ch === '"') {
-      quote = ch;
-      current += ch;
-      continue;
-    }
-    if (ch === delimiter[0] && expr[i + 1] === delimiter[1]) {
-      parts.push(current);
-      current = '';
-      i++;
-      continue;
-    }
-    current += ch;
-  }
-  parts.push(current);
-  return parts.map(p => p.trim());
-}
-
-function resolvePath(path: string, ctx: ConditionContext): unknown {
-  const paramsMatch = PARAMS_PATH_RE.exec(path);
-  if (paramsMatch) {
-    // Mandatory alternation: exactly one of groups 1-3 is defined iff exec matched.
-    const name = paramsMatch[1] ?? paramsMatch[2] ?? paramsMatch[3]!;
-    return ctx.params?.[name];
-  }
-
-  const stepsMatch = STEPS_PATH_RE.exec(path);
-  if (stepsMatch) {
-    const [, stageId, name1, name2, field] = stepsMatch;
-    const stage = ctx.stages.find(s => s.id === stageId);
-    const step = stage?.steps?.find(s => s.name === (name1 ?? name2));
-    if (!step) return undefined;
-    return getField(step, field!);
-  }
-
-  const stageMatch = STAGE_FIELD_RE.exec(path);
-  if (stageMatch) {
-    const [, stageId, field] = stageMatch;
-    const stage = ctx.stages.find(s => s.id === stageId);
-    if (!stage) return undefined;
-    // Prefer the inner result (score, decision, ...), fall back to the
-    // StageResult envelope (status, durationMs).
-    const fromResult = stage.result ? getField(stage.result, field!) : undefined;
-    if (fromResult !== undefined) return fromResult;
-    const fromEnvelope = getField(stage, field!);
-    if (fromEnvelope !== undefined) return fromEnvelope;
-    // Stage exists but never completed: its result fields are KNOWN-absent —
-    // verdict-gating conditions must fail closed on a crashed/skipped gate
-    // stage (module header, second exception; issue 10908362).
-    if (stage.status !== 'completed') return STAGE_RESULT_ABSENT;
-    return undefined;
-  }
-
-  return undefined;
+/** Length in code points, the unit the JSON schema's `maxLength` counts (D41). */
+export function conditionLength(src: string): number {
+  return [...src].length;
 }
 
 /**
- * Dynamic field access on internally-produced objects (StepResult,
- * CommandResult/WorkflowResult, StageResult). SAFETY: single type-erasing
- * cast to an unknown-valued record — no concrete structure is fabricated,
- * and every caller narrows the result through truthy()/String()/Number().
- * (Restores the single-assertion discipline of the pre-Phase-3 getField.)
+ * Characters a string literal may not hold (D40): C0 controls (tab, newline included), DEL, C1
+ * controls, U+2028 and U+2029.
  */
-function getField(obj: object, field: string): unknown {
-  if (!(field in obj)) return undefined;
-  return (obj as Record<string, unknown>)[field];
+const LITERAL_CONTROL = /[\u0000-\u001f\u007f-\u009f\u2028\u2029]/;
+
+/** Whole-condition faults, checked before any reference. */
+export type ConditionParseCode = 'condition_too_long' | 'condition_syntax';
+
+/** Per-reference faults this module can classify. */
+export type ReferenceFaultCode = 'unknown_root' | 'unknown_path';
+
+/** A reference that resolved to one of the three roots. */
+export type ConditionRef =
+  | { kind: 'param'; name: string }
+  | { kind: 'passed'; stage: string }
+  | { kind: 'step'; stage: string; step: string };
+
+/** A reference that did not resolve to a root. */
+export interface ReferenceFault { kind: 'fault'; code: ReferenceFaultCode; message: string }
+
+/** The parsed condition. */
+export type ConditionNode =
+  | { k: 'or' | 'and'; l: ConditionNode; r: ConditionNode }
+  | { k: 'not'; e: ConditionNode }
+  | { k: 'cmp'; ref: ConditionRef | ReferenceFault; op: '==' | '!='; lit: string }
+  | { k: 'ref'; ref: ConditionRef | ReferenceFault };
+
+/**
+ * `refs` is in source order and may hold faults: the spec runs every check on one reference
+ * (root, path, declaration, ancestry, step) before the next, so the load validator, which holds
+ * the context for the later checks, walks this list and stops at the first fault.
+ */
+export type ConditionParseResult =
+  | { ok: true; tree: ConditionNode; refs: Array<ConditionRef | ReferenceFault> }
+  | { ok: false; code: ConditionParseCode; message: string };
+
+/** `ws`: whitespace came right before this token (whitespace may not appear inside a reference). */
+type Token =
+  | { t: 'op'; v: '||' | '&&' | '==' | '!=' | '!' | '(' | ')' | '[' | ']' | '.'; ws: boolean }
+  | { t: 'str'; v: string; ws: boolean }
+  | { t: 'id'; v: string; ws: boolean };
+
+type RawSegment = { kind: 'seg'; v: string } | { kind: 'key'; v: string };
+
+class SyntaxFault extends Error {}
+
+const isLetter = (c: string): boolean => (c >= 'a' && c <= 'z') || (c >= 'A' && c <= 'Z');
+const isDigit = (c: string): boolean => c >= '0' && c <= '9';
+
+function tokenize(src: string): Token[] {
+  const out: Token[] = [];
+  let i = 0;
+  let ws = false;
+  while (i < src.length) {
+    const c = src[i]!;
+    if (c === ' ' || c === '\t' || c === '\n' || c === '\r') { i++; ws = true; continue; }
+    const two = src.slice(i, i + 2);
+    if (two === '||' || two === '&&' || two === '==' || two === '!=') { out.push({ t: 'op', v: two, ws }); i += 2; ws = false; continue; }
+    if (c === '!' || c === '(' || c === ')' || c === '[' || c === ']' || c === '.') { out.push({ t: 'op', v: c, ws }); i++; ws = false; continue; }
+    if (c === "'" || c === '"') {
+      const end = src.indexOf(c, i + 1);
+      if (end < 0) throw new SyntaxFault('unterminated string literal');
+      if (LITERAL_CONTROL.test(src.slice(i + 1, end))) throw new SyntaxFault('a string literal may not contain a control character (D40)');
+      out.push({ t: 'str', v: src.slice(i + 1, end), ws });
+      ws = false;
+      i = end + 1;
+      continue;
+    }
+    if (isLetter(c)) {
+      let j = i + 1;
+      while (j < src.length && (isLetter(src[j]!) || isDigit(src[j]!) || src[j] === '_' || src[j] === '-')) j++;
+      out.push({ t: 'id', v: src.slice(i, j), ws });
+      i = j;
+      ws = false;
+      continue;
+    }
+    // digits (number literals), `=`, `<`, `>`, and anything else
+    throw new SyntaxFault(`unexpected character ${JSON.stringify(c)}`);
+  }
+  return out;
 }
 
-function truthy(value: unknown): ConditionVerdict {
-  if (value === undefined || value === null) return null;
-  if (typeof value === 'boolean') return value;
-  if (typeof value === 'number') return value !== 0;
-  if (typeof value === 'string') return value !== '' && value !== 'false';
-  return null;
+/** Classify one syntactically valid reference against the three roots. */
+function classify(segs: RawSegment[]): ConditionRef | ReferenceFault {
+  const [root, ...rest] = segs;
+  const shown = segs.map((s, n) => (s.kind === 'key' ? `['${s.v}']` : (n ? '.' : '') + s.v)).join('');
+  if (root!.kind !== 'seg' || (root!.v !== 'params' && root!.v !== 'stages')) {
+    return { kind: 'fault', code: 'unknown_root', message: `"${shown}": a condition reads only params.*, stages.<id>.passed and stages.<id>.steps['<name>'].output` };
+  }
+  if (root!.v === 'params') {
+    if (rest.length === 1) return { kind: 'param', name: rest[0]!.v };
+    return { kind: 'fault', code: 'unknown_path', message: `"${shown}": write params.<name> or params['<name>']` };
+  }
+  const [id, a, b, c] = rest;
+  if (rest.length === 2 && id?.kind === 'seg' && a?.kind === 'seg' && a.v === 'passed') {
+    return { kind: 'passed', stage: id.v };
+  }
+  if (rest.length === 4 && id?.kind === 'seg' && a?.kind === 'seg' && a.v === 'steps' && b?.kind === 'key' && c?.kind === 'seg' && c.v === 'output') {
+    return { kind: 'step', stage: id.v, step: b.v };
+  }
+  return { kind: 'fault', code: 'unknown_path', message: `"${shown}": a stage reference is stages.<id>.passed or stages.<id>.steps['<name>'].output` };
 }
 
-function evaluateTerm(term: string, ctx: ConditionContext): ConditionVerdict {
-  // Unary negation: !unknown stays unknown.
-  let negations = 0;
-  let rest = term;
-  while (rest.startsWith('!')) {
-    negations++;
-    rest = rest.slice(1).trim();
-  }
-  const negate = (v: ConditionVerdict): ConditionVerdict =>
-    v === null ? null : (negations % 2 === 1 ? !v : v);
+class Parser {
+  private i = 0;
+  readonly refs: Array<ConditionRef | ReferenceFault> = [];
+  constructor(private readonly toks: Token[]) {}
 
-  const cmp = COMPARISON_RE.exec(rest);
-  if (cmp) {
-    // Non-null assertions here are regex invariants: path (group 1) and op
-    // (group 2) are mandatory captures, and exactly one literal alternative
-    // (str1/str2/num/bool) is defined iff exec matched.
-    const [, pathRaw, op, str1, str2, num, bool] = cmp;
-    const path = pathRaw!.trim();
-    const actual = resolvePath(path, ctx);
-    if (actual === STAGE_RESULT_ABSENT) {
-      // Known-absent result field on a non-completed stage: equality to any
-      // literal is false, inequality true; ordering is ill-formed (unknown).
-      if (op === '==') return negate(false);
-      if (op === '!=') return negate(true);
-      return null;
-    }
-    if (actual === undefined || actual === null) {
-      // D5 amendment: within the params namespace, ABSENCE IS A VALUE, not an
-      // unknown — an unset param equals no literal (== false, != true).
-      // Stage/step path absence stays unknown: there it signals a typo or a
-      // missing stage, where fail-open is the safety property. Ordering over
-      // an absent param remains ill-formed (unknown).
-      if (PARAMS_PATH_RE.test(path)) {
-        if (op === '==') return negate(false);
-        if (op === '!=') return negate(true);
-      }
-      return null;
-    }
-    const expected: string | number | boolean =
-      // EXTERNAL-OK: `num` is already a finite number here — parseExternalNumber ran on the
-    // operands above. This re-reads a validated value, not an external one.
-    num !== undefined ? Number(num)
-      : bool !== undefined ? bool === 'true'
-      : (str1 ?? str2)!;
-    // Ordering comparators over a non-numeric operand are ill-formed: yield
-    // unknown (fail-open) rather than NaN-comparison false — a false verdict
-    // under run-gate semantics would silently SKIP the stage on a typo.
-    if (op !== '==' && op !== '!=') {
-      const a = parseExternalNumber(actual) ?? NaN;
-      const e = parseExternalNumber(expected) ?? NaN;
-      if (Number.isNaN(a) || Number.isNaN(e)) return null;
-      switch (op) {
-        case '>=': return negate(a >= e);
-        case '<=': return negate(a <= e);
-        case '>':  return negate(a > e);
-        case '<':  return negate(a < e);
-      }
-    }
-    switch (op) {
-      case '==': return negate(String(actual) === String(expected));
-      case '!=': return negate(String(actual) !== String(expected));
-    }
+  private peek(): Token | undefined { return this.toks[this.i]; }
+  private isOp(v: string): boolean { const k = this.peek(); return k?.t === 'op' && k.v === v; }
+  private expectOp(v: string): void {
+    if (!this.isOp(v)) throw new SyntaxFault(`expected ${JSON.stringify(v)}`);
+    this.i++;
   }
 
-  // Bare path truthiness (params.frontend, stages.deploy.failed).
-  // D5 amendment: an absent param is false (so !params.x is true) — the
-  // corpus idiom `params.frontend || <detect>` expects absent→false, and the
-  // harness path reads unset params the same way. Stage/step absence → unknown.
-  if (PARAMS_PATH_RE.test(rest)) {
-    return negate(truthy(resolvePath(rest, ctx)) ?? false);
-  }
-  if (STEPS_PATH_RE.test(rest) || STAGE_FIELD_RE.test(rest)) {
-    const resolved = resolvePath(rest, ctx);
-    // Known-absent result field on a non-completed stage → false, not unknown.
-    if (resolved === STAGE_RESULT_ABSENT) return negate(false);
-    return negate(truthy(resolved));
+  parse(): ConditionNode {
+    if (this.toks.length === 0) throw new SyntaxFault('empty condition');
+    const tree = this.orExpr();
+    if (this.i !== this.toks.length) throw new SyntaxFault(`unexpected ${JSON.stringify(this.peek()!.v)}`);
+    return tree;
   }
 
-  // Bare boolean literals (degenerate but legal).
-  if (rest === 'true') return negate(true);
-  if (rest === 'false') return negate(false);
+  private orExpr(): ConditionNode {
+    let l = this.andExpr();
+    while (this.isOp('||')) { this.i++; l = { k: 'or', l, r: this.andExpr() }; }
+    return l;
+  }
 
-  return null;
+  private andExpr(): ConditionNode {
+    let l = this.unary();
+    while (this.isOp('&&')) { this.i++; l = { k: 'and', l, r: this.unary() }; }
+    return l;
+  }
+
+  private group(): ConditionNode {
+    this.expectOp('(');
+    const e = this.orExpr();
+    this.expectOp(')');
+    return e;
+  }
+
+  private unary(): ConditionNode {
+    if (this.isOp('!')) {
+      this.i++;
+      // D36: `!` precedes only a reference or a parenthesised expression.
+      if (this.isOp('(')) return { k: 'not', e: this.group() };
+      return { k: 'not', e: { k: 'ref', ref: this.reference() } };
+    }
+    return this.atom();
+  }
+
+  private atom(): ConditionNode {
+    if (this.isOp('(')) return this.group();
+    const ref = this.reference();
+    if (this.isOp('==') || this.isOp('!=')) {
+      const op = (this.peek() as { v: '==' | '!=' }).v;
+      this.i++;
+      const k = this.peek();
+      if (k?.t !== 'str') throw new SyntaxFault('a comparison needs a string literal on the right');
+      this.i++;
+      return { k: 'cmp', ref, op, lit: k.v };
+    }
+    return { k: 'ref', ref };
+  }
+
+  private reference(): ConditionRef | ReferenceFault {
+    const first = this.peek();
+    if (first?.t !== 'id') throw new SyntaxFault('expected a reference');
+    this.i++;
+    const segs: RawSegment[] = [{ kind: 'seg', v: first.v }];
+    for (;;) {
+      const next = this.peek();
+      if (next?.ws && (this.isOp('.') || this.isOp('['))) throw new SyntaxFault('whitespace inside a reference');
+      if (this.isOp('.')) {
+        this.i++;
+        const k = this.peek();
+        if (k?.t !== 'id' || k.ws) throw new SyntaxFault('expected a segment right after "."');
+        this.i++;
+        segs.push({ kind: 'seg', v: k.v });
+      } else if (this.isOp('[')) {
+        this.i++;
+        const k = this.peek();
+        if (k?.t !== 'str' || k.ws) throw new SyntaxFault('expected a quoted key right after "["');
+        this.i++;
+        if (this.peek()?.ws) throw new SyntaxFault('whitespace inside a reference');
+        this.expectOp(']');
+        segs.push({ kind: 'key', v: k.v });
+      } else break;
+    }
+    if (segs.length === 1 && (segs[0]!.v === 'true' || segs[0]!.v === 'false')) {
+      throw new SyntaxFault('boolean literals are not part of the condition language');
+    }
+    const ref = classify(segs);
+    this.refs.push(ref);
+    return ref;
+  }
 }
 
 /**
- * Evaluate a condition expression against completed stages and run params.
- * Returns true / false, or null when the expression is unparseable or a
- * needed path is unresolvable — the caller decides fail-open vs fail-closed.
+ * Parse a condition and classify its references. A whole-condition fault (length, then syntax) is
+ * returned as `ok: false`; reference faults ride in `refs` (and in the tree), in source order.
  */
-export function evaluateConditionExpr(expr: string, ctx: ConditionContext): ConditionVerdict {
-  if (expr.length > MAX_CONDITION_LENGTH) return null;
-  const trimmed = expr.trim();
-  if (!trimmed) return null;
-
-  // Kleene OR over Kleene ANDs.
-  let orVerdict: ConditionVerdict = false;
-  for (const orPart of splitTopLevel(trimmed, '||')) {
-    let andVerdict: ConditionVerdict = true;
-    for (const andPart of splitTopLevel(orPart, '&&')) {
-      const v = evaluateTerm(andPart, ctx);
-      if (v === false) { andVerdict = false; break; }
-      if (v === null) andVerdict = null;
-    }
-    if (andVerdict === true) return true;
-    if (andVerdict === null) orVerdict = null;
+export function parseCondition(src: string): ConditionParseResult {
+  const length = conditionLength(src);
+  if (length > MAX_CONDITION_LENGTH) {
+    return { ok: false, code: 'condition_too_long', message: `condition is ${length} code points; the limit is ${MAX_CONDITION_LENGTH}` };
   }
-  return orVerdict;
+  try {
+    const parser = new Parser(tokenize(src));
+    const tree = parser.parse();
+    return { ok: true, tree, refs: parser.refs };
+  } catch (e) {
+    if (e instanceof SyntaxFault) return { ok: false, code: 'condition_syntax', message: e.message };
+    throw e;
+  }
+}
+
+// ── Evaluation ──────────────────────────────────────────────────────────────
+
+/** The error value E (spec, Semantics): a read of a step that did not pass. */
+export const E = 'E' as const;
+
+/** A condition's value: true, false, or the error value E. */
+export type ConditionValue = boolean | typeof E;
+
+/** What a condition reads at run time. */
+export interface ConditionContext {
+  /** The run's parameters, declared defaults bound first. A missing key is an absent parameter. */
+  params: Readonly<Record<string, string | number | boolean | undefined>>;
+  /** Results of the stages that have ended so far. */
+  stages: readonly StageResult[];
+  /** `stages.<id>.passed` for each ended stage (PASSED, per the spec's status model). */
+  passed: ReadonlyMap<string, boolean>;
+}
+
+/** Absent: a declared parameter with no default and no value. Equals nothing; falsy. */
+const ABSENT = Symbol('absent');
+type Read = string | typeof ABSENT | typeof E;
+
+function read(ref: ConditionRef | ReferenceFault, ctx: ConditionContext): Read {
+  switch (ref.kind) {
+    case 'param': {
+      const v = Object.hasOwn(ctx.params, ref.name) ? ctx.params[ref.name] : undefined;
+      return v === undefined ? ABSENT : String(v);
+    }
+    case 'passed':
+      return String(ctx.passed.get(ref.stage) ?? false);
+    case 'step': {
+      // Readable only when the step's status is `passed` (a continue_on_error step that exited 0
+      // included). Failed, timed out, skipped after a hard failure, failed to spawn, or in a stage
+      // whose steps never ran: E.
+      const step = ctx.stages.find(s => s.id === ref.stage)?.steps?.find(s => s.name === ref.step);
+      return step?.status === 'passed' ? step.output.trim() : E;
+    }
+    case 'fault':
+      // Load validation refuses every fault, so reaching one is an interpreter defect (D4).
+      return E;
+  }
+}
+
+/** Truthiness: false for absent, '', 'false' and '0'; true otherwise. Every value is a string. */
+function truthy(v: Read): ConditionValue {
+  if (v === E) return E;
+  if (v === ABSENT) return false;
+  return v !== '' && v !== 'false' && v !== '0';
+}
+
+function evaluate(node: ConditionNode, ctx: ConditionContext): ConditionValue {
+  switch (node.k) {
+    case 'ref': return truthy(read(node.ref, ctx));
+    case 'cmp': {
+      const v = read(node.ref, ctx);
+      if (v === E) return E;
+      // An absent value equals nothing, not even ''.
+      const equal = v !== ABSENT && v === node.lit;
+      return node.op === '==' ? equal : !equal;
+    }
+    case 'not': {
+      const v = evaluate(node.e, ctx);
+      return v === E ? E : !v;
+    }
+    case 'and': {
+      // Kleene: false absorbs E from either side; otherwise E propagates.
+      const l = evaluate(node.l, ctx);
+      const r = evaluate(node.r, ctx);
+      if (l === false || r === false) return false;
+      return l === E || r === E ? E : true;
+    }
+    case 'or': {
+      const l = evaluate(node.l, ctx);
+      const r = evaluate(node.r, ctx);
+      if (l === true || r === true) return true;
+      return l === E || r === E ? E : false;
+    }
+  }
+}
+
+/**
+ * Evaluate a condition. Total: true, false, or E. A condition that does not parse yields E, since
+ * load validation refuses it before any stage launches (D4: a runtime error is an interpreter
+ * defect, and its stage or agent ends ERRORED).
+ */
+export function evaluateCondition(src: string, ctx: ConditionContext): ConditionValue {
+  const parsed = parseCondition(src);
+  if (!parsed.ok) return E;
+  return evaluate(parsed.tree, ctx);
 }

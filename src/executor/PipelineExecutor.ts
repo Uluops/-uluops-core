@@ -6,8 +6,9 @@ import type { RegistryClient } from '../registry/RegistryClient.js';
 import type { ResolvedDefinition } from '../types/registry.js';
 import type { PipelineDefinition, StageDefinition, GateDefinition, PipelineResult, StageResult, StepResult, PipelineState, PipelineHandle as IPipelineHandle } from '../types/pipeline.js';
 import { StepsExecutor } from './StepsExecutor.js';
-import { checkStepTemplateRules, nulParameter } from './stepTemplates.js';
-import { evaluateConditionExpr } from './conditions.js';
+import { nulParameter } from './stepTemplates.js';
+import { evaluateCondition, E, type ConditionContext } from './conditions.js';
+import { checkPipelineLoadRules, stagesReadingStepOutput, bindParameterDefaults } from './pipelineLoad.js';
 import { buildUpstreamContext } from './upstreamContext.js';
 import type { ExecutionInput, ExecutionOptions, UpstreamStageContext } from '../types/execution.js';
 import type { AgentResult } from '../types/agent.js';
@@ -71,7 +72,7 @@ export class PipelineExecutor {
    */
   async start(resolved: ResolvedDefinition, input: ExecutionInput, options?: ExecutionOptions): Promise<PipelineHandle> {
     const def = this.assertPipelineDefinition(resolved);
-    this.refuseBeforeLaunch(def, input);
+    this.refuseBeforeLaunch(def, input, options);
     const pipelineId = `pipeline_${Date.now()}_${crypto.randomUUID().substring(0, 8)}`;
 
     const state: PipelineState = {
@@ -176,6 +177,12 @@ export class PipelineExecutor {
     options?: ExecutionOptions,
   ): Promise<void> {
     const def = this.assertPipelineDefinition(resolved);
+    // Conditions and steps read the run's parameters with declared defaults bound first (PDL 1.6.0,
+    // condition context). Agents do not read parameters by name.
+    const runInput: ExecutionInput = { ...input, params: bindParameterDefaults(def.pipeline, input.params, input.target) };
+    // `stages.<id>.passed` for every stage that has ended: PASSED in the spec's status model.
+    const passed = new Map<string, boolean>();
+    const conditionCtx: ConditionContext = { params: runInput.params ?? {}, stages: state.stageResults, passed };
 
     try {
       for (let i = 0; i < def.pipeline.stages.length; i++) {
@@ -199,52 +206,27 @@ export class PipelineExecutor {
           continue;
         }
 
-        // Evaluate execution condition. SEMANTICS (Phase 3, spec D5):
-        // `condition` is a RUN-gate per the PDL spec — the stage runs when it
-        // holds and is skipped when it is definitively false. This flips the
-        // engine's pre-Phase-3 skip-if reading, which never actually fired for
-        // any corpus condition (the old grammar could not parse them).
-        // `skip_if` (deprecated) keeps skip-if-true semantics. Unknown verdicts
-        // (unresolvable path / unparseable expression) FAIL OPEN: run + warn.
-        const conditionCtx = { stages: state.stageResults, params: input.params };
+        // The stage condition (PDL 1.6.0, the condition language): the stage runs when it is true
+        // and is SKIPPED when it is false. Load validation (start()) has refused every condition
+        // that does not parse or references what does not exist, so the value is total: true,
+        // false, or E — a read of a step that did not pass. E makes the stage ERRORED
+        // (`condition_error`). Until P4b adds that status, an E stage is recorded `failed` with
+        // `condition_error` as its reason, and its gate decides the flow as for any failed stage.
+        // Before 1.6.0 a condition core could not read made the stage run (fail-open), and a
+        // deprecated `skip_if` was evaluated beside it; `skip_if` is now an undeclared key (D25).
         if (stage.condition) {
-          const verdict = evaluateConditionExpr(stage.condition, conditionCtx);
-          if (verdict === false) {
+          const value = evaluateCondition(stage.condition, conditionCtx);
+          if (value === false) {
             state.stageResults.push(this.createSkippedStage(stage, 'condition_not_met'));
+            passed.set(stage.id, false);
             continue;
           }
-          if (verdict === null) {
-            this.logger.warn(`Condition "${stage.condition}" on stage "${stage.id}" could not be resolved — running stage (fail-open)`);
-          }
-        } else if (stage.skip_if) {
-          const verdict = evaluateConditionExpr(stage.skip_if, conditionCtx);
-          if (verdict === true) {
-            state.stageResults.push(this.createSkippedStage(stage, 'condition_met'));
+          if (value === E) {
+            state.stageResults.push(this.createConditionErrorStage(stage, `its condition "${stage.condition}" read a step that did not pass`));
+            passed.set(stage.id, false);
+            if (this.enactGate(stage, true, def.pipeline.stages, i, state)) break;
             continue;
           }
-          if (verdict === null) {
-            this.logger.warn(`skip_if "${stage.skip_if}" on stage "${stage.id}" could not be resolved — running stage (fail-open)`);
-          }
-        }
-
-        // Hard gates must not silently pass unexecuted (G5): a steps stage
-        // whose gate resolves to on_failure:abort verifies nothing when
-        // allowStageSteps is off. That is a configuration error — the author
-        // declared the gate mandatory, the operator cannot run it — so fail
-        // the run loudly with the remedy instead of stamping PASS.
-        if (
-          isStepsStage(stage) &&
-          stage.gate &&
-          resolveOnFailure(stage.gate) === 'abort' &&
-          !(options?.allowStageSteps ?? this.allowStageSteps)
-        ) {
-          throw new PipelineError(
-            `Stage "${stage.id}" is a hard gate (gate.on_failure: abort) but its steps ` +
-            `cannot run — allowStageSteps is disabled. Enable it (config.allowStageSteps, ` +
-            `ULUOPS_ALLOW_STAGE_STEPS=true, or per-run options.allowStageSteps) or ` +
-            `downgrade the gate to on_failure: warn.`,
-            {},
-          );
         }
 
         // Execute stage. Upstream forwarding (stage-output-forwarding spec §3.4):
@@ -256,7 +238,7 @@ export class PipelineExecutor {
           state.stageResults,
           (msg) => this.logger.debug(msg),
         );
-        const stageResult = await this.executeStage(stage, input, options, state.stageResults, upstreamContext);
+        const stageResult = await this.executeStage(stage, runInput, options, conditionCtx, upstreamContext);
         state.stageResults.push(stageResult);
 
         // A cancel that landed WHILE this stage was running wins over anything the gate
@@ -284,20 +266,10 @@ export class PipelineExecutor {
 
         // Enact the stage gate (PDL $defs/gate). Until now gates were parsed
         // but never read — on_failure:abort flowed on like warn (G5).
-        const flow = this.applyGate(stage, stageResult);
-        if (flow === 'abort') {
-          this.skipRemaining(def.pipeline.stages, i + 1, state, 'gate_abort');
-          state.error = `Stage "${stage.id}" failed its gate (on_failure: abort)`;
-          state.status = 'failed';
-          break;
-        }
-        if (flow === 'skip' || flow === 'skip_remaining') {
-          this.skipRemaining(
-            def.pipeline.stages, i + 1, state,
-            flow === 'skip' ? 'gate_skip' : 'gate_early_exit',
-          );
-          break;
-        }
+        // The gate is judged once: the same verdict sets `stages.<id>.passed` and the flow.
+        const gateFailed = stage.gate ? this.gateFailed(stage.gate, stage, stageResult) : stepsFailed(stageResult);
+        passed.set(stage.id, stageResult.status === 'completed' && !gateFailed);
+        if (this.enactGate(stage, gateFailed, def.pipeline.stages, i, state)) break;
       }
 
       if (state.status === 'running') {
@@ -321,21 +293,59 @@ export class PipelineExecutor {
   }
 
   /**
-   * PDL 1.6.0 checks that run before anything launches (P3a): the step-template load errors
-   * (`template_placement`, `parameter_env_collision`), then the `PARAM_NUL` refusal. They run
-   * whether or not steps are enabled: the spec makes them properties of the pipeline and the run,
-   * not of a step. Thrown from `start()`, before any state exists, so the caller gets the codes.
+   * PDL 1.6.0 checks that run before anything launches, in this order. Thrown from `start()`, before
+   * any state exists, so the caller gets the codes and nothing ran.
+   *
+   * 1. **Load validation** (`pipelineLoad.ts`): every load error the spec names, with its location,
+   *    on `context.loadErrors`. Load warnings (`SKIP_DEPRECATED`) are logged.
+   * 2. **Steps disabled, step output read** (`STEP_OUTPUT_STEPS_DISABLED`): a condition that reads
+   *    step output while steps are off would read input that cannot exist.
+   * 3. **Steps disabled, hard-gated steps stage** (G5, no code): a steps stage behind an `abort`
+   *    gate would verify nothing. Before 1.6.0 this was thrown when the stage loop reached the
+   *    stage, after earlier stages had run and been paid for.
+   * 4. **`PARAM_NUL`**: a parameter value, declared defaults included, holds NUL.
+   *
+   * The two steps-disabled refusals name the same remedy, enabling steps for the run, and say what
+   * the global switch also enables. They do not suggest downgrading a gate to `warn`: that does not
+   * make a condition's input exist, and it turns a check the author made mandatory into advice.
    */
-  private refuseBeforeLaunch(def: PipelineDefinition, input: ExecutionInput): void {
-    const loadErrors = checkStepTemplateRules(def.pipeline);
-    if (loadErrors.length > 0) {
+  private refuseBeforeLaunch(def: PipelineDefinition, input: ExecutionInput, options?: ExecutionOptions): void {
+    const { errors, warnings } = checkPipelineLoadRules(def.pipeline);
+    if (errors.length > 0) {
       throw new PipelineError(
         `Pipeline "${def.pipeline.interface.name}" failed load validation: ` +
-          loadErrors.map(e => `${e.code} at ${e.at}: ${e.message}`).join('; '),
-        { loadErrors },
+          errors.map(e => `${e.code} at ${e.at}: ${e.message}`).join('; '),
+        { loadErrors: errors },
       );
     }
-    const nul = nulParameter(input.params);
+    for (const w of warnings) this.logger.warn(`${w.code} at stage:${w.stage}: ${w.message}`);
+
+    if (!(options?.allowStageSteps ?? this.allowStageSteps)) {
+      const remedy =
+        'Enable steps for this run (per-run options.allowStageSteps, or config.allowStageSteps). ' +
+        'The global ULUOPS_ALLOW_STAGE_STEPS=true also enables host-shell steps for every pipeline, ' +
+        'registry-resolved ones included.';
+      const readers = stagesReadingStepOutput(def.pipeline);
+      if (readers.length > 0) {
+        throw new PipelineError(
+          `Run refused (STEP_OUTPUT_STEPS_DISABLED): the condition of ${readers.map(r => `"${r}"`).join(', ')} ` +
+            `reads step output, and steps are disabled, so that output cannot exist. ${remedy}`,
+          { refusal: { code: 'STEP_OUTPUT_STEPS_DISABLED', stages: readers } },
+        );
+      }
+      const hardGated = def.pipeline.stages.filter(
+        s => isStepsStage(s) && s.gate !== undefined && resolveOnFailure(s.gate) === 'abort',
+      );
+      if (hardGated.length > 0) {
+        throw new PipelineError(
+          `Run refused: ${hardGated.map(s => `"${s.id}"`).join(', ')} is a hard gate (gate.on_failure: abort) ` +
+            `over steps, and steps are disabled, so it would verify nothing. ${remedy}`,
+          {},
+        );
+      }
+    }
+
+    const nul = nulParameter(bindParameterDefaults(def.pipeline, input.params, input.target));
     if (nul !== undefined) {
       throw new PipelineError(
         `Run refused (PARAM_NUL): the value of parameter "${nul}" contains NUL`,
@@ -360,12 +370,12 @@ export class PipelineExecutor {
    * The shared failure envelope lives here: any throw from a type executor
    * becomes a status:'failed' StageResult rather than aborting the pipeline.
    */
-  private async executeStage(stage: StageDefinition, input: ExecutionInput, options?: ExecutionOptions, priorResults: StageResult[] = [], upstreamContext: UpstreamStageContext[] = []): Promise<StageResult> {
+  private async executeStage(stage: StageDefinition, input: ExecutionInput, options: ExecutionOptions | undefined, conditionCtx: ConditionContext, upstreamContext: UpstreamStageContext[] = []): Promise<StageResult> {
     const startTime = Date.now();
 
     try {
       if (stage.type === 'agents' && stage.agents) {
-        return await this.executeAgentsStage(stage, input, options, priorResults, upstreamContext, startTime);
+        return await this.executeAgentsStage(stage, input, options, conditionCtx, upstreamContext, startTime);
       }
       if (isStepsStage(stage)) {
         return await this.executeStepsStage(stage, input, options, startTime);
@@ -422,12 +432,12 @@ export class PipelineExecutor {
     stage: StageDefinition,
     input: ExecutionInput,
     options: ExecutionOptions | undefined,
-    priorResults: StageResult[],
+    conditionCtx: ConditionContext,
     upstreamContext: UpstreamStageContext[],
     startTime: number,
   ): Promise<StageResult> {
     const agentInput = upstreamContext.length > 0 ? { ...input, upstreamContext } : input;
-    const agentResults = await this.executeInlineAgents(stage.agents!, agentInput, options, priorResults);
+    const { results: agentResults, conditionErrors } = await this.executeInlineAgents(stage.agents!, agentInput, options, conditionCtx);
     // Exclude unscored results from the average to prevent one crash from poisoning
     // the entire stage score (e.g., 1 pass at 90 + 2 crashes → 30).
     // Discriminate on score nullity, NOT on the decision string: 'FAIL' is core
@@ -467,11 +477,17 @@ export class PipelineExecutor {
 
     // Aggregating AgentResult → CommandResult conversion for pipeline stages.
     // See CommandExecutor.wrapAgentResult for divergence rationale across all three sites.
+    // An agent whose condition was E is ERRORED, and an ERRORED agent makes its stage ERRORED
+    // (PDL 1.6.0, Semantics). Until P4b adds that status, the stage is recorded `failed` with
+    // `condition_error` as its reason; the agents that did run keep their records.
+    const conditionError = conditionErrors.length > 0
+      ? { status: 'failed' as const, skipReason: `condition_error: the condition of ${conditionErrors.map(r => `"${r}"`).join(', ')} read a step that did not pass` }
+      : { status: 'completed' as const };
     return {
       id: stage.id,
       name: stage.name,
       type: 'command' as const,
-      status: 'completed',
+      ...conditionError,
       result: {
         type: 'command',
         name: stage.name,
@@ -599,26 +615,25 @@ export class PipelineExecutor {
   private async executeInlineAgents(
     agents: Array<{ ref: string; condition?: string }>,
     input: ExecutionInput,
-    options?: ExecutionOptions,
-    priorResults: StageResult[] = [],
-  ): Promise<AgentResult[]> {
-    // Per-agent condition gate (Phase 3, spec D5): agents whose condition is
-    // definitively false are not dispatched and not scored — no fabricated
-    // result is recorded for them. Unknown verdicts fail open (run + warn),
-    // matching stage-level semantics. Conditions read prior-stage results
-    // (e.g. stages.preflight.steps['Detect TypeScript'].output) and params.
-    const conditionCtx = { stages: priorResults, params: input.params };
+    options: ExecutionOptions | undefined,
+    conditionCtx: ConditionContext,
+  ): Promise<{ results: AgentResult[]; conditionErrors: string[] }> {
+    // Per-agent conditions (PDL 1.6.0): an agent whose condition is false is not dispatched and
+    // not scored, and no result is recorded for it. One whose condition is E (it read a step that
+    // did not pass) is not dispatched either; it is ERRORED, and the caller marks the stage.
+    // Conditions read earlier stages' results and the run's parameters.
+    const conditionErrors: string[] = [];
     const dispatched = agents.filter((a) => {
       if (!a.condition) return true;
-      const verdict = evaluateConditionExpr(a.condition, conditionCtx);
-      if (verdict === false) {
+      const value = evaluateCondition(a.condition, conditionCtx);
+      if (value === true) return true;
+      if (value === E) {
+        conditionErrors.push(a.ref);
+        this.logger.warn(`Inline agent "${a.ref}" is ERRORED (condition_error): its condition "${a.condition}" read a step that did not pass`);
+      } else {
         this.logger.info(`Skipping inline agent "${a.ref}" — condition not met: ${a.condition}`);
-        return false;
       }
-      if (verdict === null) {
-        this.logger.warn(`Condition "${a.condition}" on inline agent "${a.ref}" could not be resolved — running agent (fail-open)`);
-      }
-      return true;
+      return false;
     });
 
     // Per-agent elapsed time, captured so a CRASHED agent can report how long it actually
@@ -664,44 +679,36 @@ export class PipelineExecutor {
         }
       }
     }
-    return results;
+    return { results, conditionErrors };
   }
 
   /**
-   * Gate on `depends_on`: every listed dep must already be a *completed* entry
-   * in `results`. This is a completion gate over authored array order, NOT a
-   * topological sort — stages run in `def.pipeline.stages` array order
-   * (`executeAsync`'s `for` loop), and `parallel_stages` is unenacted
-   * (`types/pipeline.ts:37`). A dep declared later in the array, or a dep id
-   * that does not exist in the pipeline at all, can therefore never be
-   * satisfied; both cases are warned here (once, before the skip is recorded)
-   * so the disappearance isn't silent. A dep that exists earlier but is
-   * failed/skipped is a legitimate cascade and stays silent — see
-   * PipelineExecutor.test.ts:135-155.
+   * Whether a stage's `depends_on` is satisfied (PDL 1.6.0, D3): every dependency has reached a
+   * terminal status. **Any terminal status satisfies**, a skipped or failed dependency included;
+   * `depends_on` orders and forwards, and whether a stage runs is decided by its condition. (The
+   * one exception, a stage downstream of one that failed behind `abort`, is P4b's; until then an
+   * abort ends the loop, so no dependent is reached.)
+   *
+   * Before 1.6.0 a dependency had to be `completed`, so the dependents of a skipped stage were
+   * skipped in turn (`dependencies_not_met`), and two corpus stages vanished whenever their only
+   * upstream was a skipped conditional stage (spec §2.2).
+   *
+   * Load validation refuses a dependency declared later in the array, or on the stage itself
+   * (`forward_reference`), so every dependency that exists has ended by now. A dependency on a
+   * stage id that does not exist is not a load error in 1.6.0 (the factory warns); it can never
+   * be satisfied, and the stage is skipped with a warning naming it.
    */
   private checkStageDependencies(stage: StageDefinition, allStages: StageDefinition[], results: StageResult[]): boolean {
-    const deps = stage.depends_on;
-    if (!deps || deps.length === 0) return true;
-    const currentIndex = allStages.indexOf(stage);
     let allMet = true;
-    for (const dep of deps) {
-      if (results.some(r => r.id === dep && r.status === 'completed')) continue;
+    for (const dep of stage.depends_on ?? []) {
+      if (results.some(r => r.id === dep)) continue;
       allMet = false;
-      const depIndex = allStages.findIndex(s => s.id === dep);
-      if (depIndex === -1) {
+      if (!allStages.some(s => s.id === dep)) {
         this.logger.warn(
           `Stage "${stage.id}" declares depends_on: "${dep}", but no stage with that id exists in this pipeline ` +
           `(unknown dependency) — this dependency can never be satisfied and "${stage.id}" will always be skipped.`,
         );
-      } else if (depIndex > currentIndex) {
-        this.logger.warn(
-          `Stage "${stage.id}" depends on "${dep}", but stages run in authored array order and "${dep}" is ` +
-          `declared later in the pipeline (forward dependency) — "${dep}" cannot satisfy "${stage.id}" and this ` +
-          `stage will always be skipped. Reorder the stages.`,
-        );
       }
-      // else: dep exists earlier in the array but hasn't completed (failed or
-      // skipped) — legitimate cascade behaviour, intentionally silent here.
     }
     return allMet;
   }
@@ -776,14 +783,52 @@ export class PipelineExecutor {
   }
 
   /**
+   * A stage whose condition evaluated to E (PDL 1.6.0: ERRORED, reason `condition_error`). Until
+   * P4b adds the ERRORED status it is recorded `failed`, with `condition_error` as its reason. It
+   * did not run.
+   */
+  private createConditionErrorStage(stage: StageDefinition, detail: string): StageResult {
+    this.logger.warn(`Stage "${stage.id}" is ERRORED (condition_error): ${detail}`);
+    return {
+      id: stage.id,
+      name: stage.name,
+      type: stage.type === 'workflow' ? 'workflow' : 'command',
+      status: 'failed',
+      skipReason: `condition_error: ${detail}`,
+      // FABRICATION-OK: the stage did not run; 0 is the measured duration of a non-event.
+      durationMs: 0,
+    };
+  }
+
+  /**
+   * Enact a judged stage's gate flow. Returns true when the stage loop must stop: an abort, or a
+   * gate whose `skip` / `on_success: skip_remaining` ends the run early. Remaining stages are
+   * recorded skipped with the gate's reason.
+   */
+  private enactGate(stage: StageDefinition, failed: boolean, stages: StageDefinition[], i: number, state: PipelineState): boolean {
+    const flow = this.applyGate(stage, failed);
+    if (flow === 'abort') {
+      this.skipRemaining(stages, i + 1, state, 'gate_abort');
+      state.error = `Stage "${stage.id}" failed its gate (on_failure: abort)`;
+      state.status = 'failed';
+      return true;
+    }
+    if (flow === 'skip' || flow === 'skip_remaining') {
+      this.skipRemaining(stages, i + 1, state, flow === 'skip' ? 'gate_skip' : 'gate_early_exit');
+      return true;
+    }
+    return false;
+  }
+
+  /**
    * Evaluate a completed stage against its gate and return the flow action.
    * 'continue' means no gate effect (no gate, gate passed, or on_failure:warn).
    */
-  private applyGate(stage: StageDefinition, stageResult: StageResult): 'continue' | 'abort' | 'skip' | 'skip_remaining' {
+  private applyGate(stage: StageDefinition, failed: boolean): 'continue' | 'abort' | 'skip' | 'skip_remaining' {
     const gate = stage.gate;
     if (!gate) return 'continue';
 
-    if (this.gateFailed(gate, stage, stageResult)) {
+    if (failed) {
       const action = resolveOnFailure(gate);
       if (action === 'warn') {
         this.logger.warn(`Stage "${stage.id}" failed its gate — continuing (on_failure: warn)`);
@@ -906,6 +951,16 @@ export class PipelineExecutor {
       if (s) state.stageResults.push(this.createSkippedStage(s, reason));
     }
   }
+}
+
+/**
+ * For a stage with no gate, whether it failed: a steps stage whose step without `continue_on_error`
+ * failed (its decision is FAIL), or a stage that failed outright. Such a stage is not PASSED, so
+ * `stages.<id>.passed` reads false (PDL 1.6.0, Stage status: PASSED is "no gate and every step
+ * succeeded").
+ */
+function stepsFailed(stageResult: StageResult): boolean {
+  return stageResult.status !== 'completed' || (stageResult.steps !== undefined && stageResult.result?.decision === 'FAIL');
 }
 
 /** Steps-stage predicate — explicit `type: 'steps'` (stamped by

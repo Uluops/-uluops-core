@@ -175,21 +175,26 @@ Every chain starts with `UluOpsClient.resolveByRef()`. This sub-chain is shared.
 ```text
  1. Resolve definition (type='pipeline')                 → Definition Resolution
  2. PipelineExecutor.start(resolved, input)
+      refuseBeforeLaunch(): PDL 1.6.0 load validation (pipelineLoad.ts → PipelineError
+      context.loadErrors), then with steps off: STEP_OUTPUT_STEPS_DISABLED and the
+      hard-gated steps refusal (G5), then PARAM_NUL. Nothing has run.
  3. Generate pipelineId: "pipeline_${Date.now()}_${random7chars}"
  4. Create PipelineState { pipelineId, status: 'running', stageResults: [] }
  5. Launch executeAsync() in background (fire-and-forget)
  6. Return PipelineHandle immediately (caller can poll/wait/cancel)
 
 --- Background execution ---
+      bindParameterDefaults(); passed = Map<stageId, boolean>
  7. LOOP over stages:
  8.   [if cancelled] → break
- 9.   Check stage dependencies (all deps must have status='completed')
-10.   [if skip_if] → evaluate condition against prior stage results
+ 9.   Check stage dependencies (every dep has a result: any terminal status satisfies)
+10.   [if condition] → evaluateCondition (conditions.ts): false → skipped;
+        E → recorded failed, condition_error, gate decides the flow
 11.   executeStage():
         parseRef(stage.ref) → registry.resolve(name, version, stage.type)
         [workflow] → WorkflowExecutor.execute()           → Chain 3
         [command]  → CommandExecutor.execute()             → Chain 2
-12.   Accumulate stageResult into state
+12.   Accumulate stageResult into state; judge the gate once → passed[stage.id] and the flow
 
 --- PipelineHandle.wait() ---
 13. Await execution promise

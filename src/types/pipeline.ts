@@ -110,8 +110,8 @@ export interface StageDefinition {
   ref?: string;
 
   /** Inline agent refs — PDL stages can list agents directly instead of ref.
-   *  Per-agent `condition` is a run-gate evaluated against prior-stage results
-   *  and run params (Phase 3); unmet → agent not dispatched, not scored. */
+   *  Per-agent `condition` is in the PDL 1.6.0 condition language (see `condition`):
+   *  false → agent not dispatched, not scored; E → agent not dispatched, stage ERRORED. */
   agents?: Array<{ ref: string; condition?: string }>;
 
   /** Inline shell steps (PDL shell preflight). Preserved through normalization;
@@ -150,22 +150,22 @@ export interface StageDefinition {
    *  Enacted by PipelineExecutor: `on_failure`/`on_success` control pipeline
    *  flow; `threshold`/`aggregate` evaluate against inline-agent scores or the
    *  stage result score. A steps stage carrying an abort gate that cannot
-   *  execute (allowStageSteps off) fails the run loudly instead of silently
+   *  execute (allowStageSteps off) is refused before launch instead of silently
    *  passing (G5). */
   gate?: GateDefinition;
 
-  /** Run-gate expression (PDL semantics): the stage runs when this holds and
-   *  is skipped when it is definitively false; unresolvable expressions fail
-   *  open (run + warn). Takes precedence over skip_if. NOTE (Phase 3): this
-   *  flipped from the engine's earlier skip-if reading to match the PDL spec —
-   *  the old grammar never parsed a corpus condition, so nothing depended on
-   *  the inverted semantics. */
+  /** Run-gate in the PDL 1.6.0 condition language (executor/conditions.ts): the
+   *  stage runs when it is true, is SKIPPED when it is false, and is ERRORED when
+   *  it is E (it read a step that did not pass). Validated when the run starts;
+   *  a condition that does not parse, or references an undeclared parameter or a
+   *  stage that is not an ancestor, refuses the run with a load error.
+   *  Removed in 1.6.0 (D25): the deprecated `skip_if` key, now an undeclared key
+   *  (`unknown_key`), and the `stage.<id>` / bare `<id>.<field>` forms, now
+   *  unknown roots. */
   condition?: string;
 
-  /** @deprecated Use condition instead. Skip-if-true semantics (unchanged). */
-  skip_if?: string;
-
-  /** Stage-specific options. @reserved — typed for schema fidelity; not yet passed to executors. */
+  /** Stage-specific options. @reserved — not declared by PDL 1.6.0, so a stage carrying
+   *  it is refused at load (`unknown_key`); kept on the type for source compatibility. */
   options?: Record<string, unknown>;
 }
 
@@ -175,8 +175,9 @@ export interface StageDefinition {
 export interface TriggerDefinition {
   type: 'webhook' | 'schedule' | 'event';
   config: Record<string, unknown>;
-  /** Declared run parameters (PDL `triggers[].parameters`). Read by the PDL 1.6.0
-   *  `parameter_env_collision` load check (P3a); the rest of the trigger shape is P3b's. */
+  /** Declared run parameters (PDL `triggers[].parameters`), the union over every trigger. PDL
+   *  1.6.0 reads them at load (`undeclared_parameter`, `parameter_env_collision`) and binds each
+   *  declared `default` before a condition or step reads the parameter. */
   parameters?: Array<{ name: string; type?: string; default?: unknown; required?: boolean }>;
 }
 

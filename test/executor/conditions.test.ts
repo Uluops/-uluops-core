@@ -1,211 +1,174 @@
+/**
+ * The PDL 1.6.0 condition language (P3b): parser and evaluator, unit level. The conformance
+ * fixtures (`pdl-conformance.test.ts`) hold the same rules against whole pipelines; these tests pin
+ * the pieces, including the pre-1.6.0 behaviours each change removed.
+ */
 import { describe, it, expect } from 'vitest';
-import { evaluateConditionExpr } from '../../src/executor/conditions.js';
-import type { StageResult } from '../../src/types/pipeline.js';
+import { evaluateCondition, parseCondition, E, MAX_CONDITION_LENGTH, type ConditionContext } from '../../src/executor/conditions.js';
+import type { StageResult, StepResult } from '../../src/types/pipeline.js';
 
-// Context mirroring a real detection preflight (post-implementation shape).
+const step = (name: string, status: StepResult['status'], output: string): StepResult =>
+  ({ name, command: '…', status, exitCode: status === 'passed' ? 0 : 2, output, durationMs: 1 });
+
+// A real detection preflight's shape: two passed detectors, one failed, one skipped after a hard failure.
 const preflight: StageResult = {
   id: 'preflight',
   name: 'Preflight',
   type: 'command',
   status: 'completed',
   steps: [
-    { name: 'Detect TypeScript', command: 'test -f tsconfig.json', status: 'passed', exitCode: 0, output: 'DETECTED', durationMs: 5 },
-    { name: 'Detect frontend', command: 'find …', status: 'passed', exitCode: 0, output: 'NOT_DETECTED', durationMs: 90 },
+    step('Detect TypeScript', 'passed', 'DETECTED'),
+    step('Detect frontend', 'passed', '  NOT_DETECTED  '),
+    step('Detect docs', 'failed', 'DETECTED'),
+    step('Detect later', 'skipped', ''),
+    step('Zero', 'passed', '0'),
   ],
-  result: {
-    type: 'command', name: 'Preflight', version: '1.0.0', definitionHash: '',
-    agentType: 'analyst', decision: 'PASS', score: null, maxScore: null,
-    recommendations: [], durationMs: 100,
-    metrics: { durationMs: 100, model: 'none', toolCalls: 0, inputTokens: 0, outputTokens: 0, totalEffectiveTokens: 0 },
-  },
 };
 
-const validate: StageResult = {
-  id: 'validate',
-  name: 'Validate',
-  type: 'command',
-  status: 'completed',
-  result: {
-    type: 'command', name: 'Validate', version: '1.0.0', definitionHash: '',
-    agentType: 'validator', decision: 'PASS', score: 85, maxScore: 100,
-    recommendations: [], durationMs: 100,
-    metrics: { durationMs: 100, model: 'sonnet', toolCalls: 3, inputTokens: 1, outputTokens: 1, totalEffectiveTokens: 2 },
-  },
-};
+const ctx = (params: ConditionContext['params'] = {}, passed: Record<string, boolean> = {}): ConditionContext =>
+  ({ params, stages: [preflight], passed: new Map(Object.entries(passed)) });
+const ev = (src: string, c: ConditionContext = ctx()) => evaluateCondition(src, c);
 
-const ctx = { stages: [preflight, validate], params: { frontend: false, skip_behavior: true, mode: 'deep' } };
-
-describe('evaluateConditionExpr', () => {
-  describe('step-output paths (the corpus form)', () => {
-    it("resolves stages.<id>.steps['<name>'].output comparisons", () => {
-      expect(evaluateConditionExpr("stages.preflight.steps['Detect TypeScript'].output == 'DETECTED'", ctx)).toBe(true);
-      expect(evaluateConditionExpr("stages.preflight.steps['Detect frontend'].output == 'DETECTED'", ctx)).toBe(false);
-    });
-
-    it('resolves step status and exitCode fields', () => {
-      expect(evaluateConditionExpr("stages.preflight.steps['Detect TypeScript'].status == 'passed'", ctx)).toBe(true);
-      expect(evaluateConditionExpr("stages.preflight.steps['Detect TypeScript'].exitCode == 0", ctx)).toBe(true);
-    });
-
-    it('returns unknown for a missing step name', () => {
-      expect(evaluateConditionExpr("stages.preflight.steps['No Such Step'].output == 'DETECTED'", ctx)).toBeNull();
-    });
+describe('parseCondition: the grammar', () => {
+  it.each([
+    "params.mode == 'deep'",
+    "params['skip-synthesis']",
+    '!params.a',
+    "!(params.a == 'x')",
+    "(params.a == 'x' || params.b == 'y') && params.c == 'z'",
+    "stages.preflight.steps['Detect TypeScript'].output == \"DETECTED\"",
+    'stages.review.passed || params.lenses == \'on\'',
+  ])('accepts %s', (src) => {
+    expect(parseCondition(src).ok).toBe(true);
   });
 
-  describe('params paths', () => {
-    it('resolves params comparisons and bare truthiness', () => {
-      expect(evaluateConditionExpr("params.mode == 'deep'", ctx)).toBe(true);
-      expect(evaluateConditionExpr('params.frontend', ctx)).toBe(false);
-      expect(evaluateConditionExpr('params.skip_behavior', ctx)).toBe(true);
-    });
-
-    it('supports unary negation (the flagship !params.skip_behavior form)', () => {
-      expect(evaluateConditionExpr('!params.skip_behavior', ctx)).toBe(false);
-      expect(evaluateConditionExpr('!params.frontend', ctx)).toBe(true);
-      expect(evaluateConditionExpr('!!params.skip_behavior', ctx)).toBe(true);
-    });
-
-    it('treats an absent param as false, not unknown (D5 amendment)', () => {
-      // Absence is a normal caller state — the corpus gates agents with
-      // `params.x || <detect>` expecting absent→false (live finding e9399a31).
-      expect(evaluateConditionExpr('params.nope', ctx)).toBe(false);
-      expect(evaluateConditionExpr('!params.nope', ctx)).toBe(true);
-      expect(evaluateConditionExpr("params.nope == 'anything'", ctx)).toBe(false);
-      expect(evaluateConditionExpr("params.nope != 'anything'", ctx)).toBe(true);
-      // Ordering over an absent param stays ill-formed (unknown).
-      expect(evaluateConditionExpr('params.nope >= 5', ctx)).toBeNull();
-    });
-
-    it('supports bracket access', () => {
-      expect(evaluateConditionExpr("params['mode'] == 'deep'", ctx)).toBe(true);
-    });
+  it.each([
+    ['ordering operator', 'params.n >= 5'],
+    ['number literal', 'params.n == 5'],
+    ['boolean literal on the right', 'params.b == true'],
+    ['bare boolean (D36)', 'true'],
+    ['! before an unparenthesised comparison (D36)', "!params.a == 'x'"],
+    ['double negation (D36)', '!!params.a'],
+    ['single =', "params.a = 'x'"],
+    ['literal on the left', "'x' == params.a"],
+    ['reference on both sides', 'params.a == params.b'],
+    ['unbalanced parenthesis', "(params.a == 'x'"],
+    ['dangling operator', "params.a == 'x' &&"],
+    ['whitespace inside a reference', 'params .a'],
+    ['control character in a literal (D40)', "params.a == 'x\ty'"],
+    ['line separator in a literal (D40)', "params.a == 'x y'"],
+    ['empty', '   '],
+  ])('refuses %s as condition_syntax', (_label, src) => {
+    const r = parseCondition(src);
+    expect(r).toMatchObject({ ok: false, code: 'condition_syntax' });
   });
 
-  describe('stage-field paths', () => {
-    it('resolves stages.<id>.<field> from the inner result', () => {
-      expect(evaluateConditionExpr('stages.validate.score >= 70', ctx)).toBe(true);
-      expect(evaluateConditionExpr("stages.validate.decision == 'PASS'", ctx)).toBe(true);
-    });
-
-    it('evaluates exact-boundary numeric comparisons correctly', () => {
-      // score is exactly 85 — pins >= vs > (and <= vs <) off-by-one mutations.
-      expect(evaluateConditionExpr('stages.validate.score >= 85', ctx)).toBe(true);
-      expect(evaluateConditionExpr('stages.validate.score > 85', ctx)).toBe(false);
-      expect(evaluateConditionExpr('stages.validate.score <= 85', ctx)).toBe(true);
-      expect(evaluateConditionExpr('stages.validate.score < 85', ctx)).toBe(false);
-    });
-
-    it('supports the legacy <id>.<field> form (pre-Phase-3 back-compat)', () => {
-      expect(evaluateConditionExpr('validate.score >= 70', ctx)).toBe(true);
-      expect(evaluateConditionExpr('validate.score > 90', ctx)).toBe(false);
-    });
-
-    it('falls back to the StageResult envelope for status', () => {
-      expect(evaluateConditionExpr("stages.preflight.status == 'completed'", ctx)).toBe(true);
-    });
-
-    it('returns unknown for a missing stage', () => {
-      expect(evaluateConditionExpr("stages.ghost.decision == 'PASS'", ctx)).toBeNull();
-    });
-
-    it('fails CLOSED on result fields of a crashed stage (known-absent, issue 10908362)', () => {
-      const crashed = {
-        id: 'gate', name: 'Gate', type: 'command' as const,
-        status: 'failed' as const, skipReason: 'boom', durationMs: 5,
-      };
-      const crashCtx = { stages: [crashed], params: {} };
-      // The documented verdict-gating idiom must not fail open when the gate
-      // stage crashed: equality is false (downstream does NOT run)…
-      expect(evaluateConditionExpr("stages.gate.decisionCategory == 'positive'", crashCtx)).toBe(false);
-      // …inequality is true, bare truthiness is false.
-      expect(evaluateConditionExpr("stages.gate.decisionCategory != 'positive'", crashCtx)).toBe(true);
-      expect(evaluateConditionExpr('stages.gate.decisionCategory', crashCtx)).toBe(false);
-      // Ordering over a known-absent field stays ill-formed (unknown).
-      expect(evaluateConditionExpr('stages.gate.score >= 70', crashCtx)).toBe(null);
-      // Envelope fields still resolve normally on the crashed stage.
-      expect(evaluateConditionExpr("stages.gate.status == 'failed'", crashCtx)).toBe(true);
-    });
-
-    it('treats result fields of a skipped stage as known-absent too', () => {
-      const skipped = {
-        id: 'gate', name: 'Gate', type: 'command' as const,
-        status: 'skipped' as const, skipReason: 'condition not met', durationMs: 0,
-      };
-      const skipCtx = { stages: [skipped], params: {} };
-      expect(evaluateConditionExpr("stages.gate.decisionCategory == 'positive'", skipCtx)).toBe(false);
-    });
-
-    it('keeps fail-open (unknown) for absent fields on a COMPLETED stage', () => {
-      // Field absence on a completed stage may be a field-name typo — running
-      // anyway remains the safety property there.
-      expect(evaluateConditionExpr("stages.validate.nonexistent_field == 'x'", ctx)).toBe(null);
-    });
+  it('classifies references against the three roots, in source order', () => {
+    const r = parseCondition("params.a == 'x' && stages.pre.passed || stages.pre.steps['n'].output");
+    expect(r.ok && r.refs).toEqual([
+      { kind: 'param', name: 'a' },
+      { kind: 'passed', stage: 'pre' },
+      { kind: 'step', stage: 'pre', step: 'n' },
+    ]);
   });
 
-  describe('boolean composition (Kleene)', () => {
-    it('evaluates || across step outputs (the post-implementation MCP form)', () => {
-      expect(evaluateConditionExpr(
-        "stages.preflight.steps['Detect frontend'].output == 'DETECTED' || stages.preflight.steps['Detect TypeScript'].output == 'DETECTED'",
-        ctx,
-      )).toBe(true);
-    });
-
-    it('evaluates params || step-output mixes', () => {
-      expect(evaluateConditionExpr(
-        "params.frontend || stages.preflight.steps['Detect frontend'].output == 'DETECTED'",
-        ctx,
-      )).toBe(false);
-    });
-
-    it('evaluates && conjunction', () => {
-      expect(evaluateConditionExpr("!params.frontend && stages.validate.score >= 70", ctx)).toBe(true);
-      expect(evaluateConditionExpr("params.skip_behavior && stages.validate.score > 90", ctx)).toBe(false);
-    });
-
-    it('OR short-circuits true past an unknown; unknown survives otherwise', () => {
-      // stages.ghost.* is the genuine unknown source (missing stage = typo signal).
-      expect(evaluateConditionExpr("stages.ghost.failed || stages.validate.score >= 70", ctx)).toBe(true);
-      expect(evaluateConditionExpr('stages.ghost.failed || params.frontend', ctx)).toBeNull();
-    });
-
-    it('AND yields false past an unknown when any term is false; unknown survives otherwise', () => {
-      // Kleene: false dominates unknown in AND, regardless of term order.
-      expect(evaluateConditionExpr('stages.ghost.failed && params.frontend', ctx)).toBe(false);
-      expect(evaluateConditionExpr('params.frontend && stages.ghost.failed', ctx)).toBe(false);
-      expect(evaluateConditionExpr('stages.ghost.failed && params.skip_behavior', ctx)).toBeNull();
-    });
-
-    it('gates the live-finding form correctly: absent param || false detection is false', () => {
-      // The exact shape from the $11.46 live run: frontend-validator must gate
-      // OFF when params.frontend is unset and detection says NOT_DETECTED.
-      expect(evaluateConditionExpr(
-        "params.frontend_missing || stages.preflight.steps['Detect frontend'].output == 'DETECTED'",
-        ctx,
-      )).toBe(false);
-    });
-
-    it('does not split on || inside quoted strings', () => {
-      expect(evaluateConditionExpr("params.mode == 'a||b'", ctx)).toBe(false);
-    });
+  it.each([
+    ['trigger.type', 'unknown_root'],
+    ['context.has_src', 'unknown_root'],
+    ['stage.pre.passed', 'unknown_root'],          // D25: singular prefix
+    ['pre.decision', 'unknown_root'],               // D25: bare <id>.<field>
+    ['stages.pre.score', 'unknown_path'],
+    ["stages.pre.steps['n'].status", 'unknown_path'],
+    ['params', 'unknown_path'],
+  ])('classifies %s as %s', (src, code) => {
+    const r = parseCondition(src);
+    expect(r.ok && r.refs[0]).toMatchObject({ kind: 'fault', code });
   });
 
-  describe('ill-formed numeric comparisons fail open, not false', () => {
-    it('returns unknown when an ordering operand is non-numeric', () => {
-      // false would silently SKIP a stage under run-gate semantics.
-      expect(evaluateConditionExpr('stages.validate.decision > 5', ctx)).toBeNull();
-      expect(evaluateConditionExpr("stages.validate.score >= 'high'", ctx)).toBeNull();
-    });
+  it('bounds the length in code points (D41): 512 astral characters parse, 513 do not', () => {
+    const within = `params.a == '${'😀'.repeat(MAX_CONDITION_LENGTH - 14)}'`;
+    expect([...within].length).toBe(MAX_CONDITION_LENGTH);
+    expect(within.length).toBeGreaterThan(MAX_CONDITION_LENGTH); // UTF-16 units: the unit core used to count
+    expect(parseCondition(within).ok).toBe(true);
+    expect(parseCondition(`params.a == '${'😀'.repeat(MAX_CONDITION_LENGTH - 13)}'`)).toMatchObject({ ok: false, code: 'condition_too_long' });
+  });
+});
 
-    it('still evaluates equality on strings normally', () => {
-      expect(evaluateConditionExpr("stages.validate.decision == 'PASS'", ctx)).toBe(true);
-    });
+describe('evaluateCondition: semantics', () => {
+  it('compares string forms; a number or boolean parameter compares as its string', () => {
+    expect(ev("params.mode == 'deep'", ctx({ mode: 'deep' }))).toBe(true);
+    expect(ev("params.n == '5'", ctx({ n: 5 }))).toBe(true);
+    expect(ev("params.b == 'true'", ctx({ b: true }))).toBe(true);
+    expect(ev("params['mode'] != 'deep'", ctx({ mode: 'fast' }))).toBe(true);
   });
 
-  describe('unparseable expressions', () => {
-    it('returns unknown for unsupported namespaces and garbage', () => {
-      expect(evaluateConditionExpr("trigger.type == 'git_push'", ctx)).toBeNull();
-      expect(evaluateConditionExpr('invalid condition syntax !!!', ctx)).toBeNull();
-      expect(evaluateConditionExpr('', ctx)).toBeNull();
-    });
+  it('truthiness: empty, false and 0 are false (the string 0 included: spec §6 item 31)', () => {
+    expect(ev('params.x', ctx({ x: '' }))).toBe(false);
+    expect(ev('params.x', ctx({ x: 'false' }))).toBe(false);
+    expect(ev('params.x', ctx({ x: false }))).toBe(false);
+    expect(ev('params.x', ctx({ x: '0' }))).toBe(false);
+    expect(ev('params.x', ctx({ x: 0 }))).toBe(false);
+    expect(ev("stages.preflight.steps['Zero'].output")).toBe(false);
+    expect(ev('params.x', ctx({ x: 'yes' }))).toBe(true);
+  });
+
+  it('an absent parameter equals nothing, not even the empty string, and is falsy', () => {
+    expect(ev("params.flag == ''")).toBe(false);
+    expect(ev("params.flag != 'x'")).toBe(true);
+    expect(ev('params.flag')).toBe(false);
+    expect(ev('!params.flag')).toBe(true);
+  });
+
+  it('reads a passed step\'s output trimmed', () => {
+    expect(ev("stages.preflight.steps['Detect TypeScript'].output == 'DETECTED'")).toBe(true);
+    expect(ev("stages.preflight.steps['Detect frontend'].output == 'NOT_DETECTED'")).toBe(true);
+  });
+
+  it('reads stages.<id>.passed from the passed map; a stage not in it reads false', () => {
+    expect(ev('stages.review.passed', ctx({}, { review: true }))).toBe(true);
+    expect(ev('stages.review.passed', ctx({}, { review: false }))).toBe(false);
+    expect(ev('stages.review.passed')).toBe(false);
+    expect(ev("stages.review.passed == 'true'", ctx({}, { review: true }))).toBe(true);
+  });
+
+  it('&& binds tighter than ||, and parentheses group', () => {
+    const p = ctx({ a: 'x', b: 'n', c: 'n' });
+    expect(ev("params.a == 'x' || params.b == 'y' && params.c == 'z'", p)).toBe(true);
+    expect(ev("(params.a == 'x' || params.b == 'y') && params.c == 'z'", p)).toBe(false);
+  });
+});
+
+describe('evaluateCondition: the error value E (Kleene)', () => {
+  const failed = "stages.preflight.steps['Detect docs'].output == 'DETECTED'";
+  const skipped = "stages.preflight.steps['Detect later'].output == 'DETECTED'";
+
+  it('a read of a failed step, a step skipped after a hard failure, or a step of a stage that did not run is E', () => {
+    expect(ev(failed)).toBe(E);
+    expect(ev(skipped)).toBe(E);
+    expect(ev("stages.preflight.steps['Detect docs'].output")).toBe(E);
+    expect(ev("stages.ghost.steps['x'].output == 'y'")).toBe(E);
+  });
+
+  it('propagates as the spec table says', () => {
+    const t = "params.on == 'y'";
+    const f = "params.on == 'n'";
+    const c = ctx({ on: 'y' });
+    expect(ev(`!(${failed})`, c)).toBe(E);
+    expect(ev(`${t} || ${failed}`, c)).toBe(true);
+    expect(ev(`${failed} || ${t}`, c)).toBe(true);
+    expect(ev(`${f} && ${failed}`, c)).toBe(false);
+    expect(ev(`${failed} && ${f}`, c)).toBe(false);
+    expect(ev(`${f} || ${failed}`, c)).toBe(E);
+    expect(ev(`${failed} || ${f}`, c)).toBe(E);
+    expect(ev(`${t} && ${failed}`, c)).toBe(E);
+    expect(ev(`${failed} && ${t}`, c)).toBe(E);
+    expect(ev(`${failed} || ${skipped}`, c)).toBe(E);
+    expect(ev(`${failed} && ${skipped}`, c)).toBe(E);
+  });
+
+  it('a condition that does not parse is E, not true: load validation refuses it, so reaching one is a defect (D4)', () => {
+    // Negative control: the pre-1.6.0 evaluator returned "unknown" here and the stage ran.
+    expect(ev("trigger.type == 'git_push'")).toBe(E);
+    expect(ev('params.n >= 5')).toBe(E);
   });
 });

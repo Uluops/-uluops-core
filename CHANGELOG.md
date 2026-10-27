@@ -11,6 +11,13 @@ v0.8.3, D15, D20, D22, D38, D39; normative text `uluops-pdl-spec-v1.6.0.md`, *Ex
 Steps*; checklist v0.1.3 §P3a). The rest of PDL 1.6.0 lands in P3b (conditions, load validation),
 P4a and P4b (decisions, gates, status) before R-core.
 
+**PDL 1.6.0, build unit P3b: one condition language, checked before anything runs** (design spec
+pdl-1_6_0 v0.8.3, D2, D3, D4, D25, D36, D40, D41; normative text *Execution Semantics → The condition
+language, Dependencies and ordering, Step output must exist*; checklist v0.1.3 §P3b). Core had no
+load-time validator: a condition was looked at only when the run reached it, and one core could not
+read made its stage run with a warning. Its grammar was also a superset of what the skill and the
+rendered commands read, so the three runtimes could disagree about the same pipeline.
+
 **Agent step limit: a higher default, a client-level setting, a ceiling, and a wrap-up that makes the
 agent answer** (tracker `c13b7789`). `code-validator` on claude-sonnet-5 spent all 50 steps re-searching
 a two-file target and returned nothing, on 0.53.1 as on the PDL 1.6.0 branch; in a two-agent pipeline
@@ -45,6 +52,62 @@ wrap-up, and the context-budget brake was inert on Claude structured output.
   2026-10-26 with this release's `checkStepTemplateRules`, D38 and D39 included; a planted misplaced
   template and a planted collision were both found.
 - **Runtime:** none measurable. One scan per step command at start, linear in its length.
+
+*PDL 1.6.0 P3b (conditions, dependencies, load validation):*
+
+- **Consumer code:** `PipelineRefusal` becomes a union and gains `STEP_OUTPUT_STEPS_DISABLED`
+  (`stages: string[]`); a consumer that switched on `refusal.code === 'PARAM_NUL'` still compiles.
+  **Type-level breaking:** `StageDefinition.skip_if` is removed (D25). `PipelineLoadError.code` now
+  carries every load-error code the spec names, not only P3a's two.
+- **Runs refused that used to start** (each throws from `start()` / `runPipeline()` before any stage
+  runs; nothing is billed):
+  - **any load error the spec names** (`context.loadErrors`, each `{ code, at, message }`): a
+    condition that does not parse (`condition_syntax`: ordering operators, number and boolean
+    literals, `=`, a bare `true`, `!params.a == 'x'` and `!!x`, a control character in a string
+    literal); over 512 code points (`condition_too_long`, D41: core counted UTF-16 units); a
+    reference outside the three roots (`unknown_root`, which includes the legacy `stage.<id>` and
+    bare `<id>.<field>` forms, and `unknown_path`, e.g. `stages.a.score`); an undeclared parameter, an
+    unknown stage, a stage that is not an ancestor, an undeclared step; a `depends_on` naming a stage
+    declared later or the stage itself (`forward_reference`; was a warning, and the stage was skipped);
+    two stages with one id; an undeclared key on a stage, gate or agent ref (`unknown_key`; `skip_if`
+    is one, so is core's own `options`); per-agent threshold faults. **Zero** of the 81 corpus
+    pipelines (43 conditions; uluops-agent-workflows `2bede0a9`) and of the 224 registry pipeline
+    versions (97 conditions; the S6 snapshot read as `ululabs`, 2026-10-26) report any, checked as
+    authored and as normalized; a planted pipeline with seven kinds of fault reported all seven;
+  - **`STEP_OUTPUT_STEPS_DISABLED`** (spec §6 item 2): with steps disabled (the default), a run whose
+    conditions read step output. Before, the condition was "unknown" and the stage ran. **9 of the
+    81 corpus pipelines** read step output — agent-ecosystem-analysis, behavior-validate,
+    consumer-validate, kill-chain-synthesis, post-implementation, pre-implementation,
+    prompt-deep-audit, security-audit, ship — and 24 of the 224 registry versions, so each is refused
+    under a default `runPipeline()` until steps are enabled (`config.allowStageSteps`, or
+    `ULUOPS_ALLOW_STAGE_STEPS=true`, which enables host-shell steps for every pipeline);
+  - **the hard-gated steps refusal (G5) moves before the first stage.** It was thrown when the loop
+    reached the steps stage, after earlier stages had run and been paid for, and only if a condition
+    did not skip it first. Its message no longer suggests downgrading the gate to `warn`.
+- **Behaviour change, no signature change:**
+  - **any terminal status satisfies `depends_on`** (D3). A stage whose dependency was skipped or
+    failed now runs, unless its own condition says otherwise; `dependencies_not_met` remains only
+    for a dependency on a stage id that does not exist. Before, a dependency had to be `completed`.
+    (Abort still ends the run here; P4b narrows it to the aborting stage's dependents.)
+  - **the string `0` is false** in a condition (§6 item 31), as are `''` and `'false'`; core read
+    `'0'` as true. A parameter passed as a number or boolean compares as its string.
+  - **declared parameter defaults are bound** before a condition or a step template reads the
+    parameter. Before, an unset parameter with a default read as absent, and a step template on it
+    failed as "Unresolved template".
+  - **`stages.<id>.passed`** is true only when the stage completed and its gate passed (or, with no
+    gate, no step without `continue_on_error` failed). A stage that WARNED, failed or was skipped
+    reads false. Before, `passed` was not a field core resolved at all; the closest forms read the
+    stage's result fields, which 1.6.0 removes.
+  - **a condition that reads a step that did not pass is the error value E**, with Kleene
+    propagation: `false && E` is false and `true || E` true, otherwise E. A stage whose condition is E
+    does not run and is recorded `failed` with `skipReason` `condition_error: …`; an agent whose
+    condition is E is not dispatched, and its stage is recorded `failed` the same way, keeping the
+    records of the agents that ran. Its gate then decides the flow as for any failed stage. P4b
+    records these as ERRORED, with a `STAGE_ERRORED` warning. Before, the failed step's output read
+    as `''`, so a detector that crashed read as "not detected" and its stage was silently skipped.
+  - **parentheses parse.** Core could not read the three parenthesised pre-implementation conditions.
+- **Runtime:** one linear parse per condition at start, and the same parse at evaluation; bounded at
+  512 code points.
 
 *Agent step limit (c13b7789):*
 
@@ -94,8 +157,34 @@ wrap-up, and the context-budget brake was inert on Claude structured output.
   that passes (a per-run value overrides the config) is the positive control. Three tests that pinned
   the inert brake now pin the working one.
 
+- **`src/executor/pipelineLoad.ts`** (P3b, D29: new logic in a new module): `checkPipelineLoadRules`
+  (every PDL 1.6.0 load error, at the fixtures' locations, with `SKIP_DEPRECATED` as a load warning),
+  `stagesReadingStepOutput` (the `STEP_OUTPUT_STEPS_DISABLED` scan) and `bindParameterDefaults`.
+  `PipelineExecutor` gains only the calls into it.
+- **`src/executor/conditions.ts` is rewritten** as the 1.6.0 parser (a port of the factory's
+  `pdl-conditions.ts`, extended to build a tree) and a total, three-valued evaluator
+  (`parseCondition`, `evaluateCondition`, `E`). The old regex grammar, its four exported patterns and
+  `evaluateConditionExpr` are gone; none was exported from the package.
+- **Tests (P3b):** the conformance harness now checks every `load-errors` case through
+  `checkPipelineLoadRules` (all 15 codes, each at its location, and the `load_ok` cases with their
+  warnings), that every other case loads clean, and every stage and agent condition in the 23 core
+  cases that hold one, evaluated over a context fed from the oracle (expected `passed`, real step
+  results); the full run through `PipelineExecutor` waits for P4b's stub-agent harness. Plus the
+  `STEP_OUTPUT_STEPS_DISABLED` refusal and its steps-enabled control. `conditions.test.ts` is
+  rewritten for the grammar, the semantics and the E table; `pipelineLoad.test.ts` is new (self
+  dependency, the normalized runtime shape, error collection, defaults). 13 behavioural tests in
+  `PipelineExecutor.test.ts` fail on the pre-P3b tree (`829c6b3`): D3 twice, forward reference, the
+  three D25 forms, G5 before launch, an unreadable condition refused, the string `0`, default
+  binding, a failed step read at stage and at agent level, and `passed` after a WARNED stage. 16 hand
+  mutants of the evaluator, the validator and the refusal (Kleene absorption both ways, `!E`,
+  truthiness of `0`, absent equals `''`, D36, D40, D41, any stage field, unknown keys, self
+  dependency, self ancestry, duplicate ids, default binding, the G5 scan) are each killed.
+
 ### Removed
 
+- **`StageDefinition.skip_if`** (D25). The deprecated key is an undeclared key at load
+  (`unknown_key`), and the `skip_if` branch of the stage loop, which evaluated it fail-open, is gone.
+  Corpus and registry: zero uses.
 - **`AgentRuntime.defaults.thresholds` and `AgentRuntime.config.threshold`** (tracker `5f71197f`).
   Neither was a working threshold. `defaults.thresholds` was declared and read by
   `AgentExecutor.resolveContext`, but no resolve path ever wrote it. `config.threshold` was the ADL
@@ -127,6 +216,10 @@ wrap-up, and the context-budget brake was inert on Claude structured output.
 
 ### Internal
 
+- `test/fuzz/stopVerdict.fuzz.test.ts`: the pipeline model follows D3 (dependencies never skip a stage)
+  and expects G5 to refuse at `start()`; 245 of its generated pipelines take that path.
+- `scripts/external-input-census.json`: the old evaluator's numeric-literal parse is gone with
+  ordering operators (one `string-to-number` site removed).
 - `scripts/external-input-census.json`: two entry points move (the env read and the clamped
   resolution); both are seamed (`parseExternalNumber`, `externalInt`).
 

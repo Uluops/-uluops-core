@@ -430,8 +430,8 @@ Synchronous execution (blocks until complete):
 
 ```typescript
 // `params` supplies run parameters read by stage/agent `condition:` expressions
-// and by `{{ params.x }}` substitutions in stage `steps:` commands.
-// An absent param reads as false in a condition (see below).
+// and by `{{ params.x }}` substitutions in stage `steps:` commands. Declared
+// defaults are bound first; an absent param reads as false (see below).
 const result = await client.runPipeline('foundations', {
   target: './src',
   params: { frontend: true, tier: 'pro' },
@@ -443,7 +443,11 @@ for (const stage of result.stages) {
 }
 ```
 
-**Stage & agent conditions.** A stage's `condition` (and per-agent `agents[].condition` in inline-agent stages) is a **run-gate**: the stage or agent runs when the expression holds and is skipped when it is definitively false. Conditions can read run parameters (`params.frontend`, passed via `ExecutionInput.params`) and prior-stage results, including executed step outputs (`stages.preflight.steps['Detect TypeScript'].output == 'DETECTED'`). **An absent param is `false`** (so `!params.x` is `true` and `params.x || <detection>` gates on detection alone when `x` is unset) — param absence is a normal caller state. Unresolvable expressions of other kinds — missing stage/step path, unsupported namespace, or over the length cap — **fail open**: the stage runs and a warning is logged. `skip_if` is deprecated (skip-if-true semantics). See the PDL spec for the full expression grammar.
+**Stage & agent conditions (PDL 1.6.0).** A stage's `condition` (and per-agent `agents[].condition` in inline-agent stages) is a **run-gate**: the stage or agent runs when it is true and is skipped when it is false. A condition reads exactly three things: a declared run parameter (`params.frontend`, from `ExecutionInput.params`, declared defaults bound first), whether an ancestor stage passed (`stages.review.passed`), and an ancestor's step output (`stages.preflight.steps['Detect TypeScript'].output == 'DETECTED'`). It compares with `==` / `!=` against a string literal and combines with `!`, `&&`, `||` and parentheses; values compare as strings, and `''`, `'false'` and `'0'` are false. **An absent param is `false`** and equals nothing (so `!params.x` is `true`). Reading a step that did not pass (failed, or never ran) gives an error value that `false && …` and `true || …` absorb; otherwise the stage or agent is not run and the stage is recorded `failed` with reason `condition_error` (ERRORED from P4b).
+
+**Conditions are checked before anything runs.** `start()` / `runPipeline()` validate every stage and agent condition, `depends_on` (a stage declared later, or the stage itself, is a load error), undeclared keys on stages, gates and agent refs, and step templates, and throw a `PipelineError` whose `context.loadErrors` lists each `{ code, at, message }` (codes as the PDL 1.6.0 spec names them, e.g. `undeclared_parameter at stage:deploy`). **Before 1.6.0** a condition core could not read made its stage run with a warning (fail-open), ordering operators and number literals were accepted, and `skip_if` was evaluated; each is now a load error. See the PDL spec for the full grammar.
+
+**Dependencies.** A stage runs once every `depends_on` stage has ended, **whatever its status**: a dependency that was skipped or failed no longer skips its dependents. Whether a stage runs is decided by its own condition. (Before 1.6.0, a dependency had to complete, and the dependents of a skipped conditional stage were skipped too.)
 
 **Stage output forwarding (0.31.0, ON by default).** Any inline-agent stage with `depends_on` automatically receives an `## Upstream Analysis` section in each of its agents' initial messages — a severity-sorted slice (decision, `decisionCategory`, score, summary, top-5 recommendations) of every dependency's results, placed after the operator `Directive:` and before the project context. Forwarding is one hop (direct dependencies only) and never flows between parallel siblings. Controls:
 
@@ -478,7 +482,7 @@ stages:
       # on_success: skip_remaining  # early exit when the gate passes
 ```
 
-`on_failure: abort` surfaces as a thrown `PipelineError` from `wait()`/`runPipeline()` carrying the partial result; skipped stages are recorded with `skipReason: 'gate_abort' | 'gate_skip' | 'gate_early_exit'`. Note: an abort-gated `steps:` stage that cannot execute because `allowStageSteps` is off **fails the run loudly** instead of passing through — an unexecutable mandatory gate is a configuration error (see [Stage Steps](#stage-steps-opt-in)).
+`on_failure: abort` surfaces as a thrown `PipelineError` from `wait()`/`runPipeline()` carrying the partial result; skipped stages are recorded with `skipReason: 'gate_abort' | 'gate_skip' | 'gate_early_exit'`. Note: an abort-gated `steps:` stage that cannot execute because `allowStageSteps` is off **refuses the run before any stage starts** instead of passing through — an unexecutable mandatory gate is a configuration error (see [Stage Steps](#stage-steps-opt-in)).
 
 Async execution with handle-based control:
 
@@ -1489,7 +1493,7 @@ Package managers (`npm`, `pip`), orchestrators (`docker`, `kubectl`), build tool
 
 ### Stage Steps (opt-in)
 
-PDL pipeline stages can declare inline shell `steps:` blocks (detection preflights, build gates). The engine executes them **only when the operator opts in** via `allowStageSteps: true` (or `ULUOPS_ALLOW_STAGE_STEPS=true` — the exact string `true`). This is the same trust boundary as the `bash` tool: step commands come from resolved definitions, so running them is definition-author-controlled shell on your host. **The opt-in is the boundary — there is no command allowlist.** With the opt-in off (the default), steps-only stages pass through as `PASS` with a `null` score (excluded from pipeline score aggregation) and their steps are not run — **unless the stage carries an abort gate** (`gate.on_failure: abort`, or a `gate:` block that omits `on_failure` — abort is the PDL default), in which case the run fails loudly: an unexecutable mandatory gate is a configuration error, not a skippable step.
+PDL pipeline stages can declare inline shell `steps:` blocks (detection preflights, build gates). The engine executes them **only when the operator opts in** via `allowStageSteps: true` (or `ULUOPS_ALLOW_STAGE_STEPS=true` — the exact string `true`). This is the same trust boundary as the `bash` tool: step commands come from resolved definitions, so running them is definition-author-controlled shell on your host. **The opt-in is the boundary — there is no command allowlist.** With the opt-in off (the default), steps-only stages pass through as `PASS` with a `null` score (excluded from pipeline score aggregation) and their steps are not run — **unless the stage carries an abort gate** (`gate.on_failure: abort`, or a `gate:` block that omits `on_failure` — abort is the PDL default), in which case the run is refused before any stage starts: an unexecutable mandatory gate is a configuration error, not a skippable step. **A run whose conditions read step output is refused the same way** (`PipelineError`, `context.refusal.code === 'STEP_OUTPUT_STEPS_DISABLED'`, naming the stages): the output those conditions read cannot exist with steps off. Nine corpus pipelines read step output, among them `pre-implementation`, `ship`, `post-implementation` and `consumer-validate`, so under the default they are refused until steps are enabled for the run.
 
 Confinements applied to executed steps:
 

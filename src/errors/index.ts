@@ -348,7 +348,8 @@ export class WorkflowError extends UluOpsError {
 /**
  * A PDL load error, in the conformance fixtures' shape: the spec's code and where it was found
  * (`stage:<id>`, `stage:<id>/step:<name>`, `param:<name>`). PDL 1.6.0 P3a reports the step-template
- * codes (`template_placement`, `parameter_env_collision`); P3b's load validator adds the rest.
+ * codes (`template_placement`, `parameter_env_collision`); P3b's load validator (`executor/pipelineLoad.ts`)
+ * reports every load error the spec names.
  */
 export interface PipelineLoadError {
   code: string;
@@ -357,11 +358,17 @@ export interface PipelineLoadError {
 }
 
 /** A PDL refusal: the run was refused before any stage launched (PDL 1.6.0 spec, Codes → Refusals). */
-export interface PipelineRefusal {
-  code: 'PARAM_NUL';
-  /** The parameter whose value holds NUL. */
-  param: string;
-}
+export type PipelineRefusal =
+  | {
+      code: 'PARAM_NUL';
+      /** The parameter whose value holds NUL. */
+      param: string;
+    }
+  | {
+      code: 'STEP_OUTPUT_STEPS_DISABLED';
+      /** The stages whose condition (or an agent's) reads step output while steps are disabled. */
+      stages: string[];
+    };
 
 export class PipelineError extends UluOpsError {
   readonly code = 'PIPELINE_ERROR' as const;

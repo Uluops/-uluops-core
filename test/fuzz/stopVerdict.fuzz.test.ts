@@ -29,7 +29,7 @@ import { writeFileSync, mkdirSync } from 'node:fs';
 import { PipelineExecutor } from '../../src/executor/PipelineExecutor.js';
 import { WorkflowExecutor } from '../../src/executor/WorkflowExecutor.js';
 import { CommandExecutor } from '../../src/executor/CommandExecutor.js';
-import { CancelledError, ProviderCreditError, TimeoutError } from '../../src/errors/index.js';
+import { CancelledError, PipelineError, ProviderCreditError, TimeoutError } from '../../src/errors/index.js';
 import { tripRunFor } from '../../src/utils/runTrip.js';
 
 // ─── PRNG ────────────────────────────────────────────────────────────────────────────────────
@@ -564,8 +564,9 @@ function plModel(c: { stages: StageSpec[] }, ctx: Ctx, act: NPl, problems: strin
   for (let i = 0; i < c.stages.length; i++) {
     const s = c.stages[i]!;
     if (status !== 'running') { if (stoppedByRun) stopSkipped = true; for (let j = i; j < c.stages.length; j++) { st[c.stages[j]!.id] = { status: 'skipped' }; order.push(c.stages[j]!.id); } break; }
-    if (s.depends_on && !s.depends_on.every(d => st[d]?.status === 'completed')) { st[s.id] = { status: 'skipped' }; order.push(s.id); continue; }
-    if (s.kind === 'steps' && s.gate && (s.gate.on_failure ?? 'abort') === 'abort') { status = 'failed'; break; } // G5 throw
+    // PDL 1.6.0 D3: any terminal status satisfies depends_on, and a dependency is always declared
+    // earlier, so dependencies never skip a stage here. G5 (a hard-gated steps stage with steps off)
+    // refuses the run in start(), before this model runs: see plCase.
     let out: PlOut['stages'][string]; let gateScore: number | null = null; let nothing = false;
     if (s.kind === 'agents') {
       const recs: Rec[] = [];
@@ -756,6 +757,16 @@ async function plCase(seed: number, verbose = false) {
   const c = genPlCase(seed);
   if (ONLY_UNSTOPPED && c.stop !== 'none') return;
   CURRENT_OPTIONS = c.options;
+  // G5 (PDL 1.6.0): with steps disabled, a steps stage behind an abort gate refuses the run before
+  // any stage launches, wherever it sits. Before 1.6.0 it threw when the loop reached it.
+  if (c.stages.some(s => s.kind === 'steps' && s.gate && (s.gate.on_failure ?? 'abort') === 'abort')) {
+    bump('pl.refusedG5');
+    const refused = await runPipeline(c.stages, c.options, c.stop, plAgents(c.stages)).then(() => undefined, (e: unknown) => e);
+    if (!(refused instanceof PipelineError) || !/hard gate/.test(refused.message)) {
+      fails.push({ seed: `pl:${seed}`, cls: 'G5 not refused at start', msgs: [String(refused)] });
+    }
+    return;
+  }
   const { ctx, out } = await runPipeline(c.stages, c.options, c.stop, plAgents(c.stages));
   bump('pl.cases'); if (c.stop !== 'none') bump('pl.stopModes'); if (ctx.stopFired) bump('pl.stopFired');
   const act = normPl(out);

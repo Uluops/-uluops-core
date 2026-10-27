@@ -24,6 +24,11 @@ import type { Logger } from '@uluops/sdk-core';
 const noopLogger: Logger = { debug() {}, info() {}, warn() {}, error() {} };
 const agentExec = {} as AgentExecutor;
 
+/** A manual trigger declaring these parameters (core's TriggerDefinition type predates PDL's manual trigger). */
+function declareParams(...names: string[]): never {
+  return [{ type: 'manual', parameters: names.map(name => ({ name, type: 'string' })) }] as never;
+}
+
 function makePipelineDef(overrides?: Partial<PipelineDefinition['pipeline']>): ResolvedDefinition {
   return {
     type: 'pipeline',
@@ -135,9 +140,12 @@ describe('PipelineExecutor', () => {
   });
 
   describe('stage dependencies', () => {
-    it('skips stage when dependency not met', async () => {
+    it('runs a stage whose dependency FAILED: any terminal status satisfies depends_on (PDL 1.6.0 D3)', async () => {
+      // Negative control: on 98adad5 (core 0.53.1) stage-2 was skipped, `dependencies_not_met`.
       const cmdExec = {
-        execute: vi.fn().mockRejectedValue(new Error('Stage 1 failed')),
+        execute: vi.fn()
+          .mockRejectedValueOnce(new Error('Stage 1 failed'))
+          .mockResolvedValueOnce(makeCommandResult({ score: 90 })),
       } as unknown as CommandExecutor;
       const wfExec = makeWorkflowExecutor();
       const registry = makeRegistry();
@@ -153,8 +161,26 @@ describe('PipelineExecutor', () => {
       const result = await executor.execute(def, { target: '/tmp/test' });
 
       expect(result.stages[0]!.status).toBe('failed');
-      expect(result.stages[1]!.status).toBe('skipped');
-      expect(result.stages[1]!.skipReason).toBe('dependencies_not_met');
+      expect(result.stages[1]!.status).toBe('completed');
+      expect(cmdExec.execute).toHaveBeenCalledTimes(2);
+    });
+
+    it('runs a stage whose only dependency was SKIPPED by its condition (D3; the synthesis shape, spec §2.2)', async () => {
+      const cmdExec = makeCommandExecutor([makeCommandResult({ score: 90 })]);
+      const executor = new PipelineExecutor(makeWorkflowExecutor(), cmdExec, agentExec, makeRegistry(), noopLogger);
+      const def = makePipelineDef({
+        triggers: declareParams('deep'),
+        stages: [
+          { id: 'lens', name: 'Lens', type: 'command', ref: 'cmd-a@1.0.0', condition: "params.deep == 'on'" },
+          { id: 'synthesis', name: 'Synthesis', type: 'command', ref: 'cmd-b@1.0.0', depends_on: ['lens'] },
+        ],
+      } as never);
+
+      const result = await executor.execute(def, { target: '/tmp/test' });
+
+      expect(result.stages[0]!.status).toBe('skipped');
+      expect(result.stages[0]!.skipReason).toBe('condition_not_met');
+      expect(result.stages[1]!.status).toBe('completed');
     });
 
     it('executes dependent stage when dependency completed', async () => {
@@ -180,13 +206,10 @@ describe('PipelineExecutor', () => {
       expect(result.stages[1]!.status).toBe('completed');
     });
 
-    it('warns when a stage depends on a stage declared later in the array (forward dependency)', async () => {
+    it('refuses a stage that depends on a stage declared later in the array (forward_reference, a load error)', async () => {
+      // Negative control: on 98adad5 this was a warning and stage-1 was skipped at run time.
       const cmdExec = makeCommandExecutor([makeCommandResult({ score: 90 })]);
-      const wfExec = makeWorkflowExecutor();
-      const registry = makeRegistry();
-      const warn = vi.fn();
-      const logger: Logger = { debug() {}, info() {}, warn, error() {} };
-      const executor = new PipelineExecutor(wfExec, cmdExec, agentExec, registry, logger);
+      const executor = new PipelineExecutor(makeWorkflowExecutor(), cmdExec, agentExec, makeRegistry(), noopLogger);
 
       const def = makePipelineDef({
         stages: [
@@ -195,11 +218,10 @@ describe('PipelineExecutor', () => {
         ],
       });
 
-      const result = await executor.execute(def, { target: '/tmp/test' });
-
-      expect(result.stages[0]!.status).toBe('skipped');
-      expect(result.stages[0]!.skipReason).toBe('dependencies_not_met');
-      expect(warn).toHaveBeenCalledWith(expect.stringMatching(/forward dependency/));
+      const err = await executor.start(def, { target: '/tmp/test' }).then(() => undefined, (e: unknown) => e);
+      expect(err).toBeInstanceOf(PipelineError);
+      expect((err as PipelineError).context.loadErrors?.map(e => [e.code, e.at])).toEqual([['forward_reference', 'stage:stage-1']]);
+      expect(cmdExec.execute).not.toHaveBeenCalled();
     });
 
     it('warns when a stage depends on an id that does not exist in the pipeline (unknown dependency)', async () => {
@@ -225,50 +247,34 @@ describe('PipelineExecutor', () => {
     });
   });
 
-  describe('skip conditions', () => {
-    it('skips stage when skip_if evaluates to true', async () => {
-      const wfExec = makeWorkflowExecutor();
-      const cmdExec = makeCommandExecutor([
-        makeCommandResult({ name: 'cmd-a', score: 80, decision: 'PASS' }),
-      ]);
-      const registry = makeRegistry();
-      const executor = new PipelineExecutor(wfExec, cmdExec, agentExec, registry, noopLogger);
-
+  describe('removed condition forms (PDL 1.6.0 D25)', () => {
+    // Negative control: on 98adad5 both pipelines ran — skip_if was evaluated, and the bare
+    // `<id>.<field>` form resolved against the stage result.
+    const refusedWith = async (stage: Record<string, unknown>) => {
+      const cmdExec = makeCommandExecutor([makeCommandResult({ name: 'cmd-a', score: 80, decision: 'PASS' })]);
+      const executor = new PipelineExecutor(makeWorkflowExecutor(), cmdExec, agentExec, makeRegistry(), noopLogger);
       const def = makePipelineDef({
         stages: [
           { id: 'pre-check', name: 'Pre-check', type: 'command', ref: 'cmd-a@1.0.0' },
-          { id: 'deploy', name: 'Deploy', type: 'command', ref: 'cmd-b@1.0.0', skip_if: "pre-check.decision == 'PASS'" },
+          { id: 'deploy', name: 'Deploy', type: 'command', ref: 'cmd-b@1.0.0', depends_on: ['pre-check'], ...stage },
         ],
-      });
+      } as never);
+      const err = await executor.start(def, { target: '/tmp/test' }).then(() => undefined, (e: unknown) => e);
+      expect(err).toBeInstanceOf(PipelineError);
+      expect(cmdExec.execute).not.toHaveBeenCalled();
+      return (err as PipelineError).context.loadErrors?.map(e => [e.code, e.at]);
+    };
 
-      const result = await executor.execute(def, { target: '/tmp/test' });
-
-      expect(result.stages[0]!.status).toBe('completed');
-      expect(result.stages[1]!.status).toBe('skipped');
-      expect(result.stages[1]!.skipReason).toBe('condition_met');
+    it('refuses skip_if as an undeclared stage key', async () => {
+      expect(await refusedWith({ skip_if: "stages.pre-check.passed" })).toEqual([['unknown_key', 'stage:deploy']]);
     });
 
-    it('does not skip when condition evaluates to false', async () => {
-      const cmdResults = [
-        makeCommandResult({ name: 'cmd-a', score: 80, decision: 'WARN' }),
-        makeCommandResult({ name: 'cmd-b', score: 90 }),
-      ];
-      const wfExec = makeWorkflowExecutor();
-      const cmdExec = makeCommandExecutor(cmdResults);
-      const registry = makeRegistry();
-      const executor = new PipelineExecutor(wfExec, cmdExec, agentExec, registry, noopLogger);
+    it('refuses the bare <id>.<field> form as an unknown root', async () => {
+      expect(await refusedWith({ condition: "pre-check.decision == 'PASS'" })).toEqual([['unknown_root', 'stage:deploy']]);
+    });
 
-      const def = makePipelineDef({
-        stages: [
-          { id: 'pre-check', name: 'Pre-check', type: 'command', ref: 'cmd-a@1.0.0' },
-          { id: 'deploy', name: 'Deploy', type: 'command', ref: 'cmd-b@1.0.0', skip_if: "pre-check.decision == 'PASS'" },
-        ],
-      });
-
-      const result = await executor.execute(def, { target: '/tmp/test' });
-
-      expect(result.stages[0]!.status).toBe('completed');
-      expect(result.stages[1]!.status).toBe('completed');
+    it('refuses the singular stage.<id> form as an unknown root', async () => {
+      expect(await refusedWith({ condition: 'stage.pre-check.passed' })).toEqual([['unknown_root', 'stage:deploy']]);
     });
   });
 
@@ -798,6 +804,28 @@ describe('PipelineExecutor', () => {
       expect(result.stages[0]!.steps![0]!.output).toBe('DETECTED');
     });
 
+    it('refuses a hard-gated steps stage with steps disabled BEFORE any stage runs (G5, moved out of the loop)', async () => {
+      // Negative control: before P3b the refusal was thrown when the loop reached the steps stage,
+      // after stage "build" had run (and been paid for).
+      const cmdExec = makeCommandExecutor([makeCommandResult()]);
+      const executor = new PipelineExecutor(makeWorkflowExecutor(), cmdExec, agentExec, makeRegistry(), noopLogger);
+      const def = makePipelineDef({
+        stages: [
+          { id: 'build', name: 'Build', type: 'command', ref: 'a@1' },
+          { id: 'gate', name: 'Gate', type: 'steps', steps: [{ name: 'n', command: 'true' }], gate: { on_failure: 'abort' } },
+        ],
+      });
+
+      const err = await executor.start(def, { target: '/tmp' }).then(() => undefined, (e: unknown) => e);
+
+      expect(err).toBeInstanceOf(PipelineError);
+      expect((err as PipelineError).message).toMatch(/"gate" is a hard gate/);
+      expect((err as PipelineError).message).toMatch(/allowStageSteps/);
+      // The remedy is enabling steps; downgrading the gate is not offered (PDL 1.6.0, Step output must exist).
+      expect((err as PipelineError).message).not.toMatch(/warn/);
+      expect(cmdExec.execute).not.toHaveBeenCalled();
+    });
+
     it('fails loud on a stage with no ref, agents, or steps instead of fabricating a PASS', async () => {
       const wfExec = makeWorkflowExecutor();
       const cmdExec = makeCommandExecutor();
@@ -960,7 +988,9 @@ describe('PipelineExecutor', () => {
     });
   });
 
-  describe('run-gate conditions (Phase 3)', () => {
+  describe('run-gate conditions (PDL 1.6.0 condition language)', () => {
+    const declares = declareParams;
+
     it('skips a stage whose condition is definitively false (run-if semantics)', async () => {
       const wfExec = makeWorkflowExecutor();
       const cmdExec = makeCommandExecutor([makeCommandResult({ score: 80 })]);
@@ -968,11 +998,12 @@ describe('PipelineExecutor', () => {
       const executor = new PipelineExecutor(wfExec, cmdExec, agentExec, registry, noopLogger);
 
       const def = makePipelineDef({
+        triggers: declares('skip_forecasting'),
         stages: [
           { id: 'build', name: 'Build', type: 'command', ref: 'a@1' },
           { id: 'forecast', name: 'Forecast', type: 'command', ref: 'b@1', condition: '!params.skip_forecasting' },
         ],
-      });
+      } as never);
 
       const result = await executor.execute(def, { target: '/tmp/test', params: { skip_forecasting: true } });
 
@@ -987,22 +1018,22 @@ describe('PipelineExecutor', () => {
       const executor = new PipelineExecutor(wfExec, cmdExec, agentExec, registry, noopLogger);
 
       const def = makePipelineDef({
+        triggers: declares('skip_forecasting'),
         stages: [
           { id: 'build', name: 'Build', type: 'command', ref: 'a@1' },
           { id: 'forecast', name: 'Forecast', type: 'command', ref: 'b@1', condition: '!params.skip_forecasting' },
         ],
-      });
+      } as never);
 
       const result = await executor.execute(def, { target: '/tmp/test', params: { skip_forecasting: false } });
 
       expect(result.stages[1]!.status).toBe('completed');
     });
 
-    it('fails open (runs) when a condition cannot be resolved', async () => {
-      const wfExec = makeWorkflowExecutor();
+    it('refuses a condition it cannot read before anything runs (was: fail-open, the stage ran)', async () => {
+      // Negative control: on 98adad5 `trigger.type` was "unknown" and the stage ran with a warning.
       const cmdExec = makeCommandExecutor([makeCommandResult(), makeCommandResult()]);
-      const registry = makeRegistry();
-      const executor = new PipelineExecutor(wfExec, cmdExec, agentExec, registry, noopLogger);
+      const executor = new PipelineExecutor(makeWorkflowExecutor(), cmdExec, agentExec, makeRegistry(), noopLogger);
 
       const def = makePipelineDef({
         stages: [
@@ -1011,9 +1042,36 @@ describe('PipelineExecutor', () => {
         ],
       });
 
+      const err = await executor.start(def, { target: '/tmp/test' }).then(() => undefined, (e: unknown) => e);
+      expect((err as PipelineError).context.loadErrors?.map(e => [e.code, e.at])).toEqual([['unknown_root', 'stage:deploy']]);
+      expect(cmdExec.execute).not.toHaveBeenCalled();
+    });
+
+    it('reads the string 0 as false (spec §6 item 31; was true)', async () => {
+      const cmdExec = makeCommandExecutor([makeCommandResult()]);
+      const executor = new PipelineExecutor(makeWorkflowExecutor(), cmdExec, agentExec, makeRegistry(), noopLogger);
+      const def = makePipelineDef({
+        triggers: declares('deep'),
+        stages: [{ id: 'deep', name: 'Deep', type: 'command', ref: 'a@1', condition: 'params.deep' }],
+      } as never);
+
+      const result = await executor.execute(def, { target: '/tmp/test', params: { deep: '0' } });
+
+      expect(result.stages[0]!.status).toBe('skipped');
+      expect(cmdExec.execute).not.toHaveBeenCalled();
+    });
+
+    it('binds a declared default before reading a parameter', async () => {
+      const cmdExec = makeCommandExecutor([makeCommandResult()]);
+      const executor = new PipelineExecutor(makeWorkflowExecutor(), cmdExec, agentExec, makeRegistry(), noopLogger);
+      const def = makePipelineDef({
+        triggers: [{ type: 'manual', parameters: [{ name: 'mode', type: 'string', default: 'deep' }] }],
+        stages: [{ id: 'deep', name: 'Deep', type: 'command', ref: 'a@1', condition: "params.mode == 'deep'" }],
+      } as never);
+
       const result = await executor.execute(def, { target: '/tmp/test' });
 
-      expect(result.stages[1]!.status).toBe('completed');
+      expect(result.stages[0]!.status).toBe('completed');
     });
 
     it('gates stages on step outputs end-to-end (detection preflight)', async () => {
@@ -1053,6 +1111,7 @@ describe('PipelineExecutor', () => {
       const executor = new PipelineExecutor(wfExec, cmdExec, agentExecutor, registry, noopLogger, true);
 
       const def = makePipelineDef({
+        triggers: declares('frontend'),
         stages: [
           {
             id: 'preflight', name: 'Preflight', type: 'steps',
@@ -1081,53 +1140,82 @@ describe('PipelineExecutor', () => {
       expect(result.stages[1]!.status).toBe('completed');
       expect(result.stages[1]!.agentResults).toHaveLength(2);
     });
-  });
 
-  describe('condition evaluator', () => {
-    it('supports numeric comparisons', async () => {
-      const cmdResults = [
-        makeCommandResult({ name: 'cmd-a', score: 80 }),
-        makeCommandResult({ name: 'cmd-b', score: 90 }),
-      ];
-      const wfExec = makeWorkflowExecutor();
-      const cmdExec = makeCommandExecutor(cmdResults);
-      const registry = makeRegistry();
-      const executor = new PipelineExecutor(wfExec, cmdExec, agentExec, registry, noopLogger);
-
+    it('a stage condition that reads a FAILED step is E: the stage does not run, and is recorded failed with condition_error (ERRORED from P4b)', async () => {
+      // Negative control: on 98adad5 the failed step read as '' and the stage was skipped.
+      const cmdExec = makeCommandExecutor([makeCommandResult()]);
+      const executor = new PipelineExecutor(makeWorkflowExecutor(), cmdExec, agentExec, makeRegistry(), noopLogger, true);
       const def = makePipelineDef({
         stages: [
-          { id: 'check', name: 'Check', type: 'command', ref: 'cmd-a@1' },
-          { id: 'deploy', name: 'Deploy', type: 'command', ref: 'cmd-b@1', skip_if: 'check.score >= 70' },
+          { id: 'pre', name: 'Pre', type: 'steps', steps: [{ name: 'Detect', command: 'exit 2', continue_on_error: true }], gate: { on_failure: 'warn' } },
+          { id: 'checks', name: 'Checks', type: 'command', ref: 'a@1', depends_on: ['pre'], condition: "stages.pre.steps['Detect'].output == 'DETECTED'" },
         ],
       });
 
-      const result = await executor.execute(def, { target: '/tmp/test' });
+      const result = await executor.execute(def, { target: '/tmp' });
 
-      // check.score is 80 >= 70, so deploy should be skipped
-      expect(result.stages[1]!.status).toBe('skipped');
+      expect(result.stages[1]!.status).toBe('failed');
+      expect(result.stages[1]!.skipReason).toMatch(/^condition_error: /);
+      expect(cmdExec.execute).not.toHaveBeenCalled();
     });
 
-    it('handles invalid condition gracefully', async () => {
-      const cmdResults = [
-        makeCommandResult(),
-        makeCommandResult(),
-      ];
-      const wfExec = makeWorkflowExecutor();
-      const cmdExec = makeCommandExecutor(cmdResults);
-      const registry = makeRegistry();
-      const executor = new PipelineExecutor(wfExec, cmdExec, agentExec, registry, noopLogger);
-
+    it('an agent condition that is E leaves that agent undispatched and marks its stage condition_error; the others run', async () => {
+      const agentExecutor = makeAgentExecutor();
+      const executor = new PipelineExecutor(makeWorkflowExecutor(), makeCommandExecutor(), agentExecutor, makeRegistry(), noopLogger, true);
       const def = makePipelineDef({
         stages: [
-          { id: 'check', name: 'Check', type: 'command', ref: 'cmd-a@1' },
-          { id: 'deploy', name: 'Deploy', type: 'command', ref: 'cmd-b@1', skip_if: 'invalid condition syntax !!!' },
+          { id: 'pre', name: 'Pre', type: 'steps', steps: [{ name: 'Detect docs', command: 'exit 2', continue_on_error: true }], gate: { on_failure: 'warn' } },
+          {
+            id: 'review', name: 'Review', type: 'agents', depends_on: ['pre'],
+            agents: [{ ref: 'architect' }, { ref: 'docs', condition: "stages.pre.steps['Detect docs'].output == 'DETECTED'" }],
+          },
+        ],
+      });
+
+      const result = await executor.execute(def, { target: '/tmp' });
+
+      expect(agentExecutor.execute).toHaveBeenCalledTimes(1);
+      expect(result.stages[1]!.agentResults).toHaveLength(1);
+      expect(result.stages[1]!.status).toBe('failed');
+      expect(result.stages[1]!.skipReason).toMatch(/^condition_error: .*"docs"/);
+    });
+
+    it('Kleene: false && E is false, so the stage is skipped, not errored', async () => {
+      const cmdExec = makeCommandExecutor([makeCommandResult()]);
+      const executor = new PipelineExecutor(makeWorkflowExecutor(), cmdExec, agentExec, makeRegistry(), noopLogger, true);
+      const def = makePipelineDef({
+        triggers: declares('security'),
+        stages: [
+          { id: 'pre', name: 'Pre', type: 'steps', steps: [{ name: 'Detect', command: 'exit 2', continue_on_error: true }], gate: { on_failure: 'warn' } },
+          { id: 'security', name: 'Security', type: 'command', ref: 'a@1', depends_on: ['pre'], condition: "params.security != 'off' && stages.pre.steps['Detect'].output == 'DETECTED'" },
+        ],
+      } as never);
+
+      const result = await executor.execute(def, { target: '/tmp', params: { security: 'off' } });
+
+      expect(result.stages[1]!.status).toBe('skipped');
+      expect(result.stages[1]!.skipReason).toBe('condition_not_met');
+    });
+
+    it('stages.<id>.passed is false for a stage whose warn gate failed (WARNED), true for one that passed', async () => {
+      const cmdExec = makeCommandExecutor([
+        makeCommandResult({ name: 'low', score: 50 }),
+        makeCommandResult({ name: 'high', score: 95 }),
+        makeCommandResult(),
+      ]);
+      const executor = new PipelineExecutor(makeWorkflowExecutor(), cmdExec, agentExec, makeRegistry(), noopLogger);
+      const def = makePipelineDef({
+        stages: [
+          { id: 'warned', name: 'Warned', type: 'command', ref: 'low@1', gate: { threshold: 80, on_failure: 'warn' } },
+          { id: 'passing', name: 'Passing', type: 'command', ref: 'high@1', gate: { threshold: 80, on_failure: 'warn' } },
+          { id: 'if-warned', name: 'If warned', type: 'command', ref: 'x@1', depends_on: ['warned'], condition: 'stages.warned.passed' },
+          { id: 'if-passing', name: 'If passing', type: 'command', ref: 'y@1', depends_on: ['passing'], condition: 'stages.passing.passed' },
         ],
       });
 
       const result = await executor.execute(def, { target: '/tmp/test' });
 
-      // Invalid condition evaluates to false, so stage executes
-      expect(result.stages[1]!.status).toBe('completed');
+      expect(result.stages.map(r => r.status)).toEqual(['completed', 'completed', 'skipped', 'completed']);
     });
   });
 
@@ -1478,6 +1566,7 @@ describe('PipelineExecutor', () => {
       const executor = new PipelineExecutor(makeWorkflowExecutor(), makeCommandExecutor(), agentExecutor, makeRegistry(), noopLogger);
 
       const def = makePipelineDef({
+        triggers: declareParams('mode'),
         stages: [
           {
             id: 'panel', name: 'Panel', type: 'agents' as const,
@@ -1504,6 +1593,7 @@ describe('PipelineExecutor', () => {
       const executor = new PipelineExecutor(makeWorkflowExecutor(), makeCommandExecutor(), agentExecutor, makeRegistry(), noopLogger);
 
       const def = makePipelineDef({
+        triggers: declareParams('mode'),
         stages: [
           {
             id: 'panel', name: 'Panel', type: 'agents' as const,
@@ -1533,6 +1623,7 @@ describe('PipelineExecutor', () => {
         makeWorkflowExecutor(), makeCommandExecutor(), makeAgentExecutor([makeValidatorResult()]), makeRegistry(), noopLogger,
       );
       const def = makePipelineDef({
+        triggers: declareParams('mode'),
         stages: [
           {
             id: 'panel', name: 'Panel', type: 'agents' as const,
@@ -1777,10 +1868,12 @@ describe('PipelineExecutor — cost roll-up degrades to unknown on a crashed sta
       makeWorkflowExecutor(), cmdExec, agentExec, makeRegistry(), noopLogger,
     );
 
+    // A bare `false` is not a 1.6.0 condition (D36); an absent declared parameter is falsy.
     const def = makePipelineDef({
+      triggers: declareParams('never'),
       stages: [
         { id: 'stage-1', name: 'Stage 1', type: 'command', ref: 'cmd-a@1.0.0' },
-        { id: 'stage-2', name: 'Stage 2', type: 'command', ref: 'cmd-b@1.0.0', condition: 'false' },
+        { id: 'stage-2', name: 'Stage 2', type: 'command', ref: 'cmd-b@1.0.0', condition: 'params.never' },
       ],
     });
 
