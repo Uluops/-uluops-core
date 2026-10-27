@@ -1646,3 +1646,27 @@ describe('saved run verdict for pipelines (PDL 1.6.0 D13)', () => {
     expect(written().rawMarkdown).toBeUndefined();
   });
 });
+
+/**
+ * An agent summary over the wire's cap aborted the whole save: ops-sdk validates AgentInputSchema
+ * client-side (found live 2026-10-27, PDL 1.6.0 P4b check). The save mock here does not validate, so
+ * the assertion runs the REAL schema over what SubmissionClient wrote. Negative control: on 57339f3
+ * the 3,000-character summary is sent as is and the schema rejects it.
+ */
+describe('agent summary over the wire cap', () => {
+  beforeEach(() => { vi.clearAllMocks(); warnings.length = 0; });
+  it('is cut to the cap with a warning, so the save is not rejected; a summary within it is untouched', async () => {
+    const { AgentInputSchema } = await import('@uluops/ops-sdk');
+    mockSave.mockResolvedValueOnce({ run: { id: 'r', projectId: 'p', runNumber: 1, allGatesPassed: true, averageScore: 85 }, agents: [], correlation: { newIssues: 0, recurringIssues: 0, regressions: 0 } });
+    const pipeline = makePipelineResultWithAgents([[0, 0]]);
+    const [long, short] = pipeline.stages[0]!.agentResults!;
+    long!.summary = 'x'.repeat(3000);
+    short!.summary = 'fine';
+    await new SubmissionClient(baseConfig, testLogger).submit(makeSubmission({ result: pipeline }));
+    const agents = (mockSave.mock.calls[0]![0] as { agents: Array<{ name: string; summary?: string }> }).agents;
+    expect(agents.map(a => a.summary?.length)).toEqual([2000, 4]);
+    expect(agents[0]!.summary!.endsWith('…')).toBe(true);
+    for (const a of agents) expect(AgentInputSchema.safeParse(a).success, JSON.stringify(AgentInputSchema.safeParse(a).error?.issues)).toBe(true);
+    expect(warnings.some(w => /summary truncated 3000→2000/.test(w))).toBe(true);
+  });
+});

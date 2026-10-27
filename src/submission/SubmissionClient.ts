@@ -4,6 +4,7 @@ import {
   FailureDomainSchema,
   SeveritySchema,
   PrioritySchema,
+  AgentInputSchema,
   type AnalysisSummaryInput,
   type AnalysisRecordInput,
   type RecommendationInput,
@@ -15,6 +16,12 @@ import {
 // exported) — there is nothing to import. Kept as local constants, re-checked
 // whenever the ops-sdk pin moves, same discipline as MAX_ANALYSIS_RECORDS below.
 const VALID_CLASSIFICATION_CONFIDENCE = ['high', 'medium', 'low'] as const;
+
+/**
+ * The wire's cap on an agent's `summary`, read from the pinned ops-sdk schema (2,000 at 7.1.0) rather
+ * than copied, so a pin bump that moves it moves this too. `null` would mean the wire stopped capping.
+ */
+const MAX_AGENT_SUMMARY: number | null = AgentInputSchema.shape.summary.unwrap().maxLength;
 const VALID_CLASSIFIED_BY = ['agent', 'classifier', 'human'] as const;
 import type { Logger } from '@uluops/sdk-core';
 import type { ResolvedConfig } from '../types/config.js';
@@ -876,7 +883,7 @@ export class SubmissionClient {
       score,
       maxScore,
       decision: result.decision,
-      summary: 'summary' in result ? (result as AgentResult).summary : undefined,
+      summary: this.wireSummary(result.name, 'summary' in result ? (result as AgentResult).summary : undefined),
       model: result.metrics.model,
       // The engine stamps harness: 'uluops-core' on every ExecutionMetrics and the wire
       // type declares AgentInput.harness — it was simply never forwarded, so every run
@@ -887,6 +894,20 @@ export class SubmissionClient {
       tokens: this.extractTokens(result.metrics),
       durationMs: result.metrics.durationMs,
     };
+  }
+
+  /**
+   * An agent summary as the wire accepts it. ops-sdk validates `AgentInputSchema` client-side, so one
+   * summary over the cap aborted the WHOLE save (every agent, every recommendation, the analysis) —
+   * the failure `sanitizeRecommendation`'s policy exists to prevent, and this field was outside it.
+   * Same policy: repair only what the wire would reject (cut to the cap, ending in `…`), and warn.
+   * Found live 2026-10-27 (PDL 1.6.0 P4b check): contradiction-detector and ambiguity-mapper both
+   * wrote summaries over 2,000 characters on a ten-line file, and the run was never saved.
+   */
+  private wireSummary(agent: string, summary: string | undefined): string | undefined {
+    if (summary === undefined || MAX_AGENT_SUMMARY === null || summary.length <= MAX_AGENT_SUMMARY) return summary;
+    this.logger.warn(`Agent "${agent}" summary truncated ${summary.length}→${MAX_AGENT_SUMMARY} chars (the tracker caps it)`);
+    return `${summary.slice(0, MAX_AGENT_SUMMARY - 1)}…`;
   }
 
   /**
