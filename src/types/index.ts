@@ -34,6 +34,9 @@ export type {
   ScoringCategory,
   ScoringCriterion,
   AgentResult,
+  DecisionClass,
+  VerdictWarning,
+  AgentVerdictRecord,
 } from './agent.js';
 
 // Command
@@ -73,6 +76,10 @@ export type {
   TriggerInfo,
   PipelineArtifact,
   PipelineHandle,
+  StageOutcome,
+  GateMode,
+  ErroredReason,
+  PipelineWarning,
 } from './pipeline.js';
 
 // Tools (ToolUseBlock/ToolResult used by ToolHandler.fulfill; Tool removed — superseded by AI SDK ToolSet)

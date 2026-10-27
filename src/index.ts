@@ -82,6 +82,9 @@ export type {
   ScoringCategory,
   ScoringCriterion,
   AgentResult,
+  DecisionClass,
+  VerdictWarning,
+  AgentVerdictRecord,
 } from './types/agent.js';
 
 // ─── Types: Command ───────────────────────────────────────────────────────────
@@ -121,6 +124,10 @@ export type {
   TriggerInfo,
   PipelineArtifact,
   PipelineHandle,
+  StageOutcome,
+  GateMode,
+  ErroredReason,
+  PipelineWarning,
 } from './types/pipeline.js';
 
 // ─── Types: Registry ──────────────────────────────────────────────────────────

@@ -49,6 +49,15 @@ describe('./types closes over the field types of what it exports', () => {
     ['StepResult', 'StageResult.steps'],
     ['CostBasis', 'ExecutionMetrics.costBasis'],
     ['GateDefinition', 'StageDefinition.gate'],
+    // PDL 1.6.0 (P4a, P4b): named in the CHANGELOG as new exports and, until the 0.54.0 Verdaccio
+    // check, exported from neither entry point.
+    ['StageOutcome', 'StageResult.outcome'],
+    ['GateMode', 'StageResult.gateMode'],
+    ['ErroredReason', 'StageResult.erroredReasons'],
+    ['PipelineWarning', 'PipelineResult.warnings'],
+    ['AgentVerdictRecord', 'AgentResult.verdict'],
+    ['DecisionClass', 'AgentVerdictRecord.class'],
+    ['VerdictWarning', 'AgentVerdictRecord.warnings'],
   ])('%s (for %s) is exported from both entry points', name => {
     expect(types.has(name)).toBe(true);
     expect(root.has(name)).toBe(true);
