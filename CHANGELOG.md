@@ -6,10 +6,12 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) 
 
 ## [Unreleased]
 
+## [0.54.0] - 2026-10-27
+
 **PDL 1.6.0, build unit P3a: where steps run and how parameters reach them** (design spec pdl-1_6_0
 v0.8.3, D15, D20, D22, D38, D39; normative text `uluops-pdl-spec-v1.6.0.md`, *Execution Semantics →
-Steps*; checklist v0.1.3 §P3a). The rest of PDL 1.6.0 lands in P3b (conditions, load validation),
-P4a and P4b (decisions, gates, status) before R-core.
+Steps*; checklist v0.1.3 §P3a). P3b (conditions, load validation), P4a (decisions, scores) and P4b
+(gates, status, the saved verdict), below, complete core's share of PDL 1.6.0.
 
 **PDL 1.6.0, build unit P3b: one condition language, checked before anything runs** (design spec
 pdl-1_6_0 v0.8.3, D2, D3, D4, D25, D36, D40, D41; normative text *Execution Semantics → The condition
