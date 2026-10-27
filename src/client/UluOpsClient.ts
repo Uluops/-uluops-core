@@ -312,7 +312,10 @@ export class UluOpsClient {
    * @returns The {@link PipelineResult} with per-stage results and aggregate metrics.
    * @throws {ConfigurationError} If the resolved definition is not a pipeline.
    * @throws {IntegrityError} If a supplied pin does not match the resolved definition.
-   * @throws {PipelineError} If a stage fails (`error.context` holds stage name/index).
+   * @throws {PipelineError} If the run is refused before launch (`error.context.loadErrors` /
+   *   `refusal`), or ends `failed` (a deadline, a credit stop, a thrown execution;
+   *   `error.context.partialResult`). A failed gate, an abort included, does not throw: read
+   *   `result.decision` / `result.allGatesPassed` (PDL 1.6.0).
    */
   async runPipeline(name: string, input: ExecutionInput, options?: ResolvePinOptions): Promise<PipelineResult> {
     this.warnIgnoredThinking('runPipeline', options);

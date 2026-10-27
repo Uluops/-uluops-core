@@ -26,6 +26,15 @@ summary-word fallbacks, mapped first words through per-type synonyms, and summed
 score, so the same output could gate differently in core and in the skill, and `SECURE WITH
 CONDITIONS` read SECURE.
 
+**PDL 1.6.0, build unit P4b: gates, stage status and the saved run verdict** (design spec pdl-1_6_0
+v0.8.4, D1, D5, D10, D13, D19, D24, D42 and gate-decision D1–D3; normative text *Run model, Gates →
+Failure modes, All agents skipped*; checklist v0.1.3 §P4b). Core read `abort` as "halt the pipeline",
+`skip` as "skip everything after", had no `fail`, failed a gate on any negative decision whatever its
+mode, and saved a run's verdict as `isPositiveDecision` over a decision that ignored gate modes, so a
+negative behind `warn` failed the saved run and an accepted CONDITIONAL could pass it. **This release
+is the cutover for saved verdicts (D13, §6 item 7): pipeline runs saved by it carry `allGatesPassed`
+values computed by a different rule from the runs saved before it.**
+
 **Agent step limit: a higher default, a client-level setting, a ceiling, and a wrap-up that makes the
 agent answer** (tracker `c13b7789`). `code-validator` on claude-sonnet-5 spent all 50 steps re-searching
 a two-file target and returned nothing, on 0.53.1 as on the PDL 1.6.0 branch; in a two-agent pipeline
@@ -96,7 +105,7 @@ wrap-up, and the context-budget brake was inert on Claude structured output.
   - **any terminal status satisfies `depends_on`** (D3). A stage whose dependency was skipped or
     failed now runs, unless its own condition says otherwise; `dependencies_not_met` remains only
     for a dependency on a stage id that does not exist. Before, a dependency had to be `completed`.
-    (Abort still ends the run here; P4b narrows it to the aborting stage's dependents.)
+    (The one exception, a stage downstream of one that failed behind `abort`, is P4b's, below.)
   - **the string `0` is false** in a condition (§6 item 31), as are `''` and `'false'`; core read
     `'0'` as true. A parameter passed as a number or boolean compares as its string.
   - **declared parameter defaults are bound** before a condition or a step template reads the
@@ -108,10 +117,9 @@ wrap-up, and the context-budget brake was inert on Claude structured output.
     stage's result fields, which 1.6.0 removes.
   - **a condition that reads a step that did not pass is the error value E**, with Kleene
     propagation: `false && E` is false and `true || E` true, otherwise E. A stage whose condition is E
-    does not run and is recorded `failed` with `skipReason` `condition_error: …`; an agent whose
-    condition is E is not dispatched, and its stage is recorded `failed` the same way, keeping the
-    records of the agents that ran. Its gate then decides the flow as for any failed stage. P4b
-    records these as ERRORED, with a `STAGE_ERRORED` warning. Before, the failed step's output read
+    does not run and is ERRORED (`condition_error`, P4b below); an agent whose condition is E is
+    not dispatched, and its stage is ERRORED the same way, keeping the records of the agents that
+    ran. Before, the failed step's output read
     as `''`, so a detector that crashed read as "not detected" and its stage was silently skipped.
   - **parentheses parse.** Core could not read the three parenthesised pre-implementation conditions.
 - **Runtime:** one linear parse per condition at start, and the same parse at evaluation; bounded at
@@ -145,8 +153,8 @@ wrap-up, and the context-budget brake was inert on Claude structured output.
   - each reading warning is logged (`logger.warn`), values stripped of control characters.
 - **Pipelines** (§6 items 17, 28):
   - **D24: an agent with no score at a gate that has a threshold**, or with no score and no
-    classifiable decision, is unjudgeable. Until P4b adds ERRORED, its stage is recorded `failed`
-    with `skipReason` `agent_unjudgeable: …`, and its gate decides the flow. Before, a threshold over
+    classifiable decision, is unjudgeable, and its stage is ERRORED (`agent_unjudgeable`, P4b
+    below). Before, a threshold over
     an all-scoreless panel was fail-open. **42 corpus stage sites put an explorer, generator or
     executor behind a `warn` gate with a threshold** (70, 60 or 0; uluops-agent-workflows
     `354ffc81`); each would end unjudgeable on every run. Ruled D42 (spec v0.8.4, Alex 2026-10-26): D24
@@ -159,6 +167,70 @@ wrap-up, and the context-budget brake was inert on Claude structured output.
     `354ffc81`). An agent that does not resolve here is not refused; dispatch reports it as before.
     This adds one registry resolution per such agent before launch.
 - **Runtime:** linear in the output; no change in extraction cost.
+
+*PDL 1.6.0 P4b (gates, status, saved verdict):* applies to every pipeline run (§6 items 7, 9, 10,
+12, 15, 16, 19, 20, 24, 25).
+
+- **Consumer code:** `PipelineResult.allGatesPassed` and `PipelineResult.warnings`
+  (`PipelineWarning[]`: `STAGE_ERRORED`, `CONDITIONAL_ACCEPTED`) are new and **required**, as is
+  `PipelineMetrics.stagesErrored`; `PipelineResult.params` is new. `StageResult.status` gains
+  `'errored'`, and `StageResult` gains `outcome` (`PASSED | WARNED | FAILED | SKIPPED | ERRORED`),
+  `gateMode` and `erroredReasons`. `GateDefinition.on_failure` gains `'fail'`, `GateDefinition` gains
+  `decision`, and `agents[]` entries gain `timeout`. New exports: `StageOutcome`, `GateMode`,
+  `ErroredReason`, `PipelineWarning`. **Type-level breaking** for code that builds a
+  `PipelineResult` or `PipelineMetrics` (test fixtures, mocks): add the three required fields. An
+  exhaustive `switch` over `StageResult.status` must handle `'errored'`.
+- **An abort is no longer a stop** (D1, §6 item 20). A stage that fails behind `abort` is FAILED and
+  skips only its transitive dependents (`skipReason: 'gate_abort'`); every other stage still runs.
+  The run completes: `status: 'complete'`, `decision: 'FAIL'`, and **`wait()` / `runPipeline()`
+  resolve instead of throwing `PipelineError("… failed its gate")`**. Two consequences outside this
+  package:
+  - **`ulu exec pipeline` exits 0 on an aborted pipeline** until the CLI sets its exit code from the
+    decision. Its non-zero exit came only from that throw (`packages/-uluops-cli/src/context.ts`,
+    `handleCoreError`). P4c carries the fix with the pin bump.
+  - **aborted runs are now saved to the tracker.** `runPipeline()` tracks after `execute()`
+    returns, so the throw skipped tracking: an aborted pipeline run was never saved.
+- **Failure modes** (§6 items 10, 16, 25): `fail` is blocking: the stage is FAILED and the run
+  continues. `skip` is read as `fail` (it skipped every remaining stage). A stage with **no gate** is
+  judged as `fail`, so a negative or a failed step there fails the run and the run continues; every
+  corpus stage has a gate (324 of 324, 81 pipelines, uluops-agent-workflows `354ffc81`, YAML walk
+  2026-10-26), so this reaches registry and caller pipelines only. G5 refuses a steps stage behind
+  any blocking gate when steps are off (it refused `abort` only). An `on_failure` value outside the
+  enum reads as `abort` (it fell through and continued).
+- **Gate decisions** (gate-decision D1–D3, §6 item 12): a `warn` gate ignores the decision by
+  default, so **a negative behind `warn` no longer fails the run** (it failed it whatever the gate
+  said). A blocking gate passes a CONDITIONAL and makes `allGatesPassed` false with a
+  `CONDITIONAL_ACCEPTED` warning: the run decision is `FAIL` (it was `WARN`). `gate.decision:
+  positive` fails a CONDITIONAL; `ignore` compares nothing.
+- **Per-agent thresholds** (D5): an `agents[]` entry's `threshold` puts the gate in per-agent mode.
+- **ERRORED** (§3.1, D19, §6 items 9, 24): the P3b and P4a interims (`status: 'failed'` with
+  `skipReason` `condition_error: …` / `agent_unjudgeable: …`) are now `status: 'errored'`, and so are
+  a stage with a **crashed agent, a timeout included** (it was a negative `FAIL`) and a stage **in
+  flight at a stop** (it was `completed`). Each raises `STAGE_ERRORED`. An ERRORED stage takes its gate's
+  mode: behind `warn` the run decision is `WARN`, not `PASS`. It forwards what its agents really
+  returned, and a labelled absence when none did.
+- **All agents skipped by their own conditions** (D10, §6 item 15): the stage is SKIPPED and its
+  gate is not evaluated. It failed the gate (`verifiedNothing`), which still applies to a stage that
+  dispatched nothing for any other reason.
+- **The run verdict** (D13, §6 items 7, 19): `allGatesPassed` is computed once
+  (`src/executor/runVerdict.ts`), and `decision`, `decisionCategory` and the stage metrics follow
+  it. **`CANCELLED` is retired as a pipeline decision**: a stop that reached a stage makes the run
+  `FAIL`; `status` still says `cancelled`, and `wait()` still resolves for a cancel. Command and
+  workflow results keep `ABORTED` and the crash-decides rules, so a stopped workflow and the same
+  phases split into pipeline stages no longer read alike (aborted-agent-recording OD-14's layout
+  invariance held under 1.5 only). `stagesFailed` / `stagesWarned` count FAILED / WARNED stages; they
+  counted negative / conditional decision categories.
+- **The saved verdict** (D13): `SubmissionClient` writes `PipelineResult.allGatesPassed` as is. The
+  0.7 extraction-confidence floor no longer applies to pipelines (a decision found only through the
+  display fallbacks is already gated as absent, P4a); it stays for every other submission. A
+  pipeline result without the field saves `false`, with a warning.
+- **`params:` line** (§3.8, D14): a pipeline submission's raw markdown begins with
+  `params: {"…":"…"}`, each resolved run parameter, keys sorted, as one JSON line. Core sent no raw
+  markdown for pipeline runs before (the spec says "which both already send"; core did not), so
+  every pipeline run now carries one.
+- **`agents[].timeout`** (ms) is honoured: it overrides the run's timeout for that agent. The schema
+  has declared it since 1.4; nothing read it.
+- **Runtime:** none measurable.
 
 *Agent step limit (c13b7789):*
 
@@ -220,7 +292,7 @@ wrap-up, and the context-budget brake was inert on Claude structured output.
   `checkPipelineLoadRules` (all 15 codes, each at its location, and the `load_ok` cases with their
   warnings), that every other case loads clean, and every stage and agent condition in the 23 core
   cases that hold one, evaluated over a context fed from the oracle (expected `passed`, real step
-  results); the full run through `PipelineExecutor` waits for P4b's stub-agent harness. Plus the
+  results); P4b runs every case through `PipelineExecutor` (below). Plus the
   `STEP_OUTPUT_STEPS_DISABLED` refusal and its steps-enabled control. `conditions.test.ts` is
   rewritten for the grammar, the semantics and the E table; `pipelineLoad.test.ts` is new (self
   dependency, the normalized runtime shape, error collection, defaults). 13 behavioural tests in
@@ -248,6 +320,23 @@ wrap-up, and the context-budget brake was inert on Claude structured output.
   `agentVerdictControls.test.ts` holds the checklist's four negative controls (`REJECT`,
   `summary.score`, prose `SECURE WITH CONDITIONS`, `**REVISE**`), each failing on `6f89349`; so do the
   D24 and out-of-range-score tests. 20 hand mutants are each killed.
+- **`src/executor/stageGate.ts`** (P4b, D29): `gateMode`, `decisionKey`, `isPerAgentMode`,
+  `gateHasThreshold`, `judgeGate` (score in both modes, decision key, CONDITIONAL_ACCEPTED),
+  `judgedOutcome`. **`src/executor/runVerdict.ts`**: `computeAllGatesPassed`, `runDecision`,
+  `runDecisionCategory`, `stageMetrics`, `paramsLine`. `PipelineExecutor` gains the calls and one
+  `judgeStage`; `enactGate`, `applyGate`, `gateScore`, `computeDecision` and `computeStageMetrics`
+  are gone. `SubmissionClient` gains `savedVerdict` and `rawMarkdownFor`.
+- **Tests (P4b):** the conformance harness (`pdlConformanceHarness.ts`, shared) runs **every core
+  case that runs, 104 of them in five groups, end to end** through the real `PipelineExecutor` and
+  `AgentExecutor`, with a stub provider (README stub forms, `timeout` and `hang` included) and the two
+  `cancel` events: each stage's status, `passed`, launched agents, agent classes and saved decisions,
+  upstream, pinned steps, `all_gates_passed` **both in memory and as `SubmissionClient` writes it**,
+  `run_decision`, ABORTED records reaching submission, and warnings exhaustively over the eight codes.
+  `pdlP4bControls.test.ts` holds eight controls through fields that predate P4b; all eight fail on
+  `602b34f` (the checklist's three: a warn-gated negative saves false, `independent` is skipped, an
+  in-flight stage records `completed`). Six of the new `SubmissionClient` tests fail on `602b34f`
+  too. `stageGate.test.ts` and `runVerdict.test.ts` pin each rule; 21 hand mutants across the five
+  touched modules are each killed (five survived the first round and gained tests).
 - **Fixture erratum:** `decisions/real-docs-validator-unfilled` now expects `SCORE_INVALID` for its
   `"[X]"` score. The case predated D16, which added the warning, and warnings are exhaustive. Fixed in
   the corpus on `fix/pdl-fixture-score-invalid-placeholder` (`e68cd62b`) and in this copy; `SOURCE`
@@ -289,6 +378,12 @@ wrap-up, and the context-budget brake was inert on Claude structured output.
 
 ### Internal
 
+- `test/fuzz/stopVerdict.fuzz.test.ts` (P4b): the pipeline oracle is rewritten to the 1.6.0 run model
+  from the spec's rules (failure modes, decision key, ERRORED for stopped and unjudgeable stages,
+  abort cascade, the run verdict) and now also compares each stage's `outcome` and the run's
+  `allGatesPassed`; the layout check maps a workflow's verdict to its pipeline split instead of
+  equating them. Checked by breaking it: a blocking-default decision key and a dropped stop clause
+  each produce mismatches (47 and 71 of 1,500 pipelines). Only the deferred `[fcancel]` class remains.
 - `test/fuzz/stopVerdict.fuzz.test.ts` (P4a): the agents-stage model marks a stage failed when an agent
   is unjudgeable (D24); generated agents declare a register-token vocabulary, as do the default agents
   of `test/executor/fixtures.ts`'s registry, so the pre-launch check passes them without changing how

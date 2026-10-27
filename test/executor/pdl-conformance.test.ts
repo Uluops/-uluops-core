@@ -12,8 +12,8 @@
  *   `passed` from the expected file, and real step results from running the case's steps. A condition
  *   that is false must be an expected SKIPPED stage or a `skipped` agent; E must be an expected
  *   ERRORED stage with `STAGE_ERRORED` / `condition_error` (or an `errored` agent); true must be
- *   neither. Stage statuses and gates are P4b's, so the whole run through PipelineExecutor waits for
- *   the stub-agent harness there; this checks every condition the fixtures hold, now.
+ *   neither. Stage statuses and gates are P4b's end-to-end run, below; this checks every condition
+ *   against the oracle independently of the executor.
  * - `conditions/step-output-with-steps-disabled`: start() refuses with STEP_OUTPUT_STEPS_DISABLED.
  *
  * P4a (reading decisions and scores; the pre-launch vocabulary check):
@@ -23,7 +23,13 @@
  *   built from `stubs/agents.yaml`. The verdict's class, its saved decision where pinned, and its
  *   warnings (exhaustive over the six verdict codes, for that agent) must match; an `errored` agent
  *   must be unjudgeable at its gate, and any other must not; a stage the oracle marks
- *   `STAGE_ERRORED` / `agent_unjudgeable` must hold one. Gates, statuses and the run verdict are P4b's.
+ *   `STAGE_ERRORED` / `agent_unjudgeable` must hold one. Gates, statuses and the run verdict: P4b, below.
+ *
+ * P4b (gates, stage status, the saved verdict):
+ * - **Every core case that runs, end to end** through PipelineExecutor (pdlConformanceHarness.runCase):
+ *   stage statuses, `passed`, launches, agent classes, upstream, steps, `all_gates_passed` in memory and
+ *   as SubmissionClient writes it, `run_decision`, ABORTED records, and warnings exhaustively. The
+ *   checklist's negative controls are pdlP4bControls.test.ts.
  * - `decisions/precheck-*`: start() refuses with VOCABULARY_MISSING, or does not.
  *
  * P3a (StepsExecutor and the step-template load rules):
@@ -40,50 +46,30 @@
  * and quote-character cases fail, and none of the load-error or refusal assertions has a function to
  * call.
  */
-import { describe, it, expect, beforeAll, afterAll } from 'vitest';
-import { cpSync, mkdtempSync, readFileSync, rmSync, existsSync } from 'node:fs';
+import { describe, it, expect, beforeAll, afterAll, vi } from 'vitest';
+import { cpSync, mkdtempSync, rmSync, existsSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import * as path from 'node:path';
-import { fileURLToPath } from 'node:url';
-import YAML from 'yaml';
-import type { Logger } from '@uluops/sdk-core';
 import { StepsExecutor } from '../../src/executor/StepsExecutor.js';
 import { checkStepTemplateRules } from '../../src/executor/stepTemplates.js';
 import { checkPipelineLoadRules, bindParameterDefaults } from '../../src/executor/pipelineLoad.js';
 import { evaluateCondition, E, type ConditionContext } from '../../src/executor/conditions.js';
 import { AgentExecutor } from '../../src/executor/AgentExecutor.js';
 import { isUnjudgeable } from '../../src/executor/agentVerdict.js';
-import type { ResolvedDefinition } from '../../src/types/registry.js';
-import type { ResolvedConfig } from '../../src/types/config.js';
-import type { AIProvider } from '../../src/ai/AIProvider.js';
 import { PipelineExecutor } from '../../src/executor/PipelineExecutor.js';
 import { PipelineError } from '../../src/errors/index.js';
 import type { StageResult, StepDefinition } from '../../src/types/pipeline.js';
+import {
+  type Obj, noopLogger, FIX, cases, expected, wrap, appliesToCore,
+  resolvedStub, stubText, VERDICT_CODES, config, provider, runCase,
+} from './pdlConformanceHarness.js';
 
-type Obj = Record<string, any>;
-const noopLogger: Logger = { debug() {}, info() {}, warn() {}, error() {} };
-const FIX = path.join(path.dirname(fileURLToPath(import.meta.url)), '..', 'fixtures', 'pdl-conformance');
-const GROUPS = ['gates', 'decisions', 'conditions', 'steps', 'run-control', 'load-errors'];
-
-const cases: Obj[] = GROUPS.flatMap((g) => YAML.parse(readFileSync(path.join(FIX, 'cases', `${g}.cases.yaml`), 'utf8')).cases);
-const expected = new Map<string, Obj>(
-  GROUPS.flatMap((g) => YAML.parse(readFileSync(path.join(FIX, 'expected', `${g}.expected.yaml`), 'utf8')).expected).map((e: Obj) => [e.id, e]),
-);
-
-/** The README's wrapping rule: `parameters` become the manual trigger's, with `target` prepended. */
-function wrap(c: Obj): Obj {
-  const declared: Obj[] = c.pipeline.parameters ?? [];
-  const parameters = declared.some((p) => p.name === 'target') ? declared : [{ name: 'target', type: 'string', required: true }, ...declared];
-  return {
-    pipeline: {
-      interface: { name: `conf-${c.id.split('/')[1]}`, version: '0.0.0', displayName: `conf ${c.id}`, description: `PDL conformance case ${c.id}`, domain: 'general' },
-      triggers: [{ type: 'manual', allowed: true, parameters }],
-      stages: c.pipeline.stages.map((s: Obj) => ({ name: s.id, ...s })),
-    },
-  };
-}
-
-const appliesToCore = (c: Obj): boolean => (c.applies_to ?? []).includes('core');
+// The saved-verdict check reads what SubmissionClient WRITES, so the tracker save is captured here.
+const mockSave = vi.fn();
+vi.mock('@uluops/ops-sdk', async (importOriginal) => {
+  const actual = await importOriginal<typeof import('@uluops/ops-sdk')>();
+  return { ...actual, OpsClient: vi.fn(() => ({ runs: { save: mockSave, validate: vi.fn(), listByProject: vi.fn(), get: vi.fn() } })) };
+});
 
 describe('PDL 1.6.0 conformance: the fixtures load', () => {
   it('reads all six groups and pairs every case with one expectation', () => {
@@ -283,41 +269,6 @@ describe('PDL 1.6.0 conformance: condition decisions against the oracle (P3b)', 
 
 // ── P4a ──────────────────────────────────────────────────────────────────────
 
-const stubDefs = new Map<string, Obj>(
-  (YAML.parse(readFileSync(path.join(FIX, 'stubs', 'agents.yaml'), 'utf8')).stubs as Obj[]).map((x) => [x.name, x]),
-);
-
-/** A stub agent as core resolves it: the ADL `agent:` body carries the type and the vocabulary. */
-function resolvedStub(name: string): ResolvedDefinition {
-  const stub = stubDefs.get(name)!;
-  return {
-    type: 'agent', name, version: '1.0.0', hash: `sha256:${name}`, yaml: '', domain: 'software', agentType: stub.agentType,
-    definition: { agent: { interface: { name, agentType: stub.agentType }, ...(stub.decisions ? { decisions: stub.decisions } : {}) } },
-    runtime: { prompt: 'stub', defaults: { model: 'sonnet', timeout: 30000 }, config: { maxScore: 100, categories: [], outputSchema: 'json' } },
-  } as unknown as ResolvedDefinition;
-}
-
-/** The README's canonical stub text (Stub outputs), byte for byte. */
-function stubText(out: Obj): string {
-  if (typeof out.raw === 'string') return out.raw;
-  const object = out.json ?? { result: {
-    ...(out.score !== undefined ? { score: out.score, max_score: 100 } : {}),
-    ...(out.decision !== undefined ? { decision: out.decision } : {}),
-  } };
-  return `Conformance stub output.\n${out.line !== undefined ? `Decision: ${out.line}\n` : ''}\`\`\`json\n${JSON.stringify(object)}\n\`\`\``;
-}
-
-const VERDICT_CODES = new Set(['NEUTRAL_DECISION', 'ABSENT_DECISION', 'DECISION_CONFLICT', 'FALLBACK_DECISION_SOURCE', 'FALLBACK_SCORE_SOURCE', 'SCORE_INVALID']);
-const config = {
-  apiKey: 'k', ai: { providers: { anthropic: { apiKey: 'k' } }, defaultProvider: 'anthropic' }, registryUrl: 'https://r', submissionUrl: 'https://s',
-  dashboardUrl: 'https://d', trackingEnabled: false, timeout: 30000, debug: false, defaultThinkingBudget: 10_000, contextBudget: 200_000, maxConcurrency: 8, allowStageSteps: false,
-} as unknown as ResolvedConfig;
-const provider = (text: string) => ({
-  generate: async () => ({ text, usage: { input_tokens: 1, output_tokens: 1 }, toolCallCount: 0, model: 'anthropic:stub', provider: 'anthropic', steps: 1, finishReason: 'stop' }),
-  resolveModel: async () => ({ provider: 'anthropic', modelId: 'stub', providerModelId: 'stub', tier: 'premium', capabilities: { tools: true }, contextWindow: 200_000, resolvedFrom: 'sonnet' }),
-  createProviderShellTool: () => undefined,
-}) as unknown as AIProvider;
-
 describe('PDL 1.6.0 conformance: agent verdicts through AgentExecutor (P4a)', () => {
   const launches: Array<[string, Obj, string, string]> = [];
   for (const c of cases) {
@@ -398,4 +349,114 @@ describe('PDL 1.6.0 conformance: agent verdicts through AgentExecutor (P4a)', ()
       await (outcome as { cancel(): Promise<void> }).cancel().catch(() => {});
     }
   });
+});
+
+// ── P4b ──────────────────────────────────────────────────────────────────────
+
+/**
+ * Every core case that runs, end to end through the real PipelineExecutor and AgentExecutor, with a
+ * provider that returns each stub's text (README, Stub outputs) and a registry that resolves each
+ * stub from `stubs/agents.yaml`. Asserted against the oracle: each stage's status and `passed`, the
+ * agents launched, each agent's class (and saved decision where pinned), the upstream each stage
+ * received, pinned step results, `all_gates_passed` (in memory AND as SubmissionClient writes it),
+ * `run_decision`, ABORTED records reaching submission, and the warnings, exhaustively over the
+ * README's codes (the agent-reading six plus STAGE_ERRORED and CONDITIONAL_ACCEPTED).
+ *
+ * Stub forms: `timeout` rejects with TimeoutError once the agent's timeout elapses; `hang` waits until
+ * the run's signal aborts and rejects with CancelledError. Events: `stage:<id>:running` cancels once
+ * every agent of <id> has started; `stage:<id>:done` cancels when <id> has been judged, before the
+ * next stage launches (wrapping the executor's one judgement call).
+ */
+const STAGE_STATUS: Record<string, string> = { PASSED: 'PASSED', WARNED: 'WARNED', FAILED: 'FAILED', SKIPPED: 'SKIPPED', ERRORED: 'ERRORED' };
+const RUN_CODES = new Set(['STAGE_ERRORED', 'CONDITIONAL_ACCEPTED']);
+
+describe('PDL 1.6.0 conformance: every core case end to end (P4b)', () => {
+  let root = '';
+  let targets: Record<string, string> = {};
+  beforeAll(() => {
+    root = mkdtempSync(path.join(tmpdir(), 'pdl-conformance-run-'));
+    cpSync(path.join(FIX, 'targets'), path.join(root, 'targets'), { recursive: true, verbatimSymlinks: true });
+    const rel = (p: string) => path.relative(process.cwd(), path.join(root, 'targets', p));
+    targets = { dir: rel('project'), file: rel('project/docs/design-spec.md'), symlink: rel('linked-spec.md') };
+  });
+  afterAll(() => rmSync(root, { recursive: true, force: true }));
+
+  const runCases = cases.filter((c) => appliesToCore(c) && expected.get(c.id)!.outcome === 'ran');
+
+  it('covers every group (a filter that matched nothing would pass vacuously)', () => {
+    const groups = new Set(runCases.map(c => c.id.split('/')[0]));
+    expect([...groups].sort()).toEqual(['conditions', 'decisions', 'gates', 'run-control', 'steps']);
+    expect(runCases.length).toBe(104);
+    expect(runCases.filter(c => c.events).length).toBe(2);
+  });
+
+  it.each(runCases.map((c) => [c.id as string, c]))('%s', async (_id, c) => {
+    const want = expected.get(c.id)!;
+    const { result, launches, written } = await runCase(c, targets, mockSave);
+    const byId = new Map(result.stages.map(s => [s.id, s]));
+
+    for (const [stageId, w] of Object.entries(want.stages as Record<string, Obj>)) {
+      const got = byId.get(stageId);
+      expect(got, `stage ${stageId} recorded`).toBeDefined();
+      expect(got!.outcome, `${stageId} status`).toBe(STAGE_STATUS[w.status]);
+      expect(got!.outcome === 'PASSED', `${stageId} passed`).toBe(w.passed);
+      const launched = launches.filter(l => l.stage === stageId).map(l => l.agent);
+      expect(launched.sort(), `${stageId} launched`).toEqual([...(w.launched ?? [])].sort());
+
+      for (const [ref, pinned] of Object.entries((w.agents ?? {}) as Record<string, unknown>)) {
+        const cls = typeof pinned === 'object' ? (pinned as Obj).class : pinned;
+        const rec = got!.agentResults?.find(r => r.name === ref);
+        const label = `${stageId}/${ref}`;
+        if (cls === 'skipped') { expect(rec, `${label} skipped`).toBeUndefined(); continue; }
+        if (cls === 'errored') {
+          // Unjudgeable (D24, a crash or timeout included), stopped, or undispatched by a condition E.
+          const stage = (c.pipeline.stages as Obj[]).find(s => s.id === stageId)!;
+          const thr = stage.gate?.threshold !== undefined || (stage.agents ?? []).some((a: Obj) => a.threshold !== undefined);
+          const ok = rec === undefined
+            || rec.version === '1.0.0-synthesized'
+            || isUnjudgeable({ class: rec.verdict!.class, score: rec.score }, thr);
+          expect(ok, `${label} errored`).toBe(true);
+          expect(got!.outcome, `${label}: an errored agent errors its stage`).toBe('ERRORED');
+          continue;
+        }
+        expect(rec?.verdict?.class, `${label} class`).toBe(cls);
+        if (typeof pinned === 'object' && (pinned as Obj).saved !== undefined) expect(rec!.decision, `${label} saved`).toBe((pinned as Obj).saved);
+      }
+
+      if (w.upstream) {
+        const received = launches.filter(l => l.stage === stageId).map(l => l.upstream);
+        expect(received.length, `${stageId} launched for upstream`).toBeGreaterThan(0);
+        for (const up of received) {
+          const shape = up.map(e => e.absent ? { stage: e.stageId, absent: e.absentReason } : { stage: e.stageId, agent: e.agentName });
+          const wantShape = (w.upstream as Obj[]).map(e => e.absent === 'any' ? { stage: e.stage, absent: shape.find(x => x.stage === e.stage && 'absent' in x)?.absent ?? '(none)' } : e);
+          expect(shape, `${stageId} upstream`).toEqual(wantShape);
+        }
+      }
+    }
+
+    for (const [stageId, steps] of Object.entries((want.steps ?? {}) as Record<string, Record<string, Obj>>)) {
+      const got = Object.fromEntries((byId.get(stageId)!.steps ?? []).map(s => [s.name, { status: s.status, output: s.output }]));
+      for (const [name, w] of Object.entries(steps)) expect(got[name], `${stageId}/${name}`).toEqual({ status: w.status, output: String(w.output) });
+    }
+
+    expect(result.allGatesPassed, 'all_gates_passed').toBe(want.all_gates_passed);
+    expect(written.summary.allGatesPassed, 'all_gates_passed as SubmissionClient writes it').toBe(want.all_gates_passed);
+    expect(result.decision, 'run_decision').toBe(want.run_decision);
+    expect(written.rawMarkdown, 'params line').toMatch(/^params: \{/);
+
+    for (const name of (want.aborted_records ?? []) as string[]) {
+      expect(result.stages.flatMap(s => s.agentResults ?? []).find(r => r.name === name)?.decision, `${name} ABORTED`).toBe('ABORTED');
+      expect(written.agents.find(a => a.name === name)?.decision, `${name} ABORTED reaches submission`).toBe('ABORTED');
+    }
+
+    const key = (x: Obj) => JSON.stringify(Object.entries(x).sort());
+    const wantWarnings = ((want.warnings ?? []) as Obj[])
+      .filter((x) => !x.runtimes || x.runtimes.includes('core'))
+      .map(({ runtimes: _r, ...x }) => x);
+    const gotWarnings = [
+      ...result.warnings.filter(w => RUN_CODES.has(w.code)),
+      ...result.stages.flatMap(s => s.agentResults ?? []).flatMap(r => r.verdict?.warnings ?? []).filter(w => VERDICT_CODES.has(w.code)),
+    ] as Obj[];
+    expect(gotWarnings.map(key).sort(), 'warnings').toEqual(wantWarnings.map(key).sort());
+  }, 15_000);
 });

@@ -62,30 +62,36 @@ export interface StepDefinition {
 }
 
 /**
- * Stage gate (PDL `$defs/gate`, pdl-schema-v1.2.0). Controls pipeline flow
- * after the stage completes:
+ * Stage gate (PDL `$defs/gate`, PDL 1.6.0 §3.2; evaluated by `executor/stageGate.ts`).
  *
- * - The gate FAILS when the stage's vocabulary-resolved decision is negative,
- *   the stage errored, or (when `threshold` is set) the aggregated score falls
- *   below it. A stage with no evaluable score is fail-open for the threshold
- *   check (WorkflowExecutor.evaluateGate precedent) — decision-negative still
- *   fails it.
- * - `on_failure` is the enacted hard-stop contract (G5): `abort` fails the
- *   pipeline and skips everything downstream; `skip` skips the remaining
- *   stages but lets the pipeline complete; `warn` logs and continues.
- *   PDL schema default is `abort` — a gate is a gate.
+ * - **Score.** If any agentRef in the stage declares `threshold`, the gate is in per-agent mode:
+ *   each agent must reach its own threshold, falling back to `gate.threshold`. Otherwise
+ *   `aggregate(scores) >= threshold`. A gate with no threshold is decision-only.
+ * - **Decision** (`decision`): how each agent's decision class is compared. A neutral or absent
+ *   decision never fails a gate; the score decides.
+ * - **`on_failure`**: `abort` makes the stage FAILED and skips its transitive dependents only (D1);
+ *   `fail` makes it FAILED and the run continues; `warn` makes it WARNED; `skip` is a deprecated
+ *   alias of `fail`. Absent is `abort`. A stage with no gate at all behaves as `fail` (D19).
+ *
+ * Before 1.6.0, `abort` skipped every remaining stage and failed the run, `skip` skipped the
+ * remaining stages, and the gate failed on any negative decision whatever its mode.
  */
 export interface GateDefinition {
-  /** Score threshold (0-100). Absent → the gate fails only on negative
-   *  decisions / stage errors, never on score. */
+  /** Score threshold (0-100). Absent → the gate is decision-only, unless an agentRef declares
+   *  its own threshold (per-agent mode). */
   threshold?: number;
 
-  /** Aggregation over inline-agent scores when `threshold` is set. Ref-based
-   *  stages have a single score and ignore this. PDL schema default 'min'. */
+  /** Aggregation over inline-agent scores in aggregate mode. Ref-based stages have a single score
+   *  and ignore this. A load error in per-agent mode. PDL schema default 'min'. */
   aggregate?: 'min' | 'max' | 'average';
 
+  /** Gate-decision D1-D3: `not_negative` (a negative fails; a conditional passes, and at a
+   *  blocking gate makes `allGatesPassed` false), `positive` (a negative or a conditional fails),
+   *  `ignore`. Absent: `not_negative` on blocking gates, `ignore` on `warn` gates. */
+  decision?: 'not_negative' | 'positive' | 'ignore';
+
   /** Flow action when the gate fails. PDL schema default 'abort'. */
-  on_failure?: 'abort' | 'warn' | 'skip';
+  on_failure?: 'abort' | 'fail' | 'warn' | 'skip';
 
   /** Flow action when the gate passes. `skip_remaining` is the early-exit
    *  pattern: downstream stages are skipped, pipeline completes. PDL schema
@@ -115,9 +121,13 @@ export interface StageDefinition {
   agents?: Array<{
     ref: string;
     condition?: string;
-    /** Per-agent threshold (PDL 1.6.0, D5). Its presence puts the gate in per-agent mode; per-agent
-     *  scoring is P4b's. P4a reads only whether the gate has a threshold (D24). */
+    /** Per-agent threshold (PDL 1.6.0, D5). Its presence on any agent puts the gate in per-agent
+     *  mode: each agent must reach its own threshold, or `gate.threshold` when it has none. */
     threshold?: number;
+    /** Agent timeout in milliseconds (PDL `agentRef.timeout`, minimum 1000). Overrides the run's
+     *  timeout for this agent. An agent that times out is unjudgeable, so its stage is ERRORED.
+     *  Declared by the schema since 1.4 and read by nothing until 1.6.0 P4b. */
+    timeout?: number;
   }>;
 
   /** Inline shell steps (PDL shell preflight). Preserved through normalization;
@@ -199,6 +209,22 @@ export interface PipelineResult extends ExecutionResult {
   /** Stage-by-stage results */
   stages: StageResult[];
 
+  /**
+   * The run's saved verdict (PDL 1.6.0 §3.1, D13), computed once by `executor/runVerdict.ts` and
+   * written as-is by `SubmissionClient`. False when a stage ended FAILED, a stage ended ERRORED
+   * behind a blocking gate, a blocking gate accepted a CONDITIONAL, or a stop came before every
+   * stage reached a terminal status; otherwise true. `decision` is derived from it: FAIL when
+   * false; else WARN when a stage WARNED or ended ERRORED behind `warn`; else PASS.
+   */
+  allGatesPassed: boolean;
+
+  /** Run-level warnings ({@link PipelineWarning}), in the order they arose. */
+  warnings: PipelineWarning[];
+
+  /** The resolved run parameters (declared defaults bound), as conditions read them. Written into
+   *  the submitted run's raw markdown as its `params:` line. */
+  params?: Record<string, string | number | boolean>;
+
   /** Trigger information */
   trigger?: TriggerInfo;
 
@@ -213,19 +239,23 @@ export interface PipelineResult extends ExecutionResult {
  * Pipeline-specific metrics
  */
 export interface PipelineMetrics extends ExecutionMetrics {
-  /** Number of stages executed */
+  /** Number of stages not SKIPPED. An ERRORED stage counts, whether or not it ran. */
   stagesExecuted: number;
 
-  /** Number of stages passed */
+  /** Stages whose {@link StageResult.outcome} is PASSED. The five outcome counts partition the
+   *  stages. Before PDL 1.6.0 these counted decision categories, not gate outcomes. */
   stagesPassed: number;
 
-  /** Number of stages failed */
+  /** Stages FAILED. */
   stagesFailed: number;
 
-  /** Number of stages with conditional decisions (WARN, HOLD) */
+  /** Stages WARNED (a `warn` gate failed). Before 1.6.0: stages with a conditional decision. */
   stagesWarned: number;
 
-  /** Number of stages skipped */
+  /** Stages ERRORED. */
+  stagesErrored: number;
+
+  /** Stages SKIPPED. */
   stagesSkipped: number;
 }
 
@@ -263,8 +293,29 @@ export interface StageResult {
   /** Stage type (inferred from ref) */
   type: 'workflow' | 'command';
 
-  /** Stage status */
-  status: 'pending' | 'running' | 'completed' | 'failed' | 'skipped';
+  /** Execution status. `completed`: the stage ran to the end (its gate may still have failed:
+   *  read {@link outcome}). `failed`: the stage threw. `skipped`: it did not run. `errored`: it
+   *  could not be judged (PDL 1.6.0 ERRORED; {@link erroredReasons} says why), whether or not it ran. */
+  status: 'pending' | 'running' | 'completed' | 'failed' | 'skipped' | 'errored';
+
+  /** The stage's PDL 1.6.0 status (§3.1), set on every stage that has ended. PASSED: ran and its
+   *  gate passed (or no gate and every step succeeded). WARNED: a `warn` gate failed. FAILED: a
+   *  blocking gate failed, a step failed with no `warn` gate, or the stage threw. SKIPPED: its
+   *  condition was false, every agent was skipped by its own condition, a stage it depends on
+   *  failed behind `abort`, or a stop came before it launched. ERRORED: could not be judged.
+   *  `stages.<id>.passed` in a condition is `outcome === 'PASSED'`. */
+  outcome?: StageOutcome;
+
+  /** The failure mode the stage was judged under: `on_failure`, with `skip` read as `fail`, an
+   *  absent `on_failure` as `abort`, and a stage with no gate as `fail` (D19). Decides what an
+   *  ERRORED stage does to the run (§3.1). Absent on a stage that did not launch. */
+  gateMode?: GateMode;
+
+  /** Why the stage is ERRORED (each reason that holds): `agent_unjudgeable` (an agent gave no score
+   *  and no classifiable decision, or no score at a gate with a threshold; a timeout or crash
+   *  included), `condition_error` (a condition evaluated to E), `stopped` (in flight at a cancel,
+   *  deadline or credit stop). Each reason is also a `STAGE_ERRORED` warning on the run. */
+  erroredReasons?: ErroredReason[];
 
   /** Result (command or workflow depending on stage type) */
   result?: CommandResult | WorkflowResult;
@@ -288,6 +339,27 @@ export interface StageResult {
   /** Stage duration */
   durationMs?: number;
 }
+
+/** PDL 1.6.0 stage status (§3.1). */
+export type StageOutcome = 'PASSED' | 'WARNED' | 'FAILED' | 'SKIPPED' | 'ERRORED';
+
+/** A stage's failure mode: `abort` and `fail` are blocking, `warn` is not. */
+export type GateMode = 'abort' | 'fail' | 'warn';
+
+/** Why a stage is ERRORED (§3.1, D19). */
+export type ErroredReason = 'agent_unjudgeable' | 'condition_error' | 'stopped';
+
+/**
+ * A run-level warning (PDL 1.6.0). Agent-level reading warnings live on each agent's
+ * `AgentResult.verdict.warnings`; these are the ones a stage or the run produces.
+ * - `STAGE_ERRORED` (D19): every ERRORED stage, once per reason. Behind `warn` an ERRORED stage
+ *   leaves `allGatesPassed` unchanged, so this warning is the only place the error shows.
+ * - `CONDITIONAL_ACCEPTED` (gate-decision D2): a blocking gate passed a CONDITIONAL agent;
+ *   `allGatesPassed` is false.
+ */
+export type PipelineWarning =
+  | { code: 'STAGE_ERRORED'; stage: string; reason: ErroredReason }
+  | { code: 'CONDITIONAL_ACCEPTED'; stage: string; agent: string };
 
 /**
  * Information about what triggered the pipeline
@@ -335,6 +407,12 @@ export interface PipelineState {
 
   /** Results from completed stages */
   stageResults: StageResult[];
+
+  /** Run-level warnings raised so far (PDL 1.6.0; see {@link PipelineWarning}). */
+  warnings?: PipelineWarning[];
+
+  /** The resolved run parameters, recorded when the stage loop starts. */
+  params?: Record<string, string | number | boolean>;
 
   /** Execution start timestamp (ms since epoch) */
   startTime: number;

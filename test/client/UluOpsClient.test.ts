@@ -168,6 +168,8 @@ function makeWorkflowResult(): WorkflowResult {
 function makePipelineResult(): PipelineResult {
   return {
     type: 'pipeline',
+    allGatesPassed: true,
+    warnings: [],
     name: 'test-pipeline',
     version: '1.0.0',
     definitionHash: 'sha256:pipe',
@@ -180,7 +182,7 @@ function makePipelineResult(): PipelineResult {
     metrics: {
       inputTokens: 2000, outputTokens: 800, totalEffectiveTokens: 2800,
       durationMs: 5000, model: 'mixed',
-      stagesExecuted: 3, stagesPassed: 3, stagesFailed: 0, stagesWarned: 0, stagesSkipped: 0,
+      stagesExecuted: 3, stagesPassed: 3, stagesFailed: 0, stagesWarned: 0, stagesErrored: 0, stagesSkipped: 0,
     },
   };
 }

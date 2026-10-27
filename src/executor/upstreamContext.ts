@@ -14,6 +14,7 @@
 import type { StageDefinition, StageResult } from '../types/pipeline.js';
 import type { UpstreamStageContext } from '../types/execution.js';
 import type { AgentResult } from '../types/agent.js';
+import { CRASH_PLACEHOLDER_VERSION } from '../utils/crashPlaceholder.js';
 
 /**
  * Character caps (spec §3.3). PROVISIONAL defaults pending the Phase 1V
@@ -96,6 +97,18 @@ export function buildUpstreamContext(
 
     const result = priorResults.find((r) => r.id === dep);
     if (!result) continue; // not yet run — the dependency gate normally prevents this
+
+    // An ERRORED stage forwards what its agents really returned (PDL 1.6.0 §3.3: a dependency that
+    // produced output forwards it, as a FAILED stage does), and is a labelled absence when none did:
+    // a crash, a timeout or a stop leaves a synthesized record, not output, and a condition_error
+    // stage never ran.
+    const realOutput = result.status === 'errored'
+      ? (result.agentResults ?? []).filter((ar) => ar.version !== CRASH_PLACEHOLDER_VERSION)
+      : undefined;
+    if (realOutput && realOutput.length > 0) {
+      for (const ar of realOutput) entries.push(sliceAgentResult(dep, ar, mode));
+      continue;
+    }
 
     if (result.status !== 'completed') {
       entries.push({

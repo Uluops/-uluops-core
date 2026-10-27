@@ -1,16 +1,17 @@
 import type { AgentExecutor } from './AgentExecutor.js';
-import { finiteNonNegative } from '../utils/externalValue.js';
 import type { CommandExecutor } from './CommandExecutor.js';
 import type { WorkflowExecutor } from './WorkflowExecutor.js';
 import type { RegistryClient } from '../registry/RegistryClient.js';
 import type { ResolvedDefinition } from '../types/registry.js';
-import type { PipelineDefinition, StageDefinition, GateDefinition, PipelineResult, StageResult, StepResult, PipelineState, PipelineHandle as IPipelineHandle } from '../types/pipeline.js';
+import type { PipelineDefinition, StageDefinition, PipelineResult, StageResult, StepResult, PipelineState, PipelineWarning, ErroredReason, PipelineHandle as IPipelineHandle } from '../types/pipeline.js';
 import { StepsExecutor } from './StepsExecutor.js';
 import { nulParameter } from './stepTemplates.js';
 import { evaluateCondition, E, type ConditionContext } from './conditions.js';
 import { checkPipelineLoadRules, stagesReadingStepOutput, bindParameterDefaults } from './pipelineLoad.js';
 import { isUnjudgeable } from './agentVerdict.js';
 import { agentsMissingVocabulary, vocabularyMissingMessage } from './vocabularyPrecheck.js';
+import { gateMode, isBlocking, isPerAgentMode, gateHasThreshold, judgeGate, judgedOutcome, type GatedMember } from './stageGate.js';
+import { computeAllGatesPassed, runDecision, runDecisionCategory, stageMetrics } from './runVerdict.js';
 import { buildUpstreamContext } from './upstreamContext.js';
 import type { ExecutionInput, ExecutionOptions, UpstreamStageContext } from '../types/execution.js';
 import type { AgentResult } from '../types/agent.js';
@@ -22,7 +23,7 @@ import { rollupCost, type CostFields } from '../utils/costRollup.js';
 import { resolveDecisionCategory } from './classifyDecision.js';
 import { worstExtractionConfidence } from '../utils/worstExtractionConfidence.js';
 import { aggregateScores } from '../utils/aggregateScores.js';
-import { crashPlaceholder, abortedPlaceholder, isStoppedResult, toCommandRecord, withDeadlineMark, ABORTED_DECISION, CRASH_PLACEHOLDER_VERSION } from '../utils/crashPlaceholder.js';
+import { crashPlaceholder, abortedPlaceholder, toCommandRecord, withDeadlineMark, ABORTED_DECISION, CRASH_PLACEHOLDER_VERSION } from '../utils/crashPlaceholder.js';
 import { isDeadlineSignal, rejectionKind } from '../utils/runStop.js';
 import { stopVerdict, crashInside, containerMarkers, stopReached } from '../utils/stopVerdict.js';
 import { verifiedNothingExecuted } from '../utils/executionEvidence.js';
@@ -166,7 +167,10 @@ export class PipelineExecutor {
    * @param input - Execution input; `target` is the absolute project path.
    * @param options - Optional execution overrides (`timeoutMs`, `model`).
    * @returns The final {@link PipelineResult} with per-stage results and aggregate metrics.
-   * @throws {PipelineError} If the resolved definition is not a pipeline, or a stage fails.
+   * @throws {PipelineError} If the resolved definition is not a pipeline, the run is refused before
+   *   launch (load errors, steps disabled, `PARAM_NUL`, `VOCABULARY_MISSING`), or it ends `failed` (a
+   *   deadline, a credit stop, or its own execution threw). A gate failure, an abort included, does
+   *   not throw: the result's `decision` is FAIL (PDL 1.6.0).
    */
   async execute(resolved: ResolvedDefinition, input: ExecutionInput, options?: ExecutionOptions): Promise<PipelineResult> {
     const handle = await this.start(resolved, input, options);
@@ -183,18 +187,26 @@ export class PipelineExecutor {
     // Conditions and steps read the run's parameters with declared defaults bound first (PDL 1.6.0,
     // condition context). Agents do not read parameters by name.
     const runInput: ExecutionInput = { ...input, params: bindParameterDefaults(def.pipeline, input.params, input.target) };
-    // `stages.<id>.passed` for every stage that has ended: PASSED in the spec's status model.
+    state.params = runInput.params;
+    state.warnings ??= [];
+    // `stages.<id>.passed` for every stage that has ended: its outcome is PASSED.
     const passed = new Map<string, boolean>();
     const conditionCtx: ConditionContext = { params: runInput.params ?? {}, stages: state.stageResults, passed };
+    // Stages that ended FAILED or ERRORED behind `abort`, and every stage skipped because of one:
+    // their dependents are skipped (D1). Nothing else is.
+    const aborted = new Set<string>();
+    const end = (result: StageResult): void => {
+      state.stageResults.push(result);
+      passed.set(result.id, result.outcome === 'PASSED');
+      if (result.gateMode === 'abort' && (result.outcome === 'FAILED' || result.outcome === 'ERRORED')) aborted.add(result.id);
+    };
 
     try {
       for (let i = 0; i < def.pipeline.stages.length; i++) {
         if (stoppedNow(state)) {
-          // Record what did not run, exactly as the gate-abort path does via skipRemaining.
-          // A bare `break` left un-run stages ABSENT from stageResults[], so
-          // computeStageMetrics reported `stagesSkipped: 0` for a 6-stage pipeline stopped
-          // at stage 2, and buildResult computed a full-looking score over a partial run.
-          // A consumer could not distinguish "cancelled at stage 2" from "had 2 stages".
+          // Record what did not run. A bare `break` left un-run stages ABSENT from stageResults[],
+          // so a 6-stage pipeline stopped at stage 2 reported `stagesSkipped: 0`, and a consumer
+          // could not distinguish "cancelled at stage 2" from "had 2 stages".
           this.skipRemaining(def.pipeline.stages, i, state, stopLabel(state));
           break;
         }
@@ -205,7 +217,17 @@ export class PipelineExecutor {
 
         // Check dependencies
         if (!this.checkStageDependencies(stage, def.pipeline.stages, state.stageResults)) {
-          state.stageResults.push(this.createSkippedStage(stage, 'dependencies_not_met'));
+          end(this.createSkippedStage(stage, 'dependencies_not_met'));
+          continue;
+        }
+
+        // A stage downstream, directly or transitively, of one that failed behind `abort` is
+        // skipped; every other stage launches as usual (PDL 1.6.0 D1, revised 0.7.0). `abort` means
+        // "the work downstream of this stage is pointless", not "halt the pipeline": halting is
+        // what a stop does. Before 1.6.0 an abort skipped every remaining stage and failed the run.
+        if ((stage.depends_on ?? []).some(dep => aborted.has(dep))) {
+          end(this.createSkippedStage(stage, 'gate_abort'));
+          aborted.add(stage.id);
           continue;
         }
 
@@ -213,21 +235,17 @@ export class PipelineExecutor {
         // and is SKIPPED when it is false. Load validation (start()) has refused every condition
         // that does not parse or references what does not exist, so the value is total: true,
         // false, or E — a read of a step that did not pass. E makes the stage ERRORED
-        // (`condition_error`). Until P4b adds that status, an E stage is recorded `failed` with
-        // `condition_error` as its reason, and its gate decides the flow as for any failed stage.
+        // (`condition_error`), and it then takes its gate's mode like any ERRORED stage.
         // Before 1.6.0 a condition core could not read made the stage run (fail-open), and a
         // deprecated `skip_if` was evaluated beside it; `skip_if` is now an undeclared key (D25).
         if (stage.condition) {
           const value = evaluateCondition(stage.condition, conditionCtx);
           if (value === false) {
-            state.stageResults.push(this.createSkippedStage(stage, 'condition_not_met'));
-            passed.set(stage.id, false);
+            end(this.createSkippedStage(stage, 'condition_not_met'));
             continue;
           }
           if (value === E) {
-            state.stageResults.push(this.createConditionErrorStage(stage, `its condition "${stage.condition}" read a step that did not pass`));
-            passed.set(stage.id, false);
-            if (this.enactGate(stage, true, def.pipeline.stages, i, state)) break;
+            end(this.createConditionErrorStage(stage, `its condition "${stage.condition}" read a step that did not pass`, state));
             continue;
           }
         }
@@ -241,38 +259,28 @@ export class PipelineExecutor {
           state.stageResults,
           (msg) => this.logger.debug(msg),
         );
-        const stageResult = await this.executeStage(stage, runInput, options, conditionCtx, upstreamContext);
-        state.stageResults.push(stageResult);
+        const stageResult = this.judgeStage(stage, await this.executeStage(stage, runInput, options, conditionCtx, upstreamContext), state);
+        end(stageResult);
 
-        // A cancel that landed WHILE this stage was running wins over anything the gate
-        // would decide about it. This is the same defect as the catch below, one ring out:
-        // there the stage THREW after cancel() flipped the flag and the catch overwrote
-        // `cancelled` with `failed`; here the stage COMPLETED, failed its gate, and the
-        // unconditional `state.status = 'failed'` twelve lines down overwrote the cancel
-        // exactly the same way — so wait() threw a PipelineError at a user who had asked
-        // to stop. Only the catch half was fixed. The gate's sole output is a flow
-        // decision about stages that are not going to run now either way, so there is
-        // nothing lost by not consulting it; the completed stage's own result is already
-        // recorded above.
+        // A stop that landed while this stage ran has been recorded on it (ERRORED, `stopped`) when
+        // it reached the stage's work; either way nothing more launches. The stage's own result is
+        // already recorded above.
         //
         // Read through `stoppedNow()`: `cancel()` and a credit trip mutate `state.status` from ANOTHER
         // task while this one is awaiting, and TypeScript's control-flow analysis cannot
         // see that. It narrows `state.status` at the top-of-loop check above and then
         // reports a direct comparison here as having no overlap — a compile error for the
         // one case this guard exists to catch.
-        // A credit trip (stopRun → `failed`) stops the run the same way: the remaining stages
-        // are skipped and the gate is not consulted, since the run has already failed.
         if (stoppedNow(state)) {
           this.skipRemaining(def.pipeline.stages, i + 1, state, stopLabel(state));
           break;
         }
 
-        // Enact the stage gate (PDL $defs/gate). Until now gates were parsed
-        // but never read — on_failure:abort flowed on like warn (G5).
-        // The gate is judged once: the same verdict sets `stages.<id>.passed` and the flow.
-        const gateFailed = stage.gate ? this.gateFailed(stage.gate, stage, stageResult) : stepsFailed(stageResult);
-        passed.set(stage.id, stageResult.status === 'completed' && !gateFailed);
-        if (this.enactGate(stage, gateFailed, def.pipeline.stages, i, state)) break;
+        // The early-exit pattern (`on_success: skip_remaining`): a passing gate ends the run here.
+        if (stageResult.outcome === 'PASSED' && stage.gate?.on_success === 'skip_remaining') {
+          this.skipRemaining(def.pipeline.stages, i + 1, state, 'gate_early_exit');
+          break;
+        }
       }
 
       if (state.status === 'running') {
@@ -336,12 +344,15 @@ export class PipelineExecutor {
           { refusal: { code: 'STEP_OUTPUT_STEPS_DISABLED', stages: readers } },
         );
       }
+      // The blocking class (abort, fail, and skip as fail; PDL 1.6.0 §3.1). Before 1.6.0 only `abort`
+      // was refused here, and `fail` did not exist. A stage with no gate is not refused: with steps
+      // off it passes through, as before.
       const hardGated = def.pipeline.stages.filter(
-        s => isStepsStage(s) && s.gate !== undefined && resolveOnFailure(s.gate) === 'abort',
+        s => isStepsStage(s) && s.gate !== undefined && isBlocking(gateMode(s.gate)),
       );
       if (hardGated.length > 0) {
         throw new PipelineError(
-          `Run refused: ${hardGated.map(s => `"${s.id}"`).join(', ')} is a hard gate (gate.on_failure: abort) ` +
+          `Run refused: ${hardGated.map(s => `"${s.id}"`).join(', ')} is a blocking gate (gate.on_failure: abort or fail) ` +
             `over steps, and steps are disabled, so it would verify nothing. ${remedy}`,
           {},
         );
@@ -458,7 +469,16 @@ export class PipelineExecutor {
     startTime: number,
   ): Promise<StageResult> {
     const agentInput = upstreamContext.length > 0 ? { ...input, upstreamContext } : input;
-    const { results: agentResults, conditionErrors } = await this.executeInlineAgents(stage.agents!, agentInput, options, conditionCtx);
+    const { results: agentResults, conditionErrors, dispatched } = await this.executeInlineAgents(stage.agents!, agentInput, options, conditionCtx);
+    const refs = dispatched.map(a => a.ref);
+
+    // Every agent skipped by its own condition (D10): the stage is SKIPPED and its gate is not
+    // evaluated. Before 1.6.0 the gate failed (`verifiedNothing`), which still applies to a stage
+    // that dispatched nothing for any other reason (no agents authored).
+    if (agentResults.length === 0 && conditionErrors.length === 0 && stage.agents!.length > 0) {
+      this.logger.info(`Stage "${stage.id}" is SKIPPED: every agent's condition was false`);
+      return { ...this.createSkippedStage(stage, 'condition_not_met'), agentResults: [] };
+    }
     // Exclude unscored results from the average to prevent one crash from poisoning
     // the entire stage score (e.g., 1 pass at 90 + 2 crashes → 30).
     // Discriminate on score nullity, NOT on the decision string: 'FAIL' is core
@@ -499,29 +519,34 @@ export class PipelineExecutor {
     // Aggregating AgentResult → CommandResult conversion for pipeline stages.
     // See CommandExecutor.wrapAgentResult for divergence rationale across all three sites.
     // An agent whose condition was E is ERRORED, and an ERRORED agent makes its stage ERRORED
-    // (PDL 1.6.0, Semantics). Until P4b adds that status, the stage is recorded `failed` with
-    // `condition_error` as its reason; the agents that did run keep their records.
+    // (PDL 1.6.0, Semantics); the agents that did run keep their records.
     // An unjudgeable agent (D24) makes its stage ERRORED too: no score and no classifiable
-    // decision, or no score at a gate with a threshold. Same interim as a condition error until
-    // P4b. Stopped and crashed records are P4b's (a stop's ERRORED, a timeout's): excluded here.
-    const gateHasThreshold = stage.gate?.threshold !== undefined || (stage.agents ?? []).some(a => a.threshold !== undefined);
+    // decision, or no score at a gate with a threshold. A crashed agent (a timeout included) left
+    // no output to read, so it is unjudgeable; its crash record still reaches submission. A record a
+    // stop left is not judged here: the stage is ERRORED `stopped` (judgeStage).
+    const thresholdGate = gateHasThreshold(stage);
     const unjudgeable = agentResults
-      .filter(r => !isStoppedResult(r) && r.version !== CRASH_PLACEHOLDER_VERSION)
-      .filter(r => isUnjudgeable({ class: r.verdict?.class ?? resolveDecisionCategory(r), score: r.score ?? null }, gateHasThreshold))
-      .map(r => r.name);
-    const reasons = [
-      ...(conditionErrors.length > 0 ? [`condition_error: the condition of ${conditionErrors.map(r => `"${r}"`).join(', ')} read a step that did not pass`] : []),
-      ...(unjudgeable.length > 0 ? [`agent_unjudgeable: ${unjudgeable.map(r => `"${r}"`).join(', ')} gave no score${gateHasThreshold ? ' at a gate with a threshold' : ' and no classifiable decision'}`] : []),
+      .map((r, idx) => ({ r, ref: refs[idx] ?? r.name }))
+      .filter(({ r }) => !stopReached(r))
+      .filter(({ r }) => r.version === CRASH_PLACEHOLDER_VERSION
+        || isUnjudgeable({ class: r.verdict?.class ?? resolveDecisionCategory(r), score: r.score ?? null }, thresholdGate))
+      .map(({ ref }) => ref);
+    const erroredReasons: ErroredReason[] = [
+      ...(conditionErrors.length > 0 ? ['condition_error' as const] : []),
+      ...(unjudgeable.length > 0 ? ['agent_unjudgeable' as const] : []),
     ];
-    for (const reason of reasons) this.logger.warn(`Stage "${stage.id}" is ERRORED (${reason})`);
-    const conditionError = reasons.length > 0
-      ? { status: 'failed' as const, skipReason: reasons.join('; ') }
+    const reasonText = [
+      ...(conditionErrors.length > 0 ? [`condition_error: the condition of ${conditionErrors.map(r => `"${r}"`).join(', ')} read a step that did not pass`] : []),
+      ...(unjudgeable.length > 0 ? [`agent_unjudgeable: ${unjudgeable.map(r => `"${r}"`).join(', ')} gave no score${thresholdGate ? ' at a gate with a threshold' : ' and no classifiable decision'}, or crashed`] : []),
+    ];
+    const errored = erroredReasons.length > 0
+      ? { status: 'errored' as const, erroredReasons, skipReason: reasonText.join('; ') }
       : { status: 'completed' as const };
-    return {
+    return withDispatched(dispatched, {
       id: stage.id,
       name: stage.name,
       type: 'command' as const,
-      ...conditionError,
+      ...errored,
       result: {
         type: 'command',
         name: stage.name,
@@ -558,7 +583,7 @@ export class PipelineExecutor {
       },
       agentResults,
       durationMs: stageDurationMs,
-    };
+    });
   }
 
   /** Steps stages (PDL shell preflight / build gates). */
@@ -647,11 +672,11 @@ export class PipelineExecutor {
    * Execute inline agent refs in parallel, resolving each from the registry.
    */
   private async executeInlineAgents(
-    agents: Array<{ ref: string; condition?: string }>,
+    agents: NonNullable<StageDefinition['agents']>,
     input: ExecutionInput,
     options: ExecutionOptions | undefined,
     conditionCtx: ConditionContext,
-  ): Promise<{ results: AgentResult[]; conditionErrors: string[] }> {
+  ): Promise<{ results: AgentResult[]; conditionErrors: string[]; dispatched: NonNullable<StageDefinition['agents']> }> {
     // Per-agent conditions (PDL 1.6.0): an agent whose condition is false is not dispatched and
     // not scored, and no result is recorded for it. One whose condition is E (it read a step that
     // did not pass) is not dispatched either; it is ERRORED, and the caller marks the stage.
@@ -683,7 +708,10 @@ export class PipelineExecutor {
         try {
           const [name, version] = parseRef(a.ref);
           const resolved = await this.registry.resolve(name, version, 'agent');
-          return await this.agentExecutor.execute(resolved, input, options);
+          // `agentRef.timeout` (ms) overrides the run's timeout for this agent. AgentExecutor
+          // validates it (finitePositive) like every other timeout seam.
+          const agentOptions = a.timeout !== undefined ? { ...options, timeoutMs: a.timeout } : options;
+          return await this.agentExecutor.execute(resolved, input, agentOptions);
         } catch (error) {
           kinds[idx] = rejectionKind(error, options?.abortSignal);
           throw error;
@@ -713,15 +741,15 @@ export class PipelineExecutor {
         }
       }
     }
-    return { results, conditionErrors };
+    return { results, conditionErrors, dispatched };
   }
 
   /**
    * Whether a stage's `depends_on` is satisfied (PDL 1.6.0, D3): every dependency has reached a
    * terminal status. **Any terminal status satisfies**, a skipped or failed dependency included;
-   * `depends_on` orders and forwards, and whether a stage runs is decided by its condition. (The
-   * one exception, a stage downstream of one that failed behind `abort`, is P4b's; until then an
-   * abort ends the loop, so no dependent is reached.)
+   * `depends_on` orders and forwards, and whether a stage runs is decided by its condition. The
+   * one exception, a stage downstream of one that failed behind `abort`, is enforced in the stage
+   * loop (D1).
    *
    * Before 1.6.0 a dependency had to be `completed`, so the dependents of a skipped stage were
    * skipped in turn (`dependencies_not_met`), and two corpus stages vanished whenever their only
@@ -809,6 +837,7 @@ export class PipelineExecutor {
       // StageResult.type is 'workflow' | 'command'; agents/steps map to 'command'.
       type: stage.type === 'workflow' ? 'workflow' : 'command',
       status: 'skipped',
+      outcome: 'SKIPPED',
       skipReason: reason,
       // FABRICATION-OK: nothing ran, so no time elapsed — 0 is the MEASURED duration of a
       // non-event, not an unknown standing in for one.
@@ -817,17 +846,20 @@ export class PipelineExecutor {
   }
 
   /**
-   * A stage whose condition evaluated to E (PDL 1.6.0: ERRORED, reason `condition_error`). Until
-   * P4b adds the ERRORED status it is recorded `failed`, with `condition_error` as its reason. It
-   * did not run.
+   * A stage whose condition evaluated to E (PDL 1.6.0: ERRORED, reason `condition_error`). It did not
+   * run. It takes its gate's mode like any ERRORED stage: behind `abort` its dependents are skipped.
    */
-  private createConditionErrorStage(stage: StageDefinition, detail: string): StageResult {
+  private createConditionErrorStage(stage: StageDefinition, detail: string, state: PipelineState): StageResult {
     this.logger.warn(`Stage "${stage.id}" is ERRORED (condition_error): ${detail}`);
+    raise(state, { code: 'STAGE_ERRORED', stage: stage.id, reason: 'condition_error' });
     return {
       id: stage.id,
       name: stage.name,
       type: stage.type === 'workflow' ? 'workflow' : 'command',
-      status: 'failed',
+      status: 'errored',
+      outcome: 'ERRORED',
+      gateMode: gateMode(stage.gate),
+      erroredReasons: ['condition_error'],
       skipReason: `condition_error: ${detail}`,
       // FABRICATION-OK: the stage did not run; 0 is the measured duration of a non-event.
       durationMs: 0,
@@ -835,105 +867,91 @@ export class PipelineExecutor {
   }
 
   /**
-   * Enact a judged stage's gate flow. Returns true when the stage loop must stop: an abort, or a
-   * gate whose `skip` / `on_success: skip_remaining` ends the run early. Remaining stages are
-   * recorded skipped with the gate's reason.
+   * Judge a stage that launched (PDL 1.6.0 §3.1, §3.2): set its outcome and gate mode, and raise
+   * its run-level warnings. Called once per stage; the outcome sets `stages.<id>.passed`, the abort
+   * cascade and the run verdict.
+   *
+   * In order:
+   * 1. **A stop reached it** (an agent or the stage result holds a stopped or deadline record): ERRORED
+   *    `stopped`. The gate is not evaluated; the stop has already made `allGatesPassed` false.
+   * 2. **SKIPPED** (every agent skipped by its own condition): left as is; no gate.
+   * 3. **ERRORED** by an unjudgeable agent or an agent condition (executeAgentsStage): no gate.
+   * 4. **The gate** (`stageGate.ts`): PASSED, or WARNED behind `warn`, else FAILED. A stage that
+   *    threw, a steps stage whose step failed without `continue_on_error`, and a gated stage that
+   *    verifiably executed nothing all fail it. A stage with no gate is judged as `fail` (D19).
    */
-  private enactGate(stage: StageDefinition, failed: boolean, stages: StageDefinition[], i: number, state: PipelineState): boolean {
-    const flow = this.applyGate(stage, failed);
-    if (flow === 'abort') {
-      this.skipRemaining(stages, i + 1, state, 'gate_abort');
-      state.error = `Stage "${stage.id}" failed its gate (on_failure: abort)`;
-      state.status = 'failed';
-      return true;
+  private judgeStage(stage: StageDefinition, result: StageResult, state: PipelineState): StageResult {
+    if (result.outcome === 'SKIPPED') return result;
+    const mode = gateMode(stage.gate);
+    result.gateMode = mode;
+
+    if ((result.result !== undefined && stopReached(result.result)) || (result.agentResults?.some(stopReached) ?? false)) {
+      const reasons = [...(result.erroredReasons?.filter(r => r === 'condition_error') ?? []), 'stopped' as const];
+      this.logger.warn(`Stage "${stage.id}" is ERRORED (stopped): it was in flight when the run was stopped`);
+      for (const reason of reasons) raise(state, { code: 'STAGE_ERRORED', stage: stage.id, reason });
+      return { ...result, status: 'errored', outcome: 'ERRORED', erroredReasons: reasons };
     }
-    if (flow === 'skip' || flow === 'skip_remaining') {
-      this.skipRemaining(stages, i + 1, state, flow === 'skip' ? 'gate_skip' : 'gate_early_exit');
-      return true;
+
+    if (result.status === 'errored') {
+      for (const reason of result.erroredReasons ?? []) {
+        this.logger.warn(`Stage "${stage.id}" is ERRORED (${reason})`);
+        raise(state, { code: 'STAGE_ERRORED', stage: stage.id, reason });
+      }
+      return { ...result, outcome: 'ERRORED' };
     }
-    return false;
+
+    const { failed, conditionalAccepted, causes } = this.gateFailed(stage, result);
+    for (const agent of conditionalAccepted) {
+      this.logger.warn(`Stage "${stage.id}": a blocking gate accepted "${agent}" as CONDITIONAL, so allGatesPassed is false`);
+      raise(state, { code: 'CONDITIONAL_ACCEPTED', stage: stage.id, agent });
+    }
+    const outcome = judgedOutcome(failed, mode);
+    if (failed) this.logger.warn(`Stage "${stage.id}" failed its gate (on_failure: ${mode}): ${causes.join('; ')} — ${outcome}`);
+    return { ...result, outcome };
   }
 
   /**
-   * Evaluate a completed stage against its gate and return the flow action.
-   * 'continue' means no gate effect (no gate, gate passed, or on_failure:warn).
+   * Whether a launched, judgeable stage fails its gate, and the CONDITIONAL agents a blocking gate
+   * accepted. Members: each dispatched inline agent (its decision class and contract score, P4a), or
+   * a ref stage's one result, classified through the referenced definition's own decision.
    */
-  private applyGate(stage: StageDefinition, failed: boolean): 'continue' | 'abort' | 'skip' | 'skip_remaining' {
-    const gate = stage.gate;
-    if (!gate) return 'continue';
+  private gateFailed(stage: StageDefinition, result: StageResult): { failed: boolean; conditionalAccepted: string[]; causes: string[] } {
+    if (result.status === 'failed') return { failed: true, conditionalAccepted: [], causes: [`the stage failed: ${result.skipReason ?? 'error'}`] };
+    if (stepsFailed(result)) return { failed: true, conditionalAccepted: [], causes: ['a step without continue_on_error failed'] };
 
-    if (failed) {
-      const action = resolveOnFailure(gate);
-      if (action === 'warn') {
-        this.logger.warn(`Stage "${stage.id}" failed its gate — continuing (on_failure: warn)`);
-        return 'continue';
-      }
-      return action;
+    // A gate over work that never ran fails, whether or not a threshold was declared: an agents
+    // stage that dispatched nothing (no agents authored; all-skipped is SKIPPED, above) or a
+    // workflow ref whose every phase was skipped. Determined POSITIVELY: an empty `agentResults`,
+    // or `phasesExecuted === 0` counted by WorkflowExecutor itself. Sibling of G5 in start().
+    if (stage.gate && this.verifiedNothing(result)) {
+      this.logger.warn(`Stage "${stage.id}" has a gate but executed nothing — failing the gate rather than passing unverified work.`);
+      return { failed: true, conditionalAccepted: [], causes: ['the stage executed nothing'] };
     }
 
-    if (gate.on_success === 'skip_remaining') return 'skip_remaining';
-    return 'continue';
-  }
-
-  /**
-   * A gate fails on stage error, vocabulary-resolved negative decision, or —
-   * when `threshold` is set — an aggregated score below it. Scoreless stages
-   * are fail-open for the threshold check (WorkflowExecutor.evaluateGate
-   * precedent): steps stages score null by design and a missing score is a
-   * scoring gap, not evidence of failure. Decision-negative still fails.
-   */
-  private gateFailed(gate: GateDefinition, stage: StageDefinition, stageResult: StageResult): boolean {
-    if (stageResult.status === 'failed') return true;
-    if (resolveDecisionCategory(stageResult.result, this.warnUnclassified) === 'negative') return true;
-
-    // A gate over work that never ran fails, whether or not a threshold was declared.
-    //
-    // `gate.threshold` is optional, and without it `gateFailed` consults only the DECISION.
-    // But a workflow whose every phase was skipped reports SHIP (no phase failed — which is
-    // true), and an agents stage that dispatched nothing reports PASS (nothing came back
-    // negative — also true). Both are honest about what happened and both mean nothing was
-    // verified, so a threshold-less `on_failure: abort` gate passed them. The score channel
-    // was fixed to report 0 for exactly this case; the decision channel said PASS beside it.
-    //
-    // Sibling of the G5 check above ("hard gates must not silently pass unexecuted"), which
-    // covers a steps stage authored with no steps. Same rule, reached at runtime instead of
-    // at authoring time.
-    //
-    // Determined POSITIVELY, never inferred from a score: an empty `agentResults` means
-    // nothing was dispatched, and `phasesExecuted === 0` is counted by WorkflowExecutor
-    // itself. A stage that ran and legitimately scored 0 is untouched.
-    if (this.verifiedNothing(stageResult)) {
-      this.logger.warn(
-        `Stage "${stage.id}" has a gate but executed nothing — no agent was dispatched and ` +
-        `no phase ran. Failing the gate rather than passing unverified work.`,
-      );
-      return true;
-    }
-
-    if (gate.threshold !== undefined) {
-      // Authored YAML reaches here type-erased: `.nan` / `.inf` / a string are all
-      // authorable. `score < NaN` is false, so an unusable threshold used to make
-      // an on_failure: abort hard gate pass every stage silently — while the
-      // WorkflowExecutor twin (`score >= threshold`) failed CLOSED on the same
-      // input. Same seam as every other authored bound (externalValue), same
-      // polarity as the workflow gate now: unusable → fail closed, and say so.
-      const threshold = finiteNonNegative(gate.threshold);
-      if (threshold === undefined) {
-        this.logger.warn(
-          `Gate threshold on stage "${stage.id}" is not a usable number (${String(gate.threshold)}) — ` +
-          `failing the gate rather than comparing against it (fail-closed; ship run #94)`,
-        );
-        return true;
+    const perAgent = isPerAgentMode(stage);
+    let members: GatedMember[];
+    if (result.agentResults) {
+      // Each result is paired with the agentRef that dispatched it (executeAgentsStage), for its
+      // threshold and its authored name.
+      const refs = dispatchedAgents.get(result) ?? [];
+      members = result.agentResults.map((r, idx) => {
+        const ref = refs[idx];
+        return {
+          name: ref?.ref ?? r.name,
+          class: r.verdict?.class ?? resolveDecisionCategory(r, this.warnUnclassified),
+          score: r.score ?? null,
+          ...(ref?.threshold !== undefined ? { threshold: ref.threshold } : {}),
+        };
+      });
+    } else if (result.result) {
+      members = [{ name: stage.ref ?? stage.id, class: resolveDecisionCategory(result.result, this.warnUnclassified), score: result.result.score ?? null }];
+      if (stage.gate?.threshold !== undefined && members[0]!.score === null) {
+        this.logger.warn(`Gate threshold on stage "${stage.id}" is not evaluable (no score) — passing on score (fail-open)`);
       }
-      const score = this.gateScore(gate, stageResult);
-      if (score === null) {
-        this.logger.warn(`Gate threshold on stage "${stage.id}" is not evaluable (no scores) — passing (fail-open)`);
-        return false;
-      }
-      return score < threshold;
+    } else {
+      members = [];
     }
-
-    return false;
+    return judgeGate(stage.gate, members, perAgent);
   }
 
   /**
@@ -944,8 +962,7 @@ export class PipelineExecutor {
    * not evidence here — this decides whether to fail a gate.
    */
   private verifiedNothing(stageResult: StageResult): boolean {
-    // Inline-agents stage: the array is present and empty, meaning every agent's condition
-    // was false (or none were authored) so nothing was dispatched.
+    // Inline-agents stage: the array is present and empty — nothing was dispatched.
     if (stageResult.agentResults && stageResult.agentResults.length === 0) return true;
 
     // Workflow-ref stage: WorkflowExecutor counts this itself — a phase is "executed" only
@@ -954,30 +971,7 @@ export class PipelineExecutor {
     return verifiedNothingExecuted(stageResult.result);
   }
 
-  /**
-   * The score a gate threshold evaluates: `gate.aggregate` (PDL default 'min')
-   * over inline-agent scores when present — crashed/scoreless agents excluded,
-   * matching the stage-average exclusion — else the stage result's own score.
-   */
-  // NOTE — this is NOT the score reported on the stage result. That one is a plain average
-  // (see executeAgentsStage); this applies the AUTHORED aggregate, default 'min'. The two
-  // legitimately differ, and a stage can report 78 while failing a threshold of 70 on its
-  // weakest agent. Documented at both ends because the divergence is invisible from either.
-  private gateScore(gate: GateDefinition, stageResult: StageResult): number | null {
-    const agentScores = (stageResult.agentResults ?? [])
-      .map(r => r.score)
-      .filter((s): s is number => s !== null && s !== undefined);
-    if (agentScores.length > 0) {
-      switch (gate.aggregate ?? 'min') {
-        case 'min': return Math.min(...agentScores);
-        case 'max': return Math.max(...agentScores);
-        case 'average': return agentScores.reduce((a, b) => a + b, 0) / agentScores.length;
-      }
-    }
-    return stageResult.result?.score ?? null;
-  }
-
-  /** Record every not-yet-run stage as skipped with the gate-flow reason, so
+  /** Record every not-yet-run stage as skipped with the given reason, so
    *  the result accounts for all authored stages (nothing silently vanishes). */
   private skipRemaining(stages: StageDefinition[], from: number, state: PipelineState, reason: string): void {
     for (let j = from; j < stages.length; j++) {
@@ -988,13 +982,11 @@ export class PipelineExecutor {
 }
 
 /**
- * For a stage with no gate, whether it failed: a steps stage whose step without `continue_on_error`
- * failed (its decision is FAIL), or a stage that failed outright. Such a stage is not PASSED, so
- * `stages.<id>.passed` reads false (PDL 1.6.0, Stage status: PASSED is "no gate and every step
- * succeeded").
+ * Whether a steps stage's step without `continue_on_error` failed (its decision is FAIL). Such a stage
+ * is FAILED, or WARNED behind a `warn` gate, whatever the gate's decision key (PDL 1.6.0 §3.1).
  */
 function stepsFailed(stageResult: StageResult): boolean {
-  return stageResult.status !== 'completed' || (stageResult.steps !== undefined && stageResult.result?.decision === 'FAIL');
+  return stageResult.steps !== undefined && stageResult.result?.decision === 'FAIL';
 }
 
 /** Steps-stage predicate — explicit `type: 'steps'` (stamped by
@@ -1009,7 +1001,8 @@ function isStepsStage(stage: StageDefinition): boolean {
  * a provider-credit trip (`failed`).
  *
  * INVARIANT this relies on (1d re-check L2): inside the stage loop, stopRun — the credit trip and,
- * since aborted-agent-recording, a caller deadline — is the ONLY writer of `failed`. The gate-abort branch writes `failed` and `break`s in the same block; the catch
+ * since aborted-agent-recording, a caller deadline — is the ONLY writer of `failed`. (A gate abort wrote `failed` here
+ * before PDL 1.6.0; it no longer touches the run status, since an abort is not a stop.) The catch
  * and `execution.catch` run after the loop. A new writer of `failed` inside the loop that does
  * not break would be read here as a credit stop and its remaining stages skipped under that
  * label — give it its own break, or key this on a dedicated flag.
@@ -1035,13 +1028,22 @@ function stopLabel(state: PipelineState): string {
 /** The short skip label of a `failed` stop, recorded by stopRun: a credit trip or a deadline. */
 const stopLabels = new WeakMap<PipelineState, string>();
 
-
-/** PDL schema default: a gate without on_failure is an abort gate. Corpus
- *  audit (2026-07-10, udl/pdl/v1): every stage gate declares on_failure
- *  explicitly, so the default activates nothing silently. */
-function resolveOnFailure(gate: GateDefinition): 'abort' | 'warn' | 'skip' {
-  return gate.on_failure ?? 'abort';
+/**
+ * The agentRef behind each of an agents stage's results, in result order (the stage's agents with
+ * the condition-skipped ones removed). The gate reads each agent's own threshold and authored name
+ * from it. Held beside the result, not on the public StageResult.
+ */
+const dispatchedAgents = new WeakMap<StageResult, NonNullable<StageDefinition['agents']>>();
+function withDispatched(dispatched: NonNullable<StageDefinition['agents']>, result: StageResult): StageResult {
+  dispatchedAgents.set(result, dispatched);
+  return result;
 }
+
+/** Add a run-level warning (PDL 1.6.0) to the run's state. */
+function raise(state: PipelineState, warning: PipelineWarning): void {
+  (state.warnings ??= []).push(warning);
+}
+
 
 /**
  * Stop a run: the ONE sequence shared by `handle.cancel()` and a provider-credit trip (D13).
@@ -1149,16 +1151,17 @@ class PipelineHandle implements IPipelineHandle {
     const recommendations = this.state.stageResults
       .flatMap(s => s.result?.recommendations ?? []);
 
-    const decision = this.computeDecision();
-    // Pipeline decisions live in the core register, but stamp the category anyway
-    // so the result is self-describing like every other ExecutionResult — and so
-    // CANCELLED is deliberately 'neutral' rather than an accident of the
-    // classifyDecision default branch.
-    const decisionCategory =
-      decision === 'PASS' ? 'positive' as const :
-      decision === 'WARN' ? 'conditional' as const :
-      decision === 'CANCELLED' ? 'neutral' as const :
-      'negative' as const;
+    // The run verdict, computed once (PDL 1.6.0 §3.1, D13; executor/runVerdict.ts). The decision,
+    // its category and the stage metrics are derived from it, and SubmissionClient saves it as is.
+    const warnings = [...(this.state.warnings ?? [])];
+    const allGatesPassed = computeAllGatesPassed(this.state.stageResults, warnings, {
+      stopReached: this.stopReachedAnyStage(),
+      // A run whose own execution threw (not a stop: a stop records its label) did not reach the
+      // end of its stages.
+      executionFailed: this.state.status === 'failed' && !stopLabels.has(this.state),
+    });
+    const decision = runDecision(allGatesPassed, this.state.stageResults);
+    const decisionCategory = runDecisionCategory(decision);
 
     return {
       type: 'pipeline',
@@ -1168,6 +1171,9 @@ class PipelineHandle implements IPipelineHandle {
       minSubscription: this.state.minSubscription,
       decision,
       decisionCategory,
+      allGatesPassed,
+      warnings,
+      ...(this.state.params ? { params: this.state.params } : {}),
       score,
       extractionConfidence: worstExtractionConfidence(
         this.state.stageResults.map(s => s.result).filter((r): r is NonNullable<typeof r> => r != null),
@@ -1181,7 +1187,7 @@ class PipelineHandle implements IPipelineHandle {
         ...rollupCost(this.rollupCostChildren()),
         durationMs,
         model: 'mixed',
-        ...this.computeStageMetrics(),
+        ...stageMetrics(this.state.stageResults),
       },
     };
   }
@@ -1222,72 +1228,19 @@ class PipelineHandle implements IPipelineHandle {
     return children;
   }
 
-  /** Single-pass stage metric computation (replaces five separate filter calls). */
-  private computeStageMetrics() {
-    let stagesExecuted = 0;
-    let stagesPassed = 0;
-    let stagesFailed = 0;
-    let stagesWarned = 0;
-    let stagesSkipped = 0;
-
-    for (const s of this.state.stageResults) {
-      if (s.status === 'skipped') { stagesSkipped++; continue; }
-      stagesExecuted++;
-      // Thrown-error stages have status='failed' but no result — count as failed
-      if (s.status === 'failed') { stagesFailed++; continue; }
-      const category = resolveDecisionCategory(s.result);
-      if (category === 'positive') stagesPassed++;
-      else if (category === 'negative') stagesFailed++;
-      else if (category === 'conditional') stagesWarned++;
-    }
-
-    return { stagesExecuted, stagesPassed, stagesFailed, stagesWarned, stagesSkipped };
-  }
-
-  /** A run stop reached a stage: a stage it kept from starting, or a stage holding a stopped/deadline record. */
+  /**
+   * A run stop reached a stage (§3.1, the stop clause): a stage it kept from starting, a stage it
+   * found in flight (ERRORED `stopped`), or a stage holding a stopped or deadline record. A stop that
+   * landed after the last stage ended reached nothing, and leaves the stages' own verdict (F2,
+   * Alex 2026-10-06: "stopped" means a stop REACHED something).
+   */
   private stopReachedAnyStage(): boolean {
     const label = stopLabel(this.state);
     return this.state.stageResults.some(s =>
       (s.status === 'skipped' && s.skipReason === label)
+      || (s.erroredReasons?.includes('stopped') ?? false)
       || (s.result !== undefined && stopReached(s.result))
       || (s.agentResults?.some(stopReached) ?? false));
-  }
-
-  private computeDecision(): string {
-    // Thrown-error stages have status='failed' but no result.decision.
-    // resolveDecisionCategory prefers the stage result's propagated decisionCategory
-    // (vocabulary-resolved at the producing executor) over raw-string classification,
-    // so custom-vocabulary negatives from command/workflow refs gate correctly.
-    const hasFailures = this.state.stageResults.some(s =>
-      s.status === 'failed' || resolveDecisionCategory(s.result) === 'negative',
-    );
-    // A real failure wins over a user cancel (Alex 2026-10-05, OD-13), as at every level below:
-    // a run that FAILED a stage and was then cancelled reads FAIL. Status stays `cancelled` and
-    // wait() still resolves — only the decision word changes.
-    if (this.state.status === 'cancelled') {
-      if (hasFailures) return 'FAIL';
-      if (this.stopReachedAnyStage()) return 'CANCELLED';
-      // A cancel that reached no stage — it landed after the last stage's work returned — leaves
-      // the stages' own verdict (fall through). Status stays `cancelled`; only the word follows the
-      // work (F2, Alex 2026-10-06: "stopped" means a stop REACHED something, at every level).
-    } else if (this.state.status === 'failed') {
-      // `failed` written by a STOP (deadline; a credit trip always leaves its originator's crash, so
-      // hasFailures) that reached no stage keeps the stages' verdict; wait() still throws. Any other
-      // `failed` — a gate abort, a thrown execution — is FAIL.
-      if (hasFailures || !stopLabels.has(this.state) || this.stopReachedAnyStage()) return 'FAIL';
-    } else if (hasFailures) return 'FAIL';
-
-    // A stage holding an aborted record means the run was stopped, whatever the status says.
-    // Defence in depth beside the caller-signal listener in start() (OD-7): without it, a run whose
-    // stop did not reach `state.status` and whose completed agents passed would report PASS.
-    if (this.state.stageResults.some(s => s.result !== undefined && isStoppedResult(s.result))) return 'CANCELLED';
-
-    const hasWarnings = this.state.stageResults.some(s =>
-      resolveDecisionCategory(s.result) === 'conditional',
-    );
-    if (hasWarnings) return 'WARN';
-
-    return 'PASS';
   }
 }
 

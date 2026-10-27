@@ -443,7 +443,7 @@ for (const stage of result.stages) {
 }
 ```
 
-**Stage & agent conditions (PDL 1.6.0).** A stage's `condition` (and per-agent `agents[].condition` in inline-agent stages) is a **run-gate**: the stage or agent runs when it is true and is skipped when it is false. A condition reads exactly three things: a declared run parameter (`params.frontend`, from `ExecutionInput.params`, declared defaults bound first), whether an ancestor stage passed (`stages.review.passed`), and an ancestor's step output (`stages.preflight.steps['Detect TypeScript'].output == 'DETECTED'`). It compares with `==` / `!=` against a string literal and combines with `!`, `&&`, `||` and parentheses; values compare as strings, and `''`, `'false'` and `'0'` are false. **An absent param is `false`** and equals nothing (so `!params.x` is `true`). Reading a step that did not pass (failed, or never ran) gives an error value that `false && …` and `true || …` absorb; otherwise the stage or agent is not run and the stage is recorded `failed` with reason `condition_error` (ERRORED from P4b).
+**Stage & agent conditions (PDL 1.6.0).** A stage's `condition` (and per-agent `agents[].condition` in inline-agent stages) is a **run-gate**: the stage or agent runs when it is true and is skipped when it is false. A condition reads exactly three things: a declared run parameter (`params.frontend`, from `ExecutionInput.params`, declared defaults bound first), whether an ancestor stage passed (`stages.review.passed`), and an ancestor's step output (`stages.preflight.steps['Detect TypeScript'].output == 'DETECTED'`). It compares with `==` / `!=` against a string literal and combines with `!`, `&&`, `||` and parentheses; values compare as strings, and `''`, `'false'` and `'0'` are false. **An absent param is `false`** and equals nothing (so `!params.x` is `true`). Reading a step that did not pass (failed, or never ran) gives an error value that `false && …` and `true || …` absorb; otherwise the stage or agent is not run and the stage is **ERRORED** (`status: 'errored'`, `erroredReasons: ['condition_error']`, a `STAGE_ERRORED` warning on the run).
 
 **Conditions are checked before anything runs.** `start()` / `runPipeline()` validate every stage and agent condition, `depends_on` (a stage declared later, or the stage itself, is a load error), undeclared keys on stages, gates and agent refs, and step templates, and throw a `PipelineError` whose `context.loadErrors` lists each `{ code, at, message }` (codes as the PDL 1.6.0 spec names them, e.g. `undeclared_parameter at stage:deploy`). **Before 1.6.0** a condition core could not read made its stage run with a warning (fail-open), ordering operators and number literals were accepted, and `skip_if` was evaluated; each is now a load error. See the PDL spec for the full grammar.
 
@@ -464,25 +464,44 @@ stages:
 
 Caps (provisional; exported as `UPSTREAM_STAGE_SLICE_CAP` 8K / `UPSTREAM_STAGE_FULL_CAP` 24K / `UPSTREAM_TOTAL_CAP` 32K chars) reduce deterministically — findings first, then narratives; stage headers and verdict lines are never dropped, and all truncation is marked in-place. Fleet-wide kill switch: `ULUOPS_DISABLE_STAGE_FORWARDING=1` (or `true`). The forwarded slices ride `ExecutionInput.upstreamContext` (type `UpstreamStageContext`) — engine-populated; not an operator input.
 
-**Stage gates.** A stage's `gate:` block (PDL `$defs/gate`) controls pipeline flow after the stage completes. The gate *fails* when the stage's vocabulary-resolved decision is negative, the stage errored, or — when `threshold` is set — the aggregated score falls below it (`aggregate: min | max | average` over inline-agent scores, default `min`; ref-based stages use the stage result score; scoreless stages are fail-open for the threshold check only). What happens next is the gate's flow action:
+**Stage gates and the run verdict (PDL 1.6.0).** A stage's `gate:` block (PDL `$defs/gate`) judges the stage once it has run. Every stage ends with one `outcome` (`StageResult.outcome`): `PASSED`, `WARNED` (a `warn` gate failed), `FAILED`, `SKIPPED`, or `ERRORED` (it could not be judged). What a gate reads from each agent is fixed by the agent-output contract (see the decision and score paths above):
+
+- **Score.** If any `agents[]` entry declares `threshold`, the gate is in **per-agent mode**: each agent must reach its own threshold, or `gate.threshold` when it has none. Otherwise `aggregate(scores) >= gate.threshold` (`aggregate: min | max | average`, default `min`). A gate with no threshold is decision-only. A ref stage gates on its result's score, and a missing one there is not compared.
+- **Decision** (`gate.decision`): `not_negative` (a negative fails; a conditional passes, and a blocking gate that passes one makes the run's `allGatesPassed` false, with a `CONDITIONAL_ACCEPTED` warning), `positive` (a conditional fails too), or `ignore`. Default: `not_negative` on blocking gates, `ignore` on `warn` gates. A neutral or absent decision never fails a gate; the score decides.
+- **Unjudgeable agents.** An agent with no score at a gate that has a threshold, or with no score and no classifiable decision, makes its stage **ERRORED**, as does a crashed agent (a timeout included: `agents[].timeout`, in ms, overrides the run's timeout for that agent).
 
 ```yaml
 stages:
   - id: build-gate
     steps: [...]
     gate:
-      on_failure: abort      # hard stop: remaining stages skipped, run fails (PDL default)
+      on_failure: abort      # FAILED; this stage's transitive dependents are skipped (PDL default)
   - id: validate
     ref: ship@1.0.0
+    depends_on: [build-gate]
     gate:
-      threshold: 70          # score gate on top of the decision gate
-      aggregate: min
-      on_failure: warn       # log and continue
-      # on_failure: skip     # skip remaining stages, run still completes
+      threshold: 70
+      on_failure: fail       # FAILED; the run continues, dependents run
+  - id: review
+    agents:
+      - { ref: architect, threshold: 80 }   # per-agent thresholds
+      - { ref: docs-validator, threshold: 75 }
+    gate:
+      on_failure: warn       # WARNED; decision ignored unless `decision:` says otherwise
       # on_success: skip_remaining  # early exit when the gate passes
 ```
 
-`on_failure: abort` surfaces as a thrown `PipelineError` from `wait()`/`runPipeline()` carrying the partial result; skipped stages are recorded with `skipReason: 'gate_abort' | 'gate_skip' | 'gate_early_exit'`. Note: an abort-gated `steps:` stage that cannot execute because `allowStageSteps` is off **refuses the run before any stage starts** instead of passing through — an unexecutable mandatory gate is a configuration error (see [Stage Steps](#stage-steps-opt-in)).
+| `on_failure` | stage on failure | rest of the run |
+|---|---|---|
+| `abort` (and absent) | FAILED | its transitive dependents are skipped; every other stage runs |
+| `fail` | FAILED | continues |
+| `warn` | WARNED | continues |
+| `skip` (deprecated) | as `fail` (load warning `SKIP_DEPRECATED`) | as `fail` |
+| no gate | as `fail` | continues |
+
+An ERRORED stage takes its gate's mode: behind `abort` its dependents are skipped, behind `fail` it fails the run, behind `warn` it counts as WARNED. Every ERRORED stage raises a `STAGE_ERRORED` warning (`PipelineResult.warnings`, with `reason: 'agent_unjudgeable' | 'condition_error' | 'stopped'`). A stage whose every agent was skipped by its own condition is SKIPPED, its gate not evaluated.
+
+**The run verdict.** `PipelineResult.allGatesPassed` is false when a stage ended FAILED, a stage ended ERRORED behind `abort` or `fail`, a blocking gate accepted a CONDITIONAL, or a stop (cancel, deadline, credit limit) reached a stage before the run ended; otherwise true. `decision` follows it: `FAIL` when false, `WARN` when a stage WARNED or ended ERRORED behind `warn`, else `PASS`. A tracked run saves `allGatesPassed` exactly as computed, and its raw markdown begins with a `params:` line holding the resolved run parameters. An abort no longer ends the run: `wait()` and `runPipeline()` resolve with `status: 'complete'` and `decision: 'FAIL'`; skipped stages carry `skipReason: 'gate_abort' | 'gate_early_exit' | 'condition_not_met' | ...`. Note: a `steps:` stage behind a blocking gate (`abort`, `fail`, `skip`) that cannot execute because `allowStageSteps` is off **refuses the run before any stage starts** instead of passing through — an unexecutable mandatory gate is a configuration error (see [Stage Steps](#stage-steps-opt-in)).
 
 Async execution with handle-based control:
 
@@ -965,14 +984,15 @@ otherwise `ABORTED` / `neutral` (phase `'aborted'`). Score thresholds, lens caps
 **Finished work keeps its verdict:** the rule covers only the parts a stop reached. A workflow
 phase that finished before the stop keeps its own verdict, so a stopped workflow is `BLOCK` if a
 stopped phase crashed or a finished phase is `'blocked'`, and otherwise `ABORTED`. A pipeline
-treats finished stages the same way: a stage that really failed before a user `cancel()` makes the
-decision `FAIL`, and a cancel with no failure reads `CANCELLED`. So the same phases get the same
-verdict as one workflow or as separate pipeline stages. A stop that fired but reached nothing
-(it landed after the last work returned) leaves the verdict alone at every level; the pipeline's
-`status` still records it. A phase whose every step crashed stays `'blocked'` even under
+follows the PDL 1.6.0 run model instead: a stage in flight at the stop is **ERRORED** (`stopped`, gate
+not evaluated), and a stop that reached any stage makes `allGatesPassed` false and the decision `FAIL`;
+`status` still says `cancelled` (or `failed` for a deadline or credit stop). So a stopped workflow
+reads `ABORTED` and the same phases split into pipeline stages read `FAIL`. A stop that fired but
+reached nothing (it landed after the last work returned) leaves the verdict alone at every level; the
+pipeline's `status` still records it. A phase whose every step crashed stays `'blocked'` even under
 `on_failure: warn`, which softens only gate verdicts. Use `stopReached(result)` to ask whether a stop touched a result
 or anything inside it. With `sum`, 90 plus a stopped agent under a 150 threshold is `ABORTED`, not `FAIL`. A panel whose agents were *all* stopped returns rather than throwing, and
-a pipeline stage whose single agent was stopped is a completed stage holding an `ABORTED` record.
+a pipeline stage whose single agent was stopped is an ERRORED stage holding an `ABORTED` record.
 Genuine crashes — a timeout, a caller deadline, and the agent that received the 402 — keep the
 critical crash placeholder. Phases a stop kept from starting are recorded `'aborted'`
 (`'blocked'` under a deadline), never `'skipped'`, so a stopped workflow can never read `SHIP`. A
@@ -1501,7 +1521,7 @@ Package managers (`npm`, `pip`), orchestrators (`docker`, `kubectl`), build tool
 
 ### Stage Steps (opt-in)
 
-PDL pipeline stages can declare inline shell `steps:` blocks (detection preflights, build gates). The engine executes them **only when the operator opts in** via `allowStageSteps: true` (or `ULUOPS_ALLOW_STAGE_STEPS=true` — the exact string `true`). This is the same trust boundary as the `bash` tool: step commands come from resolved definitions, so running them is definition-author-controlled shell on your host. **The opt-in is the boundary — there is no command allowlist.** With the opt-in off (the default), steps-only stages pass through as `PASS` with a `null` score (excluded from pipeline score aggregation) and their steps are not run — **unless the stage carries an abort gate** (`gate.on_failure: abort`, or a `gate:` block that omits `on_failure` — abort is the PDL default), in which case the run is refused before any stage starts: an unexecutable mandatory gate is a configuration error, not a skippable step. **A run whose conditions read step output is refused the same way** (`PipelineError`, `context.refusal.code === 'STEP_OUTPUT_STEPS_DISABLED'`, naming the stages): the output those conditions read cannot exist with steps off. Nine corpus pipelines read step output, among them `pre-implementation`, `ship`, `post-implementation` and `consumer-validate`, so under the default they are refused until steps are enabled for the run.
+PDL pipeline stages can declare inline shell `steps:` blocks (detection preflights, build gates). The engine executes them **only when the operator opts in** via `allowStageSteps: true` (or `ULUOPS_ALLOW_STAGE_STEPS=true` — the exact string `true`). This is the same trust boundary as the `bash` tool: step commands come from resolved definitions, so running them is definition-author-controlled shell on your host. **The opt-in is the boundary — there is no command allowlist.** With the opt-in off (the default), steps-only stages pass through as `PASS` with a `null` score (excluded from pipeline score aggregation) and their steps are not run — **unless the stage carries a blocking gate** (`gate.on_failure: abort`, `fail` or `skip`, or a `gate:` block that omits `on_failure` — abort is the PDL default), in which case the run is refused before any stage starts: an unexecutable mandatory gate is a configuration error, not a skippable step. **A run whose conditions read step output is refused the same way** (`PipelineError`, `context.refusal.code === 'STEP_OUTPUT_STEPS_DISABLED'`, naming the stages): the output those conditions read cannot exist with steps off. Nine corpus pipelines read step output, among them `pre-implementation`, `ship`, `post-implementation` and `consumer-validate`, so under the default they are refused until steps are enabled for the run.
 
 Confinements applied to executed steps:
 

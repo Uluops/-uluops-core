@@ -189,7 +189,7 @@ export function checkPipelineLoadRules(pipeline: PipelineLike): { errors: Pipeli
       if (f) errors.push({ code: f.code, at: `${at}/agent:${String(agent.ref)}`, message: `Agent "${String(agent.ref)}" in stage "${sid}" condition: ${f.message}` });
     }
 
-    // Per-agent thresholds (D5). Their gate semantics are P4b's; the load errors are here.
+    // Per-agent thresholds (D5). Their gate semantics are stageGate.ts's; the load errors are here.
     const gate = isRecord(stage.gate) ? stage.gate : undefined;
     if (agents.some(a => a.threshold !== undefined)) {
       if (gate?.['aggregate'] !== undefined) {

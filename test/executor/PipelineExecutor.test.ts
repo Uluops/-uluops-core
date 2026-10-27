@@ -442,11 +442,18 @@ describe('PipelineExecutor', () => {
             id: 'stage-1', name: 'Stage 1', type: 'command', ref: 'slow@1.0.0',
             gate: { threshold: 90, on_failure: 'abort' as const },
           },
-          { id: 'stage-2', name: 'Stage 2', type: 'command', ref: 'fast@1.0.0' },
+          { id: 'stage-2', name: 'Stage 2', type: 'command', ref: 'fast@1.0.0', depends_on: ['stage-1'] },
         ],
       });
 
-      await expect(executor.execute(def, { target: '/tmp/test' })).rejects.toThrow(/failed its gate/);
+      // PDL 1.6.0 D1: an abort is not a stop. The stage is FAILED, its dependent is skipped, the run
+      // completes and FAILs; wait() resolves (before 1.6.0 it threw "failed its gate").
+      const result = await executor.execute(def, { target: '/tmp/test' });
+      expect(result.status).toBe('complete');
+      expect(result.stages[0]!.outcome).toBe('FAILED');
+      expect(result.stages[1]!.skipReason).toBe('gate_abort');
+      expect(result.allGatesPassed).toBe(false);
+      expect(result.decision).toBe('FAIL');
     });
 
     /**
@@ -819,11 +826,26 @@ describe('PipelineExecutor', () => {
       const err = await executor.start(def, { target: '/tmp' }).then(() => undefined, (e: unknown) => e);
 
       expect(err).toBeInstanceOf(PipelineError);
-      expect((err as PipelineError).message).toMatch(/"gate" is a hard gate/);
+      expect((err as PipelineError).message).toMatch(/"gate" is a blocking gate/);
       expect((err as PipelineError).message).toMatch(/allowStageSteps/);
       // The remedy is enabling steps; downgrading the gate is not offered (PDL 1.6.0, Step output must exist).
       expect((err as PipelineError).message).not.toMatch(/warn/);
       expect(cmdExec.execute).not.toHaveBeenCalled();
+    });
+
+    it('G5 refuses a steps stage behind a `fail` gate too: the whole blocking class (§6 item 10)', async () => {
+      // Negative control: on 602b34f only `abort` was refused; `fail` did not exist and read as continue.
+      const executor = new PipelineExecutor(makeWorkflowExecutor(), makeCommandExecutor(), agentExec, makeRegistry(), noopLogger);
+      for (const on_failure of ['fail', 'skip'] as const) {
+        const def = makePipelineDef({ stages: [{ id: 'gate', name: 'Gate', type: 'steps', steps: [{ name: 'n', command: 'true' }], gate: { on_failure } }] });
+        const err = await executor.start(def, { target: '/tmp' }).then(() => undefined, (e: unknown) => e);
+        expect(err, on_failure).toBeInstanceOf(PipelineError);
+      }
+      // A warn gate and no gate are not refused: with steps off they pass through.
+      for (const gate of [{ on_failure: 'warn' as const }, undefined]) {
+        const def = makePipelineDef({ stages: [{ id: 'gate', name: 'Gate', type: 'steps', steps: [{ name: 'n', command: 'true' }], ...(gate ? { gate } : {}) }] });
+        await expect(executor.execute(def, { target: '/tmp' })).resolves.toBeDefined();
+      }
     });
 
     it('fails loud on a stage with no ref, agents, or steps instead of fabricating a PASS', async () => {
@@ -946,7 +968,10 @@ describe('PipelineExecutor', () => {
       expect(result.decision).toBe('FAIL');
     });
 
-    it('computes WARN decision when a stage result has WARN', async () => {
+    it('a WARN at a stage with no gate is a CONDITIONAL its blocking-class gate accepted: the run FAILs (D19, gate-decision D2)', async () => {
+      // A stage with no gate behaves as `fail` (D19), a blocking mode, so a conditional decision
+      // passes it and makes allGatesPassed false. Before 1.6.0 the run decision was WARN; the saved
+      // verdict was already false (category conditional).
       const cmdResults = [
         makeCommandResult({ decision: 'WARN', score: 60 }),
       ];
@@ -957,7 +982,29 @@ describe('PipelineExecutor', () => {
 
       const result = await executor.execute(makePipelineDef(), { target: '/tmp/test' });
 
+      expect(result.stages[0]!.outcome).toBe('PASSED');
+      expect(result.warnings.map(w => w.code)).toEqual(['CONDITIONAL_ACCEPTED']);
+      expect(result.allGatesPassed).toBe(false);
+      expect(result.decision).toBe('FAIL');
+    });
+
+    it('a WARN behind a warn gate passes it and leaves the run PASS-able; a failing warn gate makes the run WARN', async () => {
+      const cmdExec = makeCommandExecutor([makeCommandResult({ decision: 'WARN', score: 60 }), makeCommandResult({ score: 50 })]);
+      const executor = new PipelineExecutor(makeWorkflowExecutor(), cmdExec, agentExec, makeRegistry(), noopLogger);
+      const def = makePipelineDef({
+        stages: [
+          { id: 'a', name: 'A', type: 'command' as const, ref: 'a@1', gate: { on_failure: 'warn' as const } },
+          { id: 'b', name: 'B', type: 'command' as const, ref: 'b@1', gate: { threshold: 70, on_failure: 'warn' as const } },
+        ],
+      });
+
+      const result = await executor.execute(def, { target: '/tmp/test' });
+
+      expect(result.stages.map(s => s.outcome)).toEqual(['PASSED', 'WARNED']);
+      expect(result.warnings).toEqual([]);
+      expect(result.allGatesPassed).toBe(true);
       expect(result.decision).toBe('WARN');
+      expect(result.decisionCategory).toBe('conditional');
     });
 
     it('accumulates metrics across stages', async () => {
@@ -1141,7 +1188,7 @@ describe('PipelineExecutor', () => {
       expect(result.stages[1]!.agentResults).toHaveLength(2);
     });
 
-    it('a stage condition that reads a FAILED step is E: the stage does not run, and is recorded failed with condition_error (ERRORED from P4b)', async () => {
+    it('a stage condition that reads a FAILED step is E: the stage does not run, and is ERRORED with condition_error', async () => {
       // Negative control: on 98adad5 the failed step read as '' and the stage was skipped.
       const cmdExec = makeCommandExecutor([makeCommandResult()]);
       const executor = new PipelineExecutor(makeWorkflowExecutor(), cmdExec, agentExec, makeRegistry(), noopLogger, true);
@@ -1154,8 +1201,13 @@ describe('PipelineExecutor', () => {
 
       const result = await executor.execute(def, { target: '/tmp' });
 
-      expect(result.stages[1]!.status).toBe('failed');
+      expect(result.stages[1]!.status).toBe('errored');
+      expect(result.stages[1]!.outcome).toBe('ERRORED');
+      expect(result.stages[1]!.erroredReasons).toEqual(['condition_error']);
       expect(result.stages[1]!.skipReason).toMatch(/^condition_error: /);
+      expect(result.warnings).toEqual([{ code: 'STAGE_ERRORED', stage: 'checks', reason: 'condition_error' }]);
+      // No gate is `fail` (D19), a blocking mode: an ERRORED stage behind it fails the run.
+      expect(result.allGatesPassed).toBe(false);
       expect(cmdExec.execute).not.toHaveBeenCalled();
     });
 
@@ -1176,8 +1228,10 @@ describe('PipelineExecutor', () => {
 
       expect(agentExecutor.execute).toHaveBeenCalledTimes(1);
       expect(result.stages[1]!.agentResults).toHaveLength(1);
-      expect(result.stages[1]!.status).toBe('failed');
+      expect(result.stages[1]!.status).toBe('errored');
+      expect(result.stages[1]!.outcome).toBe('ERRORED');
       expect(result.stages[1]!.skipReason).toMatch(/^condition_error: .*"docs"/);
+      expect(result.warnings).toEqual([{ code: 'STAGE_ERRORED', stage: 'review', reason: 'condition_error' }]);
     });
 
     it('Kleene: false && E is false, so the stage is skipped, not errored', async () => {
@@ -1344,7 +1398,7 @@ describe('PipelineExecutor', () => {
       expect(result.metrics.stagesFailed).toBe(1);
     });
 
-    it('warns the pipeline when a command-ref stage carries a custom conditional decision', async () => {
+    it('reads a command-ref stage\'s custom conditional decision through its stamped category (CONDITIONAL_ACCEPTED)', async () => {
       const cmdExec = makeCommandExecutor([
         makeCommandResult({ decision: 'NEEDS_POLISH', decisionCategory: 'conditional', score: 72 }),
       ]);
@@ -1352,8 +1406,10 @@ describe('PipelineExecutor', () => {
 
       const result = await executor.execute(makePipelineDef(), { target: '/tmp/test' });
 
-      expect(result.decision).toBe('WARN');
-      expect(result.metrics.stagesWarned).toBe(1);
+      // Classified conditional (not neutral): the gateless stage's blocking-class gate accepts it.
+      expect(result.warnings.map(w => w.code)).toEqual(['CONDITIONAL_ACCEPTED']);
+      expect(result.decision).toBe('FAIL');
+      expect(result.metrics.stagesPassed).toBe(1);
     });
 
     it('fails the pipeline when a workflow-ref stage carries a WDL-remapped negative decision', async () => {
@@ -1383,10 +1439,11 @@ describe('PipelineExecutor', () => {
   });
 
   describe('stage gates (PDL $defs/gate enactment)', () => {
+    // `downstream` depends on `gated`, so an abort skips it (D1); an independent stage would run.
     const twoStages = (gate: object) => ({
       stages: [
         { id: 'gated', name: 'Gated', type: 'command' as const, ref: 'a@1', gate },
-        { id: 'downstream', name: 'Downstream', type: 'command' as const, ref: 'b@1' },
+        { id: 'downstream', name: 'Downstream', type: 'command' as const, ref: 'b@1', depends_on: ['gated'] },
       ],
     });
 
@@ -1397,11 +1454,10 @@ describe('PipelineExecutor', () => {
       const cmdExec = makeCommandExecutor([makeCommandResult({ decision: 'PASS', decisionCategory: 'positive', score: 85 })]);
       const executor = new PipelineExecutor(makeWorkflowExecutor(), cmdExec, agentExec, makeRegistry(), noopLogger);
       const def = makePipelineDef(twoStages({ threshold: Number.NaN, on_failure: 'abort' }));
-      const handle = await executor.start(def, { target: '/tmp' });
-      await expect(handle.wait()).rejects.toThrow(/failed its gate/);
-      const result = await handle.status();
-      expect(result.status).toBe('failed');
-      expect(result.stages[1]!.status).not.toBe('completed');
+      const result = await executor.execute(def, { target: '/tmp' });
+      expect(result.stages[0]!.outcome).toBe('FAILED');
+      expect(result.stages[1]!.status).toBe('skipped');
+      expect(result.decision).toBe('FAIL');
     });
 
     it('aborts the pipeline when a failing stage carries on_failure: abort', async () => {
@@ -1409,15 +1465,38 @@ describe('PipelineExecutor', () => {
       const executor = new PipelineExecutor(makeWorkflowExecutor(), cmdExec, agentExec, makeRegistry(), noopLogger);
 
       const def = makePipelineDef(twoStages({ on_failure: 'abort' }));
-      const handle = await executor.start(def, { target: '/tmp' });
+      const result = await executor.execute(def, { target: '/tmp' });
 
-      await expect(handle.wait()).rejects.toThrow(/failed its gate/);
-      const result = await handle.status();
-      expect(result.status).toBe('failed');
+      // An abort skips the aborting stage's dependents and the run completes (D1, revised); before
+      // 1.6.0 the run ended `failed` and wait() threw.
+      expect(result.status).toBe('complete');
       expect(result.stages).toHaveLength(2);
+      expect(result.stages[0]!.outcome).toBe('FAILED');
       expect(result.stages[1]!.status).toBe('skipped');
       expect(result.stages[1]!.skipReason).toBe('gate_abort');
+      expect(result.allGatesPassed).toBe(false);
       expect(cmdExec.execute).toHaveBeenCalledTimes(1);
+    });
+
+    it('an abort does not skip a stage that does not depend on the aborting one (D1, revised 0.7.0)', async () => {
+      // Negative control: on 6f89349 the abort skipped `independent` too (skipRemaining).
+      const cmdExec = makeCommandExecutor([makeCommandResult({ decision: 'FAIL', decisionCategory: 'negative', score: 40 }), makeCommandResult({ score: 90 })]);
+      const executor = new PipelineExecutor(makeWorkflowExecutor(), cmdExec, agentExec, makeRegistry(), noopLogger);
+      const def = makePipelineDef({
+        stages: [
+          { id: 'gated', name: 'Gated', type: 'command' as const, ref: 'a@1', gate: { on_failure: 'abort' as const } },
+          { id: 'child', name: 'Child', type: 'command' as const, ref: 'b@1', depends_on: ['gated'] },
+          { id: 'grandchild', name: 'Grandchild', type: 'command' as const, ref: 'b@1', depends_on: ['child'] },
+          { id: 'independent', name: 'Independent', type: 'command' as const, ref: 'c@1' },
+        ],
+      });
+
+      const result = await executor.execute(def, { target: '/tmp' });
+
+      expect(result.stages.map(s => [s.id, s.outcome])).toEqual([
+        ['gated', 'FAILED'], ['child', 'SKIPPED'], ['grandchild', 'SKIPPED'], ['independent', 'PASSED'],
+      ]);
+      expect(cmdExec.execute).toHaveBeenCalledTimes(2);
     });
 
     it('treats a gate without on_failure as abort (PDL schema default)', async () => {
@@ -1425,9 +1504,10 @@ describe('PipelineExecutor', () => {
       const executor = new PipelineExecutor(makeWorkflowExecutor(), cmdExec, agentExec, makeRegistry(), noopLogger);
 
       const def = makePipelineDef(twoStages({}));
-      const handle = await executor.start(def, { target: '/tmp' });
+      const result = await executor.execute(def, { target: '/tmp' });
 
-      await expect(handle.wait()).rejects.toThrow(/failed its gate/);
+      expect(result.stages[0]!.gateMode).toBe('abort');
+      expect(result.stages[1]!.skipReason).toBe('gate_abort');
     });
 
     it('continues past a failing stage under on_failure: warn (current-corpus behavior preserved)', async () => {
@@ -1441,18 +1521,35 @@ describe('PipelineExecutor', () => {
 
       expect(result.status).toBe('complete');
       expect(result.stages[1]!.status).toBe('completed');
-      expect(result.decision).toBe('FAIL'); // computeDecision still reports the negative stage
+      // A warn gate's decision key defaults to `ignore` (gate-decision D3), so this threshold-less
+      // warn gate passes the negative, and the run passes (D13). Before 1.6.0 the negative failed the
+      // run whatever the gate said (computeDecision), and the saved verdict was false.
+      expect(result.stages[0]!.outcome).toBe('PASSED');
+      expect(result.decision).toBe('PASS');
+      expect(result.allGatesPassed).toBe(true);
     });
 
-    it('skips remaining stages without failing the run under on_failure: skip', async () => {
-      const cmdExec = makeCommandExecutor([makeCommandResult({ decision: 'FAIL', decisionCategory: 'negative', score: 40 })]);
+    it('reads on_failure: skip as fail: the stage is FAILED and the run continues (PDL 1.6.0)', async () => {
+      // Negative control: on 6f89349 `skip` skipped every remaining stage (gate_skip) and the run passed.
+      const cmdExec = makeCommandExecutor([makeCommandResult({ decision: 'FAIL', decisionCategory: 'negative', score: 40 }), makeCommandResult({ score: 90 })]);
       const executor = new PipelineExecutor(makeWorkflowExecutor(), cmdExec, agentExec, makeRegistry(), noopLogger);
 
       const result = await executor.execute(makePipelineDef(twoStages({ on_failure: 'skip' })), { target: '/tmp' });
 
       expect(result.status).toBe('complete');
-      expect(result.stages[1]!.status).toBe('skipped');
-      expect(result.stages[1]!.skipReason).toBe('gate_skip');
+      expect(result.stages[0]!.gateMode).toBe('fail');
+      expect(result.stages.map(s => s.outcome)).toEqual(['FAILED', 'PASSED']);
+      expect(result.allGatesPassed).toBe(false);
+    });
+
+    it('on_failure: fail fails the stage and runs its dependents', async () => {
+      const cmdExec = makeCommandExecutor([makeCommandResult({ decision: 'FAIL', decisionCategory: 'negative', score: 40 }), makeCommandResult({ score: 90 })]);
+      const executor = new PipelineExecutor(makeWorkflowExecutor(), cmdExec, agentExec, makeRegistry(), noopLogger);
+
+      const result = await executor.execute(makePipelineDef(twoStages({ on_failure: 'fail' })), { target: '/tmp' });
+
+      expect(result.stages.map(s => s.outcome)).toEqual(['FAILED', 'PASSED']);
+      expect(result.decision).toBe('FAIL');
     });
 
     it('aborts on a passing decision whose score falls below gate.threshold', async () => {
@@ -1460,9 +1557,10 @@ describe('PipelineExecutor', () => {
       const executor = new PipelineExecutor(makeWorkflowExecutor(), cmdExec, agentExec, makeRegistry(), noopLogger);
 
       const def = makePipelineDef(twoStages({ threshold: 70, on_failure: 'abort' }));
-      const handle = await executor.start(def, { target: '/tmp' });
+      const result = await executor.execute(def, { target: '/tmp' });
 
-      await expect(handle.wait()).rejects.toThrow(/failed its gate/);
+      expect(result.stages[0]!.outcome).toBe('FAILED');
+      expect(result.stages[1]!.skipReason).toBe('gate_abort');
     });
 
     it('passes a gate whose threshold is met', async () => {
@@ -1503,7 +1601,7 @@ describe('PipelineExecutor', () => {
     it('an agent with no score at a THRESHOLD gate is unjudgeable: the stage is not passed (D24; was fail-open)', async () => {
       // Negative control: on 829c6b3 this stage passed its threshold-70 abort gate with no score at
       // all, and `downstream` ran. A classifiable decision does not stand in for a score a threshold
-      // was never measured against. Recorded failed (agent_unjudgeable) until P4b's ERRORED.
+      // was never measured against. ERRORED (agent_unjudgeable), behind abort: its dependent is skipped.
       const agentExecutor = makeAgentExecutor([
         makeValidatorResult({ agentType: 'generator', decision: 'COMPLETE', score: null, maxScore: null }),
         makeValidatorResult({ agentType: 'generator', decision: 'COMPLETE', score: null, maxScore: null }),
@@ -1517,16 +1615,32 @@ describe('PipelineExecutor', () => {
             agents: [{ ref: 'a@1' }, { ref: 'b@1' }],
             gate: { threshold: 70, on_failure: 'abort' as const },
           },
-          { id: 'downstream', name: 'Downstream', type: 'command' as const, ref: 'c@1' },
+          { id: 'downstream', name: 'Downstream', type: 'command' as const, ref: 'c@1', depends_on: ['panel'] },
         ],
       });
-      const err = await executor.execute(def, { target: '/tmp' }).then(() => undefined, (e: unknown) => e);
+      const result = await executor.execute(def, { target: '/tmp' });
 
-      expect(err).toBeInstanceOf(PipelineError);
-      const partial = (err as PipelineError).context.partialResult!;
-      expect(partial.stages[0]!.status).toBe('failed');
-      expect(partial.stages[0]!.skipReason).toMatch(/^agent_unjudgeable: .*at a gate with a threshold/);
-      expect(partial.stages[1]!.status).toBe('skipped');
+      expect(result.stages[0]!.status).toBe('errored');
+      expect(result.stages[0]!.outcome).toBe('ERRORED');
+      expect(result.stages[0]!.skipReason).toMatch(/^agent_unjudgeable: .*at a gate with a threshold/);
+      expect(result.warnings).toEqual([{ code: 'STAGE_ERRORED', stage: 'panel', reason: 'agent_unjudgeable' }]);
+      expect(result.stages[1]!.status).toBe('skipped');
+      expect(result.allGatesPassed).toBe(false);
+    });
+
+    it('a crashed agent is unjudgeable at a DECISION-ONLY gate too: the stage is ERRORED, not FAILED on the synthesized FAIL', async () => {
+      // A crash left no output; the FAIL on its record is core's, not the agent's. At a threshold gate
+      // D24 already catches it (no score); this pins the decision-only gate, where it would otherwise
+      // read as a negative decision.
+      const agentExecutor = { execute: vi.fn().mockRejectedValue(new Error('provider 500')) } as unknown as AgentExecutor;
+      const executor = new PipelineExecutor(makeWorkflowExecutor(), makeCommandExecutor(), agentExecutor, makeRegistry(), noopLogger);
+      const def = makePipelineDef({
+        stages: [{ id: 'panel', name: 'Panel', type: 'agents' as const, agents: [{ ref: 'a@1' }], gate: { on_failure: 'warn' as const } }],
+      });
+      const result = await executor.execute(def, { target: '/tmp' });
+      expect(result.stages[0]!.outcome).toBe('ERRORED');
+      expect(result.warnings).toEqual([{ code: 'STAGE_ERRORED', stage: 'panel', reason: 'agent_unjudgeable' }]);
+      expect(result.decision).toBe('WARN');
     });
 
     it('the same scoreless agents at a DECISION-ONLY gate pass on their decision (D24, the control)', async () => {
@@ -1549,7 +1663,8 @@ describe('PipelineExecutor', () => {
 
     it('an all-scoreless agents stage is still gated on its DECISION — the negative control', async () => {
       // Without this, "scoreless passes" would also pass for a stage gate that had stopped
-      // gating agents stages entirely. A negative decision fails regardless of score.
+      // gating agents stages entirely. A negative decision fails regardless of score. At a
+      // decision-only gate: with a threshold, the scoreless agent is unjudgeable (D24, above).
       const agentExecutor = makeAgentExecutor([
         makeValidatorResult({ agentType: 'generator', decision: 'FAIL', score: null, maxScore: null }),
       ]);
@@ -1560,13 +1675,14 @@ describe('PipelineExecutor', () => {
           {
             id: 'panel', name: 'Panel', type: 'agents' as const,
             agents: [{ ref: 'a@1' }],
-            gate: { threshold: 70, on_failure: 'abort' as const },
+            gate: { on_failure: 'abort' as const },
           },
-          { id: 'downstream', name: 'Downstream', type: 'command' as const, ref: 'c@1' },
+          { id: 'downstream', name: 'Downstream', type: 'command' as const, ref: 'c@1', depends_on: ['panel'] },
         ],
       });
-      // An abort gate throws; the partial result carries the skipped downstream stage.
-      await expect(executor.execute(def, { target: '/tmp' })).rejects.toThrow(/failed its gate/);
+      const result = await executor.execute(def, { target: '/tmp' });
+      expect(result.stages[0]!.outcome).toBe('FAILED');
+      expect(result.stages[1]!.skipReason).toBe('gate_abort');
     });
 
     /**
@@ -1583,7 +1699,8 @@ describe('PipelineExecutor', () => {
      * POSITIVE CONTROL: change aggregateScores' empty-input branch to `null` and this
      * fails — the stage passes its gate and stage 2 completes.
      */
-    it('a stage whose every agent condition is FALSE blocks its gate, not fail-opens', async () => {
+    it('a stage whose every agent condition is FALSE is SKIPPED, its gate not evaluated (D10)', async () => {
+      // Negative control: on 6f89349 the gate failed (verifiedNothing) and the abort ended the run.
       const agentExecutor = makeAgentExecutor([makeValidatorResult({ score: 95 })]);
       const executor = new PipelineExecutor(makeWorkflowExecutor(), makeCommandExecutor(), agentExecutor, makeRegistry(), noopLogger);
 
@@ -1603,9 +1720,13 @@ describe('PipelineExecutor', () => {
         ],
       });
 
-      await expect(
-        executor.execute(def, { target: '/tmp', params: { mode: 'real' } }),
-      ).rejects.toThrow(/failed its gate/);
+      const result = await executor.execute(def, { target: '/tmp', params: { mode: 'real' } });
+      expect(result.stages[0]!.status).toBe('skipped');
+      expect(result.stages[0]!.outcome).toBe('SKIPPED');
+      expect(result.stages[0]!.skipReason).toBe('condition_not_met');
+      expect(result.stages[1]!.outcome).toBe('PASSED');
+      expect(result.allGatesPassed).toBe(true);
+      expect(agentExecutor.execute).not.toHaveBeenCalled();
     });
 
     it('the same stage with its conditions MET runs and passes — the negative control', async () => {
@@ -1640,25 +1761,26 @@ describe('PipelineExecutor', () => {
      * POSITIVE CONTROL: remove the `verifiedNothing(stageResult)` check from `gateFailed`
      * and both of these pass their gate and reach stage 2.
      */
-    it('a THRESHOLD-LESS gate still fails when the stage dispatched no agents', async () => {
+    it('a THRESHOLD-LESS gate still fails when the stage dispatched no agents (none authored)', async () => {
+      // All-skipped by condition is SKIPPED (D10); `verifiedNothing` stays for every other stage
+      // that dispatched nothing.
       const executor = new PipelineExecutor(
         makeWorkflowExecutor(), makeCommandExecutor(), makeAgentExecutor([makeValidatorResult()]), makeRegistry(), noopLogger,
       );
       const def = makePipelineDef({
-        triggers: declareParams('mode'),
         stages: [
           {
             id: 'panel', name: 'Panel', type: 'agents' as const,
-            agents: [{ ref: 'a@1', condition: "params.mode == 'never'" }],
+            agents: [],
             gate: { on_failure: 'abort' as const },   // no threshold — decision-only gating
           },
-          { id: 'downstream', name: 'Downstream', type: 'command' as const, ref: 'c@1' },
+          { id: 'downstream', name: 'Downstream', type: 'command' as const, ref: 'c@1', depends_on: ['panel'] },
         ],
       });
 
-      await expect(
-        executor.execute(def, { target: '/tmp', params: { mode: 'real' } }),
-      ).rejects.toThrow(/failed its gate/);
+      const result = await executor.execute(def, { target: '/tmp' });
+      expect(result.stages[0]!.outcome).toBe('FAILED');
+      expect(result.stages[1]!.skipReason).toBe('gate_abort');
     });
 
     it('a THRESHOLD-LESS gate still fails when a nested workflow executed no phase', async () => {
@@ -1679,11 +1801,13 @@ describe('PipelineExecutor', () => {
             id: 'checks', name: 'Checks', type: 'workflow' as const, ref: 'release-checks@1',
             gate: { on_failure: 'abort' as const },
           },
-          { id: 'publish', name: 'Publish', type: 'command' as const, ref: 'c@1' },
+          { id: 'publish', name: 'Publish', type: 'command' as const, ref: 'c@1', depends_on: ['checks'] },
         ],
       });
 
-      await expect(executor.execute(def, { target: '/tmp' })).rejects.toThrow(/failed its gate/);
+      const result = await executor.execute(def, { target: '/tmp' });
+      expect(result.stages[0]!.outcome).toBe('FAILED');
+      expect(result.stages[1]!.skipReason).toBe('gate_abort');
     });
 
     it('a stage that RAN and scored 0 is judged on its own terms — the negative control', async () => {
@@ -1723,13 +1847,14 @@ describe('PipelineExecutor', () => {
             agents: [{ ref: 'a@1' }, { ref: 'b@1' }],
             gate: { threshold: 70, aggregate: 'min' as const, on_failure: 'abort' as const },
           },
-          { id: 'downstream', name: 'Downstream', type: 'command' as const, ref: 'c@1' },
+          { id: 'downstream', name: 'Downstream', type: 'command' as const, ref: 'c@1', depends_on: ['panel'] },
         ],
       });
-      const handle = await executor.start(def, { target: '/tmp' });
+      const result = await executor.execute(def, { target: '/tmp' });
 
       // avg is 75 (≥70) but min is 60 — the authored aggregate must decide.
-      await expect(handle.wait()).rejects.toThrow(/failed its gate/);
+      expect(result.stages[0]!.outcome).toBe('FAILED');
+      expect(result.stages[1]!.skipReason).toBe('gate_abort');
     });
 
     it('skips remaining stages on gate.on_success: skip_remaining (early exit)', async () => {
@@ -1790,13 +1915,12 @@ describe('PipelineExecutor', () => {
             steps: [{ name: 'compile', command: 'exit 2' }],
             gate: { on_failure: 'abort' as const },
           },
-          { id: 'validate', name: 'Validate', type: 'command' as const, ref: 'a@1' },
+          { id: 'validate', name: 'Validate', type: 'command' as const, ref: 'a@1', depends_on: ['build-gate'] },
         ],
       });
-      const handle = await executor.start(def, { target: '/tmp' });
+      const result = await executor.execute(def, { target: '/tmp' });
 
-      await expect(handle.wait()).rejects.toThrow(/failed its gate/);
-      const result = await handle.status();
+      expect(result.stages[0]!.outcome).toBe('FAILED');
       expect(result.stages[0]!.steps![0]!.status).toBe('failed');
       expect(result.stages[1]!.status).toBe('skipped');
       expect(result.stages[1]!.skipReason).toBe('gate_abort');
@@ -2004,7 +2128,7 @@ describe('PipelineExecutor — gate threshold Infinity is unusable, not a permis
   const twoStages = (gate: object) => ({
     stages: [
       { id: 'gated', name: 'Gated', type: 'command' as const, ref: 'a@1', gate },
-      { id: 'downstream', name: 'Downstream', type: 'command' as const, ref: 'b@1' },
+      { id: 'downstream', name: 'Downstream', type: 'command' as const, ref: 'b@1', depends_on: ['gated'] },
     ],
   });
 
@@ -2012,11 +2136,9 @@ describe('PipelineExecutor — gate threshold Infinity is unusable, not a permis
     const cmdExec = makeCommandExecutor([makeCommandResult({ decision: 'PASS', decisionCategory: 'positive', score: 85 })]);
     const executor = new PipelineExecutor(makeWorkflowExecutor(), cmdExec, agentExec, makeRegistry(), noopLogger);
     const def = makePipelineDef(twoStages({ threshold: Number.POSITIVE_INFINITY, on_failure: 'abort' }));
-    const handle = await executor.start(def, { target: '/tmp' });
-    await expect(handle.wait()).rejects.toThrow(/failed its gate/);
-    const result = await handle.status();
-    expect(result.status).toBe('failed');
-    expect(result.stages[1]!.status).not.toBe('completed');
+    const result = await executor.execute(def, { target: '/tmp' });
+    expect(result.stages[0]!.outcome).toBe('FAILED');
+    expect(result.stages[1]!.status).toBe('skipped');
   });
 });
 

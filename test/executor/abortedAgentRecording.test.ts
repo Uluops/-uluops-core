@@ -152,7 +152,15 @@ describe('inline-agents stage', () => {
     expect(agents.map(a => a.decisionCategory)).toEqual(['neutral', 'neutral']);
     expect(agents.map(a => a.score)).toEqual([null, null]);
     expect(result.recommendations.map(r => r.title)).toEqual([]);
-    expect(result.decision).toBe('CANCELLED');
+    // PDL 1.6.0 §3.1: the stage was in flight at the stop, so it is ERRORED (`stopped`) and the stop
+    // makes allGatesPassed false: the run decision is FAIL, its status still `cancelled`. Before 1.6.0
+    // the stage was `completed` and the run read CANCELLED.
+    expect(result.status).toBe('cancelled');
+    expect(result.stages[0]!.status).toBe('errored');
+    expect(result.stages[0]!.erroredReasons).toEqual(['stopped']);
+    expect(result.warnings).toEqual([{ code: 'STAGE_ERRORED', stage: result.stages[0]!.id, reason: 'stopped' }]);
+    expect(result.allGatesPassed).toBe(false);
+    expect(result.decision).toBe('FAIL');
   });
 
   // T2. NC: two recommendations (the originator's and the sibling's crash).
@@ -207,7 +215,7 @@ describe('inline-agents stage', () => {
 
   // T16 + OD-7. NC: against 0.49.0 the caller signal left the run `running`, it ended `completed`,
   // and (without the computeDecision guard) a stage whose completed agent passed reported PASS.
-  it('a consumer abortSignal stops the run: cancelled, CANCELLED, never PASS', async () => {
+  it('a consumer abortSignal stops the run: cancelled, never PASS (FAIL since PDL 1.6.0; was CANCELLED)', async () => {
     const exec = pipelineExecutor(agentExecutor({ ok: 'pass', waits: 'wait' }), ['ok', 'waits']);
     const caller = new AbortController();
     const handle = await exec.start(inlinePipeline(['ok', 'waits']), { target: '/tmp' }, { abortSignal: caller.signal });
@@ -215,7 +223,8 @@ describe('inline-agents stage', () => {
     caller.abort();
     const result = await handle.wait();
     expect(result.status).toBe('cancelled');
-    expect(result.decision).toBe('CANCELLED');
+    expect(result.decision).toBe('FAIL');
+    expect(result.stages[0]!.outcome).toBe('ERRORED');
     const decisions = result.stages[0]!.agentResults!.map(a => a.decision).sort();
     expect(decisions).toEqual(['ABORTED', 'PASS']);
     expect(result.stages[0]!.result!.decision).toBe('ABORTED');
@@ -521,14 +530,18 @@ describe('fold: pipeline edges', () => {
   }
 
   // Alex, crew #110 F4. NC: against 911115f the stage is `failed` and counts in stagesFailed.
-  it('a stopped single-agent ref stage is a completed stage holding an ABORTED record', async () => {
+  it('a stopped single-agent ref stage is an ERRORED stage holding an ABORTED record', async () => {
     const handle = await refExecutor().start(refPipeline(), { target: '/tmp' });
     await new Promise(r => setTimeout(r, 5));
     await handle.cancel();
     const result = await handle.wait();
-    expect(result.stages[0]!.status).toBe('completed');
+    // PDL 1.6.0: in flight at the stop → ERRORED `stopped` (was `completed`). The record still reaches
+    // submission, and the stage is not counted FAILED.
+    expect(result.stages[0]!.status).toBe('errored');
+    expect(result.stages[0]!.erroredReasons).toEqual(['stopped']);
     expect(result.stages[0]!.agentResults!.map(a => a.decision)).toEqual(['ABORTED']);
     expect(result.metrics.stagesFailed).toBe(0);
+    expect(result.metrics.stagesErrored).toBe(1);
     expect(result.stages[1]!.status).toBe('skipped');
   });
 
@@ -832,12 +845,15 @@ describe('OD-13: a real failure beats a later user cancel at the pipeline', () =
     expect(result.decision).toBe('FAIL');
   });
 
-  it('control: a cancel with no failure is still CANCELLED', async () => {
+  it('control: a cancel with no failure still reads stopped (status cancelled; decision FAIL since PDL 1.6.0)', async () => {
     const exec = pipelineExecutor(agentExecutor({ a: 'wait' }), ['a']);
     const handle = await exec.start(inlinePipeline(['a']), { target: '/tmp' });
     await new Promise(r => setTimeout(r, 5));
     await handle.cancel();
-    expect((await handle.wait()).decision).toBe('CANCELLED');
+    const result = await handle.wait();
+    expect(result.status).toBe('cancelled');
+    expect(result.stages[0]!.erroredReasons).toEqual(['stopped']);
+    expect(result.decision).toBe('FAIL');
   });
 });
 
@@ -942,7 +958,9 @@ describe('OD-14: finished keeps verdict, layout-invariant', () => {
       const expected = bCrashed || (await aloneCategory(a, on_fail, on_failure)) === 'negative' ? 'negative' : 'neutral';
       const label = `${mode}: A=${a} B=${b} on_fail=${on_fail} on_failure=${on_failure}`;
       expect(await oneWorkflow(a, b, on_fail, mode, on_failure), `workflow ${label}`).toBe(expected);
-      expect(await twoStages(a, b, on_fail, mode, on_failure), `pipeline ${label}`).toBe(expected);
+      // PDL 1.6.0 §3.1: at the pipeline the stop reached stage s2, so the run is FAIL whatever A
+      // returned. OD-14's layout invariance holds for workflows; a pipeline now maps the verdict.
+      expect(await twoStages(a, b, on_fail, mode, on_failure), `pipeline ${label}`).toBe('negative');
       checked++;
     }
     expect(checked).toBe(96);
@@ -990,7 +1008,7 @@ describe('run #113 mechanicals', () => {
 
   // L1. NC: against 254af8b the stage is `failed` with no agentResults — the deadline's crash
   // record and its mark were dropped.
-  it('a single-agent ref stage under a caller deadline is completed with a deadline-marked crash record', async () => {
+  it('a single-agent ref stage under a caller deadline is ERRORED (stopped) with a deadline-marked crash record', async () => {
     const c = new AbortController();
     const cmdExec = {
       execute: vi.fn().mockImplementation((_r: unknown, _i: unknown, o?: { abortSignal?: AbortSignal }) =>
@@ -1001,8 +1019,9 @@ describe('run #113 mechanicals', () => {
     const d = inlinePipeline([]);
     (d.definition as unknown as PipelineDefinition).pipeline.stages = [{ id: 's1', name: 'S1', type: 'command', ref: 'one@1' }] as never;
     const { thrown } = await settle((await exec.start(d, { target: '/tmp' }, { abortSignal: c.signal })).wait());
-    const stage = (thrown!.context.partialResult as { stages: Array<{ status: string; agentResults?: AgentResult[]; result?: { degradationMarkers?: Array<{ code: string }> } }> }).stages[0]!;
-    expect(stage.status).toBe('completed');
+    const stage = (thrown!.context.partialResult as { stages: Array<{ status: string; erroredReasons?: string[]; agentResults?: AgentResult[]; result?: { degradationMarkers?: Array<{ code: string }> } }> }).stages[0]!;
+    expect(stage.status).toBe('errored');
+    expect(stage.erroredReasons).toEqual(['stopped']);
     expect(stage.agentResults!.map(a => [a.decision, a.version])).toEqual([['FAIL', CRASH_PLACEHOLDER_VERSION]]);
     expect(stage.result!.degradationMarkers!.map(m => m.code)).toContain('execution.deadline');
   });
@@ -1066,7 +1085,7 @@ describe('fuzz #114 folds (F1, F2, F3; Alex 2026-10-06)', () => {
     expect(thrown !== undefined).toBe(deadline);
   });
   // Guard: a stop that kept a later stage from starting DID reach something.
-  it('control: a stop that skipped a later stage still reads CANCELLED', async () => {
+  it('control: a stop that skipped a later stage still reads stopped (FAIL since PDL 1.6.0; was CANCELLED)', async () => {
     const c = new AbortController();
     const registry = makeRegistry({ wa: wf([{ id: 'a', name: 'A', commands: ['fire'], parallel: true, gate: gate() }], 'continue') });
     const cmdExec = stepExec(c);
@@ -1078,7 +1097,9 @@ describe('fuzz #114 folds (F1, F2, F3; Alex 2026-10-06)', () => {
     ] as never;
     const result = await (await exec.start(d, { target: '/tmp' }, { abortSignal: c.signal })).wait();
     expect(result.stages[1]!.status).toBe('skipped');
-    expect(result.decision).toBe('CANCELLED');
+    expect(result.status).toBe('cancelled');
+    expect(result.allGatesPassed).toBe(false);
+    expect(result.decision).toBe('FAIL');
   });
 
   // F3. NC: against 92a6d6c C is recorded aborted/stoppedBeforeStart (deadline: blocked + a

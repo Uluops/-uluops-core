@@ -29,6 +29,7 @@ import { EXTRACTION_CONFIDENCE_THRESHOLD } from '../constants.js';
 import { isCanonicalMode } from '@uluops/taxonomy';
 import { CRASH_PLACEHOLDER_VERSION } from '../utils/crashPlaceholder.js';
 import { verifiedNothingExecuted } from '../utils/executionEvidence.js';
+import { paramsLine } from '../executor/runVerdict.js';
 
 /**
  * Ceiling on `analysisRecords` in one `runs.save` payload. Mirrors
@@ -584,6 +585,43 @@ export class SubmissionClient {
   }
 
   /**
+   * The saved run verdict (`summary.allGatesPassed`).
+   *
+   * **A pipeline run saves the value its executor computed** (PDL 1.6.0 §3.1, D13;
+   * `PipelineResult.allGatesPassed`, executor/runVerdict.ts), computed once and written as is. Until
+   * 1.6.0 it was `isPositiveDecision` over the pipeline's decision, so a negative behind a `warn`
+   * gate saved `false`, an accepted CONDITIONAL saved `true` when the run's other stages passed, and
+   * the worst child's extraction confidence could veto it. The confidence floor is cut at its source
+   * for pipelines instead: a decision core found only through its display fallbacks is gated as
+   * absent (P4a), so no low-confidence decision reaches a pipeline gate (D13, Alex).
+   *
+   * A pipeline result without a boolean there (hand-built, or from a core before 1.6.0) saves
+   * `false`: asserting success wants evidence of success, and the value it would be compared
+   * against does not exist.
+   *
+   * Every other result keeps {@link isPositiveDecision}, floor included.
+   */
+  private savedVerdict(result: ExecutionResult | AgentResult): boolean {
+    if (!this.isPipelineResult(result)) return this.isPositiveDecision(result);
+    if (typeof result.allGatesPassed === 'boolean') return result.allGatesPassed;
+    this.logger.warn(`Pipeline result "${result.name}" carries no allGatesPassed verdict; saving false`);
+    return false;
+  }
+
+  /**
+   * The raw markdown a run carries. A pipeline run's begins with its `params:` line (each resolved
+   * run parameter, PDL 1.6.0 §3.8 D14): the tracker's save input has no params field, so an override
+   * such as `lenses=on` is otherwise unrecorded. A caller's own markdown follows it.
+   */
+  private rawMarkdownFor(submission: RunSubmission): string | undefined {
+    const { result, rawMarkdown } = submission;
+    if (!this.isPipelineResult(result) || !result.params) return rawMarkdown;
+    const line = paramsLine(result.params);
+    if (rawMarkdown?.startsWith(line)) return rawMarkdown;
+    return rawMarkdown ? `${line}\n\n${rawMarkdown}` : line;
+  }
+
+  /**
    * Transform SDK RunSubmission to OpsClient SaveFeaturesListInput format.
    *
    * Also returns `repairedRecommendations` — the count of recommendations
@@ -686,9 +724,9 @@ export class SubmissionClient {
         agents,
         recommendations: cappedRecommendations,
         timestamp: new Date().toISOString(),
-        rawMarkdown: submission.rawMarkdown,
+        rawMarkdown: this.rawMarkdownFor(submission),
         summary: {
-          allGatesPassed: this.isPositiveDecision(result),
+          allGatesPassed: this.savedVerdict(result),
           // OMIT when scoreless — the tracker computes the average over scored agents
           // or stores null. Never fabricate 0. (score-nullability spec, averageScore decision.)
           //
@@ -969,7 +1007,7 @@ export class SubmissionClient {
       runNumber: 0,
       projectId: 'local',
       dashboardUrl: '',
-      allGatesPassed: this.isPositiveDecision(submission.result),
+      allGatesPassed: this.savedVerdict(submission.result),
       // Local response is a read-type (RunSubmissionResponse) — preserve null, don't omit
       // (only the wire payload to the tracker omits). No fabricated 0.
       averageScore: submission.result.score ?? null,

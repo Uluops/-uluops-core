@@ -164,6 +164,8 @@ function makeResolvedDefinitionForAnalysis(): ResolvedDefinition {
 function makePipelineResultWithAgents(stageAgentCounts: number[][]): PipelineResult {
   return {
     type: 'pipeline',
+    allGatesPassed: true,
+    warnings: [],
     name: 'test-pipeline',
     version: '1.0.0',
     definitionHash: 'sha256:pipe',
@@ -176,7 +178,7 @@ function makePipelineResultWithAgents(stageAgentCounts: number[][]): PipelineRes
       inputTokens: 2000, outputTokens: 800, totalEffectiveTokens: 2800,
       durationMs: 5000, model: 'mixed',
       stagesExecuted: stageAgentCounts.length, stagesPassed: stageAgentCounts.length,
-      stagesFailed: 0, stagesWarned: 0, stagesSkipped: 0,
+      stagesFailed: 0, stagesWarned: 0, stagesErrored: 0, stagesSkipped: 0,
     },
     stages: stageAgentCounts.map((agentCounts, stageIdx) => ({
       id: `stage-${stageIdx}`,
@@ -675,6 +677,8 @@ describe('SubmissionClient', () => {
       okSave();
       const pipeline: PipelineResult = {
         type: 'pipeline',
+        allGatesPassed: true,
+        warnings: [],
         name: 'test-pipeline',
         version: '2.0.0',
         definitionHash: 'sha256:pipe',
@@ -685,7 +689,7 @@ describe('SubmissionClient', () => {
         durationMs: 1000,
         metrics: {
           inputTokens: 0, outputTokens: 0, totalEffectiveTokens: 0, durationMs: 1000, model: 'mixed',
-          stagesExecuted: 1, stagesPassed: 1, stagesFailed: 0, stagesWarned: 0, stagesSkipped: 0,
+          stagesExecuted: 1, stagesPassed: 1, stagesFailed: 0, stagesWarned: 0, stagesErrored: 0, stagesSkipped: 0,
         },
         stages: [{
           id: 'preflight',
@@ -1426,6 +1430,8 @@ describe('SubmissionClient — a run that verified NOTHING must not submit avera
     okSave();
     const pipeline = {
       type: 'pipeline',
+      allGatesPassed: true,
+      warnings: [],
       name: 'empty',
       status: 'completed',
       version: '1.0.0',
@@ -1438,7 +1444,7 @@ describe('SubmissionClient — a run that verified NOTHING must not submit avera
       stages: [],
       metrics: {
         inputTokens: 0, outputTokens: 0, totalEffectiveTokens: 0, durationMs: 1, model: 'mixed',
-        stagesExecuted: 0, stagesPassed: 0, stagesFailed: 0, stagesWarned: 0, stagesSkipped: 0,
+        stagesExecuted: 0, stagesPassed: 0, stagesFailed: 0, stagesWarned: 0, stagesErrored: 0, stagesSkipped: 0,
       },
     } as unknown as PipelineResult;
 
@@ -1459,6 +1465,8 @@ describe('SubmissionClient — a run that verified NOTHING must not submit avera
     const nested = allSkippedWorkflow();
     const pipeline = {
       type: 'pipeline',
+      allGatesPassed: true,
+      warnings: [],
       name: 'wrap',
       version: '1.0.0',
       definitionHash: 'sha256:pl',
@@ -1471,7 +1479,7 @@ describe('SubmissionClient — a run that verified NOTHING must not submit avera
       stages: [{ id: 's1', name: 'S1', type: 'workflow', status: 'completed', durationMs: 10, result: nested }],
       metrics: {
         inputTokens: 0, outputTokens: 0, totalEffectiveTokens: 0, durationMs: 20, model: 'mixed',
-        stagesExecuted: 1, stagesPassed: 1, stagesFailed: 0, stagesWarned: 0, stagesSkipped: 0,
+        stagesExecuted: 1, stagesPassed: 1, stagesFailed: 0, stagesWarned: 0, stagesErrored: 0, stagesSkipped: 0,
       },
     } as unknown as PipelineResult;
 
@@ -1505,7 +1513,9 @@ describe('aborted-agent recording (submission)', () => {
     const { CancelledError } = await import('../../src/errors/index.js');
     const pipeline = makePipelineResultWithAgents([[0]]);
     pipeline.status = 'cancelled';
-    pipeline.decision = 'CANCELLED';
+    // What PipelineExecutor produces for a run a stop reached (PDL 1.6.0 §3.1): FAIL, not passed.
+    pipeline.decision = 'FAIL';
+    pipeline.allGatesPassed = false;
     pipeline.stages[0]!.agentResults!.push(abortedPlaceholder('steady', new CancelledError('Execution was cancelled by the caller')));
     pipeline.recommendations = pipeline.stages[0]!.agentResults!.flatMap(a => a.recommendations);
     const client = new SubmissionClient(baseConfig, testLogger);
@@ -1558,5 +1568,81 @@ describe('aborted-agent recording (submission)', () => {
     const input = mockSave.mock.calls[0]![0] as { analysisSummary?: { decision?: string }; analysisRecords?: unknown[] };
     expect(input.analysisRecords).toHaveLength(2);
     expect(input.analysisSummary?.decision).not.toBe('ABORTED');
+  });
+});
+
+/**
+ * PDL 1.6.0 D13: a pipeline run saves the verdict its executor computed (`PipelineResult.allGatesPassed`,
+ * executor/runVerdict.ts), as is. Negative controls (6f89349, isPositiveDecision over the pipeline
+ * decision): the first case saved `true` (category positive), the second `false` (category negative),
+ * the third `false` (the 0.7 floor). The end-to-end check over every conformance case, through
+ * PipelineExecutor, is in test/executor/pdl-conformance.test.ts.
+ */
+describe('saved run verdict for pipelines (PDL 1.6.0 D13)', () => {
+  beforeEach(() => { vi.clearAllMocks(); warnings.length = 0; });
+  const okSave = () => mockSave.mockResolvedValueOnce({
+    run: { id: 'r', projectId: 'p', runNumber: 1, allGatesPassed: true, averageScore: 85 },
+    agents: [], correlation: { newIssues: 0, recurringIssues: 0, regressions: 0 },
+  });
+  const written = () => (mockSave.mock.calls[0]![0] as { summary: { allGatesPassed: boolean }; rawMarkdown?: string });
+
+  it('writes allGatesPassed false for an accepted CONDITIONAL although the decision category is positive', async () => {
+    okSave();
+    const pipeline = { ...makePipelineResultWithAgents([[0]]), decision: 'PASS', decisionCategory: 'positive' as const, allGatesPassed: false };
+    await new SubmissionClient(baseConfig, testLogger).submit(makeSubmission({ result: pipeline }));
+    expect(written().summary.allGatesPassed).toBe(false);
+  });
+
+  it('writes allGatesPassed true for a warn-gated negative although the decision category is negative', async () => {
+    okSave();
+    const pipeline = { ...makePipelineResultWithAgents([[0]]), decision: 'FAIL', decisionCategory: 'negative' as const, allGatesPassed: true };
+    await new SubmissionClient(baseConfig, testLogger).submit(makeSubmission({ result: pipeline }));
+    expect(written().summary.allGatesPassed).toBe(true);
+  });
+
+  it('applies no confidence floor to a pipeline (cut at its source, D13)', async () => {
+    okSave();
+    const pipeline = { ...makePipelineResultWithAgents([[0]]), extractionConfidence: 0.4, allGatesPassed: true };
+    await new SubmissionClient(baseConfig, testLogger).submit(makeSubmission({ result: pipeline }));
+    expect(written().summary.allGatesPassed).toBe(true);
+  });
+
+  it('saves false, with a warning, for a pipeline result that carries no verdict', async () => {
+    okSave();
+    const { allGatesPassed: _drop, ...pipeline } = makePipelineResultWithAgents([[0]]);
+    await new SubmissionClient(baseConfig, testLogger).submit(makeSubmission({ result: pipeline as unknown as PipelineResult }));
+    expect(written().summary.allGatesPassed).toBe(false);
+    expect(warnings.some(w => /carries no allGatesPassed verdict/.test(w))).toBe(true);
+  });
+
+  it('keeps the floor for a single-agent submission (the control)', async () => {
+    okSave();
+    await new SubmissionClient(baseConfig, testLogger).submit(makeSubmission({
+      result: { ...makeResult({ decision: 'PASS' }), decisionCategory: 'positive' as const, extractionConfidence: 0.4 },
+    }));
+    expect(written().summary.allGatesPassed).toBe(false);
+  });
+
+  it('writes the resolved run parameters as the raw markdown\'s params: line (§3.8 D14)', async () => {
+    okSave();
+    const pipeline = { ...makePipelineResultWithAgents([[0]]), params: { target: '/repo', lenses: 'on', a: 'x y=z' } };
+    await new SubmissionClient(baseConfig, testLogger).submit(makeSubmission({ result: pipeline }));
+    expect(written().rawMarkdown).toBe('params: {"a":"x y=z","lenses":"on","target":"/repo"}');
+  });
+
+  it('puts the params: line ahead of a caller\'s own raw markdown, once', async () => {
+    okSave(); okSave();
+    const pipeline = { ...makePipelineResultWithAgents([[0]]), params: { lenses: 'off' } };
+    const client = new SubmissionClient(baseConfig, testLogger);
+    await client.submit(makeSubmission({ result: pipeline, rawMarkdown: '# Report' }));
+    expect(written().rawMarkdown).toBe('params: {"lenses":"off"}\n\n# Report');
+    await client.submit(makeSubmission({ result: pipeline, rawMarkdown: 'params: {"lenses":"off"}\n\n# Report' }));
+    expect((mockSave.mock.calls[1]![0] as { rawMarkdown?: string }).rawMarkdown).toBe('params: {"lenses":"off"}\n\n# Report');
+  });
+
+  it('adds no params: line to a non-pipeline submission', async () => {
+    okSave();
+    await new SubmissionClient(baseConfig, testLogger).submit(makeSubmission());
+    expect(written().rawMarkdown).toBeUndefined();
   });
 });

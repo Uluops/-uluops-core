@@ -470,3 +470,28 @@ describe('normalization round-trip', () => {
     expect(out.stages[0]!['type']).toBe('agents');
   });
 });
+
+describe('buildUpstreamContext: an ERRORED dependency (PDL 1.6.0 P4b)', () => {
+  const stages: StageDefinition[] = [
+    { id: 'review', name: 'review', type: 'agents', agents: [{ ref: 'a' }, { ref: 'b' }] },
+    { id: 'reducer', name: 'reducer', type: 'agents', agents: [{ ref: 'c' }], depends_on: ['review'] },
+  ];
+  it('forwards the output its agents really returned, and not the crash record beside it', async () => {
+    const { crashPlaceholder } = await import('../../src/utils/crashPlaceholder.js');
+    const errored: StageResult = {
+      id: 'review', name: 'review', type: 'command', status: 'errored', erroredReasons: ['agent_unjudgeable'], skipReason: 'agent_unjudgeable: "b" crashed',
+      agentResults: [makeValidatorResult({ name: 'a' }), crashPlaceholder('b', new Error('boom'))],
+    };
+    expect(buildUpstreamContext(stages[1]!, stages, [errored]).map(e => e.agentName ?? `absent:${e.absentReason}`)).toEqual(['a']);
+  });
+
+  it('is a labelled absence when no agent returned output (a timeout, a crash, a condition_error)', async () => {
+    const { crashPlaceholder } = await import('../../src/utils/crashPlaceholder.js');
+    const errored: StageResult = {
+      id: 'review', name: 'review', type: 'command', status: 'errored', erroredReasons: ['agent_unjudgeable'], skipReason: 'agent_unjudgeable: "a" crashed',
+      agentResults: [crashPlaceholder('a', new Error('timed out'))],
+    };
+    const [entry] = buildUpstreamContext(stages[1]!, stages, [errored]);
+    expect(entry).toMatchObject({ stageId: 'review', absent: true, absentReason: 'agent_unjudgeable: "a" crashed' });
+  });
+});

@@ -363,15 +363,15 @@ function normWf(r: unknown): NWf {
     phases: Object.fromEntries(w.phases.map(p => [p.id, { d: p.decision, sbs: p.stoppedBeforeStart === true }])), markers: codes(w),
     executed: w.metrics.phasesExecuted, costOk: expPriced === !(w.metrics.costUsd === undefined && w.metrics.costBasis !== 'none') };
 }
-interface NStage { status: string; decision?: string; cat?: string; score?: number | null; markers?: string[]; wf?: NWf }
-interface NPl { threw: boolean; decision: string; status: string; score: number | null; stages: Record<string, NStage> }
+interface NStage { status: string; outcome?: string; decision?: string; cat?: string; score?: number | null; markers?: string[]; wf?: NWf }
+interface NPl { threw: boolean; decision: string; status: string; score: number | null; allGatesPassed?: boolean; stages: Record<string, NStage> }
 function normPl(out: { ok: boolean; v?: unknown; e?: unknown }): NPl | { hang: true } {
   const r = (out.ok ? out.v : (out.e as { context?: { partialResult?: unknown } })?.context?.partialResult) as
-    (AnyRes & { status: string; stages: Array<{ id: string; status: string; result?: AnyRes }> }) | undefined;
+    (AnyRes & { status: string; allGatesPassed?: boolean; stages: Array<{ id: string; status: string; outcome?: string; result?: AnyRes }> }) | undefined;
   if (!r) return { hang: true };
-  return { threw: !out.ok, decision: r.decision, status: r.status, score: r.score ?? null,
+  return { threw: !out.ok, decision: r.decision, status: r.status, score: r.score ?? null, allGatesPassed: r.allGatesPassed,
     stages: Object.fromEntries(r.stages.map(s => [s.id, {
-      status: s.status, decision: s.result?.decision, cat: s.result?.decisionCategory, score: s.result?.score ?? null,
+      status: s.status, outcome: s.outcome, decision: s.result?.decision, cat: s.result?.decisionCategory, score: s.result?.score ?? null,
       markers: s.result ? codes(s.result) : [], ...(s.result?.type === 'workflow' ? { wf: normWf(s.result) } : {}),
     }])) };
 }
@@ -552,94 +552,123 @@ function cmpWf(exp: WfOut, act: NWf, label: string, out: string[]) {
   if (act.costOk === false) out.push(`${label} cost roll-up priced-ness wrong`);
 }
 
-const plCat = (d: string) => ({ FAIL: 'negative', WARN: 'conditional', PASS: 'positive', CANCELLED: 'neutral' } as Record<string, string>)[d] ?? `?${d}`;
-interface PlOut { decision: string; status: string; score: number | null; stages: Record<string, { status: string; cat?: Cat; decision?: string; markers?: string[]; wf?: WfOut }>; stopUnreached: boolean }
+const plCat = (d: string) => ({ FAIL: 'negative', WARN: 'conditional', PASS: 'positive' } as Record<string, string>)[d] ?? `?${d}`;
+type Outcome16 = 'PASSED' | 'WARNED' | 'FAILED' | 'SKIPPED' | 'ERRORED';
+interface PlOut { decision: string; status: string; score: number | null; allGatesPassed: boolean; stages: Record<string, { status: string; outcome: Outcome16; cat?: Cat; decision?: string; markers?: string[]; wf?: WfOut }>; stopUnreached: boolean }
+/**
+ * The pipeline oracle, PDL 1.6.0 (§3.1 run model, §3.2 gates; P4b). Derived from the spec's rules,
+ * not from stageGate.ts / runVerdict.ts:
+ * - mode: no gate → fail (D19); on_failure absent → abort; skip → fail. abort and fail block.
+ * - decision key: not_negative at a blocking gate, ignore at warn (gate-decision D3).
+ * - a stage a stop reached (it holds a stopped or deadline record) is ERRORED, gate not evaluated;
+ *   an agents stage with an unjudgeable agent (D24: a crash, or no score at a threshold gate, or no
+ *   score and a neutral decision) is ERRORED; else the gate decides PASSED / WARNED / FAILED.
+ * - abort skips only the stage's transitive dependents (D1); the run completes.
+ * - allGatesPassed is false on FAILED, ERRORED behind a blocking mode, an accepted CONDITIONAL, or a
+ *   stop that reached a stage; decision FAIL when false, else WARN on WARNED / ERRORED-behind-warn.
+ * Before P4b this modelled 1.5: abort skipped every remaining stage and failed the run, skip skipped
+ * the rest, any negative failed the run, and a user stop that reached a stage read CANCELLED.
+ */
 function plModel(c: { stages: StageSpec[] }, ctx: Ctx, act: NPl, problems: string[]): PlOut {
   let status = 'running';
   const st: PlOut['stages'] = {};
-  const order: string[] = [];
   let stopUnreached = false;
-  let stoppedByRun = false, stopReachedStage = false, stopSkipped = false;
+  let stoppedByRun = false, stopReachedStage = false, stopSkipped = false, conditionalAccepted = false, stopErrored = false;
+  const aborted = new Set<string>();
   const stopStatus = ctx.mode === 'cancel' || ctx.mode === 'abort' ? 'cancelled' : 'failed';
   const stageAgents = (s: StageSpec) => (s.kind === 'agents' ? s.agents : s.kind === 'command' ? stepAgents(s.step) : s.kind === 'workflow' ? wfAgents(s.wf) : []).map(a => a.name);
+  const modeOf = (g?: StageGate) => !g ? 'fail' : g.on_failure === 'warn' ? 'warn' : g.on_failure === 'skip' ? 'fail' : 'abort';
+  const stopMarks = (m?: string[]) => (m ?? []).some(x => x === RUN_STOPPED || x === PARTIAL || x === 'execution.deadline');
   const scores: Record<string, number | null> = {};
   for (let i = 0; i < c.stages.length; i++) {
     const s = c.stages[i]!;
-    if (status !== 'running') { if (stoppedByRun) stopSkipped = true; for (let j = i; j < c.stages.length; j++) { st[c.stages[j]!.id] = { status: 'skipped' }; order.push(c.stages[j]!.id); } break; }
-    // PDL 1.6.0 D3: any terminal status satisfies depends_on, and a dependency is always declared
-    // earlier, so dependencies never skip a stage here. G5 (a hard-gated steps stage with steps off)
-    // refuses the run in start(), before this model runs: see plCase.
-    let out: PlOut['stages'][string]; let gateScore: number | null = null; let nothing = false;
+    if (status !== 'running') { if (stoppedByRun) stopSkipped = true; for (let j = i; j < c.stages.length; j++) st[c.stages[j]!.id] = { status: 'skipped', outcome: 'SKIPPED' }; break; }
+    // D1: a stage downstream of one that failed behind abort is skipped, and so are its dependents.
+    if ((s.depends_on ?? []).some(d => aborted.has(d))) { st[s.id] = { status: 'skipped', outcome: 'SKIPPED' }; aborted.add(s.id); continue; }
+    const mode = modeOf(s.gate);
+    let out: PlOut['stages'][string]; let nothing = false;
+    let members: Array<{ cat: Cat; score: number | null }> = [];
+    let reached = false, unjudgeable = false;
     if (s.kind === 'agents') {
       const recs: Rec[] = [];
-      for (const a of s.agents) { const o = ctx.trace.get(a.name); if (!o) { problems.push(`missing-call ${a.name}`); return { decision: '?', status: '?', score: null, stages: {}, stopUnreached }; } recs.push(agentRec(o, ctx)); }
-      const reached = recs.some(r => r.stop), crash = recs.some(r => r.crash);
+      for (const a of s.agents) { const o = ctx.trace.get(a.name); if (!o) { problems.push(`missing-call ${a.name}`); return { decision: '?', status: '?', score: null, allGatesPassed: false, stages: {}, stopUnreached }; } recs.push(agentRec(o, ctx)); }
+      reached = recs.some(r => r.stop); const crash = recs.some(r => r.crash);
       const neg = reached ? crash : recs.some(r => r.cat === 'negative');
       const cat: Cat = neg ? 'negative' : reached ? 'neutral' : 'positive';
       const sc = recs.filter(r => r.score !== null).map(r => r.score!);
       scores[s.id] = sc.length ? Math.round(mean(sc)) : null;
-      gateScore = sc.length ? agg(sc, s.gate?.aggregate ?? 'min', false) : null;
-      out = { status: 'completed', cat, decision: neg ? 'FAIL' : reached ? 'ABORTED' : 'PASS', markers: [...(reached ? [crash ? PARTIAL : RUN_STOPPED] : []), ...(crash ? [CHILD] : [])].sort() };
-      // PDL 1.6.0 D24: an agent with no score at a threshold gate, or with no score and a neutral
-      // decision, is unjudgeable; its stage is recorded failed (agent_unjudgeable) until P4b's
-      // ERRORED. Stopped and crashed records are not judged here.
+      out = { status: 'completed', outcome: 'PASSED', cat, decision: neg ? 'FAIL' : reached ? 'ABORTED' : 'PASS', markers: [...(reached ? [crash ? PARTIAL : RUN_STOPPED] : []), ...(crash ? [CHILD] : [])].sort() };
       const thr = s.gate?.threshold !== undefined;
-      if (recs.some(r => !r.stop && !r.crashRec && r.score === null && (thr || r.cat === 'neutral'))) out.status = 'failed';
+      unjudgeable = recs.some(r => !r.stop && (r.crashRec || (r.score === null && (thr || r.cat === 'neutral'))));
+      members = recs.map(r => ({ cat: r.cat, score: r.score }));
     } else if (s.kind === 'command') {
       const m = cmdModel(s.step, ctx);
-      if (m.k === 'missing') { problems.push(`missing-call ${m.agent}`); return { decision: '?', status: '?', score: null, stages: {}, stopUnreached }; }
+      if (m.k === 'missing') { problems.push(`missing-call ${m.agent}`); return { decision: '?', status: '?', score: null, allGatesPassed: false, stages: {}, stopUnreached }; }
       if (m.k === 'throw') {
-        if (m.err === 'cancel') { const dl = deadline(ctx); out = { status: 'completed', cat: dl ? 'negative' : 'neutral', decision: dl ? 'FAIL' : 'ABORTED' }; scores[s.id] = null; }
-        else { out = { status: 'failed' }; scores[s.id] = null; }
-      } else { out = { status: 'completed', cat: m.rec.cat, decision: m.decision, markers: m.markers }; scores[s.id] = m.rec.score; gateScore = m.rec.score; }
+        // A stop's rejection is recorded as a completed stage holding the stopped / deadline record.
+        if (m.err === 'cancel') { const dl = deadline(ctx); out = { status: 'completed', outcome: 'PASSED', cat: dl ? 'negative' : 'neutral', decision: dl ? 'FAIL' : 'ABORTED' }; reached = true; scores[s.id] = null; }
+        else { out = { status: 'failed', outcome: 'FAILED' }; scores[s.id] = null; }
+      } else {
+        out = { status: 'completed', outcome: 'PASSED', cat: m.rec.cat, decision: m.decision, markers: m.markers }; scores[s.id] = m.rec.score;
+        reached = stopMarks(m.markers); members = [{ cat: m.rec.cat, score: m.rec.score }];
+      }
     } else if (s.kind === 'workflow') {
       const sbs = act.stages[s.id]?.wf ? Object.fromEntries(Object.entries(act.stages[s.id]!.wf!.phases ?? {}).map(([k, v]) => [k, v.sbs])) : undefined;
       const w = wfModel(s.wf, ctx, sbs, problems);
-      if (w.threw) { out = { status: 'failed' }; scores[s.id] = null; }
+      if (w.threw) { out = { status: 'failed', outcome: 'FAILED' }; scores[s.id] = null; }
       else {
-        out = { status: 'completed', cat: w.cat, decision: w.decision, wf: w };
-        nothing = w.executed === 0; scores[s.id] = nothing ? null : w.score ?? null; gateScore = w.score ?? null;
+        out = { status: 'completed', outcome: 'PASSED', cat: w.cat, decision: w.decision, wf: w };
+        nothing = w.executed === 0; scores[s.id] = nothing ? null : w.score ?? null;
         if (w.stopUnreached) stopUnreached = true;
+        reached = stopMarks(w.markers); members = [{ cat: w.cat!, score: w.score ?? null }];
       }
-    } else { out = { status: 'completed', cat: 'positive', decision: 'PASS' }; scores[s.id] = null; }
-    st[s.id] = out; order.push(s.id);
+    } else { out = { status: 'completed', outcome: 'PASSED', cat: 'positive', decision: 'PASS' }; scores[s.id] = null; members = [{ cat: 'positive', score: null }]; }
+
+    if (reached) { out.status = 'errored'; out.outcome = 'ERRORED'; stopErrored = true; }
+    else if (unjudgeable) { out.status = 'errored'; out.outcome = 'ERRORED'; }
+    else {
+      const key = mode === 'warn' ? 'ignore' : 'not_negative';
+      let failed = out.status === 'failed' || (s.gate !== undefined && nothing);
+      if (key === 'not_negative' && members.some(m => m.cat === 'negative')) failed = true;
+      const thr = s.gate?.threshold;
+      if (thr !== undefined) {
+        const sc = members.map(m => m.score).filter((x): x is number => x !== null);
+        if (sc.length && agg(sc, s.gate?.aggregate ?? 'min', false) < thr) failed = true;
+      }
+      out.outcome = !failed ? 'PASSED' : mode === 'warn' ? 'WARNED' : 'FAILED';
+      if (!failed && mode !== 'warn' && members.some(m => m.cat === 'conditional')) conditionalAccepted = true;
+    }
+    if (mode === 'abort' && (out.outcome === 'FAILED' || out.outcome === 'ERRORED')) aborted.add(s.id);
+    st[s.id] = out;
+
     const stopInHere = ctx.stopFired && ctx.trigger !== undefined && stageAgents(s).includes(ctx.trigger);
     if (stopInHere) {
       status = stopStatus; stoppedByRun = true;
       if (s.kind === 'agents' && !st[s.id]!.markers?.some(m => m === RUN_STOPPED || m === PARTIAL)) stopUnreached = true;
-      if (s.kind === 'command' && out.decision !== 'ABORTED' && !(out.markers ?? []).some(m => m === RUN_STOPPED || m === PARTIAL) && !(out.status === 'completed' && deadline(ctx) && out.decision === 'FAIL' && out.markers === undefined)) stopUnreached = true;
+      if (s.kind === 'command' && out.decision !== 'ABORTED' && !(out.markers ?? []).some(m => m === RUN_STOPPED || m === PARTIAL) && !(deadline(ctx) && out.decision === 'FAIL' && out.markers === undefined)) stopUnreached = true;
       stopReachedStage = !stopUnreached; // the one stop fires in this stage only
       continue; // loop top skips the rest
     }
-    if (s.gate) {
-      const failed = out.status === 'failed' || out.cat === 'negative' || nothing ||
-        (s.gate.threshold !== undefined && gateScore !== null && gateScore < s.gate.threshold);
-      if (failed) {
-        const a = s.gate.on_failure ?? 'abort';
-        if (a === 'abort') { status = 'failed'; for (let j = i + 1; j < c.stages.length; j++) st[c.stages[j]!.id] = { status: 'skipped' }; break; }
-        if (a === 'skip') { for (let j = i + 1; j < c.stages.length; j++) st[c.stages[j]!.id] = { status: 'skipped' }; break; }
-      } else if (s.gate.on_success === 'skip_remaining') { for (let j = i + 1; j < c.stages.length; j++) st[c.stages[j]!.id] = { status: 'skipped' }; break; }
-    }
+    if (s.gate?.on_success === 'skip_remaining' && out.outcome === 'PASSED') { for (let j = i + 1; j < c.stages.length; j++) st[c.stages[j]!.id] = { status: 'skipped', outcome: 'SKIPPED' }; break; }
   }
   if (status === 'running') status = 'completed';
-  const stages = Object.values(st);
-  const hasFailures = stages.some(x => x.status === 'failed' || x.cat === 'negative');
-  // Rule 3/4 at the pipeline: a failed/negative stage → FAIL (beats a later user cancel, OD-13);
-  // else a user stop → CANCELLED; a credit trip / deadline → FAIL.
-  let decision: string;
-  // F2 (Alex 2026-10-06): "stopped" means a stop REACHED a stage (held a stop record, or a later
-  // stage it kept from starting). A stop that reached nothing leaves the stages' verdict.
-  const reachedAny = stopReachedStage || stopSkipped;
-  const normal = hasFailures ? 'FAIL' : stages.some(x => x.cat === 'conditional') ? 'WARN' : 'PASS';
-  if (status === 'cancelled') decision = hasFailures ? 'FAIL' : reachedAny ? 'CANCELLED' : normal;
-  else if (status === 'failed') decision = hasFailures || !stoppedByRun || reachedAny ? 'FAIL' : normal;
-  else decision = normal;
+  const stages = Object.entries(st);
+  // F2 (Alex 2026-10-06), kept: a stop reached the run only if it reached a stage (a stopped record)
+  // or kept a later one from starting. A stop that reached nothing leaves the stages' verdict.
+  const reachedAny = stopErrored || (stoppedByRun && stopSkipped);
+  void stopReachedStage;
+  const stageOf = (id: string) => c.stages.find(x => x.id === id)!;
+  const allGatesPassed = !reachedAny && !conditionalAccepted && !stages.some(([id, x]) =>
+    x.outcome === 'FAILED' || (x.outcome === 'ERRORED' && modeOf(stageOf(id).gate) !== 'warn'));
+  const warned = stages.some(([id, x]) => x.outcome === 'WARNED' || (x.outcome === 'ERRORED' && modeOf(stageOf(id).gate) === 'warn'));
+  const decision = !allGatesPassed ? 'FAIL' : warned ? 'WARN' : 'PASS';
   const sc = c.stages.filter(s => st[s.id] && st[s.id]!.status !== 'skipped' && s.id in scores).map(s => scores[s.id]).filter((x): x is number => x !== null && x !== undefined);
   const score = sc.length ? Math.round(mean(sc)) : (Object.keys(st).length === 0 ? 0 : null);
-  return { decision, status: status === 'completed' ? 'complete' : status, score, stages: st, stopUnreached };
+  return { decision, status: status === 'completed' ? 'complete' : status, score, allGatesPassed, stages: st, stopUnreached };
 }
 function cmpPl(exp: PlOut, act: NPl, label: string, out: string[]) {
   if (exp.decision !== act.decision) out.push(`${label} decision exp=${exp.decision} act=${act.decision}`);
+  if (exp.allGatesPassed !== act.allGatesPassed) out.push(`${label} allGatesPassed exp=${exp.allGatesPassed} act=${act.allGatesPassed}`);
   if (exp.status !== act.status) out.push(`${label} status exp=${exp.status} act=${act.status}`);
   if (act.threw !== (exp.status === 'failed')) out.push(`${label} wait() threw=${act.threw} but status=${exp.status}`);
   if ((exp.score ?? null) !== (act.score ?? null)) out.push(`${label} score exp=${exp.score} act=${act.score}`);
@@ -647,6 +676,7 @@ function cmpPl(exp: PlOut, act: NPl, label: string, out: string[]) {
     const a = act.stages[id];
     if (!a) { out.push(`${label} stage ${id} missing (exp ${e.status})`); continue; }
     if (a.status !== e.status) { out.push(`${label} stage ${id} status exp=${e.status} act=${a.status}`); continue; }
+    if (a.outcome !== e.outcome) out.push(`${label} stage ${id} outcome exp=${e.outcome} act=${a.outcome}`);
     if (e.cat && a.cat !== e.cat) out.push(`${label} stage ${id} cat exp=${e.cat} act=${a.cat}`);
     if (e.decision && a.decision !== e.decision) out.push(`${label} stage ${id} decision exp=${e.decision} act=${a.decision}`);
     if (e.markers && JSON.stringify(e.markers) !== JSON.stringify(a.markers)) out.push(`${label} stage ${id} markers exp=${e.markers} act=${a.markers}`);
@@ -752,8 +782,14 @@ async function wfCase(seed: number, verbose = false) {
     const np = normPl(p.out);
     bump('layout.cases'); if (ctx.stopFired) bump('layout.stopped');
     if ('hang' in np) { fails.push({ seed: `wf:${seed}`, cls: 'layout-hang', msgs: ['layout pipeline hang'] }); return; }
+    // PDL 1.6.0 maps the verdict across layouts rather than preserving it (OD-14's invariance held
+    // under 1.5 only). Each split stage is a gateless workflow ref, judged as `fail` with the blocking
+    // decision default (D19, gate-decision D3), and a stop that reaches a stage makes the run FAIL
+    // (§3.1). So a workflow that is positive or neutral passes as a pipeline unless a stop reached the
+    // run; a conditional is an accepted CONDITIONAL (FAIL), and a negative fails.
     const a = wfCatOf(act), b = plCat(np.decision);
-    if (a !== b) {
+    const want = !exp.anyStop && (a === 'positive' || a === 'neutral') ? 'positive' : 'negative';
+    if (b !== want) {
       const tag = exp.stopUnreached ? 'stop-unreached' : ctx.stopFired ? 'stopped' : 'unstopped';
       bump(`layout.mismatch.${tag}`);
       fails.push({ seed: `wf:${seed}`, cls: `LAYOUT[${tag}] wf=${act.threw ? 'THREW' : act.decision}/${a} pl=${np.decision}/${b}`, msgs: [`layout wf=${a} pipeline=${b}`] });
@@ -764,12 +800,13 @@ async function plCase(seed: number, verbose = false) {
   const c = genPlCase(seed);
   if (ONLY_UNSTOPPED && c.stop !== 'none') return;
   CURRENT_OPTIONS = c.options;
-  // G5 (PDL 1.6.0): with steps disabled, a steps stage behind an abort gate refuses the run before
-  // any stage launches, wherever it sits. Before 1.6.0 it threw when the loop reached it.
-  if (c.stages.some(s => s.kind === 'steps' && s.gate && (s.gate.on_failure ?? 'abort') === 'abort')) {
+  // G5 (PDL 1.6.0): with steps disabled, a steps stage behind a blocking gate (abort, fail, skip as
+  // fail) refuses the run before any stage launches, wherever it sits. Before 1.6.0 only `abort` did,
+  // and it threw when the loop reached the stage.
+  if (c.stages.some(s => s.kind === 'steps' && s.gate && s.gate.on_failure !== 'warn')) {
     bump('pl.refusedG5');
     const refused = await runPipeline(c.stages, c.options, c.stop, plAgents(c.stages)).then(() => undefined, (e: unknown) => e);
-    if (!(refused instanceof PipelineError) || !/hard gate/.test(refused.message)) {
+    if (!(refused instanceof PipelineError) || !/blocking gate/.test(refused.message)) {
       fails.push({ seed: `pl:${seed}`, cls: 'G5 not refused at start', msgs: [String(refused)] });
     }
     return;
