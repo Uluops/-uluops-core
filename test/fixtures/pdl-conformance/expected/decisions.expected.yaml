@@ -230,7 +230,7 @@ expected:
       review: { status: ERRORED, passed: false, launched: [stub-docs-a], agents: { stub-docs-a: { class: errored, saved: "[DOCUMENTED|PARTIALLY_DOCUMENTED|UNDERDOCUMENTED]" } } }
     all_gates_passed: false
     run_decision: FAIL
-    warnings: [{ code: NEUTRAL_DECISION, agent: stub-docs-a, value: "[DOCUMENTED|PARTIALLY_DOCUMENTED|UNDERDOCUMENTED]" }, { code: STAGE_ERRORED, stage: review, reason: agent_unjudgeable }]
+    warnings: [{ code: NEUTRAL_DECISION, agent: stub-docs-a, value: "[DOCUMENTED|PARTIALLY_DOCUMENTED|UNDERDOCUMENTED]" }, { code: SCORE_INVALID, agent: stub-docs-a, value: "[X]" }, { code: STAGE_ERRORED, stage: review, reason: agent_unjudgeable }]
 
   - id: decisions/real-docs-validator-filled
     outcome: ran

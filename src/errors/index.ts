@@ -365,6 +365,11 @@ export type PipelineRefusal =
       param: string;
     }
   | {
+      code: 'VOCABULARY_MISSING';
+      /** Agents of blocking-gated stages that neither declare a vocabulary nor are explorers. */
+      agents: string[];
+    }
+  | {
       code: 'STEP_OUTPUT_STEPS_DISABLED';
       /** The stages whose condition (or an agent's) reads step output while steps are disabled. */
       stages: string[];

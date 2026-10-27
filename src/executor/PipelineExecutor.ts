@@ -9,6 +9,8 @@ import { StepsExecutor } from './StepsExecutor.js';
 import { nulParameter } from './stepTemplates.js';
 import { evaluateCondition, E, type ConditionContext } from './conditions.js';
 import { checkPipelineLoadRules, stagesReadingStepOutput, bindParameterDefaults } from './pipelineLoad.js';
+import { isUnjudgeable } from './agentVerdict.js';
+import { agentsMissingVocabulary, vocabularyMissingMessage } from './vocabularyPrecheck.js';
 import { buildUpstreamContext } from './upstreamContext.js';
 import type { ExecutionInput, ExecutionOptions, UpstreamStageContext } from '../types/execution.js';
 import type { AgentResult } from '../types/agent.js';
@@ -73,6 +75,7 @@ export class PipelineExecutor {
   async start(resolved: ResolvedDefinition, input: ExecutionInput, options?: ExecutionOptions): Promise<PipelineHandle> {
     const def = this.assertPipelineDefinition(resolved);
     this.refuseBeforeLaunch(def, input, options);
+    await this.refuseMissingVocabulary(def);
     const pipelineId = `pipeline_${Date.now()}_${crypto.randomUUID().substring(0, 8)}`;
 
     const state: PipelineState = {
@@ -354,6 +357,24 @@ export class PipelineExecutor {
     }
   }
 
+  /**
+   * The pre-launch vocabulary check (PDL 1.6.0 P4a, `vocabularyPrecheck.ts`), after the load and
+   * steps checks above: it resolves each blocking-gated agent, so the checks that need no I/O go
+   * first. `VOCABULARY_MISSING` names the agents.
+   */
+  private async refuseMissingVocabulary(def: PipelineDefinition): Promise<void> {
+    const missing = await agentsMissingVocabulary(
+      def.pipeline.stages,
+      // EXTERNAL-OK: the resolved definition is read only for whether it declares a vocabulary or is
+      // an explorer (vocabularyPrecheck.ts); no value from it reaches a numeric context.
+      (ref) => { const [name, version] = parseRef(ref); return this.registry.resolve(name, version, 'agent'); },
+      (ref, error) => this.logger.debug(`Vocabulary pre-check: "${ref}" did not resolve (${formatErrorMessage(error)}); dispatch will report it`),
+    );
+    if (missing.length > 0) {
+      throw new PipelineError(vocabularyMissingMessage(missing), { refusal: { code: 'VOCABULARY_MISSING', agents: missing } });
+    }
+  }
+
   private assertPipelineDefinition(resolved: ResolvedDefinition): PipelineDefinition {
     if (resolved.type !== 'pipeline') {
       throw new PipelineError(
@@ -480,8 +501,21 @@ export class PipelineExecutor {
     // An agent whose condition was E is ERRORED, and an ERRORED agent makes its stage ERRORED
     // (PDL 1.6.0, Semantics). Until P4b adds that status, the stage is recorded `failed` with
     // `condition_error` as its reason; the agents that did run keep their records.
-    const conditionError = conditionErrors.length > 0
-      ? { status: 'failed' as const, skipReason: `condition_error: the condition of ${conditionErrors.map(r => `"${r}"`).join(', ')} read a step that did not pass` }
+    // An unjudgeable agent (D24) makes its stage ERRORED too: no score and no classifiable
+    // decision, or no score at a gate with a threshold. Same interim as a condition error until
+    // P4b. Stopped and crashed records are P4b's (a stop's ERRORED, a timeout's): excluded here.
+    const gateHasThreshold = stage.gate?.threshold !== undefined || (stage.agents ?? []).some(a => a.threshold !== undefined);
+    const unjudgeable = agentResults
+      .filter(r => !isStoppedResult(r) && r.version !== CRASH_PLACEHOLDER_VERSION)
+      .filter(r => isUnjudgeable({ class: r.verdict?.class ?? resolveDecisionCategory(r), score: r.score ?? null }, gateHasThreshold))
+      .map(r => r.name);
+    const reasons = [
+      ...(conditionErrors.length > 0 ? [`condition_error: the condition of ${conditionErrors.map(r => `"${r}"`).join(', ')} read a step that did not pass`] : []),
+      ...(unjudgeable.length > 0 ? [`agent_unjudgeable: ${unjudgeable.map(r => `"${r}"`).join(', ')} gave no score${gateHasThreshold ? ' at a gate with a threshold' : ' and no classifiable decision'}`] : []),
+    ];
+    for (const reason of reasons) this.logger.warn(`Stage "${stage.id}" is ERRORED (${reason})`);
+    const conditionError = reasons.length > 0
+      ? { status: 'failed' as const, skipReason: reasons.join('; ') }
       : { status: 'completed' as const };
     return {
       id: stage.id,

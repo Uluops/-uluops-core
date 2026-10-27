@@ -18,6 +18,14 @@ load-time validator: a condition was looked at only when the run reached it, and
 read made its stage run with a warning. Its grammar was also a superset of what the skill and the
 rendered commands read, so the three runtimes could disagree about the same pipeline.
 
+**PDL 1.6.0, build unit P4a: one contract for reading a decision and a score** (design spec
+pdl-1_6_0 v0.8.3, D6, D9, D16, D17, D18, D23, D24, D33; normative text *Gates → Reading the decision and
+the score, The token rule, Classification, Neutral, absent and saved decisions, Pre-launch vocabulary
+check*; checklist v0.1.3 §P4a). Core read a decision from seven containers plus `status` and
+summary-word fallbacks, mapped first words through per-type synonyms, and summed breakdowns into a
+score, so the same output could gate differently in core and in the skill, and `SECURE WITH
+CONDITIONS` read SECURE.
+
 **Agent step limit: a higher default, a client-level setting, a ceiling, and a wrap-up that makes the
 agent answer** (tracker `c13b7789`). `code-validator` on claude-sonnet-5 spent all 50 steps re-searching
 a two-file target and returned nothing, on 0.53.1 as on the PDL 1.6.0 branch; in a two-agent pipeline
@@ -109,6 +117,48 @@ wrap-up, and the context-budget brake was inert on Claude structured output.
 - **Runtime:** one linear parse per condition at start, and the same parse at evaluation; bounded at
   512 code points.
 
+*PDL 1.6.0 P4a (decisions and scores):* applies to **every agent result**, inside a pipeline or not.
+
+- **Consumer code:** `AgentResult.verdict` (new, optional: `{ class, warnings }`), with the exported
+  types `DecisionClass`, `VerdictWarning` and `AgentVerdictRecord`; `PipelineRefusal` gains
+  `VOCABULARY_MISSING` (`agents: string[]`); `StageDefinition.agents[].threshold` is typed. Additive.
+- **Behaviour change, same types, different values** (§6 items 8, 21, 22, 23, 29):
+  - **the decision** is read from `result.decision`, then `decision`, then a `Decision:` line, and
+    reduced by the token rule. Core read the top level, then `summary`, then `result` and four more
+    containers, then `status`, then a summary's first word. A decision found only there is now
+    **absent** (`ABSENT_DECISION` plus `FALLBACK_DECISION_SOURCE` naming it);
+  - **`**REVISE** (Score: 85)`** now reads REVISE (was an unrecognised token, neutral), and
+    **`SECURE WITH CONDITIONS`** in prose reads neutral (the structured-text capture read SECURE,
+    a positive);
+  - **synonyms no longer classify**: `REJECT` and `ERROR` from a validator used to read FAIL and fail
+    its gate, `OK`/`SUCCESS`/`PASSED` PASS, `DONE` COMPLETE; each now reads **neutral** and the score
+    decides. Display is unchanged only in the logs;
+  - **`AgentResult.decision` is the saved form** (D18): the token when it classifies; otherwise the
+    value as written, whitespace collapsed, cut to 50 characters; `UNKNOWN` when absent. Core saved
+    `normalizeDecision`'s output: a validator's or executor's synonym mapped by its first word
+    (`REJECT – see notes` saved `FAIL`), otherwise the whole value upper-cased, uncut;
+  - **the score** is `result.score`, then `score`, then a `Score:` line, 0–100 or an exact numeric
+    string. **A value outside 0–100 is no score** (`SCORE_INVALID`); it was clamped, so `150` became
+    a passing `100`. A score found only in `summary`, `report`, a wrapper, `scores.Total`, or summed
+    from `breakdown` / `criteria` / categories is no score (`FALLBACK_SCORE_SOURCE` for the first
+    kinds). 218 of the 268 corpus agents emit `result.score`; the other 50 do not score by design;
+  - each reading warning is logged (`logger.warn`), values stripped of control characters.
+- **Pipelines** (§6 items 17, 28):
+  - **D24: an agent with no score at a gate that has a threshold**, or with no score and no
+    classifiable decision, is unjudgeable. Until P4b adds ERRORED, its stage is recorded `failed`
+    with `skipReason` `agent_unjudgeable: …`, and its gate decides the flow. Before, a threshold over
+    an all-scoreless panel was fail-open. **42 corpus stage sites put an explorer, generator or
+    executor behind a `warn` gate with a threshold** (70, 60 or 0; uluops-agent-workflows
+    `354ffc81`); each will now end unjudgeable on every run (WARNED under P4b, with `STAGE_ERRORED`),
+    a question raised for the spec owner;
+  - **the pre-launch vocabulary check is enabled**: `start()` resolves every inline agent of a
+    blocking-gated stage (`abort`, `fail`, `skip`, or no `on_failure`) and refuses with
+    `VOCABULARY_MISSING` when one neither declares `decisions.vocabulary` / `completion.vocabulary`
+    nor is an explorer. **Zero** corpus agents in blocking-gated stages trip it (census, corpus
+    `354ffc81`). An agent that does not resolve here is not refused; dispatch reports it as before.
+    This adds one registry resolution per such agent before launch.
+- **Runtime:** linear in the output; no change in extraction cost.
+
 *Agent step limit (c13b7789):*
 
 - **Consumer code:** `UluOpsConfig.maxSteps` and `ResolvedConfig.maxSteps` (new, optional);
@@ -180,6 +230,28 @@ wrap-up, and the context-budget brake was inert on Claude structured output.
   truthiness of `0`, absent equals `''`, D36, D40, D41, any stage field, unknown keys, self
   dependency, self ancestry, duplicate ids, default binding, the G5 scan) are each killed.
 
+- **`src/executor/agentVerdict.ts`** (P4a, D29): `decisionToken` (the token rule), `readAgentVerdict`
+  (paths, conflict rule, saved form, score contract, warnings), `isUnjudgeable` (D24).
+  `src/executor/vocabularyPrecheck.ts`: `classifiesItsDecisions`, `blockingGatedAgentRefs`,
+  `agentsMissingVocabulary`, the refusal text (D33). `OutputNormalizer.locateDisplaySources` reports
+  where the wide resolvers found a value, with its path, for the fallback warnings; the resolvers
+  themselves are unchanged. `AgentExecutor` and `PipelineExecutor` gain only the calls.
+- **Tests (P4a):** the conformance harness runs every launched stub of every core case (112 agents
+  in 108 stages) through the real `AgentExecutor`, the stub text built byte for byte from the fixture
+  README: class, saved decision and the six reading warnings must match, an `errored` agent must be
+  unjudgeable at its gate, and `STAGE_ERRORED` / `agent_unjudgeable` must hold one; plus the three
+  `precheck` cases through `start()`. `agentVerdict.test.ts` pins the token rule, paths, conflicts, the
+  score contract, D24, the pre-check, and **register parity**: the spec's 13-token table against
+  sdk-core's `classifyDecision` (sdk-core exports no list), twelve synonyms neutral, and a vocabulary
+  that names `FAIL` as positive still classifying FAIL negative (buildVocabularyMap's drop is kept).
+  `agentVerdictControls.test.ts` holds the checklist's four negative controls (`REJECT`,
+  `summary.score`, prose `SECURE WITH CONDITIONS`, `**REVISE**`), each failing on `6f89349`; so do the
+  D24 and out-of-range-score tests. 20 hand mutants are each killed.
+- **Fixture erratum:** `decisions/real-docs-validator-unfilled` now expects `SCORE_INVALID` for its
+  `"[X]"` score. The case predated D16, which added the warning, and warnings are exhaustive. Fixed in
+  the corpus on `fix/pdl-fixture-score-invalid-placeholder` (`e68cd62b`) and in this copy; `SOURCE`
+  records both.
+
 ### Removed
 
 - **`StageDefinition.skip_if`** (D25). The deprecated key is an undeclared key at load
@@ -216,6 +288,13 @@ wrap-up, and the context-budget brake was inert on Claude structured output.
 
 ### Internal
 
+- `test/fuzz/stopVerdict.fuzz.test.ts` (P4a): the agents-stage model marks a stage failed when an agent
+  is unjudgeable (D24); generated agents declare a register-token vocabulary, as do the default agents
+  of `test/executor/fixtures.ts`'s registry, so the pre-launch check passes them without changing how
+  they classify.
+- `scripts/external-input-census.json` (P4a): three sites, each waived — the pre-check's registry
+  resolve (read for vocabulary presence only), the score contract's numeric-string read, and the
+  moved score-resolver probe.
 - `test/fuzz/stopVerdict.fuzz.test.ts`: the pipeline model follows D3 (dependencies never skip a stage)
   and expects G5 to refuse at `start()`; 245 of its generated pipelines take that path.
 - `scripts/external-input-census.json`: the old evaluator's numeric-literal parse is gone with

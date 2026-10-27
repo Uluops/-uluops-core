@@ -180,7 +180,9 @@ function genPlCase(seed: number): PlCase {
 // ─── Definitions + registry ──────────────────────────────────────────────────────────────────
 const iface = (name: string) => ({ name, version: '1.0.0', displayName: name, description: 'd', domain: 'software' });
 function agentDef(name: string) {
-  return { type: 'agent', name, version: '1.0.0', hash: `sha256:${name}`, yaml: '', domain: 'software', agentType: 'validator', definition: {},
+  return { type: 'agent', name, version: '1.0.0', hash: `sha256:${name}`, yaml: '', domain: 'software', agentType: 'validator',
+    // A vocabulary of register tokens: passes the PDL 1.6.0 pre-launch check, classifies as the register does.
+    definition: { agent: { decisions: { vocabulary: { positive: 'PASS', negative: 'FAIL', conditional: 'WARN' } } } },
     runtime: { prompt: 'p', defaults: { model: 'sonnet', timeout: 30000 }, config: { maxScore: 100, categories: [], outputSchema: 'json' } } };
 }
 function cmdDef(s: CmdStep) {
@@ -578,6 +580,11 @@ function plModel(c: { stages: StageSpec[] }, ctx: Ctx, act: NPl, problems: strin
       scores[s.id] = sc.length ? Math.round(mean(sc)) : null;
       gateScore = sc.length ? agg(sc, s.gate?.aggregate ?? 'min', false) : null;
       out = { status: 'completed', cat, decision: neg ? 'FAIL' : reached ? 'ABORTED' : 'PASS', markers: [...(reached ? [crash ? PARTIAL : RUN_STOPPED] : []), ...(crash ? [CHILD] : [])].sort() };
+      // PDL 1.6.0 D24: an agent with no score at a threshold gate, or with no score and a neutral
+      // decision, is unjudgeable; its stage is recorded failed (agent_unjudgeable) until P4b's
+      // ERRORED. Stopped and crashed records are not judged here.
+      const thr = s.gate?.threshold !== undefined;
+      if (recs.some(r => !r.stop && !r.crashRec && r.score === null && (thr || r.cat === 'neutral'))) out.status = 'failed';
     } else if (s.kind === 'command') {
       const m = cmdModel(s.step, ctx);
       if (m.k === 'missing') { problems.push(`missing-call ${m.agent}`); return { decision: '?', status: '?', score: null, stages: {}, stopUnreached }; }

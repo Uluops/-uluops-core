@@ -1500,7 +1500,10 @@ describe('PipelineExecutor', () => {
      * utils/aggregateScores.ts and the first two assertions below fail — stage 2 is never
      * reached, and the stage score reads 0.
      */
-    it('is fail-open for threshold checks on an all-scoreless AGENTS stage', async () => {
+    it('an agent with no score at a THRESHOLD gate is unjudgeable: the stage is not passed (D24; was fail-open)', async () => {
+      // Negative control: on 829c6b3 this stage passed its threshold-70 abort gate with no score at
+      // all, and `downstream` ran. A classifiable decision does not stand in for a score a threshold
+      // was never measured against. Recorded failed (agent_unjudgeable) until P4b's ERRORED.
       const agentExecutor = makeAgentExecutor([
         makeValidatorResult({ agentType: 'generator', decision: 'COMPLETE', score: null, maxScore: null }),
         makeValidatorResult({ agentType: 'generator', decision: 'COMPLETE', score: null, maxScore: null }),
@@ -1517,12 +1520,31 @@ describe('PipelineExecutor', () => {
           { id: 'downstream', name: 'Downstream', type: 'command' as const, ref: 'c@1' },
         ],
       });
-      const result = await executor.execute(def, { target: '/tmp' });
+      const err = await executor.execute(def, { target: '/tmp' }).then(() => undefined, (e: unknown) => e);
 
+      expect(err).toBeInstanceOf(PipelineError);
+      const partial = (err as PipelineError).context.partialResult!;
+      expect(partial.stages[0]!.status).toBe('failed');
+      expect(partial.stages[0]!.skipReason).toMatch(/^agent_unjudgeable: .*at a gate with a threshold/);
+      expect(partial.stages[1]!.status).toBe('skipped');
+    });
+
+    it('the same scoreless agents at a DECISION-ONLY gate pass on their decision (D24, the control)', async () => {
+      const agentExecutor = makeAgentExecutor([
+        makeValidatorResult({ agentType: 'generator', decision: 'COMPLETE', score: null, maxScore: null }),
+      ]);
+      const executor = new PipelineExecutor(makeWorkflowExecutor(), makeCommandExecutor(), agentExecutor, makeRegistry(), noopLogger);
+      const def = makePipelineDef({
+        stages: [
+          { id: 'panel', name: 'Panel', type: 'agents' as const, agents: [{ ref: 'a@1' }], gate: { on_failure: 'abort' as const } },
+          { id: 'downstream', name: 'Downstream', type: 'command' as const, ref: 'c@1' },
+        ],
+      });
+      const result = await executor.execute(def, { target: '/tmp' });
+      expect(result.stages[0]!.status).toBe('completed');
       expect(result.stages[1]!.status).toBe('completed');
       // No agent scored, so the stage reports no score rather than a fabricated failing one.
       expect(result.stages[0]!.result?.score ?? null).toBeNull();
-      expect(result.status).toBe('complete');
     });
 
     it('an all-scoreless agents stage is still gated on its DECISION — the negative control', async () => {

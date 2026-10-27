@@ -180,7 +180,12 @@ export function makeRegistry(resolutions?: Record<string, ResolvedDefinition>): 
         version: version ?? '1.0.0',
         hash: 'sha256:resolved',
         yaml: '',
-        definition: {} as ResolvedDefinition['definition'],
+        // An agent declares a vocabulary, as every corpus agent in a blocking-gated stage does, so the
+        // PDL 1.6.0 pre-launch check passes it. Register tokens only: buildVocabularyMap drops them,
+        // so classification is the core register's, unchanged.
+        definition: (type === 'agent'
+          ? { agent: { decisions: { vocabulary: { positive: 'PASS', negative: 'FAIL', conditional: 'WARN' } } } }
+          : {}) as ResolvedDefinition['definition'],
         runtime: {} as ResolvedDefinition['runtime'],
         domain: 'software',
       } as ResolvedDefinition);

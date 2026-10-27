@@ -179,7 +179,9 @@ describe('AgentExecutor', () => {
       expect(result.maxScore).toBeNull(); // invariant: score null iff maxScore null
     });
 
-    it('clamps an out-of-range score and warns (range enforced here, not the schema — 0a)', async () => {
+    it('an out-of-range score is no score, with SCORE_INVALID (PDL 1.6.0 D16; was clamped to 100)', async () => {
+      // A clamp turned 150 into a passing 100. The contract reads a value outside 0-100 at a named
+      // path as no score: the decision then stands alone, or the agent is unjudgeable at a threshold.
       const warn = vi.fn();
       const logger: Logger = { debug() {}, info() {}, warn, error() {} };
       const ai = mockAIProvider({
@@ -187,8 +189,10 @@ describe('AgentExecutor', () => {
       });
       const executor = new AgentExecutor(baseConfig, ai, logger);
       const result = await executor.execute(makeValidatorDef(), { target: tmpDir });
-      expect(result.score).toBe(100);
-      expect(warn).toHaveBeenCalledWith(expect.stringContaining('out-of-range'));
+      expect(result.score).toBeNull();
+      expect(result.maxScore).toBeNull();
+      expect(result.verdict?.warnings).toContainEqual({ code: 'SCORE_INVALID', agent: expect.any(String), value: '150' });
+      expect(warn).toHaveBeenCalledWith(expect.stringContaining('SCORE_INVALID'));
     });
 
     it('warns when a custom decision resolves neutral because the definition has no vocabulary', async () => {

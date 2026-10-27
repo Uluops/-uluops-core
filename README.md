@@ -1066,6 +1066,14 @@ if (category === 'negative') {
 }
 ```
 
+**How an agent's decision and score are read (PDL 1.6.0).** Every agent result's `decision`, `decisionCategory` and `score` come from one contract on the agent's output, not from a search of it:
+
+- **Decision:** the string at `result.decision`, else the top-level `decision` (in the JSON core extracted), else the agent's `Decision:` line. The value is reduced to one token (leading glyphs, `**`, quotes dropped; the first run of letters, digits and underscores, upper-cased) that counts only when followed by the end, closing punctuation (`) ] . , : ; ! *`) or whitespace before a non-letter. So `**REVISE** (Score: 85)` reads REVISE, while `NOT SECURE`, `SECURE WITH CONDITIONS` and an unfilled `[A|B]` placeholder read **neutral**: the rule fails toward neutral, never toward the wrong class. The token is classified through the definition's vocabulary, then the 13-token core register above; **synonyms do not classify** (`REJECT`, `OK`, `SUCCESS` and `DONE` read neutral).
+- **Saved decision:** the token when it classifies; otherwise the value as written, whitespace collapsed and cut to 50 characters; `UNKNOWN` when nothing was found.
+- **Score:** `result.score`, else `score`, else the number on a `Score:` line; a number from 0 to 100, or a string that is exactly one. A value outside that is **no score** (it used to be clamped), and a score found only elsewhere (`summary.score`, a summed breakdown) is no score either.
+- **Warnings:** `result.verdict` records the class (`absent` when no decision was found) and the warnings the reading raised: `NEUTRAL_DECISION`, `ABSENT_DECISION`, `DECISION_CONFLICT` (JSON and line both classify and disagree; the JSON wins), `FALLBACK_DECISION_SOURCE` / `FALLBACK_SCORE_SOURCE` (naming where the wider search found a value that does not count), `SCORE_INVALID`.
+- **In a pipeline**, an agent with no score at a gate that has a threshold, or with no score and no classifiable decision, is unjudgeable (D24), and before launch every agent in a blocking-gated stage must declare a vocabulary or be an explorer, or `start()` refuses with `context.refusal.code === 'VOCABULARY_MISSING'`.
+
 **Aggregation semantics** (multi-agent commands and workflow phases):
 
 - A **scoreless** child whose decision resolves `negative` fails the aggregate outright — it has no channel into the score average, so it gates categorically.

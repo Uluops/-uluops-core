@@ -9,7 +9,9 @@ import { OutputExtractor } from '../parser/OutputExtractor.js';
 import { deriveContextBudget } from '../ai/contextBudget.js';
 import { agentOutputSchema } from '../parser/outputSchemas.js';
 import { ExecutionError, MaxStepsExhaustedError } from '../errors/index.js';
-import { classifyDecision, buildVocabularyMap, type DecisionCategory } from './classifyDecision.js';
+import { buildVocabularyMap, type DecisionCategory } from './classifyDecision.js';
+import { readAgentVerdict, type AgentVerdict } from './agentVerdict.js';
+import { OutputNormalizer } from '../parser/OutputNormalizer.js';
 import { deriveCompleteness, resolutionMarkersFromLegacy } from './degradationMarkers.js';
 import type { DegradationMarker } from '../types/degradation.js';
 import type { ResolvedConfig } from '../types/config.js';
@@ -63,6 +65,8 @@ const MAX_RAW_OUTPUT_BYTES = 512 * 1024;
  */
 export class AgentExecutor {
   private outputExtractor = new OutputExtractor();
+  /** The wide resolvers, kept for display: they name where a value was when the PDL contract finds none. */
+  private displayNormalizer = new OutputNormalizer();
   /** Whether this executor has already told the user a shell is active (see setupTools). */
   private shellNoticeShown = false;
 
@@ -293,29 +297,27 @@ export class AgentExecutor {
     const durationMs = Date.now() - startTime;
     const metrics = this.buildMetrics(result, durationMs);
 
-    // ── Decision (non-destructive) ──────────────────────────────────────────
-    // The decision always reflects the actual parsed value. Extraction trust is
-    // expressed separately via `extractionConfidence`/`extractionMethod` on the
-    // result — we never overwrite a correctly-parsed decision just because a
-    // low-confidence (e.g. 0.5 regex) extraction method produced it. Whether a
-    // low-confidence result is allowed to pass a gate is decided downstream by
-    // SubmissionClient.isPositiveDecision (EXTRACTION_CONFIDENCE_THRESHOLD), not
-    // by erasing the decision here.
-    //
-    // ── Decision normalization ──────────────────────────────────────────────
-    // Agents emit native vocabulary (PASS, EXAMINED, VITAL, FLOWING, etc.).
-    // classifyAgentDecision() normalizes these to DecisionCategory (positive/
-    // negative/conditional/error) using the agent definition's vocabulary map.
-    //
-    // ASSUMPTION (2026-04-16): downstream consumers use `decisionCategory` for
-    // gate logic, not the raw `decision` string. If any consumer pattern-matches
-    // on raw decision strings, vocabulary drift across agent types will cause
-    // silent misclassification. As of 0.30.0 all in-package gates comply:
-    // executors resolve via resolveDecisionCategory(), and SubmissionClient.
-    // isPositiveDecision prefers decisionCategory with a literal 'PASS'|'SHIP'
-    // fallback only when the category is absent (closes tracker issue A3).
-    const effectiveDecision = parsed.decision ?? 'FAIL';
-    const decisionCategory = this.classifyAgentDecision(resolved, effectiveDecision);
+    // ── Decision and score: the PDL 1.6.0 contract (agentVerdict.ts) ─────────
+    // The decision is read from `result.decision`, `decision`, then the `Decision:` line, reduced
+    // by the token rule, and classified through the definition's vocabulary, then the core
+    // register. The score is read from `result.score`, `score`, then the `Score:` line. What the
+    // result saves is that reading: `decision` is the token when it classifies, else the value as
+    // written (cut to 50), else UNKNOWN (D18); `decisionCategory` its class (absent → neutral);
+    // `score` the contract's score or null. The extractor's wider search (seven containers, the
+    // `status` and summary-word fallbacks, summed breakdowns) and `normalizeDecision`'s synonyms no
+    // longer decide anything; when the contract finds nothing, a warning names where they found
+    // a value. Extraction trust stays separate (`extractionConfidence`), as before.
+    const verdict = this.readVerdict(resolved, result, parsed, rawText);
+    const effectiveDecision = verdict.saved;
+    const decisionCategory: DecisionCategory = verdict.class === 'absent' ? 'neutral' : verdict.class;
+    const gatedParsed: ParsedOutput = {
+      ...parsed,
+      score: verdict.score ?? undefined,
+      // A null contract score keeps the agent's own maxScore only when the agent itself gave no
+      // score, so buildResult still warns on a half-filled pair the agent wrote; a score found only
+      // by the wide search is not one, and leaves no half pair behind.
+      maxScore: verdict.score !== null ? (parsed.maxScore ?? 100) : (parsed.score == null ? parsed.maxScore : undefined),
+    };
 
     // Execution-phase degradation markers (resolution-phase markers are merged
     // from resolved.degradations inside buildResult). These feed the run's
@@ -323,7 +325,8 @@ export class AgentExecutor {
     const executionMarkers = this.collectExecutionMarkers(result, rawText, extraction, toolAdapter.budgetTracker, toolAdapter.shellSchemaFallback);
 
     return {
-      ...this.buildResult(resolved, agentType, context, parsed, effectiveDecision, extraction, recommendations, durationMs, metrics, decisionCategory, rawText, executionMarkers),
+      ...this.buildResult(resolved, agentType, context, gatedParsed, effectiveDecision, extraction, recommendations, durationMs, metrics, decisionCategory, rawText, executionMarkers),
+      verdict: { class: verdict.class, warnings: verdict.warnings },
       runConditions,
     };
   }
@@ -542,49 +545,33 @@ export class AgentExecutor {
   }
 
   /**
-   * Classify decision using agent definition vocabulary.
+   * Read the agent's decision and score as a PDL 1.6.0 gate reads them (`agentVerdict.ts`), and
+   * log each warning the reading raised.
    */
-  private classifyAgentDecision(resolved: ResolvedDefinition, decision: string | undefined): DecisionCategory {
-    // Read through the `agent:` wrapper. AgentDefinition mandates it (types/agent.ts:23-24)
-    // and normalization preserves it verbatim (registry/normalize.ts:222-225, "Agent
-    // definitions pass through unchanged"), so `definition.decisions` is ALWAYS undefined —
-    // which silently disabled every custom vocabulary in the corpus. `definition` is
-    // `AgentDefinition | Partial<AgentDefinition>` (types/registry.ts:75), so `agent` may be
-    // absent when no YAML was available; buildVocabularyMap treats undefined as "no custom
-    // vocabulary" and falls back to the core register. sdk-core's own doc example uses this
-    // same unwrapped-body form: buildVocabularyMap(agentDefinition.agent).
-    // Narrowed rather than cast: only the 'agent' branch of the union has an `agent` body.
-    // execute() calls assertAgentRuntime() first (:91), which throws for any other type, but
-    // that returns a runtime rather than acting as a type predicate — so narrow here instead
-    // of asserting a shape, which is precisely what hid this defect before.
-    // `?? {}` because buildVocabularyMap dereferences `definition.decisions` without guarding
-    // its own parameter — `agent` is absent whenever no YAML was available (the Partial branch
-    // of ResolvedDefinition['definition']), and an empty body correctly yields "no custom
-    // vocabulary", falling back to the core register.
+  private readVerdict(resolved: ResolvedDefinition, result: AIGenerateResult, parsed: ParsedOutput, rawText: string): AgentVerdict {
+    // Read through the `agent:` wrapper: AgentDefinition mandates it and normalization preserves it,
+    // so `definition.decisions` is always undefined (reading it there once disabled every custom
+    // vocabulary in the corpus). `agent` is absent when no YAML was available; `?? {}` then yields
+    // no vocabulary and the core register classifies alone. buildVocabularyMap drops entries that
+    // would remap a register token (CWE-345), and that stays: a vocabulary classifies custom words.
     const agentBody = resolved.type === 'agent' ? resolved.definition.agent : undefined;
-    const vocabularyMap = buildVocabularyMap(agentBody ?? {});
-    const category = classifyDecision(decision, vocabularyMap);
-    // A non-empty decision resolving 'neutral' means it is neither in the core
-    // register nor in the definition's vocabulary — almost always a missing
-    // decisions.vocabulary/completion.vocabulary block in the YAML. The stamp is
-    // authoritative downstream (resolveDecisionCategory prefers it over
-    // re-classification), so surface the gap instead of laundering a possible
-    // negative into a non-gating neutral silently.
-    if (category === 'neutral' && decision) {
-      // The decision string is LLM output (attacker-influenced via prompt
-      // injection in the target); strip control characters so it cannot forge
-      // log lines or inject ANSI/structured-log payloads (CWE-117). Cap length
-      // for the same reason. resolved.name is SAFE_NAME_PATTERN-validated.
-      const safeDecision = decision.slice(0, 80).replace(/[\x00-\x1f\x7f]/g, '_');
-      this.logger.warn(
-        `Decision "${safeDecision}" from agent "${resolved.name}" is not in the core register or the definition's vocabulary — ` +
-        `stamping decisionCategory 'neutral' (non-gating). Declare it under agent.decisions.vocabulary ` +
-        `(positive/negative/conditional) or agent.completion.vocabulary (complete/partial/failed). ` +
-        `Note the schema allows ONE term per slot, so an agent emitting a third term needs that slot declared — ` +
-        `and tracking.category 'gate' forbids 'conditional', which requires 'safety' instead.`,
-      );
+    const json = result.structuredOutput ?? parsed.rawJson;
+    const verdict = readAgentVerdict({
+      agent: resolved.name,
+      json,
+      text: rawText,
+      vocabulary: buildVocabularyMap(agentBody ?? {}),
+      display: this.displayNormalizer.locateDisplaySources(json),
+    });
+    for (const w of verdict.warnings) {
+      // Values are LLM output (attacker-influenced via the target): strip control characters so
+      // they cannot forge log lines (CWE-117); the reader already cut them to 50 characters.
+      const detail = JSON.stringify({ ...w, code: undefined }).replace(/[\x00-\x1f\x7f]/g, '_');
+      this.logger.warn(`${w.code} ${detail}${w.code === 'NEUTRAL_DECISION'
+        ? ` — not in the core register or the definition's vocabulary; the score decides. Declare it under agent.decisions.vocabulary (or agent.completion.vocabulary) if it is a verdict.`
+        : ''}`);
     }
-    return category;
+    return verdict;
   }
 
   /**

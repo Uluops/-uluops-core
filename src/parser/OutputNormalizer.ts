@@ -37,12 +37,12 @@ export class OutputNormalizer {
     const sources = this.buildParseSources(obj);
 
     const output: ParsedOutput = {
-      decision: this.normalizeDecision(this.resolveDecisionField(sources), agentType),
+      decision: this.normalizeDecision(this.resolveDecisionField(sources).value, agentType),
       rawJson: raw,
     };
 
     // Resolve score
-    const rawScore = this.resolveScoreField(sources);
+    const rawScore = this.resolveScoreField(sources)?.value;
     if (typeof rawScore === 'number') {
       output.score = rawScore;
     } else if (typeof rawScore === 'string') {
@@ -57,6 +57,28 @@ export class OutputNormalizer {
     }
 
     return output;
+  }
+
+  /**
+   * Where the wide resolvers found a decision and a score in `raw`, with the path each came from
+   * (`summary.decision`, `status`, `report.results.score`, `breakdown`…).
+   *
+   * PDL 1.6.0 reads an agent's decision and score from a fixed contract (`result.decision`, then
+   * `decision`, then a `Decision:` line; likewise for the score), in `executor/agentVerdict.ts`.
+   * The resolvers here search much further. They stay, for display and for this: when the contract
+   * finds nothing, the verdict reader names the source these found it in
+   * (`FALLBACK_DECISION_SOURCE`, `FALLBACK_SCORE_SOURCE`), so the value is visible though it does
+   * not gate.
+   */
+  locateDisplaySources(raw: unknown): { decision?: { value: string; source: string }; score?: { value: number | string; source: string } } {
+    if (!raw || typeof raw !== 'object' || Array.isArray(raw)) return {};
+    const sources = this.buildParseSources(raw as Record<string, unknown>);
+    const decision = this.resolveDecisionField(sources);
+    const score = this.resolveScoreField(sources);
+    return {
+      ...(decision.source ? { decision: { value: decision.value, source: decision.source } } : {}),
+      ...(score ? { score } : {}),
+    };
   }
 
   normalizeDecision(decision: string, agentType: AgentType): string {
@@ -200,64 +222,81 @@ export class OutputNormalizer {
     return undefined;
   }
 
+  /** The wide resolvers' containers, in search order, each with the path it is reported under. */
+  private labelledSources(ctx: ParseSources): Array<[string, Record<string, unknown> | undefined]> {
+    const { obj } = ctx;
+    const at = (path: string) => (path ? `${path}.` : '');
+    const summaryPath = this.asRecord(obj['summary']) ? 'summary' : 'result.summary';
+    const resultsPath = this.asRecord(ctx.report?.['results']) ? 'report.results' : 'results';
+    const reportSummaryPath = this.asRecord(ctx.report?.['summary']) ? 'report.summary' : `${resultsPath}.summary`;
+    const wrapperKey = ctx.validationSummary
+      ? Object.keys(obj).find(k => obj[k] === ctx.validationSummary) ?? 'wrapper'
+      : 'wrapper';
+    return [
+      [at(''), ctx.obj], [at(summaryPath), ctx.summary], [at('result'), ctx.result],
+      [at('report'), ctx.report], [at(resultsPath), ctx.reportResults], [at(reportSummaryPath), ctx.reportSummary],
+      [at(wrapperKey), ctx.validationSummary],
+    ];
+  }
+
   private resolveDecisionField(
     ctx: ParseSources,
-  ): string {
+  ): { value: string; source?: string } {
     const { obj } = ctx;
-    const sources = [ctx.obj, ctx.summary, ctx.result, ctx.report, ctx.reportResults, ctx.reportSummary, ctx.validationSummary];
+    const sources = this.labelledSources(ctx);
     // Check each source for decision/final_decision fields
-    for (const source of sources) {
+    for (const [path, source] of sources) {
       if (!source) continue;
       for (const key of ['decision', 'final_decision']) {
         const d = source[key];
-        if (typeof d === 'string') return d;
+        const source_ = `${path}${key}`;
+        if (typeof d === 'string') return { value: d, source: source_ };
         // Handle decision as object: { pass: true, label: "PASS" } or { result: "PASS" }
         if (d && typeof d === 'object') {
           const dObj = d as Record<string, unknown>;
-          if (typeof dObj['result'] === 'string') return dObj['result'];
-          if (typeof dObj['label'] === 'string') return dObj['label'];
-          if (typeof dObj['value'] === 'string') return dObj['value'];
-          if (typeof dObj['status'] === 'string') return dObj['status'];
-          if (typeof dObj['pass'] === 'boolean') return dObj['pass'] ? 'PASS' : 'FAIL';
+          for (const sub of ['result', 'label', 'value', 'status']) {
+            if (typeof dObj[sub] === 'string') return { value: dObj[sub] as string, source: `${source_}.${sub}` };
+          }
+          if (typeof dObj['pass'] === 'boolean') return { value: dObj['pass'] ? 'PASS' : 'FAIL', source: `${source_}.pass` };
         }
       }
     }
     // Fallback to status field
-    for (const source of sources) {
+    for (const [path, source] of sources) {
       if (!source) continue;
-      if (typeof source['status'] === 'string') return source['status'];
+      if (typeof source['status'] === 'string') return { value: source['status'], source: `${path}status` };
     }
     // Fallback: check if summary is a string starting with a decision word
     if (typeof obj['summary'] === 'string') {
       const summaryFirst = obj['summary'].split(/[\s\-–—]+/)[0]?.toUpperCase();
       if (summaryFirst && ['PASS', 'FAIL', 'WARN', 'ERROR', 'COMPLETE'].includes(summaryFirst)) {
-        return summaryFirst;
+        return { value: summaryFirst, source: 'summary (first word)' };
       }
     }
-    return 'UNKNOWN';
+    return { value: 'UNKNOWN' };
   }
 
   private resolveScoreField(
     ctx: ParseSources,
-  ): number | string | undefined {
+  ): { value: number | string; source: string } | undefined {
     const { obj } = ctx;
-    const sources = [ctx.obj, ctx.summary, ctx.result, ctx.report, ctx.reportResults, ctx.reportSummary, ctx.validationSummary];
+    const sources = this.labelledSources(ctx);
     // Check each source for a score value
-    for (const source of sources) {
+    for (const [path, source] of sources) {
       if (!source) continue;
       for (const scoreKey of ['score', 'total_score', 'score_total']) {
         const s = source[scoreKey];
-        if (typeof s === 'number') return s;
+        const at = `${path}${scoreKey}`;
+        if (typeof s === 'number') return { value: s, source: at };
         // EXTERNAL-OK: a TYPE probe, not a value read — it asks whether the string looks numeric
   // so the caller can decide which branch to take. The value itself is coerced through
   // parseExternalNumber at the sites that actually use it.
-  if (typeof s === 'string' && s.trim() !== '' && !isNaN(Number(s))) return s;
+  if (typeof s === 'string' && s.trim() !== '' && !isNaN(Number(s))) return { value: s, source: at };
         // Handle score as object: { total: 85, ... }
         if (s && typeof s === 'object') {
           const sObj = s as Record<string, unknown>;
           for (const key of ['total', 'value', 'overall', 'final']) {
-            if (typeof sObj[key] === 'number') return sObj[key] as number;
-            if (typeof sObj[key] === 'string') return sObj[key] as string;
+            if (typeof sObj[key] === 'number' || typeof sObj[key] === 'string') return { value: sObj[key] as number | string, source: `${at}.${key}` };
           }
         }
       }
@@ -268,8 +307,8 @@ export class OutputNormalizer {
     // FABRICATION-OK: `scores` is an OBJECT (a category-score map), not a number.
     // Testing it for presence is correct; the rule matched the name, not the type.
     if (scores) {
-      if (typeof scores['Total'] === 'number') return scores['Total'];
-      if (typeof scores['total'] === 'number') return scores['total'];
+      if (typeof scores['Total'] === 'number') return { value: scores['Total'], source: 'scores.Total' };
+      if (typeof scores['total'] === 'number') return { value: scores['total'], source: 'scores.total' };
     }
     // Check breakdown with sub-scores sum (use cached wrapper from buildParseSources)
     const wrapper = ctx.validationSummary;
@@ -288,7 +327,7 @@ export class OutputNormalizer {
           values.push((rec['points'] as number) - deductions);
         }
       }
-      if (values.length > 0) return values.reduce((a, b) => a + b, 0);
+      if (values.length > 0) return { value: values.reduce((a, b) => a + b, 0), source: 'breakdown (sum)' };
     }
     // Check criteria with sub-scores sum (gpt-4.1-nano shape)
     const criteria = this.asRecord(obj['criteria']);
@@ -299,7 +338,7 @@ export class OutputNormalizer {
         const rec = this.asRecord(v);
         if (rec && typeof rec['score'] === 'number') values.push(rec['score'] as number);
       }
-      if (values.length > 0) return values.reduce((a, b) => a + b, 0);
+      if (values.length > 0) return { value: values.reduce((a, b) => a + b, 0), source: 'criteria (sum)' };
     }
     return undefined;
   }

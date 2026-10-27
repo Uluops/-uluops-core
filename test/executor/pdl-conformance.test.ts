@@ -16,6 +16,16 @@
  *   the stub-agent harness there; this checks every condition the fixtures hold, now.
  * - `conditions/step-output-with-steps-disabled`: start() refuses with STEP_OUTPUT_STEPS_DISABLED.
  *
+ * P4a (reading decisions and scores; the pre-launch vocabulary check):
+ * - **Every launched stub agent, through the real AgentExecutor.** For each core case that runs, each
+ *   agent the oracle says launched (a `timeout` or `hang` stub excepted) is executed with a provider
+ *   that returns the stub's text, built byte for byte as the README specifies, against a definition
+ *   built from `stubs/agents.yaml`. The verdict's class, its saved decision where pinned, and its
+ *   warnings (exhaustive over the six verdict codes, for that agent) must match; an `errored` agent
+ *   must be unjudgeable at its gate, and any other must not; a stage the oracle marks
+ *   `STAGE_ERRORED` / `agent_unjudgeable` must hold one. Gates, statuses and the run verdict are P4b's.
+ * - `decisions/precheck-*`: start() refuses with VOCABULARY_MISSING, or does not.
+ *
  * P3a (StepsExecutor and the step-template load rules):
  *
  * - `steps/*` (core): each stage's steps run through StepsExecutor against a COPY of `targets/`, with
@@ -41,6 +51,11 @@ import { StepsExecutor } from '../../src/executor/StepsExecutor.js';
 import { checkStepTemplateRules } from '../../src/executor/stepTemplates.js';
 import { checkPipelineLoadRules, bindParameterDefaults } from '../../src/executor/pipelineLoad.js';
 import { evaluateCondition, E, type ConditionContext } from '../../src/executor/conditions.js';
+import { AgentExecutor } from '../../src/executor/AgentExecutor.js';
+import { isUnjudgeable } from '../../src/executor/agentVerdict.js';
+import type { ResolvedDefinition } from '../../src/types/registry.js';
+import type { ResolvedConfig } from '../../src/types/config.js';
+import type { AIProvider } from '../../src/ai/AIProvider.js';
 import { PipelineExecutor } from '../../src/executor/PipelineExecutor.js';
 import { PipelineError } from '../../src/errors/index.js';
 import type { StageResult, StepDefinition } from '../../src/types/pipeline.js';
@@ -263,5 +278,124 @@ describe('PDL 1.6.0 conformance: condition decisions against the oracle (P3b)', 
     const handle = await enabled.start({ type: 'pipeline', definition: wrap(c) } as never, { target: '/tmp', params: c.params }).catch((e: unknown) => e);
     expect(handle).not.toBeInstanceOf(PipelineError);
     await (handle as { cancel(): Promise<void> }).cancel().catch(() => {});
+  });
+});
+
+// ── P4a ──────────────────────────────────────────────────────────────────────
+
+const stubDefs = new Map<string, Obj>(
+  (YAML.parse(readFileSync(path.join(FIX, 'stubs', 'agents.yaml'), 'utf8')).stubs as Obj[]).map((x) => [x.name, x]),
+);
+
+/** A stub agent as core resolves it: the ADL `agent:` body carries the type and the vocabulary. */
+function resolvedStub(name: string): ResolvedDefinition {
+  const stub = stubDefs.get(name)!;
+  return {
+    type: 'agent', name, version: '1.0.0', hash: `sha256:${name}`, yaml: '', domain: 'software', agentType: stub.agentType,
+    definition: { agent: { interface: { name, agentType: stub.agentType }, ...(stub.decisions ? { decisions: stub.decisions } : {}) } },
+    runtime: { prompt: 'stub', defaults: { model: 'sonnet', timeout: 30000 }, config: { maxScore: 100, categories: [], outputSchema: 'json' } },
+  } as unknown as ResolvedDefinition;
+}
+
+/** The README's canonical stub text (Stub outputs), byte for byte. */
+function stubText(out: Obj): string {
+  if (typeof out.raw === 'string') return out.raw;
+  const object = out.json ?? { result: {
+    ...(out.score !== undefined ? { score: out.score, max_score: 100 } : {}),
+    ...(out.decision !== undefined ? { decision: out.decision } : {}),
+  } };
+  return `Conformance stub output.\n${out.line !== undefined ? `Decision: ${out.line}\n` : ''}\`\`\`json\n${JSON.stringify(object)}\n\`\`\``;
+}
+
+const VERDICT_CODES = new Set(['NEUTRAL_DECISION', 'ABSENT_DECISION', 'DECISION_CONFLICT', 'FALLBACK_DECISION_SOURCE', 'FALLBACK_SCORE_SOURCE', 'SCORE_INVALID']);
+const config = {
+  apiKey: 'k', ai: { providers: { anthropic: { apiKey: 'k' } }, defaultProvider: 'anthropic' }, registryUrl: 'https://r', submissionUrl: 'https://s',
+  dashboardUrl: 'https://d', trackingEnabled: false, timeout: 30000, debug: false, defaultThinkingBudget: 10_000, contextBudget: 200_000, maxConcurrency: 8, allowStageSteps: false,
+} as unknown as ResolvedConfig;
+const provider = (text: string) => ({
+  generate: async () => ({ text, usage: { input_tokens: 1, output_tokens: 1 }, toolCallCount: 0, model: 'anthropic:stub', provider: 'anthropic', steps: 1, finishReason: 'stop' }),
+  resolveModel: async () => ({ provider: 'anthropic', modelId: 'stub', providerModelId: 'stub', tier: 'premium', capabilities: { tools: true }, contextWindow: 200_000, resolvedFrom: 'sonnet' }),
+  createProviderShellTool: () => undefined,
+}) as unknown as AIProvider;
+
+describe('PDL 1.6.0 conformance: agent verdicts through AgentExecutor (P4a)', () => {
+  const launches: Array<[string, Obj, string, string]> = [];
+  for (const c of cases) {
+    const want = expected.get(c.id)!;
+    if (!appliesToCore(c) || want.outcome !== 'ran') continue;
+    for (const [stageId, w] of Object.entries(want.stages as Record<string, Obj>)) {
+      for (const ref of (w.launched ?? []) as string[]) {
+        const out = c.stubs?.[ref];
+        if (out && !out.timeout && !out.hang) launches.push([`${c.id} ${stageId}/${ref}`, c, stageId, ref]);
+      }
+    }
+  }
+
+  it('covers every group\'s launched stubs (a filter that matched nothing would pass vacuously)', () => {
+    expect(launches.filter(([, c]) => c.id.startsWith('decisions/')).length).toBeGreaterThanOrEqual(40);
+    expect(launches.length).toBe(112);
+  });
+
+  it.each(launches)('%s', async (_label, c, stageId, ref) => {
+    const want = expected.get(c.id)!;
+    const w = (want.stages as Record<string, Obj>)[stageId]!;
+    const stage = (c.pipeline.stages as Obj[]).find((s) => s.id === stageId)!;
+    const gateHasThreshold = stage.gate?.threshold !== undefined || (stage.agents ?? []).some((a: Obj) => a.threshold !== undefined);
+    const result = await new AgentExecutor(config, provider(stubText(c.stubs[ref])), noopLogger).execute(resolvedStub(ref), { target: '/tmp' });
+    const verdict = result.verdict!;
+    const unjudgeable = isUnjudgeable({ class: verdict.class, score: result.score }, gateHasThreshold);
+
+    const pinned = w.agents?.[ref];
+    const cls = typeof pinned === 'object' ? pinned.class : pinned;
+    if (cls === 'errored') expect(unjudgeable, `${ref} should be unjudgeable (class ${verdict.class}, score ${result.score})`).toBe(true);
+    else {
+      expect(unjudgeable, `${ref} is unjudgeable`).toBe(false);
+      if (cls !== undefined) expect(verdict.class).toBe(cls);
+    }
+    if (typeof pinned === 'object' && pinned.saved !== undefined) expect(result.decision).toBe(pinned.saved);
+
+    const wantWarnings = ((want.warnings ?? []) as Obj[])
+      .filter((x) => VERDICT_CODES.has(x.code) && x.agent === ref && (!x.runtimes || x.runtimes.includes('core')))
+      .map(({ runtimes: _r, ...x }) => x);
+    const key = (x: Obj) => JSON.stringify(Object.entries(x).sort());
+    expect(verdict.warnings.map(key).sort()).toEqual(wantWarnings.map(key).sort());
+  });
+
+  const byStage = new Map<string, typeof launches>();
+  for (const l of launches) {
+    const k = `${l[1].id} ${l[2]}`;
+    byStage.set(k, [...(byStage.get(k) ?? []), l]);
+  }
+  it.each([...byStage])(
+    '%s: STAGE_ERRORED agent_unjudgeable iff an agent is unjudgeable', async (_k, group) => {
+      const [, c, stageId] = group[0]!;
+      const want = expected.get(c.id)!;
+      if ((c.pipeline.stages as Obj[]).find((s) => s.id === stageId)!.agents?.some((a: Obj) => c.stubs?.[a.ref]?.timeout || c.stubs?.[a.ref]?.hang)) return;
+      const stage = (c.pipeline.stages as Obj[]).find((s) => s.id === stageId)!;
+      const thr = stage.gate?.threshold !== undefined || (stage.agents ?? []).some((a: Obj) => a.threshold !== undefined);
+      let any = false;
+      for (const [, , , ref] of group) {
+        const r = await new AgentExecutor(config, provider(stubText(c.stubs[ref])), noopLogger).execute(resolvedStub(ref), { target: '/tmp' });
+        any ||= isUnjudgeable({ class: r.verdict!.class, score: r.score }, thr);
+      }
+      const flagged = ((want.warnings ?? []) as Obj[]).some((x) => x.code === 'STAGE_ERRORED' && x.stage === stageId && x.reason === 'agent_unjudgeable');
+      expect(any).toBe(flagged);
+    },
+  );
+
+  const precheck = cases.filter((c) => c.id.startsWith('decisions/precheck-'));
+  it.each(precheck.map((c) => [c.id as string, c]))('%s', async (_id, c) => {
+    const want = expected.get(c.id)!;
+    const registry = { resolve: async (name: string) => resolvedStub(name) };
+    const executor = new PipelineExecutor({} as never, {} as never, {} as never, registry as never, noopLogger, true);
+    const outcome = await executor.start({ type: 'pipeline', definition: wrap(c) } as never, { target: '/tmp', params: c.params })
+      .catch((e: unknown) => e);
+    if (want.outcome === 'refused') {
+      expect(outcome).toBeInstanceOf(PipelineError);
+      expect((outcome as PipelineError).context.refusal).toEqual(want.refused);
+    } else {
+      expect(outcome).not.toBeInstanceOf(PipelineError);
+      await (outcome as { cancel(): Promise<void> }).cancel().catch(() => {});
+    }
   });
 });

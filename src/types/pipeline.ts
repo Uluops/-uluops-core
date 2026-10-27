@@ -112,7 +112,13 @@ export interface StageDefinition {
   /** Inline agent refs — PDL stages can list agents directly instead of ref.
    *  Per-agent `condition` is in the PDL 1.6.0 condition language (see `condition`):
    *  false → agent not dispatched, not scored; E → agent not dispatched, stage ERRORED. */
-  agents?: Array<{ ref: string; condition?: string }>;
+  agents?: Array<{
+    ref: string;
+    condition?: string;
+    /** Per-agent threshold (PDL 1.6.0, D5). Its presence puts the gate in per-agent mode; per-agent
+     *  scoring is P4b's. P4a reads only whether the gate has a threshold (D24). */
+    threshold?: number;
+  }>;
 
   /** Inline shell steps (PDL shell preflight). Preserved through normalization;
    *  not yet executed — see StepDefinition. */

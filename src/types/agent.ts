@@ -575,6 +575,16 @@ interface AgentResultBase {
    * Extracted from the LLM's structured output `summary` field. */
   summary?: string;
 
+  /**
+   * How a gate read this agent's output (PDL 1.6.0, `executor/agentVerdict.ts`): the decision's
+   * class (`absent` when nothing was at `result.decision`, `decision` or a `Decision:` line; it is
+   * handled as neutral) and the warnings reading it raised (`NEUTRAL_DECISION`, `ABSENT_DECISION`,
+   * `DECISION_CONFLICT`, `FALLBACK_DECISION_SOURCE`, `FALLBACK_SCORE_SOURCE`, `SCORE_INVALID`).
+   * `decision` holds the saved form and `score` the gating score; this records how they were read.
+   * Absent on synthesized records (a crash or a stop) and on results from cores before 1.6.0.
+   */
+  verdict?: AgentVerdictRecord;
+
   /** Confidence in output extraction (0-1). 1.0 = structured output, 0.5 = regex fallback.
    * Low confidence indicates the result may be unreliable — decision/score may be defaults. */
   extractionConfidence?: number;
@@ -618,6 +628,24 @@ interface AgentResultBase {
    * Both are read back untyped by AnalysisSummaryExtractor at submission time.
    * Internal: not part of the public API surface. */
   rawJson?: unknown;
+}
+
+/** A decision as a PDL gate reads it. `absent`: nothing at either JSON path and no `Decision:` line. */
+export type DecisionClass = import('../executor/classifyDecision.js').DecisionCategory | 'absent';
+
+/** The warnings reading an agent's verdict can emit (PDL 1.6.0 spec, Codes → Warnings). */
+export type VerdictWarning =
+  | { code: 'NEUTRAL_DECISION'; agent: string; value: string }
+  | { code: 'ABSENT_DECISION'; agent: string }
+  | { code: 'DECISION_CONFLICT'; agent: string; json: string; line: string }
+  | { code: 'FALLBACK_DECISION_SOURCE'; agent: string; source: string }
+  | { code: 'FALLBACK_SCORE_SOURCE'; agent: string; source: string }
+  | { code: 'SCORE_INVALID'; agent: string; value: string };
+
+/** {@link AgentResultBase.verdict}. */
+export interface AgentVerdictRecord {
+  class: DecisionClass;
+  warnings: VerdictWarning[];
 }
 
 /**

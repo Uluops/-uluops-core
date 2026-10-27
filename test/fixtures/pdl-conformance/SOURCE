@@ -1,5 +1,7 @@
 Copied from uluops-agent-workflows udl/pdl/conformance/ (cases/, expected/, stubs/, targets/, README.md)
-at commit 60403c35 (on main since 9dd2e569, 2026-10-26: 154 cases, D38-D41 and duplicate_stage_id).
+at commit 60403c35 (on main since 9dd2e569, 2026-10-26: 154 cases, D38-D41 and duplicate_stage_id),
+plus e68cd62b (branch fix/pdl-fixture-score-invalid-placeholder, unmerged at copy time): one erratum,
+decisions/real-docs-validator-unfilled expects SCORE_INVALID for its "[X]" score (D16).
 
 These files are the PDL 1.6.0 conformance oracle; the corpus copy is authoritative. Nothing
 detects drift between this copy and the corpus: each core release that touches PDL execution
