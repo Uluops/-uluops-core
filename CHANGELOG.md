@@ -27,7 +27,7 @@ score, so the same output could gate differently in core and in the skill, and `
 CONDITIONS` read SECURE.
 
 **PDL 1.6.0, build unit P4b: gates, stage status and the saved run verdict** (design spec pdl-1_6_0
-v0.8.4, D1, D5, D10, D13, D19, D24, D42 and gate-decision D1–D3; normative text *Run model, Gates →
+v0.8.5, D1, D5, D10, D13, D19, D24, D42, D43 and gate-decision D1–D3; normative text *Run model, Gates →
 Failure modes, All agents skipped*; checklist v0.1.3 §P4b). Core read `abort` as "halt the pipeline",
 `skip` as "skip everything after", had no `fail`, failed a gate on any negative decision whatever its
 mode, and saved a run's verdict as `isPositiveDecision` over a decision that ignored gate modes, so a
@@ -191,10 +191,14 @@ wrap-up, and the context-budget brake was inert on Claude structured output.
   - **aborted runs are now saved to the tracker.** `runPipeline()` tracks after `execute()`
     returns, so the throw skipped tracking: an aborted pipeline run was never saved.
 - **Failure modes** (§6 items 10, 16, 25): `fail` is blocking: the stage is FAILED and the run
-  continues. `skip` is read as `fail` (it skipped every remaining stage). A stage with **no gate** is
-  judged as `fail`, so a negative or a failed step there fails the run and the run continues; every
-  corpus stage has a gate (324 of 324, 81 pipelines, uluops-agent-workflows `354ffc81`, YAML walk
-  2026-10-26), so this reaches registry and caller pipelines only. G5 refuses a steps stage behind
+  continues. `skip` is read as `fail` (it skipped every remaining stage). A stage with **no gate**
+  never fails the run (D43, Alex 2026-10-27, revising D19's "behaves as `fail`"): it is judged as
+  `warn` with the `not_negative` decision key, so a failed step, a thrown stage or a negative decision
+  there makes it WARNED and the run `WARN`, and `allGatesPassed` is unchanged. Before 1.6.0 such a
+  negative failed the saved run (`isPositiveDecision` over `computeDecision`); a conditional there
+  is not accepted, since no gate is not blocking. Every corpus stage has a gate (324 of 324, 81
+  pipelines, uluops-agent-workflows `354ffc81`, YAML walk 2026-10-26), so this reaches registry and
+  caller pipelines only. G5 refuses a steps stage behind
   any blocking gate when steps are off (it refused `abort` only). An `on_failure` value outside the
   enum reads as `abort` (it fell through and continued).
 - **Gate decisions** (gate-decision D1–D3, §6 item 12): a `warn` gate ignores the decision by

@@ -965,13 +965,17 @@ describe('PipelineExecutor', () => {
 
       const result = await executor.execute(makePipelineDef(), { target: '/tmp/test' });
 
-      expect(result.decision).toBe('FAIL');
+      // No gate is judged as `warn` with the `not_negative` key (D43): the negative WARNs the run, it
+      // does not fail it (it failed it before D43).
+      expect(result.stages[0]!.outcome).toBe('WARNED');
+      expect(result.decision).toBe('WARN');
+      expect(result.allGatesPassed).toBe(true);
     });
 
-    it('a WARN at a stage with no gate is a CONDITIONAL its blocking-class gate accepted: the run FAILs (D19, gate-decision D2)', async () => {
-      // A stage with no gate behaves as `fail` (D19), a blocking mode, so a conditional decision
-      // passes it and makes allGatesPassed false. Before 1.6.0 the run decision was WARN; the saved
-      // verdict was already false (category conditional).
+    it('a WARN at a stage with no gate passes it, and nothing accepts it: the run PASSes (D43)', async () => {
+      // A stage with no gate is judged as `warn` (D43), which is not blocking, so a conditional
+      // decision passes it without making allGatesPassed false. Before 1.6.0 the run decision was
+      // WARN and the saved verdict false (category conditional).
       const cmdResults = [
         makeCommandResult({ decision: 'WARN', score: 60 }),
       ];
@@ -983,9 +987,9 @@ describe('PipelineExecutor', () => {
       const result = await executor.execute(makePipelineDef(), { target: '/tmp/test' });
 
       expect(result.stages[0]!.outcome).toBe('PASSED');
-      expect(result.warnings.map(w => w.code)).toEqual(['CONDITIONAL_ACCEPTED']);
-      expect(result.allGatesPassed).toBe(false);
-      expect(result.decision).toBe('FAIL');
+      expect(result.warnings).toEqual([]);
+      expect(result.allGatesPassed).toBe(true);
+      expect(result.decision).toBe('PASS');
     });
 
     it('a WARN behind a warn gate passes it and leaves the run PASS-able; a failing warn gate makes the run WARN', async () => {
@@ -1206,8 +1210,9 @@ describe('PipelineExecutor', () => {
       expect(result.stages[1]!.erroredReasons).toEqual(['condition_error']);
       expect(result.stages[1]!.skipReason).toMatch(/^condition_error: /);
       expect(result.warnings).toEqual([{ code: 'STAGE_ERRORED', stage: 'checks', reason: 'condition_error' }]);
-      // No gate is `fail` (D19), a blocking mode: an ERRORED stage behind it fails the run.
-      expect(result.allGatesPassed).toBe(false);
+      // No gate is `warn` (D43): the ERRORED stage counts as WARNED and leaves allGatesPassed alone.
+      expect(result.allGatesPassed).toBe(true);
+      expect(result.decision).toBe('WARN');
       expect(cmdExec.execute).not.toHaveBeenCalled();
     });
 
@@ -1296,9 +1301,10 @@ describe('PipelineExecutor', () => {
       expect(result.stages[0]!.status).toBe('failed');
       expect(result.stages[0]!.skipReason).toContain('Agent crashed');
       expect(result.stages[1]!.status).toBe('completed');
-      // Pipeline decision must reflect the thrown-error failure
-      expect(result.decision).toBe('FAIL');
-      expect(result.metrics.stagesFailed).toBe(1);
+      // The thrown stage has no gate, so it is WARNED (D43) and the run decision WARN, not PASS.
+      expect(result.stages[0]!.outcome).toBe('WARNED');
+      expect(result.decision).toBe('WARN');
+      expect(result.metrics.stagesWarned).toBe(1);
       expect(result.metrics.stagesExecuted).toBe(2);
     });
 
@@ -1342,7 +1348,10 @@ describe('PipelineExecutor', () => {
 
       expect(result.stages[0]!.result!.decision).toBe('FAIL');
       expect(result.stages[0]!.result!.decisionCategory).toBe('negative');
-      expect(result.decision).toBe('FAIL');
+      // No gate is judged as `warn` with the `not_negative` key (D43): the negative WARNs the run, it
+      // does not fail it (it failed it before D43).
+      expect(result.stages[0]!.outcome).toBe('WARNED');
+      expect(result.decision).toBe('WARN');
     });
 
     it('keeps a negative-verdict agent with a real score in the stage average (crash filter untouched)', async () => {
@@ -1368,7 +1377,9 @@ describe('PipelineExecutor', () => {
       const result = await executor.execute(inlineAgentsDef(), { target: '/tmp/test' });
 
       expect(result.stages[0]!.result!.decision).toBe('FAIL');
-      expect(result.decision).toBe('FAIL');
+      // The crash makes the stage ERRORED; with no gate (D43) that WARNs the run.
+      expect(result.stages[0]!.outcome).toBe('ERRORED');
+      expect(result.decision).toBe('WARN');
     });
 
     it('unstamped custom verdicts remain neutral and pass — the documented fallback boundary', async () => {
@@ -1393,9 +1404,10 @@ describe('PipelineExecutor', () => {
 
       const result = await executor.execute(makePipelineDef(), { target: '/tmp/test' });
 
-      expect(result.decision).toBe('FAIL');
-      expect(result.decisionCategory).toBe('negative'); // buildResult stamps the pipeline result too
-      expect(result.metrics.stagesFailed).toBe(1);
+      // Classified negative through its stamped category; no gate (D43) makes that WARNED.
+      expect(result.decision).toBe('WARN');
+      expect(result.decisionCategory).toBe('conditional'); // buildResult stamps the pipeline result too
+      expect(result.metrics.stagesWarned).toBe(1);
     });
 
     it('reads a command-ref stage\'s custom conditional decision through its stamped category (CONDITIONAL_ACCEPTED)', async () => {
@@ -1406,9 +1418,10 @@ describe('PipelineExecutor', () => {
 
       const result = await executor.execute(makePipelineDef(), { target: '/tmp/test' });
 
-      // Classified conditional (not neutral): the gateless stage's blocking-class gate accepts it.
-      expect(result.warnings.map(w => w.code)).toEqual(['CONDITIONAL_ACCEPTED']);
-      expect(result.decision).toBe('FAIL');
+      // Classified conditional (not neutral): it passes the gateless stage (D43, not blocking), so
+      // nothing is accepted and the run passes. A blocking gate would accept it (see stage gates).
+      expect(result.warnings).toEqual([]);
+      expect(result.decision).toBe('PASS');
       expect(result.metrics.stagesPassed).toBe(1);
     });
 
@@ -1423,7 +1436,8 @@ describe('PipelineExecutor', () => {
       });
       const result = await executor.execute(def, { target: '/tmp/test' });
 
-      expect(result.decision).toBe('FAIL');
+      expect(result.stages[0]!.outcome).toBe('WARNED'); // negative at a gateless stage (D43)
+      expect(result.decision).toBe('WARN');
     });
 
     it('classifies core-register decisions without a stamped category (backwards compatible)', async () => {
@@ -1434,7 +1448,8 @@ describe('PipelineExecutor', () => {
 
       const result = await executor.execute(makePipelineDef(), { target: '/tmp/test' });
 
-      expect(result.decision).toBe('FAIL');
+      expect(result.stages[0]!.outcome).toBe('WARNED'); // classified negative; no gate (D43) WARNs
+      expect(result.decision).toBe('WARN');
     });
   });
 

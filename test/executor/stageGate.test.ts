@@ -11,13 +11,13 @@ const m = (name: string, cls: GatedMember['class'], score: number | null, thresh
   ({ name, class: cls, score, ...(threshold !== undefined ? { threshold } : {}) });
 
 describe('gateMode', () => {
-  it('reads skip as fail, absent on_failure as abort, and no gate as fail (D1, D19)', () => {
+  it('reads skip as fail, absent on_failure as abort, and no gate as warn (D1, D43)', () => {
     expect(gateMode({ on_failure: 'skip' })).toBe('fail');
     expect(gateMode({ on_failure: 'fail' })).toBe('fail');
     expect(gateMode({ on_failure: 'warn' })).toBe('warn');
     expect(gateMode({ on_failure: 'abort' })).toBe('abort');
     expect(gateMode({})).toBe('abort');
-    expect(gateMode(undefined)).toBe('fail');
+    expect(gateMode(undefined)).toBe('warn');
   });
 
   it('reads a value outside the enum as abort, the most blocking mode (was: continue)', () => {
@@ -30,7 +30,15 @@ describe('decisionKey', () => {
     expect(decisionKey({ on_failure: 'fail' }, 'fail')).toBe('not_negative');
     expect(decisionKey({ on_failure: 'abort' }, 'abort')).toBe('not_negative');
     expect(decisionKey({ on_failure: 'warn' }, 'warn')).toBe('ignore');
-    expect(decisionKey(undefined, 'fail')).toBe('not_negative');
+  });
+
+  it('a stage with no gate reads not_negative although its mode is warn (D43): a negative WARNs it', () => {
+    expect(decisionKey(undefined, gateMode(undefined))).toBe('not_negative');
+    const r = judgeGate(undefined, [m('a', 'negative', 90)], false);
+    expect(r.failed).toBe(true);
+    expect(judgedOutcome(r.failed, gateMode(undefined))).toBe('WARNED');
+    // Not blocking, so a conditional passes and is not reported accepted.
+    expect(judgeGate(undefined, [m('a', 'conditional', 90)], false)).toMatchObject({ failed: false, conditionalAccepted: [] });
   });
 
   it('keeps an authored key, and reads an unknown one as the default', () => {

@@ -878,7 +878,7 @@ export class PipelineExecutor {
    * 3. **ERRORED** by an unjudgeable agent or an agent condition (executeAgentsStage): no gate.
    * 4. **The gate** (`stageGate.ts`): PASSED, or WARNED behind `warn`, else FAILED. A stage that
    *    threw, a steps stage whose step failed without `continue_on_error`, and a gated stage that
-   *    verifiably executed nothing all fail it. A stage with no gate is judged as `fail` (D19).
+   *    verifiably executed nothing all fail it. A stage with no gate is judged as `warn` (D43).
    */
   private judgeStage(stage: StageDefinition, result: StageResult, state: PipelineState): StageResult {
     if (result.outcome === 'SKIPPED') return result;

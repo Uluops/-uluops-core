@@ -71,7 +71,8 @@ export interface StepDefinition {
  *   decision never fails a gate; the score decides.
  * - **`on_failure`**: `abort` makes the stage FAILED and skips its transitive dependents only (D1);
  *   `fail` makes it FAILED and the run continues; `warn` makes it WARNED; `skip` is a deprecated
- *   alias of `fail`. Absent is `abort`. A stage with no gate at all behaves as `fail` (D19).
+ *   alias of `fail`. Absent is `abort`. A stage with no gate at all is judged as `warn` with the
+ *   `not_negative` decision key: a failed step or a negative decision makes it WARNED (D43).
  *
  * Before 1.6.0, `abort` skipped every remaining stage and failed the run, `skip` skipped the
  * remaining stages, and the gate failed on any negative decision whatever its mode.
@@ -307,7 +308,7 @@ export interface StageResult {
   outcome?: StageOutcome;
 
   /** The failure mode the stage was judged under: `on_failure`, with `skip` read as `fail`, an
-   *  absent `on_failure` as `abort`, and a stage with no gate as `fail` (D19). Decides what an
+   *  absent `on_failure` as `abort`, and a stage with no gate as `warn` (D43). Decides what an
    *  ERRORED stage does to the run (§3.1). Absent on a stage that did not launch. */
   gateMode?: GateMode;
 

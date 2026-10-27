@@ -257,10 +257,11 @@ expected:
   - id: gates/steps-only-hard-failure-no-gate
     outcome: ran
     stages:
-      pre: { status: FAILED, passed: false, launched: [] }
+      # D43 (Alex 2026-10-27, revising D19): a stage with no gate is judged as `warn`.
+      pre: { status: WARNED, passed: false, launched: [] }
       b: { status: PASSED, passed: true, launched: [stub-gate-a], agents: { stub-gate-a: positive } }
-    all_gates_passed: false
-    run_decision: FAIL
+    all_gates_passed: true
+    run_decision: WARN
     warnings: []
 
   - id: gates/steps-only-hard-failure-warn-gate

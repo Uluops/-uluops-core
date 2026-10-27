@@ -19,16 +19,17 @@ import { finiteNonNegative } from '../utils/externalValue.js';
 export type DecisionKey = 'not_negative' | 'positive' | 'ignore';
 
 /**
- * The failure mode (§3.2, failure modes; D1, D19): `on_failure`, with `skip` read as `fail`
+ * The failure mode (§3.2, failure modes; D1, D43): `on_failure`, with `skip` read as `fail`
  * (deprecated; load warns `SKIP_DEPRECATED`) and an absent `on_failure` as `abort`. A stage with no
- * gate behaves as `fail`.
+ * gate is judged as `warn`: it never fails the run, and a failure there is WARNED (D43, Alex
+ * 2026-10-27, revising D19's "behaves as `fail`").
  *
  * Any value outside the enum reads as `abort`, the most blocking mode. Authored YAML reaches here
  * type-erased, and before 1.6.0 an unknown value fell through every branch and continued: a typo in
  * a hard gate made it advisory.
  */
 export function gateMode(gate: GateDefinition | undefined): GateMode {
-  if (!gate) return 'fail';
+  if (!gate) return 'warn';
   switch (gate.on_failure) {
     case 'warn': return 'warn';
     case 'fail':
@@ -42,9 +43,14 @@ export function isBlocking(mode: GateMode): boolean {
   return mode !== 'warn';
 }
 
-/** The decision key: as authored, else `not_negative` on a blocking gate and `ignore` on `warn` (D3). */
+/**
+ * The decision key: as authored, else `not_negative` on a blocking gate and `ignore` on `warn` (D3).
+ * A stage with no gate reads `not_negative` (D43): a negative there is WARNED rather than passed
+ * without a trace. It cannot accept a CONDITIONAL, since it is not blocking.
+ */
 export function decisionKey(gate: GateDefinition | undefined, mode: GateMode): DecisionKey {
-  const key = gate?.decision;
+  if (!gate) return 'not_negative';
+  const key = gate.decision;
   if (key === 'not_negative' || key === 'positive' || key === 'ignore') return key;
   return isBlocking(mode) ? 'not_negative' : 'ignore';
 }

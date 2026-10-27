@@ -558,8 +558,8 @@ interface PlOut { decision: string; status: string; score: number | null; allGat
 /**
  * The pipeline oracle, PDL 1.6.0 (§3.1 run model, §3.2 gates; P4b). Derived from the spec's rules,
  * not from stageGate.ts / runVerdict.ts:
- * - mode: no gate → fail (D19); on_failure absent → abort; skip → fail. abort and fail block.
- * - decision key: not_negative at a blocking gate, ignore at warn (gate-decision D3).
+ * - mode: no gate → warn (D43); on_failure absent → abort; skip → fail. abort and fail block.
+ * - decision key: not_negative at a blocking gate and at no gate, ignore at a warn gate (D3, D43).
  * - a stage a stop reached (it holds a stopped or deadline record) is ERRORED, gate not evaluated;
  *   an agents stage with an unjudgeable agent (D24: a crash, or no score at a threshold gate, or no
  *   score and a neutral decision) is ERRORED; else the gate decides PASSED / WARNED / FAILED.
@@ -577,7 +577,7 @@ function plModel(c: { stages: StageSpec[] }, ctx: Ctx, act: NPl, problems: strin
   const aborted = new Set<string>();
   const stopStatus = ctx.mode === 'cancel' || ctx.mode === 'abort' ? 'cancelled' : 'failed';
   const stageAgents = (s: StageSpec) => (s.kind === 'agents' ? s.agents : s.kind === 'command' ? stepAgents(s.step) : s.kind === 'workflow' ? wfAgents(s.wf) : []).map(a => a.name);
-  const modeOf = (g?: StageGate) => !g ? 'fail' : g.on_failure === 'warn' ? 'warn' : g.on_failure === 'skip' ? 'fail' : 'abort';
+  const modeOf = (g?: StageGate) => !g ? 'warn' : g.on_failure === 'warn' ? 'warn' : g.on_failure === 'skip' ? 'fail' : 'abort';
   const stopMarks = (m?: string[]) => (m ?? []).some(x => x === RUN_STOPPED || x === PARTIAL || x === 'execution.deadline');
   const scores: Record<string, number | null> = {};
   for (let i = 0; i < c.stages.length; i++) {
@@ -627,7 +627,8 @@ function plModel(c: { stages: StageSpec[] }, ctx: Ctx, act: NPl, problems: strin
     if (reached) { out.status = 'errored'; out.outcome = 'ERRORED'; stopErrored = true; }
     else if (unjudgeable) { out.status = 'errored'; out.outcome = 'ERRORED'; }
     else {
-      const key = mode === 'warn' ? 'ignore' : 'not_negative';
+      // D43: a stage with no gate is `warn` with the `not_negative` key.
+      const key = mode === 'warn' && s.gate ? 'ignore' : 'not_negative';
       let failed = out.status === 'failed' || (s.gate !== undefined && nothing);
       if (key === 'not_negative' && members.some(m => m.cat === 'negative')) failed = true;
       const thr = s.gate?.threshold;
@@ -783,16 +784,24 @@ async function wfCase(seed: number, verbose = false) {
     bump('layout.cases'); if (ctx.stopFired) bump('layout.stopped');
     if ('hang' in np) { fails.push({ seed: `wf:${seed}`, cls: 'layout-hang', msgs: ['layout pipeline hang'] }); return; }
     // PDL 1.6.0 maps the verdict across layouts rather than preserving it (OD-14's invariance held
-    // under 1.5 only). Each split stage is a gateless workflow ref, judged as `fail` with the blocking
-    // decision default (D19, gate-decision D3), and a stop that reaches a stage makes the run FAIL
-    // (§3.1). So a workflow that is positive or neutral passes as a pipeline unless a stop reached the
-    // run; a conditional is an accepted CONDITIONAL (FAIL), and a negative fails.
+    // under 1.5 only). Each split stage is a gateless workflow ref, judged as `warn` with the
+    // `not_negative` key (D43), and a stop that reaches a stage makes the run FAIL (§3.1). So a
+    // workflow that a stop reached reads FAIL as a pipeline; otherwise a negative (or a throw) is
+    // WARNED (WARN), and anything else passes (a conditional is not accepted: no gate is not blocking).
     const a = wfCatOf(act), b = plCat(np.decision);
-    const want = !exp.anyStop && (a === 'positive' || a === 'neutral') ? 'positive' : 'negative';
+    // A stop reaches the split pipeline when it reached the workflow's work, or when it fired in a
+    // stage that has later stages (the stop keeps them from starting), which one workflow can see as
+    // reaching nothing.
+    const phases = c.wf.phases;
+    const trig = ctx.trigger === undefined ? -1 : phases.findIndex(p => p.steps.flatMap(st => st.kind === 'agentRef' ? [st.agent] : stepAgents(st)).some(ag => ag.name === ctx.trigger));
+    const plStopReached = exp.anyStop || (ctx.stopFired && trig >= 0 && trig < phases.length - 1);
+    const want = plStopReached ? 'negative' : a === 'negative' ? 'conditional' : 'positive';
     if (b !== want) {
       const tag = exp.stopUnreached ? 'stop-unreached' : ctx.stopFired ? 'stopped' : 'unstopped';
       bump(`layout.mismatch.${tag}`);
-      fails.push({ seed: `wf:${seed}`, cls: `LAYOUT[${tag}] wf=${act.threw ? 'THREW' : act.decision}/${a} pl=${np.decision}/${b}`, msgs: [`layout wf=${a} pipeline=${b}`] });
+      // The deferred F4 class ([fcancel]) is exempt here as in the per-run checks: until D43 the two
+      // seeds that carry it in a layout case matched only because negative mapped to negative.
+      fails.push({ seed: `wf:${seed}`, cls: `${fc}LAYOUT[${tag}] wf=${act.threw ? 'THREW' : act.decision}/${a} pl=${np.decision}/${b}`, msgs: [`layout wf=${a} pipeline=${b}`] });
     }
   }
 }

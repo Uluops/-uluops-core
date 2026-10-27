@@ -497,7 +497,7 @@ stages:
 | `fail` | FAILED | continues |
 | `warn` | WARNED | continues |
 | `skip` (deprecated) | as `fail` (load warning `SKIP_DEPRECATED`) | as `fail` |
-| no gate | as `fail` | continues |
+| no gate | WARNED (a failed step, a thrown stage or a negative decision; D43) | continues; never fails the run |
 
 An ERRORED stage takes its gate's mode: behind `abort` its dependents are skipped, behind `fail` it fails the run, behind `warn` it counts as WARNED. Every ERRORED stage raises a `STAGE_ERRORED` warning (`PipelineResult.warnings`, with `reason: 'agent_unjudgeable' | 'condition_error' | 'stopped'`). A stage whose every agent was skipped by its own condition is SKIPPED, its gate not evaluated.
 
