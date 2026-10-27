@@ -364,6 +364,15 @@ wrap-up, and the context-budget brake was inert on Claude structured output.
 
 ### Fixed
 
+- **An agent summary over 2,000 characters aborted the whole tracker save** (found live 2026-10-27,
+  in the PDL 1.6.0 P4b check: contradiction-detector and ambiguity-mapper both wrote longer ones on a
+  ten-line file, and the run came back `trackingFailed` with nothing saved). ops-sdk validates
+  `AgentInputSchema` client-side, so one long summary dropped every agent, recommendation and analysis
+  record of the run. `SubmissionClient` now cuts the summary to the cap read from the pinned schema
+  (`AgentInputSchema.shape.summary`), ending in `…`, and warns: the repair policy
+  `sanitizeRecommendation` already applies, extended to the field it missed. Single-agent and pipeline
+  runs alike; predates PDL 1.6.0.
+
 - **The context-budget wrap-up brake did nothing on Claude runs** (README warned of it from 0.42.0).
   Probed live 2026-10-26 on claude-sonnet-5 with `structuredOutputMode: 'jsonTool'`: a model told to
   keep calling a tool that never finishes exhausted a 5-step cap with no output, and did the same with
