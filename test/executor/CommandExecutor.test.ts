@@ -101,6 +101,25 @@ describe('CommandExecutor', () => {
     });
   });
 
+  // CDL 2.0.0 makes `execution` optional (`command.required` is only `interface`), but core read
+  // `execution.model.default` unguarded: a schema-valid command without the block, or with only the
+  // preflight the normalizer moves there, threw a TypeError (R-D12 live verification, 2026-10-31).
+  // With no model declared, the agent's own model applies (the override is undefined).
+  describe('a command with no execution block, or no model in it', () => {
+    for (const [label, execution] of [['no execution block', undefined], ['preflight only', { preflight: [] }]] as const) {
+      it(`runs its agent with the agent's own model (${label}), single and multi-agent`, async () => {
+        for (const agents of [['test-agent@1.0.0'], ['a@1.0.0', 'b@1.0.0']]) {
+          const agentExec = makeAgentExecutor([makeValidatorResult(), makeValidatorResult()]);
+          const executor = new CommandExecutor(agentExec, makeRegistry());
+          const result = await executor.execute(makeCommandDef({ agents, execution }), { target: '/tmp/test' });
+          expect(result.type).toBe('command');
+          const opts = (agentExec.execute as ReturnType<typeof vi.fn>).mock.calls[0]![2] as { model?: string };
+          expect(opts.model).toBeUndefined();
+        }
+      });
+    }
+  });
+
   describe('multi-agent execution', () => {
     it('aggregates multiple validator results with average', async () => {
       const results = [

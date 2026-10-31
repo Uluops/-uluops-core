@@ -60,6 +60,12 @@ beside it suspect too. Tracker `ced3416c`.
 
 ### Fixed
 
+- **A command with no `execution` block, or no `model` in it, threw a `TypeError`** (R-D12 live
+  verification). CDL 2.0.0 makes both optional, and the normalizer creates the block holding only a
+  moved `preflight`. But `CommandExecutor` read `execution.model.default`, `timeout`, `thresholds` and
+  `sequential` without a guard: "Cannot read properties of undefined (reading 'default')". These reads
+  are now guarded. With no model declared, the agent's own model applies. `CommandDefinition`'s type
+  still declares both fields always present, which is wider than the schema.
 - **A relative target failed every `$ARGUMENTS` path preflight check** (consumer-validate run #122,
   dx-validator). The registry's `validate` command checks `path: $ARGUMENTS`, and so does the README's
   `runCommand('validate', { target: './src' })`. Core substituted the raw target into the path and then

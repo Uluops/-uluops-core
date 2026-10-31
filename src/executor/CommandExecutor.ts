@@ -22,6 +22,16 @@ import { worstExtractionConfidence } from '../utils/worstExtractionConfidence.js
 
 const noopLogger: Logger = { debug() {}, info() {}, warn() {}, error() {} };
 
+type CommandExecution = CommandDefinition['command']['execution'];
+/**
+ * A command's `execution` block as the CDL schema allows it: absent, or without `model`. The
+ * `CommandDefinition` type declares both always present, which a schema-valid definition does not
+ * guarantee; every read in this file goes through here.
+ */
+function executionOf(def: CommandDefinition): (Omit<Partial<CommandExecution>, 'model'> & { model?: Partial<CommandExecution['model']> }) | undefined {
+  return def.command.execution as (Omit<Partial<CommandExecution>, 'model'> & { model?: Partial<CommandExecution['model']> }) | undefined;
+}
+
 /**
  * Executes command definitions.
  *
@@ -90,12 +100,18 @@ export class CommandExecutor {
     // The runtime check above narrows the discriminated union — no cast (a9d65912).
     const def = resolved.definition;
 
-    // Model resolution: operator override > CDL default
-    const model = overrides?.model ?? def.command.execution.model.default;
+    // CDL 2.0.0 makes `execution` optional, and the normalizer creates it holding only a moved
+    // `preflight` when that is all a command declares, so neither the block nor its `model` can be
+    // assumed (CommandDefinition's type says both are always present; it is wider than the schema).
+    // Read through this, never `def.command.execution.*` directly: the unguarded read threw a
+    // TypeError on a schema-valid command (R-D12 live verification, 2026-10-31).
+    const execution = executionOf(def);
+    // Model resolution: operator override > CDL default > the agent's own model (undefined here).
+    const model = overrides?.model ?? execution?.model?.default;
 
     // 1. Run preflight checks
-    if (def.command.execution?.preflight) {
-      await runPreflightChecks(def.command.execution.preflight, input);
+    if (execution?.preflight) {
+      await runPreflightChecks(execution.preflight, input);
     }
 
     // 2. Resolve referenced agents
@@ -110,8 +126,8 @@ export class CommandExecutor {
 
       const agentResult = await this.agentExecutor.execute(agentResolved, input, {
         model,
-        timeoutMs: def.command.execution.timeout,
-        thresholds: def.command.execution.thresholds,
+        timeoutMs: execution?.timeout,
+        thresholds: execution?.thresholds,
         abortSignal: overrides?.abortSignal,
       });
 
@@ -124,7 +140,7 @@ export class CommandExecutor {
       const agentResolved = await this.registry.resolve(name, version, 'agent');
       return this.agentExecutor.execute(agentResolved, input, {
         model,
-        timeoutMs: def.command.execution.timeout,
+        timeoutMs: execution?.timeout,
         // Every agent in a multi-agent command shares the caller's signal, so one cancel
         // ends the whole panel — including the ones still queued behind the concurrency
         // limit, which abort before they ever reach the provider.
@@ -134,7 +150,7 @@ export class CommandExecutor {
 
     let agentResults: AgentResult[];
 
-    if (def.command.execution.sequential === false) {
+    if (execution?.sequential === false) {
       agentResults = await this.executeParallel(agentRefs, executeAgent, overrides?.abortSignal);
     } else {
       agentResults = await this.executeSequentially(agentRefs, executeAgent, overrides?.abortSignal);
@@ -330,7 +346,7 @@ export class CommandExecutor {
       score: agentResult.score,
       maxScore: agentResult.maxScore,
       extractionConfidence: agentResult.extractionConfidence,
-      threshold: def.command.execution.thresholds?.pass,
+      threshold: executionOf(def)?.thresholds?.pass,
       categories: agentResult.categories?.map(mapCategory),
       artifacts: agentResult.artifacts,
       recommendations: agentResult.recommendations,
@@ -381,8 +397,8 @@ export class CommandExecutor {
     }
 
     // Determine overall decision
-    const threshold = def.command.execution.thresholds?.pass ?? DEFAULT_PASS_THRESHOLD;
-    const warnThreshold = def.command.execution.thresholds?.warn ?? DEFAULT_WARN_THRESHOLD;
+    const threshold = executionOf(def)?.thresholds?.pass ?? DEFAULT_PASS_THRESHOLD;
+    const warnThreshold = executionOf(def)?.thresholds?.warn ?? DEFAULT_WARN_THRESHOLD;
     let decision: string;
     let decisionCategory: DecisionCategory;
 
