@@ -34,6 +34,18 @@ beside it suspect too. Tracker `ced3416c`.
   `Decision:` and `Score:` lines say: a stated verdict still gates, and at a threshold gate a report with
   no `Score:` line is ERRORED. Core's own structured output (`agentOutputSchema`, flat) is the envelope by
   construction and is read as before. Every rendered agent output template carries `result`.
+- **An inline-agents stage's `result.decision` now reports the stage's outcome** (behaviour change, no
+  signature change; consumer-validate run #122, wittgenstein GI-4). Core synthesizes that result over
+  the stage's agents. Its `decision` was `FAIL` whenever any agent was negative, whatever the gate's mode
+  or decision key. So a negative agent behind an explicit `warn` gate (key `ignore`) reported outcome
+  PASSED with decision `FAIL`, and a CONDITIONAL agent at a `positive`-key gate reported FAILED with
+  `PASS`. It now reads `PASS`, `WARN`, `FAIL` or `ERROR` for PASSED, WARNED, FAILED or ERRORED, with
+  `decisionCategory` positive, conditional, negative or neutral. A stage a stop reached still reads
+  `FAIL` when an agent really crashed and `ABORTED` otherwise. Unchanged: each agent's decision on
+  `agentResults`, ref stages (the referenced definition's own result), steps stages, the tracker save
+  (which records each agent, not the stage), and upstream forwarding (which forwards the agents). A
+  consumer that read the stage's `decision` as "did any agent object" should read
+  `agentResults[].decisionCategory` instead.
 - **`skipReason` text.** An `agent_unjudgeable` reason now names each agent's cause:
   `agent_unjudgeable: "a" gave no decision at a blocking gate, "b" crashed`. Before, it was one phrase
   for the whole list. `erroredReasons` and the `STAGE_ERRORED` warning are unchanged.

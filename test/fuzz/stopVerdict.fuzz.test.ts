@@ -566,6 +566,8 @@ interface PlOut { decision: string; status: string; score: number | null; allGat
  * - abort skips only the stage's transitive dependents (D1); the run completes.
  * - allGatesPassed is false on FAILED, ERRORED behind a blocking mode, an accepted CONDITIONAL, or a
  *   stop that reached a stage; decision FAIL when false, else WARN on WARNED / ERRORED-behind-warn.
+ * - an agents stage's own decision reports its outcome (PASS / WARN / FAIL / ERROR), except on a
+ *   stage a stop reached, where crash decides (FAIL, else ABORTED).
  * Before P4b this modelled 1.5: abort skipped every remaining stage and failed the run, skip skipped
  * the rest, any negative failed the run, and a user stop that reached a stage read CANCELLED.
  */
@@ -638,6 +640,12 @@ function plModel(c: { stages: StageSpec[] }, ctx: Ctx, act: NPl, problems: strin
       }
       out.outcome = !failed ? 'PASSED' : mode === 'warn' ? 'WARNED' : 'FAILED';
       if (!failed && mode !== 'warn' && members.some(m => m.cat === 'conditional')) conditionalAccepted = true;
+    }
+    // 0.55.0 (consumer-validate run #122, GI-4): an agents stage's synthesized decision reports its
+    // outcome once judged; only a stage a stop reached keeps "crash decides" (FAIL / ABORTED above).
+    if (s.kind === 'agents' && !reached) {
+      const byOutcome: Record<string, [string, Cat]> = { PASSED: ['PASS', 'positive'], WARNED: ['WARN', 'conditional'], FAILED: ['FAIL', 'negative'], ERRORED: ['ERROR', 'neutral'] };
+      [out.decision, out.cat] = byOutcome[out.outcome]!;
     }
     if (mode === 'abort' && (out.outcome === 'FAILED' || out.outcome === 'ERRORED')) aborted.add(s.id);
     st[s.id] = out;

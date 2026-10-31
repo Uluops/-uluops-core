@@ -320,7 +320,12 @@ export interface StageResult {
    *  deadline or credit stop). Each reason is also a `STAGE_ERRORED` warning on the run. */
   erroredReasons?: ErroredReason[];
 
-  /** Result (command or workflow depending on stage type) */
+  /** Result (command or workflow depending on stage type). A ref stage carries the referenced
+   *  definition's own result. An inline-agents stage carries a result core synthesizes over its
+   *  agents: its `score` is their average, and its `decision` / `decisionCategory` report the
+   *  stage's `outcome` (PASSED → PASS / positive, WARNED → WARN / conditional, FAILED → FAIL /
+   *  negative, ERRORED → ERROR / neutral), except on a stage a stop reached, which reads FAIL when an
+   *  agent really crashed and ABORTED otherwise. Each agent's own decision is on `agentResults`. */
   result?: CommandResult | WorkflowResult;
 
   /** Individual agent results for inline-agent stages (preserved for tracker decomposition) */

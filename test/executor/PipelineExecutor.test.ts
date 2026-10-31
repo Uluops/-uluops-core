@@ -1346,11 +1346,13 @@ describe('PipelineExecutor', () => {
 
       const result = await executor.execute(inlineAgentsDef(), { target: '/tmp/test' });
 
-      expect(result.stages[0]!.result!.decision).toBe('FAIL');
-      expect(result.stages[0]!.result!.decisionCategory).toBe('negative');
       // No gate is judged as `warn` with the `not_negative` key (D43): the negative WARNs the run, it
-      // does not fail it (it failed it before D43).
+      // does not fail it (it failed it before D43). The stage's own decision reports that outcome
+      // (0.55.0); the agent's negative stays on the agent.
       expect(result.stages[0]!.outcome).toBe('WARNED');
+      expect(result.stages[0]!.result!.decision).toBe('WARN');
+      expect(result.stages[0]!.result!.decisionCategory).toBe('conditional');
+      expect(result.stages[0]!.agentResults!.map(a => a.decisionCategory)).toEqual(['negative', 'positive']);
       expect(result.decision).toBe('WARN');
     });
 
@@ -1376,10 +1378,52 @@ describe('PipelineExecutor', () => {
 
       const result = await executor.execute(inlineAgentsDef(), { target: '/tmp/test' });
 
-      expect(result.stages[0]!.result!.decision).toBe('FAIL');
-      // The crash makes the stage ERRORED; with no gate (D43) that WARNs the run.
+      // The crash makes the stage ERRORED; with no gate (D43) that WARNs the run. ERRORED reads as
+      // ERROR, a neutral token: the stage could not be judged.
       expect(result.stages[0]!.outcome).toBe('ERRORED');
+      expect(result.stages[0]!.result!.decision).toBe('ERROR');
+      expect(result.stages[0]!.result!.decisionCategory).toBe('neutral');
       expect(result.decision).toBe('WARN');
+    });
+
+    // An inline-agents stage's `result` is synthesized by core, so its decision reports the stage's
+    // outcome (0.55.0; consumer-validate run #122, wittgenstein GI-4). Before, it was FAIL whenever
+    // any agent was negative, whatever the gate's mode or decision key, so an explicit `warn` gate
+    // (key `ignore`) gave outcome PASSED with decision FAIL.
+    describe('the stage decision reports the outcome', () => {
+      const run = async (results: AgentResult[], gate: Record<string, unknown>) => {
+        const executor = new PipelineExecutor(makeWorkflowExecutor(), makeCommandExecutor(), makeAgentExecutor(results), makeRegistry(), noopLogger);
+        const def = makePipelineDef({
+          stages: [{ id: 'panel', name: 'Panel', type: 'agents' as const, agents: results.map((_, i) => ({ ref: `a${i}@1` })), gate: gate as never }],
+        });
+        return (await executor.execute(def, { target: '/tmp/test' })).stages[0]!;
+      };
+      const negative = makeValidatorResult({ decision: 'BEWITCHED', decisionCategory: 'negative', score: 81 });
+
+      it('a negative agent behind an explicit warn gate (key ignore): PASSED and PASS', async () => {
+        const stage = await run([negative], { threshold: 75, on_failure: 'warn' });
+        expect(stage.outcome).toBe('PASSED');
+        expect([stage.result!.decision, stage.result!.decisionCategory]).toEqual(['PASS', 'positive']);
+        expect(stage.agentResults![0]!.decision).toBe('BEWITCHED');
+      });
+
+      it('a failed warn gate: WARNED and WARN', async () => {
+        const stage = await run([makeValidatorResult({ score: 60 })], { threshold: 75, on_failure: 'warn' });
+        expect(stage.outcome).toBe('WARNED');
+        expect([stage.result!.decision, stage.result!.decisionCategory]).toEqual(['WARN', 'conditional']);
+      });
+
+      it('a conditional agent at a `positive`-key blocking gate: FAILED and FAIL', async () => {
+        const stage = await run([makeValidatorResult({ decision: 'WARN', decisionCategory: 'conditional', score: 90 })], { on_failure: 'fail', decision: 'positive' });
+        expect(stage.outcome).toBe('FAILED');
+        expect([stage.result!.decision, stage.result!.decisionCategory]).toEqual(['FAIL', 'negative']);
+      });
+
+      it('an unjudgeable agent: ERRORED and ERROR (neutral)', async () => {
+        const stage = await run([makeValidatorResult({ decision: 'UNKNOWN', score: 85, verdict: { class: 'absent', warnings: [] } })], { on_failure: 'abort' });
+        expect(stage.outcome).toBe('ERRORED');
+        expect([stage.result!.decision, stage.result!.decisionCategory]).toEqual(['ERROR', 'neutral']);
+      });
     });
 
     it('unstamped custom verdicts remain neutral and pass — the documented fallback boundary', async () => {

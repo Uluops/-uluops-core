@@ -3,7 +3,7 @@ import type { CommandExecutor } from './CommandExecutor.js';
 import type { WorkflowExecutor } from './WorkflowExecutor.js';
 import type { RegistryClient } from '../registry/RegistryClient.js';
 import type { ResolvedDefinition } from '../types/registry.js';
-import type { PipelineDefinition, StageDefinition, PipelineResult, StageResult, StepResult, PipelineState, PipelineWarning, ErroredReason, PipelineHandle as IPipelineHandle } from '../types/pipeline.js';
+import type { PipelineDefinition, StageDefinition, PipelineResult, StageResult, StepResult, PipelineState, PipelineWarning, ErroredReason, StageOutcome, PipelineHandle as IPipelineHandle } from '../types/pipeline.js';
 import { StepsExecutor } from './StepsExecutor.js';
 import { nulParameter } from './stepTemplates.js';
 import { evaluateCondition, E, type ConditionContext } from './conditions.js';
@@ -570,6 +570,8 @@ export class PipelineExecutor {
         version: CRASH_PLACEHOLDER_VERSION,
         definitionHash: '',
         agentType: 'analyst',
+        // Provisional: judgeStage restamps decision and decisionCategory from the stage's outcome
+        // (reportOutcome). This value survives only on a stage a stop reached ("crash decides").
         decision: stageNegative ? 'FAIL' : stageAborted ? ABORTED_DECISION : 'PASS',
         decisionCategory: stageNegative ? 'negative' as const : stageAborted ? 'neutral' as const : 'positive' as const,
         // KEEP: avgScore is a real average over child agents; maxScore 100 is its scale,
@@ -908,7 +910,7 @@ export class PipelineExecutor {
         this.logger.warn(`Stage "${stage.id}" is ERRORED (${reason})`);
         raise(state, { code: 'STAGE_ERRORED', stage: stage.id, reason });
       }
-      return { ...result, outcome: 'ERRORED' };
+      return reportOutcome({ ...result, outcome: 'ERRORED' });
     }
 
     const { failed, conditionalAccepted, causes } = this.gateFailed(stage, result);
@@ -918,7 +920,7 @@ export class PipelineExecutor {
     }
     const outcome = judgedOutcome(failed, mode);
     if (failed) this.logger.warn(`Stage "${stage.id}" failed its gate (on_failure: ${mode}): ${causes.join('; ')} — ${outcome}`);
-    return { ...result, outcome };
+    return reportOutcome({ ...result, outcome });
   }
 
   /**
@@ -990,6 +992,30 @@ export class PipelineExecutor {
       if (s) state.stageResults.push(this.createSkippedStage(s, reason));
     }
   }
+}
+
+/**
+ * The decision an inline-agents stage's synthesized result reports once the stage is judged: its
+ * outcome (0.55.0; consumer-validate run #122, wittgenstein GI-4). Before, it was FAIL whenever any
+ * agent was negative, whatever the gate's mode or decision key, so an explicit `warn` gate (key
+ * `ignore`) reported outcome PASSED with decision FAIL. ERRORED reads ERROR, a neutral token: the
+ * stage could not be judged. Each agent's own decision stays on `agentResults`.
+ *
+ * Only core's synthesized aggregate is restamped. A ref stage's result is the referenced
+ * definition's own, and a steps stage's decision is its steps' verdict, which `stepsFailed` reads;
+ * neither is touched. A stopped stage keeps "crash decides" (`stopVerdict`, OD-12): judgeStage
+ * returns before calling this.
+ */
+const OUTCOME_DECISION: Record<Exclude<StageOutcome, 'SKIPPED'>, { decision: string; decisionCategory: 'positive' | 'conditional' | 'negative' | 'neutral' }> = {
+  PASSED: { decision: 'PASS', decisionCategory: 'positive' },
+  WARNED: { decision: 'WARN', decisionCategory: 'conditional' },
+  FAILED: { decision: 'FAIL', decisionCategory: 'negative' },
+  ERRORED: { decision: 'ERROR', decisionCategory: 'neutral' },
+};
+function reportOutcome(result: StageResult): StageResult {
+  if (!result.agentResults || !result.result || result.result.version !== CRASH_PLACEHOLDER_VERSION) return result;
+  if (result.outcome === undefined || result.outcome === 'SKIPPED') return result;
+  return { ...result, result: { ...result.result, ...OUTCOME_DECISION[result.outcome] } };
 }
 
 /**
