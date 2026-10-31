@@ -6,7 +6,9 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) 
 
 ## [Unreleased]
 
-**PDL 1.6.0, R-D12: an absent decision at a blocking gate is ERRORED** (design spec pdl-1_6_0 v0.9.0,
+## [0.55.0] - 2026-10-31
+
+**PDL 1.6.0, R-D12: an absent decision at a blocking gate is ERRORED** (design spec pdl-1_6_0 v0.9.1,
 D12, D46, D47; normative text `uluops-pdl-spec-v1.6.0.md`, *Gates → Neutral, absent and saved
 decisions*; checklist v0.1.5 §R-D12). Until now an agent whose decision core could not read was judged
 on its score alone at every gate, so a blocking gate could pass work whose verdict was never read.
