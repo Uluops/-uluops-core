@@ -8,7 +8,7 @@ import { StepsExecutor } from './StepsExecutor.js';
 import { nulParameter } from './stepTemplates.js';
 import { evaluateCondition, E, type ConditionContext } from './conditions.js';
 import { checkPipelineLoadRules, stagesReadingStepOutput, bindParameterDefaults } from './pipelineLoad.js';
-import { isUnjudgeable } from './agentVerdict.js';
+import { unjudgeableCause, type UnjudgeableCause } from './agentVerdict.js';
 import { agentsMissingVocabulary, vocabularyMissingMessage } from './vocabularyPrecheck.js';
 import { gateMode, isBlocking, isPerAgentMode, gateHasThreshold, judgeGate, judgedOutcome, type GatedMember } from './stageGate.js';
 import { computeAllGatesPassed, runDecision, runDecisionCategory, stageMetrics } from './runVerdict.js';
@@ -524,20 +524,31 @@ export class PipelineExecutor {
     // decision, or no score at a gate with a threshold. A crashed agent (a timeout included) left
     // no output to read, so it is unjudgeable; its crash record still reaches submission. A record a
     // stop left is not judged here: the stage is ERRORED `stopped` (judgeStage).
-    const thresholdGate = gateHasThreshold(stage);
+    // An absent decision at a blocking gate is unjudgeable whatever its score (D12).
+    const judging = { hasThreshold: gateHasThreshold(stage), blocking: stage.gate !== undefined && isBlocking(gateMode(stage.gate)) };
+    const causeText: Record<UnjudgeableCause | 'crashed', string> = {
+      crashed: 'crashed',
+      absent_at_blocking_gate: 'gave no decision at a blocking gate',
+      no_score_at_threshold: 'gave no score at a gate with a threshold',
+      no_score_no_decision: 'gave no score and no classifiable decision',
+    };
     const unjudgeable = agentResults
       .map((r, idx) => ({ r, ref: refs[idx] ?? r.name }))
       .filter(({ r }) => !stopReached(r))
-      .filter(({ r }) => r.version === CRASH_PLACEHOLDER_VERSION
-        || isUnjudgeable({ class: r.verdict?.class ?? resolveDecisionCategory(r), score: r.score ?? null }, thresholdGate))
-      .map(({ ref }) => ref);
+      .map(({ r, ref }) => ({
+        ref,
+        cause: r.version === CRASH_PLACEHOLDER_VERSION
+          ? 'crashed' as const
+          : unjudgeableCause({ class: r.verdict?.class ?? resolveDecisionCategory(r), score: r.score ?? null }, judging),
+      }))
+      .filter((u): u is { ref: string; cause: UnjudgeableCause | 'crashed' } => u.cause !== undefined);
     const erroredReasons: ErroredReason[] = [
       ...(conditionErrors.length > 0 ? ['condition_error' as const] : []),
       ...(unjudgeable.length > 0 ? ['agent_unjudgeable' as const] : []),
     ];
     const reasonText = [
       ...(conditionErrors.length > 0 ? [`condition_error: the condition of ${conditionErrors.map(r => `"${r}"`).join(', ')} read a step that did not pass`] : []),
-      ...(unjudgeable.length > 0 ? [`agent_unjudgeable: ${unjudgeable.map(r => `"${r}"`).join(', ')} gave no score${thresholdGate ? ' at a gate with a threshold' : ' and no classifiable decision'}, or crashed`] : []),
+      ...(unjudgeable.length > 0 ? [`agent_unjudgeable: ${unjudgeable.map(u => `"${u.ref}" ${causeText[u.cause]}`).join(', ')}`] : []),
     ];
     const errored = erroredReasons.length > 0
       ? { status: 'errored' as const, erroredReasons, skipReason: reasonText.join('; ') }

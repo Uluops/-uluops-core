@@ -562,6 +562,7 @@ export class AgentExecutor {
       text: rawText,
       vocabulary: buildVocabularyMap(agentBody ?? {}),
       display: this.displayNormalizer.locateDisplaySources(json),
+      structured: result.structuredOutput !== undefined,
     });
     for (const w of verdict.warnings) {
       // Values are LLM output (attacker-influenced via the target): strip control characters so

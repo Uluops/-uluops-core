@@ -56,6 +56,18 @@ import { checkPipelineLoadRules, bindParameterDefaults } from '../../src/executo
 import { evaluateCondition, E, type ConditionContext } from '../../src/executor/conditions.js';
 import { AgentExecutor } from '../../src/executor/AgentExecutor.js';
 import { isUnjudgeable } from '../../src/executor/agentVerdict.js';
+
+/**
+ * How a stage's gate judges an unjudgeable agent, derived from the YAML here rather than through
+ * stageGate.ts, so the oracle does not share the code it checks: a threshold (aggregate or
+ * per-agent), and a blocking gate (any gate but `warn`; a stage with no gate is not blocking, D43).
+ */
+function judging(stage: Obj): { hasThreshold: boolean; blocking: boolean } {
+  return {
+    hasThreshold: stage.gate?.threshold !== undefined || (stage.agents ?? []).some((a: Obj) => a.threshold !== undefined),
+    blocking: stage.gate !== undefined && stage.gate.on_failure !== 'warn',
+  };
+}
 import { PipelineExecutor } from '../../src/executor/PipelineExecutor.js';
 import { PipelineError } from '../../src/errors/index.js';
 import type { StageResult, StepDefinition } from '../../src/types/pipeline.js';
@@ -284,17 +296,17 @@ describe('PDL 1.6.0 conformance: agent verdicts through AgentExecutor (P4a)', ()
 
   it('covers every group\'s launched stubs (a filter that matched nothing would pass vacuously)', () => {
     expect(launches.filter(([, c]) => c.id.startsWith('decisions/')).length).toBeGreaterThanOrEqual(40);
-    expect(launches.length).toBe(112);
+    expect(launches.length).toBe(121);
   });
 
   it.each(launches)('%s', async (_label, c, stageId, ref) => {
     const want = expected.get(c.id)!;
     const w = (want.stages as Record<string, Obj>)[stageId]!;
     const stage = (c.pipeline.stages as Obj[]).find((s) => s.id === stageId)!;
-    const gateHasThreshold = stage.gate?.threshold !== undefined || (stage.agents ?? []).some((a: Obj) => a.threshold !== undefined);
+    const gate = judging(stage);
     const result = await new AgentExecutor(config, provider(stubText(c.stubs[ref])), noopLogger).execute(resolvedStub(ref), { target: '/tmp' });
     const verdict = result.verdict!;
-    const unjudgeable = isUnjudgeable({ class: verdict.class, score: result.score }, gateHasThreshold);
+    const unjudgeable = isUnjudgeable({ class: verdict.class, score: result.score }, gate);
 
     const pinned = w.agents?.[ref];
     const cls = typeof pinned === 'object' ? pinned.class : pinned;
@@ -323,11 +335,11 @@ describe('PDL 1.6.0 conformance: agent verdicts through AgentExecutor (P4a)', ()
       const want = expected.get(c.id)!;
       if ((c.pipeline.stages as Obj[]).find((s) => s.id === stageId)!.agents?.some((a: Obj) => c.stubs?.[a.ref]?.timeout || c.stubs?.[a.ref]?.hang)) return;
       const stage = (c.pipeline.stages as Obj[]).find((s) => s.id === stageId)!;
-      const thr = stage.gate?.threshold !== undefined || (stage.agents ?? []).some((a: Obj) => a.threshold !== undefined);
+      const gate = judging(stage);
       let any = false;
       for (const [, , , ref] of group) {
         const r = await new AgentExecutor(config, provider(stubText(c.stubs[ref])), noopLogger).execute(resolvedStub(ref), { target: '/tmp' });
-        any ||= isUnjudgeable({ class: r.verdict!.class, score: r.score }, thr);
+        any ||= isUnjudgeable({ class: r.verdict!.class, score: r.score }, gate);
       }
       const flagged = ((want.warnings ?? []) as Obj[]).some((x) => x.code === 'STAGE_ERRORED' && x.stage === stageId && x.reason === 'agent_unjudgeable');
       expect(any).toBe(flagged);
@@ -386,7 +398,7 @@ describe('PDL 1.6.0 conformance: every core case end to end (P4b)', () => {
   it('covers every group (a filter that matched nothing would pass vacuously)', () => {
     const groups = new Set(runCases.map(c => c.id.split('/')[0]));
     expect([...groups].sort()).toEqual(['conditions', 'decisions', 'gates', 'run-control', 'steps']);
-    expect(runCases.length).toBe(104);
+    expect(runCases.length).toBe(113);
     expect(runCases.filter(c => c.events).length).toBe(2);
   });
 
@@ -411,10 +423,9 @@ describe('PDL 1.6.0 conformance: every core case end to end (P4b)', () => {
         if (cls === 'errored') {
           // Unjudgeable (D24, a crash or timeout included), stopped, or undispatched by a condition E.
           const stage = (c.pipeline.stages as Obj[]).find(s => s.id === stageId)!;
-          const thr = stage.gate?.threshold !== undefined || (stage.agents ?? []).some((a: Obj) => a.threshold !== undefined);
           const ok = rec === undefined
             || rec.version === '1.0.0-synthesized'
-            || isUnjudgeable({ class: rec.verdict!.class, score: rec.score }, thr);
+            || isUnjudgeable({ class: rec.verdict!.class, score: rec.score }, judging(stage));
           expect(ok, `${label} errored`).toBe(true);
           expect(got!.outcome, `${label}: an errored agent errors its stage`).toBe('ERRORED');
           continue;

@@ -1676,6 +1676,55 @@ describe('PipelineExecutor', () => {
       expect(result.stages[0]!.result?.score ?? null).toBeNull();
     });
 
+    // D12 (R-D12, decided by S0's read): an absent decision at a blocking gate is ERRORED, whatever
+    // the score. It is about agents. A workflow or command ref classifies through its own definition
+    // (D9), so a ref with no classifiable decision is unchanged (OQ-3, Alex 2026-10-31): the score
+    // decides. The fixture format has no ref stubs, so this pins OQ-3 here (Alex, 2026-10-31).
+    it('an inline agent with an absent decision and a passing score at a blocking gate is ERRORED (D12)', async () => {
+      const agentExecutor = makeAgentExecutor([
+        makeValidatorResult({ decision: 'UNKNOWN', score: 85, verdict: { class: 'absent', warnings: [] } }),
+      ]);
+      const executor = new PipelineExecutor(makeWorkflowExecutor(), makeCommandExecutor(), agentExecutor, makeRegistry(), noopLogger);
+      const def = makePipelineDef({
+        stages: [
+          { id: 'panel', name: 'Panel', type: 'agents' as const, agents: [{ ref: 'a@1' }], gate: { on_failure: 'abort' as const } },
+          { id: 'downstream', name: 'Downstream', type: 'command' as const, ref: 'c@1', depends_on: ['panel'] },
+        ],
+      });
+      const result = await executor.execute(def, { target: '/tmp' });
+      expect(result.stages[0]!.outcome).toBe('ERRORED');
+      expect(result.stages[0]!.skipReason).toBe('agent_unjudgeable: "a@1" gave no decision at a blocking gate');
+      expect(result.stages[1]!.status).toBe('skipped');
+      expect(result.decision).toBe('FAIL');
+    });
+
+    it('the same absent decision behind `warn` is judged on its score (D12 is blocking gates only)', async () => {
+      const agentExecutor = makeAgentExecutor([
+        makeValidatorResult({ decision: 'UNKNOWN', score: 85, verdict: { class: 'absent', warnings: [] } }),
+      ]);
+      const executor = new PipelineExecutor(makeWorkflowExecutor(), makeCommandExecutor(), agentExecutor, makeRegistry(), noopLogger);
+      const def = makePipelineDef({
+        stages: [{ id: 'panel', name: 'Panel', type: 'agents' as const, agents: [{ ref: 'a@1' }], gate: { threshold: 70, on_failure: 'warn' as const } }],
+      });
+      const result = await executor.execute(def, { target: '/tmp' });
+      expect(result.stages[0]!.outcome).toBe('PASSED');
+    });
+
+    it('a command ref with no classifiable decision at a blocking gate is judged on its score, not ERRORED (OQ-3)', async () => {
+      const cmdExec = makeCommandExecutor([makeCommandResult({ decision: 'UNKNOWN', score: 85 }), makeCommandResult()]);
+      const executor = new PipelineExecutor(makeWorkflowExecutor(), cmdExec, agentExec, makeRegistry(), noopLogger);
+      const def = makePipelineDef({
+        stages: [
+          { id: 'review', name: 'Review', type: 'command' as const, ref: 'r@1', gate: { on_failure: 'abort' as const } },
+          { id: 'downstream', name: 'Downstream', type: 'command' as const, ref: 'c@1', depends_on: ['review'] },
+        ],
+      });
+      const result = await executor.execute(def, { target: '/tmp' });
+      expect(result.stages[0]!.outcome).toBe('PASSED');
+      expect(result.stages[1]!.status).toBe('completed');
+      expect(result.warnings ?? []).not.toContainEqual(expect.objectContaining({ code: 'STAGE_ERRORED' }));
+    });
+
     it('an all-scoreless agents stage is still gated on its DECISION — the negative control', async () => {
       // Without this, "scoreless passes" would also pass for a stage gate that had stopped
       // gating agents stages entirely. A negative decision fails regardless of score. At a

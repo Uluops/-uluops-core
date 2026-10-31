@@ -130,14 +130,40 @@ describe('readAgentVerdict: paths, conflicts, saved form', () => {
 
   it('classifies through the vocabulary case-insensitively', () => {
     const lower = buildVocabularyMap({ decisions: { vocabulary: { positive: 'Proceed', negative: 'revise' } } } as never);
-    expect(readAgentVerdict({ agent: 'a', json: { decision: 'REVISE' }, text: '', vocabulary: lower }).class).toBe('negative');
+    expect(readAgentVerdict({ agent: 'a', json: { result: { decision: 'REVISE' } }, text: '', vocabulary: lower }).class).toBe('negative');
+  });
+});
+
+describe('readAgentVerdict: only the output envelope is read (D47)', () => {
+  // R-D12 step 0: core's inline-JSON fallback lifted a category object out of a truncated block, and the
+  // contract read its score (17) where the agent's result.score was 87.
+  const fragment = { name: 'Anxiety-Register Classification', score: 17, max_points: 25, decision: 'CONFIDENCE_WARRANTED' };
+
+  it('extracted JSON without `result` is not read: its score and decision do not gate', () => {
+    const v = readAgentVerdict({ agent: 'a', json: fragment, text: '' });
+    expect(v).toMatchObject({ class: 'absent', score: null });
+  });
+
+  it('the lines still are: a truncated report keeps what its Decision: and Score: lines say', () => {
+    const v = readAgentVerdict({ agent: 'a', json: fragment, text: 'Decision: FAIL\nScore: 87' });
+    expect(v).toMatchObject({ class: 'negative', saved: 'FAIL', score: 87 });
+  });
+
+  it('an object carrying `result` is the envelope, and its top-level paths are read too', () => {
+    expect(readAgentVerdict({ agent: 'a', json: { result: { score: 87 }, decision: 'PASS' }, text: '' }))
+      .toMatchObject({ class: 'positive', score: 87 });
+  });
+
+  it('core\'s structured output is the envelope by construction: flat `agentOutputSchema` is read', () => {
+    expect(readAgentVerdict({ agent: 'a', json: { decision: 'PASS', score: 85, maxScore: 100 }, text: '', structured: true }))
+      .toMatchObject({ class: 'positive', score: 85 });
   });
 });
 
 describe('readAgentVerdict: the score contract (D16)', () => {
   it.each([
     [{ result: { score: 70 }, score: 90 }, 70],
-    [{ score: 90 }, 90],
+    [{ result: {}, score: 90 }, 90],
     [{ result: { score: '85' } }, 85],
     [{ result: { score: 0 } }, 0],
     [{ result: { score: 100 } }, 100],
@@ -180,17 +206,26 @@ describe('readAgentVerdict: the score contract (D16)', () => {
   });
 });
 
-describe('isUnjudgeable (D24)', () => {
+describe('isUnjudgeable (D24, D12)', () => {
+  // [class, score, threshold, blocking, unjudgeable]
   it.each([
-    ['positive', null, true, true],
-    ['positive', null, false, false],
-    ['negative', null, false, false],
-    ['neutral', null, false, true],
-    ['absent', null, false, true],
-    ['neutral', 85, true, false],
-    ['absent', 0, true, false],
-  ] as const)('%s, score %s, threshold %s → %s', (cls, score, thr, want) => {
-    expect(isUnjudgeable({ class: cls, score }, thr)).toBe(want);
+    ['positive', null, true, true, true],
+    ['positive', null, false, true, false],
+    ['negative', null, false, true, false],
+    ['neutral', null, false, true, true],
+    ['absent', null, false, false, true],
+    // A declared neutral with a score is judgeable at any gate (D6; D12's control).
+    ['neutral', 85, true, true, false],
+    ['neutral', 85, false, true, false],
+    // D12: an absent decision at a blocking gate is unjudgeable whatever the score.
+    ['absent', 85, false, true, true],
+    ['absent', 85, true, true, true],
+    ['absent', 0, true, true, true],
+    // Behind `warn`, or in a stage with no gate, the score decides.
+    ['absent', 85, true, false, false],
+    ['absent', 0, false, false, false],
+  ] as const)('%s, score %s, threshold %s, blocking %s → %s', (cls, score, hasThreshold, blocking, want) => {
+    expect(isUnjudgeable({ class: cls, score }, { hasThreshold, blocking })).toBe(want);
   });
 });
 

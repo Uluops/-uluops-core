@@ -6,6 +6,60 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) 
 
 ## [Unreleased]
 
+**PDL 1.6.0, R-D12: an absent decision at a blocking gate is ERRORED** (design spec pdl-1_6_0 v0.9.0,
+D12, D46, D47; normative text `uluops-pdl-spec-v1.6.0.md`, *Gates → Neutral, absent and saved
+decisions*; checklist v0.1.5 §R-D12). Until now an agent whose decision core could not read was judged
+on its score alone at every gate, so a blocking gate could pass work whose verdict was never read.
+S0's measurement decided D12: across 303 core runs, 10.56 per 100 agent results had no readable
+decision (the bar was 1 per 100). An absent decision means extraction failed, which makes the score
+beside it suspect too. Tracker `ced3416c`.
+
+### Upgrade impact
+
+- **Saved-verdict cutover (behaviour change, no signature change).** Pipeline runs saved by this
+  release judge an absent decision differently from runs saved before it. An agent with no readable
+  decision in a stage gated `abort` or `fail` now makes the stage ERRORED (`agent_unjudgeable`), even
+  with a passing score. Before, the score decided, and in S0's sample one such agent passed its gate on
+  score alone (pre-implementation-architect on GLM, 83). Comparing `allGatesPassed` or stage outcomes
+  across this boundary compares two rules.
+- **Not changed:** a declared neutral token with a score is still judged on its score (D6). An absent
+  decision behind `warn`, or in a stage with no gate, is still judged on its score. Workflow and command
+  ref stages are unchanged: a ref classifies through its own definition (D9, OQ-3).
+- **Truncated output (D47).** JSON that text extraction finds is read for the decision and score only
+  when it is the agent's output envelope, an object carrying `result`. Core's inline-JSON fallback could
+  lift a fragment out of a truncated block, and the contract read its fields. In R-D12 step 0 that was a
+  category object scoring 17, where the agent's `result.score` was 87. Such output now keeps what its
+  `Decision:` and `Score:` lines say: a stated verdict still gates, and at a threshold gate a report with
+  no `Score:` line is ERRORED. Core's own structured output (`agentOutputSchema`, flat) is the envelope by
+  construction and is read as before. Every rendered agent output template carries `result`.
+- **`skipReason` text.** An `agent_unjudgeable` reason now names each agent's cause:
+  `agent_unjudgeable: "a" gave no decision at a blocking gate, "b" crashed`. Before, it was one phrase
+  for the whole list. `erroredReasons` and the `STAGE_ERRORED` warning are unchanged.
+
+### Changed
+
+- `src/executor/agentVerdict.ts`: `unjudgeableCause` (new) and `isUnjudgeable` take the gate's
+  threshold and blocking state (`{ hasThreshold, blocking }`, previously a threshold boolean).
+  `PipelineExecutor` passes `isBlocking(gateMode(gate))`; a stage with no gate is not blocking (D43).
+  `readAgentVerdict` takes `structured`, set by `AgentExecutor` when the JSON is core's structured output.
+  Neither function is exported from the package.
+
+### Fixed
+
+- **Exports:** `StageOutcome`, `GateMode`, `ErroredReason`, `PipelineWarning` (P4b) and `DecisionClass`,
+  `VerdictWarning`, `AgentVerdictRecord` (P4a) are now exported from both entry points. 0.54.0's
+  CHANGELOG named them, but neither entry point exported them. The 0.54.0 Verdaccio check found it
+  (`c9b8fb3`).
+
+### Internal
+
+- Conformance fixtures re-copied from corpus `feat/pdl-1.6.0-r-d12` (`e539222c`): 163 cases. Four
+  expectations flip to ERRORED (`absent-with-passing-score`, `absent-with-failing-score`,
+  `path-fallback-only`, `path-status-fallback-only`), and nine cases are new. Against 0.54.0 the copy
+  fails 23 tests; the D47 and D12 lines each fail their own tests when removed.
+- OQ-3 (refs out of scope) is pinned by a `PipelineExecutor` unit test, since the fixture format has
+  no ref stubs (Alex, 2026-10-31).
+
 ## [0.54.0] - 2026-10-27
 
 **PDL 1.6.0, build unit P3a: where steps run and how parameters reach them** (design spec pdl-1_6_0

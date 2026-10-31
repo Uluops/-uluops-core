@@ -132,6 +132,8 @@ function contractScore(v: unknown): number | undefined {
  * @param input.vocabulary - the agent's declared vocabulary (`buildVocabularyMap`); register remaps
  *   are already dropped there.
  * @param input.display - where the wide resolvers found a decision and a score, for the fallback warnings.
+ * @param input.structured - `json` is core's structured output (`agentOutputSchema`), the envelope by
+ *   construction; otherwise `json` is read only when it carries `result` (D47).
  */
 export function readAgentVerdict(input: {
   agent: string;
@@ -139,11 +141,19 @@ export function readAgentVerdict(input: {
   text: string;
   vocabulary?: DecisionVocabularyMap;
   display?: DisplaySources;
+  /** True when `json` is the runtime's schema-enforced structured output, not JSON extracted from text. */
+  structured?: boolean;
 }): AgentVerdict {
   const { agent } = input;
   const vocabulary = upperVocabulary(input.vocabulary);
   const warnings: VerdictWarning[] = [];
-  const obj = asRecord(input.json);
+  // Only the output envelope is the agent's JSON (D47). Text extraction can lift a fragment out of a
+  // truncated block (step 0: a category object scored 17 where the agent's `result.score` was 87), so
+  // extracted JSON counts only when it carries `result`. Core's structured output is the envelope by
+  // construction: the provider enforced `agentOutputSchema` on it, which is flat (`decision`, `score`
+  // at the top) and is never a fragment. Anything else falls to the `Decision:` and `Score:` lines.
+  const candidate = asRecord(input.json);
+  const obj = candidate !== undefined && (input.structured === true || 'result' in candidate) ? candidate : undefined;
   const result = asRecord(obj?.['result']);
 
   // ── Decision ─────────────────────────────────────────────────────────────
@@ -207,13 +217,33 @@ export function readAgentVerdict(input: {
   return { class: cls, saved, score, warnings };
 }
 
+/** What makes an agent unjudgeable, or undefined when it is judgeable. */
+export type UnjudgeableCause = 'absent_at_blocking_gate' | 'no_score_at_threshold' | 'no_score_no_decision';
+
 /**
- * Whether an agent is unjudgeable (D24): no score and no classifiable decision; or, at a gate with a
- * threshold (aggregate or per-agent), no score at all. A classifiable decision does not stand in
- * for a score a threshold was never measured against. At a decision-only gate it suffices.
+ * Why an agent is unjudgeable (D24, D12), or undefined when it is judgeable:
+ * - an absent decision at a blocking gate, whatever the score (D12, decided by S0's read: an absent
+ *   decision means extraction failed, so the score beside it is suspect too);
+ * - at a gate with a threshold (aggregate or per-agent), no score at all. A classifiable decision does
+ *   not stand in for a score a threshold was never measured against;
+ * - no score and no classifiable decision.
+ * A declared neutral token with a score is judgeable at any gate (D6). At a `warn` gate, or in a
+ * stage with no gate, an absent decision with a score is judgeable too: the score decides.
  */
-export function isUnjudgeable(verdict: { class: DecisionClass; score: number | null }, gateHasThreshold: boolean): boolean {
-  if (verdict.score !== null) return false;
-  if (gateHasThreshold) return true;
-  return verdict.class === 'neutral' || verdict.class === 'absent';
+export function unjudgeableCause(
+  verdict: { class: DecisionClass; score: number | null },
+  gate: { hasThreshold: boolean; blocking: boolean },
+): UnjudgeableCause | undefined {
+  if (verdict.class === 'absent' && gate.blocking) return 'absent_at_blocking_gate';
+  if (verdict.score !== null) return undefined;
+  if (gate.hasThreshold) return 'no_score_at_threshold';
+  return verdict.class === 'neutral' || verdict.class === 'absent' ? 'no_score_no_decision' : undefined;
+}
+
+/** Whether an agent is unjudgeable (`unjudgeableCause`). */
+export function isUnjudgeable(
+  verdict: { class: DecisionClass; score: number | null },
+  gate: { hasThreshold: boolean; blocking: boolean },
+): boolean {
+  return unjudgeableCause(verdict, gate) !== undefined;
 }

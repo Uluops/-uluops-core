@@ -209,7 +209,7 @@ cases:
 
   # ── Neutral and absent (§3.2 item 5, D6, D12) ─────────────────────────
   - id: decisions/neutral-with-passing-score
-    covers: ["§3.2 item 5", D6]
+    covers: ["§3.2 item 5", D6, D12]
     applies_to: [core, skill]
     stubs:
       stub-gate-a: { decision: MAYBE, score: 90 }
@@ -244,7 +244,8 @@ cases:
       stages:
         - { id: review, agents: [{ ref: stub-gate-a }], gate: { threshold: 80, on_failure: fail } }
     note: >
-      The interim D12 rule: the score decides. Re-measure issue ced3416c may turn this ERRORED.
+      D12 (decided 2026-10-31, 10.56 absent per 100): an absent decision at a blocking gate is ERRORED whatever the
+      score. Before R-D12 the score decided and this case PASSED.
 
   - id: decisions/absent-with-failing-score
     covers: ["§3.2 item 5", D12]
@@ -263,6 +264,287 @@ cases:
     pipeline:
       stages:
         - { id: review, agents: [{ ref: stub-gate-a }], gate: { threshold: 80, on_failure: fail } }
+
+  # ── R-D12: absent decisions by gate class, the rendered Decision: line, the envelope (D12, D46, D47) ──
+  - id: decisions/absent-score-warn-gate
+    covers: ["§3.2 item 5", D12]
+    applies_to: [core, skill]
+    stubs:
+      stub-gate-a: { score: 90 }
+    pipeline:
+      stages:
+        - { id: review, agents: [{ ref: stub-gate-a }], gate: { threshold: 80, on_failure: warn } }
+    note: >
+      D12 binds blocking gates only. At a warn gate an absent decision is neutral and the score decides.
+
+  - id: decisions/absent-score-no-gate
+    covers: ["§3.2 item 5", D12, D43]
+    applies_to: [core, skill]
+    stubs:
+      stub-gate-a: { score: 90 }
+    pipeline:
+      stages:
+        - { id: review, agents: [{ ref: stub-gate-a }] }
+    note: >
+      A stage with no gate is not blocking (D43), so D12 does not apply: the absent decision is neutral.
+
+  - id: decisions/absent-score-decision-only-blocking
+    covers: ["§3.1 ERRORED", "§3.2 item 5", D12]
+    applies_to: [core, skill]
+    stubs:
+      stub-gate-a: { score: 90 }
+    pipeline:
+      stages:
+        - { id: review, agents: [{ ref: stub-gate-a }], gate: { on_failure: fail } }
+    note: >
+      A decision-only blocking gate: D12 makes the absent agent unjudgeable although it has a score.
+
+  - id: decisions/absent-score-abort-skips-dependent
+    covers: ["§3.1 ERRORED", "§3.2 failure modes", D12, D1]
+    applies_to: [core, skill]
+    stubs:
+      stub-gate-a: { score: 90 }
+      stub-gate-b: { decision: PROCEED, score: 90 }
+    pipeline:
+      stages:
+        - { id: a, agents: [{ ref: stub-gate-a }], gate: { threshold: 80, on_failure: abort } }
+        - { id: b, depends_on: [a], agents: [{ ref: stub-gate-b }], gate: { threshold: 80, on_failure: fail } }
+    note: >
+      An ERRORED stage takes its gate's failure mode: behind abort, its dependent is SKIPPED.
+
+  - id: decisions/line-with-truncated-json-decision-only
+    covers: ["§3.2 item 1", D46, D47]
+    applies_to: [core, skill]
+    stubs:
+      stub-anxiety-a:
+        raw: |-
+          Assessment complete. Excerpt of a real anxiety-reader output (R-D12 step 0), trimmed; the JSON is cut off as returned.
+
+          ━━━━━━━━━━━━━━━━━━━━━━━━━━
+          DECISION
+          ━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+          Decision: FRAGILITY_MASKED
+
+          ```json
+          {
+            "schema_version": "1.5.0",
+            "agent": {
+              "name": "anxiety-reader",
+              "model": "opus",
+              "type": "analyst",
+              "tokens": {
+                "input_tokens": 0,
+                "output_tokens": 0,
+                "cache_creation_tokens": 0,
+                "cache_read_tokens": 0,
+                "cached_input_tokens": 0,
+                "reasoning_output_tokens": 0,
+                "thinking_tokens": 0,
+                "tool_tokens": 0,
+                "total_effective_tokens": 0
+              }
+            },
+            "target": "SCOPE.md",
+            "timestamp": "2026-10-31T00:00:00.000Z",
+            "result": {
+              "score": "87",
+              "max_score": 100,
+              "decision": "FRAGILITY_MASKED",
+              "threshold": 70,
+              "decision_vocabulary": "CONFIDENCE_WARRANTED/FRAGILITY_MASKED",
+              "auto_fail_triggered": "false"
+            },
+            "categories": [
+              {
+                "name": "Fear Identification",
+                "score": "27",
+                "max_points": 30,
+                "findings": [
+                  {
+                    "criterion": "Fears identified with specificity",
+                    "points_earned": "10",
+                    "points_possible": "10",
+                    "issues": []
+                  },
+                  {
+                    "criterion": "Each fear grounded in artifact structure",
+                    "points_earned": "10",
+                    "points_possible": "10",
+                    "issues": []
+                  },
+                  {
+                    "criterion": "Anxiety distinguished from hostility, boredom, and analysis",
+                    "points_earned": "7",
+                    "points_possible": "10",
+                    "issues": [
+                      {
+                        "title": "Two findings lean analytical rather than affective",
+                        "priority": "suggested",
+                        "type": "observation",
+                        "failure_code": "SEM-CAT/L",
+                        "file_path": "SCOPE.md",
+                        "line_number": null,
+                        "description": "The tier-copy-drift (F5) and empty-tier equivalence (F7) findings are nearer to analytical risk observation than fear-visible perception; the affective load is carried by F1/F4/F9. Slight deduction for register mixing, not a structural defect in the reading."
+                      }
+                    ]
+                  }
+                ]
+              },
+              {
+                "name": "Anxiety-Register Classification",
+                "score": "23",
+                
+    pipeline:
+      stages:
+        - { id: review, agents: [{ ref: stub-anxiety-a }], gate: { on_failure: fail } }
+    note: >
+      A real anxiety-reader output (R-D12 step 0, DeepSeek), trimmed, with its DECISION line in the D46 form. The
+      JSON is cut off as returned. The verdict is read from the Decision: line (negative), so the decision-only
+      blocking gate fails it. Without the D46 line this output read absent. Core names the fragment's score in
+      FALLBACK_SCORE_SOURCE; it does not gate (D47).
+
+  - id: decisions/line-with-truncated-json-threshold
+    covers: ["§3.2 item 1", D24, D46, D47]
+    applies_to: [core, skill]
+    stubs:
+      stub-anxiety-a:
+        raw: |-
+          Assessment complete. Excerpt of a real anxiety-reader output (R-D12 step 0), trimmed; the JSON is cut off as returned.
+
+          ━━━━━━━━━━━━━━━━━━━━━━━━━━
+          DECISION
+          ━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+          Decision: FRAGILITY_MASKED
+
+          ```json
+          {
+            "schema_version": "1.5.0",
+            "agent": {
+              "name": "anxiety-reader",
+              "model": "opus",
+              "type": "analyst",
+              "tokens": {
+                "input_tokens": 0,
+                "output_tokens": 0,
+                "cache_creation_tokens": 0,
+                "cache_read_tokens": 0,
+                "cached_input_tokens": 0,
+                "reasoning_output_tokens": 0,
+                "thinking_tokens": 0,
+                "tool_tokens": 0,
+                "total_effective_tokens": 0
+              }
+            },
+            "target": "SCOPE.md",
+            "timestamp": "2026-10-31T00:00:00.000Z",
+            "result": {
+              "score": "87",
+              "max_score": 100,
+              "decision": "FRAGILITY_MASKED",
+              "threshold": 70,
+              "decision_vocabulary": "CONFIDENCE_WARRANTED/FRAGILITY_MASKED",
+              "auto_fail_triggered": "false"
+            },
+            "categories": [
+              {
+                "name": "Fear Identification",
+                "score": "27",
+                "max_points": 30,
+                "findings": [
+                  {
+                    "criterion": "Fears identified with specificity",
+                    "points_earned": "10",
+                    "points_possible": "10",
+                    "issues": []
+                  },
+                  {
+                    "criterion": "Each fear grounded in artifact structure",
+                    "points_earned": "10",
+                    "points_possible": "10",
+                    "issues": []
+                  },
+                  {
+                    "criterion": "Anxiety distinguished from hostility, boredom, and analysis",
+                    "points_earned": "7",
+                    "points_possible": "10",
+                    "issues": [
+                      {
+                        "title": "Two findings lean analytical rather than affective",
+                        "priority": "suggested",
+                        "type": "observation",
+                        "failure_code": "SEM-CAT/L",
+                        "file_path": "SCOPE.md",
+                        "line_number": null,
+                        "description": "The tier-copy-drift (F5) and empty-tier equivalence (F7) findings are nearer to analytical risk observation than fear-visible perception; the affective load is carried by F1/F4/F9. Slight deduction for register mixing, not a structural defect in the reading."
+                      }
+                    ]
+                  }
+                ]
+              },
+              {
+                "name": "Anxiety-Register Classification",
+                "score": "23",
+                
+    pipeline:
+      stages:
+        - { id: review, agents: [{ ref: stub-anxiety-a }], gate: { threshold: 80, on_failure: fail } }
+    note: >
+      The same output at a threshold gate. The cut-off JSON holds no envelope (no object carrying result), so there
+      is no score (D47). Core 0.54.0 read a category object's score (27) from it and FAILED the stage on that number.
+      With no score at a threshold gate the agent is unjudgeable (D24). Core's display resolver still finds the
+      fragment's score and names it in FALLBACK_SCORE_SOURCE (source `score`), which does not gate.
+
+  - id: decisions/echoed-option-list
+    covers: ["§3.2 item 1", D46]
+    applies_to: [core, skill]
+    stubs:
+      stub-anxiety-a:
+        raw: |-
+          Assessment complete.
+
+          Decision: CONFIDENCE_WARRANTED
+          Decision: FRAGILITY_MASKED
+    pipeline:
+      stages:
+        - { id: review, agents: [{ ref: stub-anxiety-a }], gate: { on_failure: fail } }
+    note: >
+      Pins the hazard D46's render avoids: the first Decision: line is the one read, so an echoed list of options
+      reads as its first (positive) token. Rendered agents are given one instruction line, never this list.
+
+  - id: decisions/echoed-instruction-line
+    covers: ["§3.2 item 3", D46]
+    applies_to: [core, skill]
+    stubs:
+      stub-anxiety-a:
+        raw: |-
+          Assessment complete.
+
+          Decision: <TOKEN>
+          Score: 90
+    pipeline:
+      stages:
+        - { id: review, agents: [{ ref: stub-anxiety-a }], gate: { threshold: 80, on_failure: fail } }
+    note: >
+      An echoed D46 instruction line reads neutral (`>` is not a follow character), so the score decides.
+
+  - id: decisions/dropped-dash-label
+    covers: ["§3.2 item 3", D46]
+    applies_to: [core, skill]
+    stubs:
+      stub-anxiety-a:
+        raw: |-
+          Assessment complete.
+
+          Decision: FRAGILITY_MASKED Assessment negative
+          Score: 90
+    pipeline:
+      stages:
+        - { id: review, agents: [{ ref: stub-anxiety-a }], gate: { threshold: 80, on_failure: fail } }
+    note: >
+      Why D46 renders the token only: a label without its dash fails the follow test and reads neutral, so a
+      negative verdict passes on its score.
 
   - id: decisions/classifiable-without-score-at-threshold
     covers: ["§3.1 ERRORED", "§3.2 item 5", D24]
@@ -930,7 +1212,7 @@ cases:
   # ── Pre-launch vocabulary check (§3.2 item 6, D9) ─────────────────────
   - id: decisions/precheck-refuses-missing-vocabulary
     covers: ["§3.2 item 6", D9]
-    applies_to: [core]
+    applies_to: [core, skill]
     stubs:
       stub-gate-a: { decision: PROCEED, score: 90 }
       stub-novocab-a: { decision: PASS, score: 90 }
@@ -940,21 +1222,21 @@ cases:
         - { id: b, depends_on: [a], agents: [{ ref: stub-novocab-a }], gate: { threshold: 80, on_failure: fail } }
     note: >
       Refused before stage a launches, although a is fine: the check runs over every
-      blocking-gated stage first. Binds the skill from P6b (S1), when its check is enabled.
+      blocking-gated stage first. Binds the skill since 0.10.0 (P6b, S1).
 
   - id: decisions/precheck-passes-explorer
     covers: ["§3.2 item 6", D9]
-    applies_to: [core]
+    applies_to: [core, skill]
     stubs:
       stub-explorer-a: { decision: EXPLORED }
     pipeline:
       stages:
         - { id: map, agents: [{ ref: stub-explorer-a }], gate: { on_failure: abort } }
-    note: Binds the skill from P6b (S1).
+    note: Binds the skill since 0.10.0 (P6b, S1).
 
   - id: decisions/precheck-ignores-warn-gated-stages
     covers: ["§3.2 item 6", D9]
-    applies_to: [core]
+    applies_to: [core, skill]
     stubs:
       stub-gate-a: { decision: PROCEED, score: 90 }
       stub-novocab-a: { decision: PASS, score: 90 }
@@ -964,4 +1246,4 @@ cases:
         - { id: b, depends_on: [a], agents: [{ ref: stub-novocab-a }], gate: { threshold: 70, on_failure: warn } }
     note: >
       The check covers blocking-gated stages only. A check that refuses this run is over-broad.
-      Binds the skill from P6b (S1).
+      Binds the skill since 0.10.0 (P6b, S1).

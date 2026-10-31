@@ -1,10 +1,9 @@
 Copied from uluops-agent-workflows udl/pdl/conformance/ (cases/, expected/, stubs/, targets/, README.md)
-at commit 60403c35 (on main since 9dd2e569, 2026-10-26: 154 cases, D38-D41 and duplicate_stage_id),
-plus e68cd62b (branch fix/pdl-fixture-score-invalid-placeholder, unmerged at copy time): one erratum,
-decisions/real-docs-validator-unfilled expects SCORE_INVALID for its "[X]" score (D16).
-Plus b384d8de (branch fix/pdl-d43-gateless-warns, unmerged at copy time; D43, Alex 2026-10-27):
-gates/steps-only-hard-failure-no-gate expects `pre` WARNED, all_gates_passed true, run_decision WARN (a
-stage with no gate is judged as `warn`, revising D19); its case note and the README Q4 row follow.
+at commit e539222c (branch feat/pdl-1.6.0-r-d12, unmerged at copy time, 2026-10-31: 163 cases, R-D12
+steps 1-2 plus one erratum): absent at a blocking gate is ERRORED (D12), envelope-only JSON (D47),
+`Decision:` line cases (D46). The erratum: the two truncated-JSON cases expect core's
+FALLBACK_SCORE_SOURCE once D47 stops the contract reading the fragment. The branch builds on main
+96b18d0f, which carries the earlier copy's 60403c35, e68cd62b and b384d8de.
 
 These files are the PDL 1.6.0 conformance oracle; the corpus copy is authoritative. Nothing
 detects drift between this copy and the corpus: each core release that touches PDL execution

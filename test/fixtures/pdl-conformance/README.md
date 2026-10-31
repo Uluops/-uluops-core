@@ -5,6 +5,8 @@ each rule produces on a concrete pipeline, so core, the factory and the `pdl-exe
 can be held to the same answers. They were written before any runtime work (P0b), from
 `uluops-specifications/specs/cross-repo/drafts/pdl-1_6_0/pdl-1_6_0-spec-v0_8_2.md`
 (written against v0.6.0; the questions they raised were ruled and folded into v0.7.0, v0.8.0 and v0.8.1).
+R-D12 (spec v0.9.0, 2026-10-31) flipped the absent-decision cases to ERRORED at blocking gates (D12) and
+added the gate-class, `Decision:`-line, envelope and echo cases (D12, D46, D47).
 Section references (`§3.2`) are to that spec. Decision references are to its §4 (`D6`), or
 to the gate-decision spec where marked `gate-decision D2`.
 
@@ -136,7 +138,9 @@ model relays the stub's text.
 
 - `core`: core runs the case as a unit test (P3/P4b), from a copy of these files that
   records the corpus commit it was copied from.
-- `skill`: the `pdl-executor` skill on each skill release and orchestrating-model upgrade.
+- `skill`: the `pdl-executor` skill on each skill release and orchestrating-model upgrade, run by
+  `npm run check:skill-conformance` (`--load` for the load cases through `udl validate`, `--all
+  --model <m>` for the cases a model orchestrates).
 - `factory`: `validatePDLSemantics` (load-error cases only).
 
 A case limited to `core` is one the skill cannot be put in: a mid-run cancel, a provider
@@ -168,8 +172,8 @@ expected:
 ```
 
 - **Agent class.** Each agent's decision as the gate read it: `positive`, `negative`,
-  `conditional`, `neutral`, `absent`, or `errored` (no score and no classifiable decision,
-  or a condition that evaluated to E). `skipped` for an agent its own condition skipped.
+  `conditional`, `neutral`, `absent`, or `errored` (no score and no classifiable decision; no score
+  at a threshold gate; an absent decision at a blocking gate (D12); or a condition that evaluated to E). `skipped` for an agent its own condition skipped.
   Where the saved decision is pinned, the value is `{ class: neutral, saved: "SECURE WITH CONDITIONS" }`.
   `saved` is the agent decision a runtime writes to the tracker (§3.2 item 5, D18): the token
   when it classifies; otherwise the value as written, whitespace collapsed, cut to 50
@@ -214,13 +218,13 @@ adopts them into the normative spec or renames them here in the same change.
 | code | fields | rule |
 |---|---|---|
 | `NEUTRAL_DECISION` | `agent`, `value` | §3.2 item 5: a neutral decision; the score decides. `value` is the saved form (D18) |
-| `ABSENT_DECISION` | `agent` | §3.2 item 5: nothing at either JSON path and no `Decision:` line; handled as neutral |
+| `ABSENT_DECISION` | `agent` | §3.2 item 5: nothing at either JSON path and no `Decision:` line. At a blocking gate the agent is unjudgeable (D12); elsewhere it is handled as neutral |
 | `DECISION_CONFLICT` | `agent`, `json`, `line` | §3.2 item 2: both classify and disagree; JSON wins |
 | `FALLBACK_DECISION_SOURCE` | `agent`, `source` | §3.2 item 1: core found a decision only outside the two named paths; gated as absent |
 | `CONDITIONAL_ACCEPTED` | `stage`, `agent` | gate-decision D2: a blocking gate passed a CONDITIONAL; `all_gates_passed` is false |
 | `FALLBACK_SCORE_SOURCE` | `agent`, `source` | §3.2 item 1 (D16): core found a score only outside the three named paths; counts as no score |
 | `SCORE_INVALID` | `agent`, `value` | §3.2 item 1 (D16): a score at a named path that is not a number from 0 to 100; counts as no score |
-| `STAGE_ERRORED` | `stage`, `reason` | §3.1 (D19): every ERRORED stage, whatever its gate. `reason` is `agent_unjudgeable` (no score and no classifiable decision, a timeout included), `condition_error` (a condition evaluated to E) or `stopped` (in flight at a cancel, deadline or credit stop) |
+| `STAGE_ERRORED` | `stage`, `reason` | §3.1 (D19): every ERRORED stage, whatever its gate. `reason` is `agent_unjudgeable` (no score and no classifiable decision, no score at a threshold gate, or an absent decision at a blocking gate; a timeout included), `condition_error` (a condition evaluated to E) or `stopped` (in flight at a cancel, deadline or credit stop) |
 | `SKIP_DEPRECATED` | `stage` | §3.2 failure modes: `on_failure: skip` loads as `fail` (load warning) |
 
 **Refusals** (before any stage launches)

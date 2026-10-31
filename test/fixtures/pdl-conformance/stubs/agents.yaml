@@ -17,6 +17,7 @@
 #   lens      machiavelli-analyst           EFFECTUAL / IDEALIZED (no conditional)
 #   explorer  any explorer                  no vocabulary; EXPLORED is core-register
 #   novocab   (none)                        no vocabulary and not an explorer: the pre-check refuses it
+#   anxiety   anxiety-reader                CONFIDENCE_WARRANTED / FRAGILITY_MASKED (no conditional; R-D12)
 
 stubs:
   - { name: stub-gate-a, agentType: validator, decisions: { vocabulary: { positive: PROCEED, negative: REVISE } } }
@@ -28,3 +29,4 @@ stubs:
   - { name: stub-lens-b, agentType: analyst, decisions: { vocabulary: { positive: EFFECTUAL, negative: IDEALIZED } } }
   - { name: stub-explorer-a, agentType: explorer }
   - { name: stub-novocab-a, agentType: validator }
+  - { name: stub-anxiety-a, agentType: analyst, decisions: { vocabulary: { positive: CONFIDENCE_WARRANTED, negative: FRAGILITY_MASKED } } }

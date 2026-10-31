@@ -39,10 +39,19 @@ const baseConfig: ResolvedConfig = {
   allowStageSteps: false,
 };
 
+/**
+ * An agent's JSON output as a rendered agent writes it in text: the output envelope, an object
+ * carrying `result` (agent-output schema v1.5). Text-extracted JSON without `result` is not read
+ * for gating (PDL 1.6.0 D47); only core's structured output is flat.
+ */
+function envelopeText(result: Record<string, unknown>): string {
+  return JSON.stringify({ result });
+}
+
 function mockAIProvider(overrides?: Partial<AIGenerateResult>): AIProvider {
   return {
     generate: vi.fn().mockResolvedValue({
-      text: JSON.stringify({
+      text: envelopeText({
         decision: 'PASS',
         score: 85,
         maxScore: 100,
@@ -158,7 +167,7 @@ describe('AgentExecutor', () => {
 
     it('preserves null score/maxScore for a scoreless (generator-shaped) output (V8)', async () => {
       const ai = mockAIProvider({
-        text: JSON.stringify({ decision: 'COMPLETE', score: null, maxScore: null, categories: null }),
+        text: envelopeText({ decision: 'COMPLETE', score: null, maxScore: null, categories: null }),
       });
       const executor = new AgentExecutor(baseConfig, ai, noopLogger);
       const result = await executor.execute(makeValidatorDef(), { target: tmpDir });
@@ -170,7 +179,7 @@ describe('AgentExecutor', () => {
       const warn = vi.fn();
       const logger: Logger = { debug() {}, info() {}, warn, error() {} };
       const ai = mockAIProvider({
-        text: JSON.stringify({ decision: 'COMPLETE', score: null, maxScore: 100, categories: null }),
+        text: envelopeText({ decision: 'COMPLETE', score: null, maxScore: 100, categories: null }),
       });
       const executor = new AgentExecutor(baseConfig, ai, logger);
       const result = await executor.execute(makeValidatorDef(), { target: tmpDir });
@@ -185,7 +194,7 @@ describe('AgentExecutor', () => {
       const warn = vi.fn();
       const logger: Logger = { debug() {}, info() {}, warn, error() {} };
       const ai = mockAIProvider({
-        text: JSON.stringify({ decision: 'PASS', score: 150, maxScore: 100, categories: null }),
+        text: envelopeText({ decision: 'PASS', score: 150, maxScore: 100, categories: null }),
       });
       const executor = new AgentExecutor(baseConfig, ai, logger);
       const result = await executor.execute(makeValidatorDef(), { target: tmpDir });
@@ -199,7 +208,7 @@ describe('AgentExecutor', () => {
       const warn = vi.fn();
       const logger: Logger = { debug() {}, info() {}, warn, error() {} };
       const ai = mockAIProvider({
-        text: JSON.stringify({ decision: 'BEWITCHED', score: 40, maxScore: 100, categories: null }),
+        text: envelopeText({ decision: 'BEWITCHED', score: 40, maxScore: 100, categories: null }),
       });
       const executor = new AgentExecutor(baseConfig, ai, logger);
       const result = await executor.execute(makeValidatorDef(), { target: tmpDir });
@@ -214,7 +223,7 @@ describe('AgentExecutor', () => {
       const warn = vi.fn();
       const logger: Logger = { debug() {}, info() {}, warn, error() {} };
       const ai = mockAIProvider({
-        text: JSON.stringify({ decision: 'BEWITCHED', score: 40, maxScore: 100, categories: null }),
+        text: envelopeText({ decision: 'BEWITCHED', score: 40, maxScore: 100, categories: null }),
       });
       const executor = new AgentExecutor(baseConfig, ai, logger);
       const def = makeValidatorDef();
@@ -428,7 +437,7 @@ describe('AgentExecutor', () => {
     // buildResult). Control: the 'caps' cases fail on 0.52.x, where thresholds were echoed only.
     describe('thresholds gate decisionCategory', () => {
       const run = async (decision: string, score: number | null, thresholds?: { pass?: number; warn?: number }) => {
-        const ai = mockAIProvider({ text: JSON.stringify({ decision, score, maxScore: score === null ? null : 100 }) });
+        const ai = mockAIProvider({ text: envelopeText({ decision, score, maxScore: score === null ? null : 100 }) });
         const executor = new AgentExecutor(baseConfig, ai, noopLogger);
         return executor.execute(makeValidatorDef(), { target: tmpDir }, thresholds ? { thresholds } : undefined);
       };
@@ -483,8 +492,9 @@ describe('AgentExecutor', () => {
   describe('executor execution', () => {
     it('executes an executor agent and returns ExecutorAgentResult', async () => {
       const ai = mockAIProvider({
+        // Artifacts sit beside the envelope, where the normalizer reads them; the decision is in it.
         text: JSON.stringify({
-          decision: 'COMPLETE',
+          result: { decision: 'COMPLETE' },
           artifacts: [
             { name: 'report.md', type: 'file', content: '# Report' },
           ],
@@ -833,7 +843,7 @@ describe('AgentExecutor', () => {
 
     it('uses "Generate" preamble for generator agents', async () => {
       const ai = mockAIProvider({
-        text: JSON.stringify({ decision: 'ACTUALIZED', score: 91 }),
+        text: envelopeText({ decision: 'ACTUALIZED', score: 91 }),
       });
       const executor = new AgentExecutor(baseConfig, ai, noopLogger);
 
@@ -858,7 +868,7 @@ describe('AgentExecutor', () => {
 
     it('uses "Execute" preamble for executor agents', async () => {
       const ai = mockAIProvider({
-        text: JSON.stringify({ decision: 'COMPLETE' }),
+        text: envelopeText({ decision: 'COMPLETE' }),
       });
       const executor = new AgentExecutor(baseConfig, ai, noopLogger);
 
@@ -871,7 +881,7 @@ describe('AgentExecutor', () => {
 
     it('uses "Explore" preamble for explorer agents', async () => {
       const ai = mockAIProvider({
-        text: JSON.stringify({ decision: 'EXPLORED' }),
+        text: envelopeText({ decision: 'EXPLORED' }),
       });
       const executor = new AgentExecutor(baseConfig, ai, noopLogger);
 
@@ -889,7 +899,7 @@ describe('AgentExecutor', () => {
 
     it('uses "Forecast" preamble for forecaster agents', async () => {
       const ai = mockAIProvider({
-        text: JSON.stringify({ decision: 'HIGH_CONFIDENCE' }),
+        text: envelopeText({ decision: 'HIGH_CONFIDENCE' }),
       });
       const executor = new AgentExecutor(baseConfig, ai, noopLogger);
 
@@ -907,7 +917,7 @@ describe('AgentExecutor', () => {
 
     it('uses "Analyze" preamble for analyst agents', async () => {
       const ai = mockAIProvider({
-        text: JSON.stringify({ decision: 'COHERENT', score: 75 }),
+        text: envelopeText({ decision: 'COHERENT', score: 75 }),
       });
       const executor = new AgentExecutor(baseConfig, ai, noopLogger);
 

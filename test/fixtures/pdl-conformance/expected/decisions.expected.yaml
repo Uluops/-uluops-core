@@ -123,18 +123,18 @@ expected:
   - id: decisions/path-fallback-only
     outcome: ran
     stages:
-      review: { status: PASSED, passed: true, launched: [stub-gate-a], agents: { stub-gate-a: { class: absent, saved: "UNKNOWN" } } }
-    all_gates_passed: true
-    run_decision: PASS
-    warnings: [{ code: ABSENT_DECISION, agent: stub-gate-a }, { code: FALLBACK_DECISION_SOURCE, agent: stub-gate-a, source: summary.decision, runtimes: [core] }]
+      review: { status: ERRORED, passed: false, launched: [stub-gate-a], agents: { stub-gate-a: errored } }
+    all_gates_passed: false
+    run_decision: FAIL
+    warnings: [{ code: ABSENT_DECISION, agent: stub-gate-a }, { code: FALLBACK_DECISION_SOURCE, agent: stub-gate-a, source: summary.decision, runtimes: [core] }, { code: STAGE_ERRORED, stage: review, reason: agent_unjudgeable }]
 
   - id: decisions/path-status-fallback-only
     outcome: ran
     stages:
-      review: { status: PASSED, passed: true, launched: [stub-gate-a], agents: { stub-gate-a: { class: absent, saved: "UNKNOWN" } } }
-    all_gates_passed: true
-    run_decision: PASS
-    warnings: [{ code: ABSENT_DECISION, agent: stub-gate-a }, { code: FALLBACK_DECISION_SOURCE, agent: stub-gate-a, source: status, runtimes: [core] }]
+      review: { status: ERRORED, passed: false, launched: [stub-gate-a], agents: { stub-gate-a: errored } }
+    all_gates_passed: false
+    run_decision: FAIL
+    warnings: [{ code: ABSENT_DECISION, agent: stub-gate-a }, { code: FALLBACK_DECISION_SOURCE, agent: stub-gate-a, source: status, runtimes: [core] }, { code: STAGE_ERRORED, stage: review, reason: agent_unjudgeable }]
 
   - id: decisions/conflict-both-classify
     outcome: ran
@@ -187,18 +187,18 @@ expected:
   - id: decisions/absent-with-passing-score
     outcome: ran
     stages:
-      review: { status: PASSED, passed: true, launched: [stub-gate-a], agents: { stub-gate-a: { class: absent, saved: "UNKNOWN" } } }
-    all_gates_passed: true
-    run_decision: PASS
-    warnings: [{ code: ABSENT_DECISION, agent: stub-gate-a }]
+      review: { status: ERRORED, passed: false, launched: [stub-gate-a], agents: { stub-gate-a: errored } }
+    all_gates_passed: false
+    run_decision: FAIL
+    warnings: [{ code: ABSENT_DECISION, agent: stub-gate-a }, { code: STAGE_ERRORED, stage: review, reason: agent_unjudgeable }]
 
   - id: decisions/absent-with-failing-score
     outcome: ran
     stages:
-      review: { status: FAILED, passed: false, launched: [stub-gate-a], agents: { stub-gate-a: { class: absent, saved: "UNKNOWN" } } }
+      review: { status: ERRORED, passed: false, launched: [stub-gate-a], agents: { stub-gate-a: errored } }
     all_gates_passed: false
     run_decision: FAIL
-    warnings: [{ code: ABSENT_DECISION, agent: stub-gate-a }]
+    warnings: [{ code: ABSENT_DECISION, agent: stub-gate-a }, { code: STAGE_ERRORED, stage: review, reason: agent_unjudgeable }]
 
   - id: decisions/absent-without-score
     outcome: ran
@@ -346,6 +346,79 @@ expected:
     all_gates_passed: true
     run_decision: PASS
     warnings: []
+
+  - id: decisions/absent-score-warn-gate
+    outcome: ran
+    stages:
+      review: { status: PASSED, passed: true, launched: [stub-gate-a], agents: { stub-gate-a: { class: absent, saved: "UNKNOWN" } } }
+    all_gates_passed: true
+    run_decision: PASS
+    warnings: [{ code: ABSENT_DECISION, agent: stub-gate-a }]
+
+  - id: decisions/absent-score-no-gate
+    outcome: ran
+    stages:
+      review: { status: PASSED, passed: true, launched: [stub-gate-a], agents: { stub-gate-a: { class: absent, saved: "UNKNOWN" } } }
+    all_gates_passed: true
+    run_decision: PASS
+    warnings: [{ code: ABSENT_DECISION, agent: stub-gate-a }]
+
+  - id: decisions/absent-score-decision-only-blocking
+    outcome: ran
+    stages:
+      review: { status: ERRORED, passed: false, launched: [stub-gate-a], agents: { stub-gate-a: errored } }
+    all_gates_passed: false
+    run_decision: FAIL
+    warnings: [{ code: ABSENT_DECISION, agent: stub-gate-a }, { code: STAGE_ERRORED, stage: review, reason: agent_unjudgeable }]
+
+  - id: decisions/absent-score-abort-skips-dependent
+    outcome: ran
+    stages:
+      a: { status: ERRORED, passed: false, launched: [stub-gate-a], agents: { stub-gate-a: errored } }
+      b: { status: SKIPPED, passed: false, launched: [] }
+    all_gates_passed: false
+    run_decision: FAIL
+    warnings: [{ code: ABSENT_DECISION, agent: stub-gate-a }, { code: STAGE_ERRORED, stage: a, reason: agent_unjudgeable }]
+
+  - id: decisions/line-with-truncated-json-decision-only
+    outcome: ran
+    stages:
+      review: { status: FAILED, passed: false, launched: [stub-anxiety-a], agents: { stub-anxiety-a: { class: negative, saved: FRAGILITY_MASKED } } }
+    all_gates_passed: false
+    run_decision: FAIL
+    warnings: [{ code: FALLBACK_SCORE_SOURCE, agent: stub-anxiety-a, source: score, runtimes: [core] }]
+
+  - id: decisions/line-with-truncated-json-threshold
+    outcome: ran
+    stages:
+      review: { status: ERRORED, passed: false, launched: [stub-anxiety-a], agents: { stub-anxiety-a: errored } }
+    all_gates_passed: false
+    run_decision: FAIL
+    warnings: [{ code: FALLBACK_SCORE_SOURCE, agent: stub-anxiety-a, source: score, runtimes: [core] }, { code: STAGE_ERRORED, stage: review, reason: agent_unjudgeable }]
+
+  - id: decisions/echoed-option-list
+    outcome: ran
+    stages:
+      review: { status: PASSED, passed: true, launched: [stub-anxiety-a], agents: { stub-anxiety-a: { class: positive, saved: CONFIDENCE_WARRANTED } } }
+    all_gates_passed: true
+    run_decision: PASS
+    warnings: []
+
+  - id: decisions/echoed-instruction-line
+    outcome: ran
+    stages:
+      review: { status: PASSED, passed: true, launched: [stub-anxiety-a], agents: { stub-anxiety-a: { class: neutral, saved: "<TOKEN>" } } }
+    all_gates_passed: true
+    run_decision: PASS
+    warnings: [{ code: NEUTRAL_DECISION, agent: stub-anxiety-a, value: "<TOKEN>" }]
+
+  - id: decisions/dropped-dash-label
+    outcome: ran
+    stages:
+      review: { status: PASSED, passed: true, launched: [stub-anxiety-a], agents: { stub-anxiety-a: { class: neutral, saved: "FRAGILITY_MASKED Assessment negative" } } }
+    all_gates_passed: true
+    run_decision: PASS
+    warnings: [{ code: NEUTRAL_DECISION, agent: stub-anxiety-a, value: "FRAGILITY_MASKED Assessment negative" }]
 
   - id: decisions/classifiable-without-score-at-threshold
     outcome: ran
