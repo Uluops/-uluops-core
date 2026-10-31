@@ -21,8 +21,10 @@ export type DecisionKey = 'not_negative' | 'positive' | 'ignore';
 /**
  * The failure mode (§3.2, failure modes; D1, D43): `on_failure`, with `skip` read as `fail`
  * (deprecated; load warns `SKIP_DEPRECATED`) and an absent `on_failure` as `abort`. A stage with no
- * gate is judged as `warn`: it never fails the run, and a failure there is WARNED (D43, Alex
- * 2026-10-27, revising D19's "behaves as `fail`").
+ * gate takes the `warn` failure mode: it never fails the run, and a failure there is WARNED (D43,
+ * Alex 2026-10-27, revising D19's "behaves as `fail`"). Its decision key is not `warn`'s, though:
+ * `decisionKey` gives it `not_negative`, so a negative is WARNED, where an explicit `warn` gate
+ * defaults to `ignore` and passes it.
  *
  * Any value outside the enum reads as `abort`, the most blocking mode. Authored YAML reaches here
  * type-erased, and before 1.6.0 an unknown value fell through every branch and continued: a typo in
@@ -94,7 +96,8 @@ export interface GateJudgement {
  *
  * **Decision.** `positive`: a negative or a conditional fails. `not_negative`: a negative fails; a
  * conditional passes, and a passing blocking gate reports it as accepted. `ignore`: not compared.
- * Neutral and absent never fail; the score decides (§3.2 item 5).
+ * Neutral and absent never fail here; the score decides (§3.2 item 5). An absent decision at a
+ * blocking gate never reaches this function: D12 has made its stage ERRORED (`unjudgeableCause`).
  */
 export function judgeGate(
   gate: GateDefinition | undefined,

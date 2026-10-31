@@ -20,6 +20,8 @@ import { rejectionKind } from '../utils/runStop.js';
 import { stopVerdict, crashInside, isCrashRecord, stopReached, containerMarkers } from '../utils/stopVerdict.js';
 import { worstExtractionConfidence } from '../utils/worstExtractionConfidence.js';
 
+const noopLogger: Logger = { debug() {}, info() {}, warn() {}, error() {} };
+
 /**
  * Executes command definitions.
  *
@@ -29,8 +31,6 @@ import { worstExtractionConfidence } from '../utils/worstExtractionConfidence.js
  * Handles preflight checks, model/threshold overrides from command definition,
  * and multi-agent score aggregation.
  */
-const noopLogger: Logger = { debug() {}, info() {}, warn() {}, error() {} };
-
 export class CommandExecutor {
   private logger: Logger;
 
@@ -63,7 +63,8 @@ export class CommandExecutor {
    * across agents (multi-agent) per the command's aggregation method.
    *
    * @param resolved - Registry-resolved command definition (must have `type: 'command'`).
-   * @param input - Execution input; `target` is the absolute project path.
+   * @param input - Execution input; `target` is the project path (a relative one resolves against the
+   *                process's working directory).
    * @param overrides - Optional runtime overrides; `model` wins over the definition's default
    *                    model, and `abortSignal` is forwarded to every agent this command dispatches.
    * @returns The aggregated {@link CommandResult} with per-agent scores, decision, and recommendations.

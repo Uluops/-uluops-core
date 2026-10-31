@@ -24,19 +24,6 @@ import { worstExtractionConfidence } from '../utils/worstExtractionConfidence.js
 import type { Logger } from '@uluops/sdk-core';
 
 /**
- * Executes workflows as quality-gated directed acyclic graphs.
- *
- * Phases are topologically sorted into execution levels based on declared
- * dependencies. Independent phases (those in the same topological level)
- * execute in parallel. Quality gates evaluate continuous AI judgment scores
- * against declared thresholds, with four distinct failure behaviors:
- *
- * - stop:  do not start subsequent levels; let running phases finish
- * - abort: cancel running phases immediately; skip all remaining
- * - continue: proceed past failure; dependent phases still check deps
- * - warn:  proceed with warning annotation; no blocking
- */
-/**
  * Recover the completed-and-billed command results a thrown WorkflowError is carrying.
  *
  * Identity-free (`code` discriminant, not `instanceof`) for the reason errors/index.ts
@@ -50,6 +37,19 @@ function extractPartialCommands(error: unknown): CommandResult[] {
   return Array.isArray(partial) ? (partial as CommandResult[]) : [];
 }
 
+/**
+ * Executes workflows as quality-gated directed acyclic graphs.
+ *
+ * Phases are topologically sorted into execution levels based on declared
+ * dependencies. Independent phases (those in the same topological level)
+ * execute in parallel. Quality gates evaluate continuous AI judgment scores
+ * against declared thresholds, with four distinct failure behaviors:
+ *
+ * - stop:  do not start subsequent levels; let running phases finish
+ * - abort: cancel running phases immediately; skip all remaining
+ * - continue: proceed past failure; dependent phases still check deps
+ * - warn:  proceed with warning annotation; no blocking
+ */
 export class WorkflowExecutor {
   private logger: Logger;
 

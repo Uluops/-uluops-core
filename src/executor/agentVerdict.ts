@@ -7,7 +7,8 @@
  * `decisions/*` cases are the oracle.
  *
  * **One contract on agent output.** The decision is the string at `result.decision`, else the
- * top-level `decision` (in whichever JSON core extracted), else the value of the agent's
+ * top-level `decision` of the output envelope (core's structured output, or extracted JSON that
+ * carries `result`; any other extracted JSON is not read, D47), else the value of the agent's
  * `Decision:` line. The score is `result.score`, else `score`, else the number on the `Score:`
  * line. Nothing else in the output gates. Core's `OutputNormalizer` searches seven containers, key
  * aliases, `status` and summary-word fallbacks, and sums breakdowns: those stay for display, and
@@ -35,7 +36,9 @@ export type { DecisionClass, VerdictWarning };
 
 /** What a gate reads from one agent's output. */
 export interface AgentVerdict {
-  /** The decision's class. `absent` is handled as neutral: the score decides. */
+  /** The decision's class. A `neutral` one lets the score decide. So does an `absent` one behind a
+   *  `warn` gate or in a stage with no gate; at a blocking gate an absent decision makes the agent
+   *  unjudgeable whatever its score (D12, `unjudgeableCause`). */
   class: DecisionClass;
   /** The saved decision (D18): the token when it classifies; else the value as written, whitespace
    *  collapsed, cut to 50 characters; `UNKNOWN` when absent. */

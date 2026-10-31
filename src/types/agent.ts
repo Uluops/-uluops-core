@@ -577,8 +577,9 @@ interface AgentResultBase {
 
   /**
    * How a gate read this agent's output (PDL 1.6.0, `executor/agentVerdict.ts`): the decision's
-   * class (`absent` when nothing was at `result.decision`, `decision` or a `Decision:` line; it is
-   * handled as neutral) and the warnings reading it raised (`NEUTRAL_DECISION`, `ABSENT_DECISION`,
+   * class (`absent` when nothing was at `result.decision`, `decision` or a `Decision:` line; behind
+   * a `warn` gate or with no gate the score decides, and at a blocking gate the agent is unjudgeable,
+   * D12) and the warnings reading it raised (`NEUTRAL_DECISION`, `ABSENT_DECISION`,
    * `DECISION_CONFLICT`, `FALLBACK_DECISION_SOURCE`, `FALLBACK_SCORE_SOURCE`, `SCORE_INVALID`).
    * `decision` holds the saved form and `score` the gating score; this records how they were read.
    * Absent on synthesized records (a crash or a stop) and on results from cores before 1.6.0.

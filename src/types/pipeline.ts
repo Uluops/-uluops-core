@@ -300,21 +300,23 @@ export interface StageResult {
   status: 'pending' | 'running' | 'completed' | 'failed' | 'skipped' | 'errored';
 
   /** The stage's PDL 1.6.0 status (§3.1), set on every stage that has ended. PASSED: ran and its
-   *  gate passed (or no gate and every step succeeded). WARNED: a `warn` gate failed. FAILED: a
-   *  blocking gate failed, a step failed with no `warn` gate, or the stage threw. SKIPPED: its
+   *  gate passed (or no gate and every step succeeded). WARNED: a `warn` gate failed, or a step
+   *  failed or an agent was negative in a stage with no gate (D43). FAILED: a blocking gate failed,
+   *  a step failed behind a blocking gate, or the stage threw. SKIPPED: its
    *  condition was false, every agent was skipped by its own condition, a stage it depends on
    *  failed behind `abort`, or a stop came before it launched. ERRORED: could not be judged.
    *  `stages.<id>.passed` in a condition is `outcome === 'PASSED'`. */
   outcome?: StageOutcome;
 
   /** The failure mode the stage was judged under: `on_failure`, with `skip` read as `fail`, an
-   *  absent `on_failure` as `abort`, and a stage with no gate as `warn` (D43). Decides what an
+   *  absent `on_failure` as `abort`, and a stage with no gate as `warn` (D43; its decision key is
+   *  `not_negative`, not `warn`'s `ignore`). Decides what an
    *  ERRORED stage does to the run (§3.1). Absent on a stage that did not launch. */
   gateMode?: GateMode;
 
-  /** Why the stage is ERRORED (each reason that holds): `agent_unjudgeable` (an agent gave no score
-   *  and no classifiable decision, or no score at a gate with a threshold; a timeout or crash
-   *  included), `condition_error` (a condition evaluated to E), `stopped` (in flight at a cancel,
+  /** Why the stage is ERRORED (each reason that holds): `agent_unjudgeable` (an agent gave no
+   *  decision at a blocking gate, whatever its score (D12); no score at a gate with a threshold; no
+   *  score and no classifiable decision; or crashed, a timeout included), `condition_error` (a condition evaluated to E), `stopped` (in flight at a cancel,
    *  deadline or credit stop). Each reason is also a `STAGE_ERRORED` warning on the run. */
   erroredReasons?: ErroredReason[];
 
@@ -328,7 +330,11 @@ export interface StageResult {
    *  (pdl-steps-execution-spec D4). Absent when steps were not executed. */
   steps?: StepResult[];
 
-  /** Reason if stage was skipped */
+  /** Why the stage did not complete normally, as text: the skip reason for a SKIPPED stage
+   *  (`condition_not_met`, `gate_abort`, `cancelled`, …), the error for a stage that threw, and the
+   *  ERRORED reasons with their detail for an ERRORED stage (`agent_unjudgeable: "a" gave no
+   *  decision at a blocking gate`). Forwarded upstream context reads it as a stage's failure text.
+   *  For a machine-readable reason, read `outcome` and `erroredReasons`. */
   skipReason?: string;
 
   /** Stage start time */

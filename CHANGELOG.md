@@ -48,6 +48,28 @@ beside it suspect too. Tracker `ced3416c`.
 
 ### Fixed
 
+- **A relative target failed every `$ARGUMENTS` path preflight check** (consumer-validate run #122,
+  dx-validator). The registry's `validate` command checks `path: $ARGUMENTS`, and so does the README's
+  `runCommand('validate', { target: './src' })`. Core substituted the raw target into the path and then
+  resolved that path against the target again, so `./src` was checked as `<cwd>/src/src` and an existing
+  directory failed with "Target directory does not exist". The check's path now gets the resolved target,
+  and a missing-path error names the path it checked, after any custom message (`Target directory does
+  not exist: /abs/path`). Absolute targets behaved correctly before and are unchanged.
+- **The pre-launch vocabulary check and the gate disagreed about "blocking"** (run #122, GI-2). The gate
+  reads an `on_failure` value outside the enum as `abort`, but the check kept its own set of blocking
+  values. A stage with such a value was therefore gated as blocking without its agents being checked. The
+  check now uses the gate's definition (`isBlocking(gateMode(gate))`).
+- **Docs that still described 0.54.0's absent decision** (run #122): the `AgentVerdict.class`,
+  `AgentResult.verdict`, `judgeGate` and `StageResult.erroredReasons` doc comments, and the README's
+  decision-path and D24 lines, now state D12 and the D47 envelope rule. Also corrected:
+  - the README dependency rule now names the `abort` exception;
+  - `StageResult.outcome` now describes FAILED and WARNED as D43 has them;
+  - a stage with no gate is documented as taking `warn`'s failure mode but the `not_negative` key;
+  - the README now states that a stage's `result.score` is the average;
+  - the README now states that WDL `abort` differs from PDL `abort`;
+  - `StageResult.skipReason` and the README now describe its ERRORED text;
+  - the README's type list names the types exported in this release;
+  - `CommandExecutor` and `WorkflowExecutor` now carry their class docs, which a declaration had cut off.
 - **Exports:** `StageOutcome`, `GateMode`, `ErroredReason`, `PipelineWarning` (P4b) and `DecisionClass`,
   `VerdictWarning`, `AgentVerdictRecord` (P4a) are now exported from both entry points. 0.54.0's
   CHANGELOG named them, but neither entry point exported them. The 0.54.0 Verdaccio check found it

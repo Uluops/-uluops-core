@@ -49,13 +49,18 @@ function shellQuote(s: string): string {
 function substituteCheckVars(check: PreflightCheck, input: ExecutionInput): PreflightCheck {
   // Shell-quote the target for command substitution to prevent CWE-78.
   // Path/message fields use the raw value (not shell-interpreted).
+  // A path gets the RESOLVED target: checkFileExists resolves the path against the target, so the raw
+  // value doubled a relative target (`./src` was checked as `<cwd>/src/src`). The registry's `validate`
+  // command checks `path: $ARGUMENTS`, with relative argument examples.
   const subRaw = (s: string | undefined): string | undefined =>
     s?.replace(/\$ARGUMENTS/g, input.target);
+  const subPath = (s: string | undefined): string | undefined =>
+    s?.replace(/\$ARGUMENTS/g, path.resolve(input.target));
   const subShell = (s: string | undefined): string | undefined =>
     s?.replace(/\$ARGUMENTS/g, shellQuote(input.target));
   return {
     ...check,
-    path: subRaw(check.path),
+    path: subPath(check.path),
     command: subShell(check.command),
     message: subRaw(check.message),
   };
@@ -123,8 +128,10 @@ async function checkFileExists(
     // lstat ENOENT → file not found; realpath failure → dangling symlink or race
     const isNotFound = error instanceof Error && 'code' in error && (error as NodeJS.ErrnoException).code === 'ENOENT';
     throw new PreflightError(
+      // The checked path is always named: a custom message alone ("Target directory does not exist")
+      // left a user looking at a directory that did exist with nothing to compare against.
       isNotFound
-        ? (check.message ?? `Required file not found: ${check.path}`)
+        ? `${check.message ?? 'Required file not found'}: ${fullPath}`
         : `Failed to resolve real path: ${error instanceof Error ? error.message : 'unknown'}`,
       'file_exists',
       { path: check.path },

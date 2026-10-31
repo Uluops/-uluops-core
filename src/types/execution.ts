@@ -50,7 +50,7 @@ export type AgentType = 'validator' | 'executor' | 'analyst' | 'generator' | 'ex
  * Base input for all execution types
  */
 export interface ExecutionInput {
-  /** Target path to analyze */
+  /** Target path to analyze. A relative path resolves against the process's working directory. */
   target: string;
 
   /**

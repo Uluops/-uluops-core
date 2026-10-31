@@ -42,6 +42,23 @@ describe('runPreflightChecks', () => {
       await expect(runPreflightChecks(checks, input)).rejects.toThrow('package.json is required');
     });
 
+    // The registry's `validate` command checks `path: $ARGUMENTS`, and its own argument examples are
+    // relative (`./services/auth-service`). The raw target was substituted into the path and then
+    // resolved against the target again, so `./src` was checked as `<cwd>/src/src` and an existing
+    // directory read "Target directory does not exist" (consumer-validate run on core 0.55.0, dx-validator).
+    it('a $ARGUMENTS path with a RELATIVE target checks the target itself, not target/target', async () => {
+      await fs.mkdir(path.join(tmpDir, 'src'));
+      vi.spyOn(process, 'cwd').mockReturnValue(tmpDir);
+      const rel = path.relative(process.cwd(), path.join(tmpDir, 'src'));
+      const checks: PreflightCheck[] = [{ check: 'path_exists', path: '$ARGUMENTS', message: 'Target directory does not exist' }];
+      await expect(runPreflightChecks(checks, { target: `./${rel}` })).resolves.toBeUndefined();
+    });
+
+    it('a missing path names the path it checked, even with a custom message', async () => {
+      const checks: PreflightCheck[] = [{ check: 'path_exists', path: '$ARGUMENTS/nope', message: 'Target directory does not exist' }];
+      await expect(runPreflightChecks(checks, input)).rejects.toThrow(`Target directory does not exist: ${path.join(tmpDir, 'nope')}`);
+    });
+
     it('throws when path is missing from check', async () => {
       const checks: PreflightCheck[] = [{ check: 'file_exists' }];
       await expect(runPreflightChecks(checks, input)).rejects.toThrow('requires a path');

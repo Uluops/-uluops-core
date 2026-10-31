@@ -29,6 +29,7 @@ export const UPSTREAM_STAGE_FULL_CAP = 24_000;
  *  reports put verdict/summary at the top and conclusions at the bottom —
  *  middle detail is the safest loss. */
 export const UPSTREAM_FULL_HEAD_CHARS = 16_000;
+/** Tail retained from a `forward: full` rawOutput (the head is `UPSTREAM_FULL_HEAD_CHARS`). */
 export const UPSTREAM_FULL_TAIL_CHARS = 8_000;
 /** Total `## Upstream Analysis` section cap. */
 export const UPSTREAM_TOTAL_CAP = 32_000;

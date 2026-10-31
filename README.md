@@ -397,6 +397,8 @@ const { phasesExecuted, phasesPassed, phasesBlocked, phasesAborted } = result.me
 
 Workflows define phase dependencies and failure behaviors in their WDL definition:
 
+WDL's `abort` is not PDL's: in a workflow, `abort` (like `stop`) skips every remaining phase, while a PDL stage gated `abort` skips only its own dependents. A pipeline stage that refs a workflow runs it under the workflow's meaning.
+
 ```yaml
 orchestration:
   on_failure: stop       # stop | abort | continue | warn
@@ -447,7 +449,7 @@ for (const stage of result.stages) {
 
 **Conditions are checked before anything runs.** `start()` / `runPipeline()` validate every stage and agent condition, `depends_on` (a stage declared later, or the stage itself, is a load error), undeclared keys on stages, gates and agent refs, and step templates, and throw a `PipelineError` whose `context.loadErrors` lists each `{ code, at, message }` (codes as the PDL 1.6.0 spec names them, e.g. `undeclared_parameter at stage:deploy`). **Before 1.6.0** a condition core could not read made its stage run with a warning (fail-open), ordering operators and number literals were accepted, and `skip_if` was evaluated; each is now a load error. See the PDL spec for the full grammar.
 
-**Dependencies.** A stage runs once every `depends_on` stage has ended, **whatever its status**: a dependency that was skipped or failed no longer skips its dependents. Whether a stage runs is decided by its own condition. (Before 1.6.0, a dependency had to complete, and the dependents of a skipped conditional stage were skipped too.)
+**Dependencies.** A stage runs once every `depends_on` stage has ended, **whatever its status**, with one exception: the transitive dependents of a stage that ended FAILED or ERRORED behind an `abort` gate are skipped (see the failure-mode table below). A skipped dependency, or one that failed behind `fail` or `warn`, no longer skips its dependents. Whether a stage runs is otherwise decided by its own condition. (Before 1.6.0, a dependency had to complete, and the dependents of a skipped conditional stage were skipped too.)
 
 **Stage output forwarding (0.31.0, ON by default).** Any inline-agent stage with `depends_on` automatically receives an `## Upstream Analysis` section in each of its agents' initial messages — a severity-sorted slice (decision, `decisionCategory`, score, summary, top-5 recommendations) of every dependency's results, placed after the operator `Directive:` and before the project context. Forwarding is one hop (direct dependencies only) and never flows between parallel siblings. Controls:
 
@@ -466,7 +468,7 @@ Caps (provisional; exported as `UPSTREAM_STAGE_SLICE_CAP` 8K / `UPSTREAM_STAGE_F
 
 **Stage gates and the run verdict (PDL 1.6.0).** A stage's `gate:` block (PDL `$defs/gate`) judges the stage once it has run. Every stage ends with one `outcome` (`StageResult.outcome`): `PASSED`, `WARNED` (a `warn` gate failed), `FAILED`, `SKIPPED`, or `ERRORED` (it could not be judged). What a gate reads from each agent is fixed by the agent-output contract (see the decision and score paths above):
 
-- **Score.** If any `agents[]` entry declares `threshold`, the gate is in **per-agent mode**: each agent must reach its own threshold, or `gate.threshold` when it has none. Otherwise `aggregate(scores) >= gate.threshold` (`aggregate: min | max | average`, default `min`). A gate with no threshold is decision-only. A ref stage gates on its result's score, and a missing one there is not compared.
+- **Score.** If any `agents[]` entry declares `threshold`, the gate is in **per-agent mode**: each agent must reach its own threshold, or `gate.threshold` when it has none. Otherwise `aggregate(scores) >= gate.threshold` (`aggregate: min | max | average`, default `min`). The stage's own `result.score` is always the **average** of its agents' scores, a descriptive figure: a stage can report 78 and still fail a `min` gate of 70. A gate with no threshold is decision-only. A ref stage gates on its result's score, and a missing one there is not compared.
 - **Decision** (`gate.decision`): `not_negative` (a negative fails; a conditional passes, and a blocking gate that passes one makes the run's `allGatesPassed` false, with a `CONDITIONAL_ACCEPTED` warning), `positive` (a conditional fails too), or `ignore`. Default: `not_negative` on blocking gates, `ignore` on `warn` gates. A neutral decision never fails a gate; the score decides. An absent one decides on its score only behind `warn` or in a stage with no gate: at a blocking gate it makes the agent unjudgeable (below).
 - **Unjudgeable agents.** An agent makes its stage **ERRORED** when it gave no decision at a blocking gate (`abort` or `fail`), whatever its score; when it gave no score at a gate that has a threshold; when it gave no score and no classifiable decision; or when it crashed (a timeout included: `agents[].timeout`, in ms, overrides the run's timeout for that agent). A decision counts only from the agent's output envelope (the JSON object carrying `result`, or core's structured output) or its `Decision:` line; a JSON fragment that text extraction lifts out of a truncated block is not read.
 
@@ -499,7 +501,7 @@ stages:
 | `skip` (deprecated) | as `fail` (load warning `SKIP_DEPRECATED`) | as `fail` |
 | no gate | WARNED (a failed step, a thrown stage or a negative decision; D43) | continues; never fails the run |
 
-An ERRORED stage takes its gate's mode: behind `abort` its dependents are skipped, behind `fail` it fails the run, behind `warn` it counts as WARNED. Every ERRORED stage raises a `STAGE_ERRORED` warning (`PipelineResult.warnings`, with `reason: 'agent_unjudgeable' | 'condition_error' | 'stopped'`). A stage whose every agent was skipped by its own condition is SKIPPED, its gate not evaluated.
+An ERRORED stage takes its gate's mode: behind `abort` its dependents are skipped, behind `fail` it fails the run, behind `warn` it counts as WARNED. Every ERRORED stage raises a `STAGE_ERRORED` warning (`PipelineResult.warnings`, with `reason: 'agent_unjudgeable' | 'condition_error' | 'stopped'`). The stage's `skipReason` carries the same reasons as text, naming each unjudgeable agent's cause: `agent_unjudgeable: "a@1" gave no decision at a blocking gate, "b@1" crashed` (the other causes read `gave no score at a gate with a threshold` and `gave no score and no classifiable decision`). Match on `outcome` and `erroredReasons`, not on that text. A stage whose every agent was skipped by its own condition is SKIPPED, its gate not evaluated.
 
 **The run verdict.** `PipelineResult.allGatesPassed` is false when a stage ended FAILED, a stage ended ERRORED behind `abort` or `fail`, a blocking gate accepted a CONDITIONAL, or a stop (cancel, deadline, credit limit) reached a stage before the run ended; otherwise true. `decision` follows it: `FAIL` when false, `WARN` when a stage WARNED or ended ERRORED behind `warn`, else `PASS`. A tracked run saves `allGatesPassed` exactly as computed, and its raw markdown begins with a `params:` line holding the resolved run parameters. An abort no longer ends the run: `wait()` and `runPipeline()` resolve with `status: 'complete'` and `decision: 'FAIL'`; skipped stages carry `skipReason: 'gate_abort' | 'gate_early_exit' | 'condition_not_met' | ...`. Note: a `steps:` stage behind a blocking gate (`abort`, `fail`, `skip`) that cannot execute because `allowStageSteps` is off **refuses the run before any stage starts** instead of passing through — an unexecutable mandatory gate is a configuration error (see [Stage Steps](#stage-steps-opt-in)).
 
@@ -1088,11 +1090,11 @@ if (category === 'negative') {
 
 **How an agent's decision and score are read (PDL 1.6.0).** Every agent result's `decision`, `decisionCategory` and `score` come from one contract on the agent's output, not from a search of it:
 
-- **Decision:** the string at `result.decision`, else the top-level `decision` (in the JSON core extracted), else the agent's `Decision:` line. The value is reduced to one token (leading glyphs, `**`, quotes dropped; the first run of letters, digits and underscores, upper-cased) that counts only when followed by the end, closing punctuation (`) ] . , : ; ! *`) or whitespace before a non-letter. So `**REVISE** (Score: 85)` reads REVISE, while `NOT SECURE`, `SECURE WITH CONDITIONS` and an unfilled `[A|B]` placeholder read **neutral**: the rule fails toward neutral, never toward the wrong class. The token is classified through the definition's vocabulary, then the 13-token core register above; **synonyms do not classify** (`REJECT`, `OK`, `SUCCESS` and `DONE` read neutral).
+- **Decision:** the string at `result.decision`, else the top-level `decision` of the output envelope, else the agent's `Decision:` line. The envelope is core's structured output, or JSON found in the agent's text that carries `result`; JSON without `result` (a fragment of a cut-off block, or a flat `{"decision": …}` fence) is not read for the decision or the score (D47). The value is reduced to one token (leading glyphs, `**`, quotes dropped; the first run of letters, digits and underscores, upper-cased) that counts only when followed by the end, closing punctuation (`) ] . , : ; ! *`) or whitespace before a non-letter. So `**REVISE** (Score: 85)` reads REVISE, while `NOT SECURE`, `SECURE WITH CONDITIONS` and an unfilled `[A|B]` placeholder read **neutral**: the rule fails toward neutral, never toward the wrong class. The token is classified through the definition's vocabulary, then the 13-token core register above; **synonyms do not classify** (`REJECT`, `OK`, `SUCCESS` and `DONE` read neutral).
 - **Saved decision:** the token when it classifies; otherwise the value as written, whitespace collapsed and cut to 50 characters; `UNKNOWN` when nothing was found.
 - **Score:** `result.score`, else `score`, else the number on a `Score:` line; a number from 0 to 100, or a string that is exactly one. A value outside that is **no score** (it used to be clamped), and a score found only elsewhere (`summary.score`, a summed breakdown) is no score either.
 - **Warnings:** `result.verdict` records the class (`absent` when no decision was found) and the warnings the reading raised: `NEUTRAL_DECISION`, `ABSENT_DECISION`, `DECISION_CONFLICT` (JSON and line both classify and disagree; the JSON wins), `FALLBACK_DECISION_SOURCE` / `FALLBACK_SCORE_SOURCE` (naming where the wider search found a value that does not count), `SCORE_INVALID`.
-- **In a pipeline**, an agent with no score at a gate that has a threshold, or with no score and no classifiable decision, is unjudgeable (D24), and before launch every agent in a blocking-gated stage must declare a vocabulary or be an explorer, or `start()` refuses with `context.refusal.code === 'VOCABULARY_MISSING'`.
+- **In a pipeline**, an agent is unjudgeable when it gave no decision at a blocking gate, whatever its score (D12); when it gave no score at a gate that has a threshold; or when it gave no score and no classifiable decision (D24), and before launch every agent in a blocking-gated stage must declare a vocabulary or be an explorer, or `start()` refuses with `context.refusal.code === 'VOCABULARY_MISSING'`.
 
 **Aggregation semantics** (multi-agent commands and workflow phases):
 
@@ -1243,6 +1245,13 @@ import {
   type StageResult,              // one entry of PipelineResult.stages
   type StepDefinition,           // one entry of StageDefinition.steps (see Stage Steps)
   type StepResult,               // one entry of StageResult.steps
+  type StageOutcome,             // StageResult.outcome: PASSED | WARNED | FAILED | SKIPPED | ERRORED
+  type GateMode,                 // StageResult.gateMode: abort | fail | warn
+  type ErroredReason,            // StageResult.erroredReasons[]: agent_unjudgeable | condition_error | stopped
+  type PipelineWarning,          // one entry of PipelineResult.warnings (STAGE_ERRORED, CONDITIONAL_ACCEPTED, …)
+  type PipelineLoadError,        // one entry of PipelineError.context.loadErrors
+  type PipelineRefusal,          // PipelineError.context.refusal (e.g. VOCABULARY_MISSING)
+  type CostBasis,                // metrics.costBasis: billed | estimated | mixed | unpriced | none
   // Registry types
   type SubscriptionTier,         // 'free' | 'hobbyist' | 'plus' | 'pro' | 'enterprise';
                                  // type of SubscriptionRequiredError.requiredTier / .currentTier
@@ -1251,6 +1260,9 @@ import {
   resolveDecisionCategory,
   type DecisionCategory,
   type DecisionVocabularyMap,   // return type of buildVocabularyMap
+  type DecisionClass,            // AgentVerdictRecord.class: DecisionCategory plus 'absent'
+  type AgentVerdictRecord,       // AgentResult.verdict: how a gate read the agent's output
+  type VerdictWarning,           // one entry of AgentVerdictRecord.warnings
   // Analysis & AI layer companion types (for direct Advanced Exports usage)
   type AnalysisExtractionResult, // return type of AnalysisSummaryExtractor
   type ResolvedModel,            // return type of ModelCatalog.resolve

@@ -19,6 +19,7 @@ export const UluOpsErrorCodes = {
   UNKNOWN_ERROR: 'UNKNOWN_ERROR',
 } as const;
 
+/** The union of `UluOpsErrorCodes` values: what `UluOpsError.code` can hold. */
 export type UluOpsErrorCode = typeof UluOpsErrorCodes[keyof typeof UluOpsErrorCodes];
 
 /**

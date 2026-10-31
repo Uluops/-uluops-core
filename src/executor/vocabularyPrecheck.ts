@@ -23,8 +23,7 @@
 
 import type { ResolvedDefinition } from '../types/registry.js';
 import type { StageDefinition } from '../types/pipeline.js';
-
-const BLOCKING = new Set([undefined, 'abort', 'fail', 'skip']);
+import { gateMode, isBlocking } from './stageGate.js';
 
 /** Whether a resolved agent declares a decision vocabulary or is an explorer. */
 export function classifiesItsDecisions(resolved: ResolvedDefinition): boolean {
@@ -41,7 +40,10 @@ export function classifiesItsDecisions(resolved: ResolvedDefinition): boolean {
 export function blockingGatedAgentRefs(stages: readonly StageDefinition[]): string[] {
   const refs: string[] = [];
   for (const stage of stages) {
-    if (!stage.gate || !BLOCKING.has(stage.gate.on_failure as string | undefined)) continue;
+    // The gate's own definition of blocking, so a stage the gate judges as blocking is checked here
+    // too: an `on_failure` outside the enum reads as `abort` there, and a separate set here let such
+    // a stage escape the check (consumer-validate run #122, wittgenstein GI-2).
+    if (!stage.gate || !isBlocking(gateMode(stage.gate))) continue;
     for (const a of stage.agents ?? []) if (typeof a?.ref === 'string' && !refs.includes(a.ref)) refs.push(a.ref);
   }
   return refs;

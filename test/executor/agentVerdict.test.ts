@@ -257,6 +257,12 @@ describe('the pre-launch vocabulary check (D9)', () => {
     ] as never)).toEqual(['abort', 'default', 'fail']);
   });
 
+  it('checks a stage whose on_failure is outside the enum: the gate judges it as abort, so it is blocking (GI-2)', () => {
+    expect(blockingGatedAgentRefs([
+      { id: 'a', name: 'a', agents: [{ ref: 'typo' }], gate: { on_failure: 'Abort' as never } },
+    ] as never)).toEqual(['typo']);
+  });
+
   it('does not refuse an agent it cannot resolve; dispatch reports it', async () => {
     const unresolved: string[] = [];
     const missing = await agentsMissingVocabulary(
