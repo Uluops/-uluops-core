@@ -98,104 +98,63 @@ export class OutputExtractor {
     // ── Extraction strategies (ordered by confidence) ──────────────────────
     // Confidence values are heuristics encoding relative trust in each method.
     // They were calibrated against Claude's output patterns and may need
-    // recalibration as new models (GPT, Gemini) are added. The parsed decision
-    // is always preserved on the result; SubmissionClient gates on
-    // EXTRACTION_CONFIDENCE_THRESHOLD (constants.ts) so a strategy below that
-    // threshold yields a decision that is reported but not trusted to pass a gate.
+    // recalibration as new models (GPT, Gemini) are added. An agent result's
+    // decision and score are NOT this parse's: AgentExecutor saves the gate's reading
+    // (agentVerdict.ts, PDL 1.6.0). What this method decides for the result is the
+    // categories, recommendations, raw JSON and `extractionConfidence`, and
+    // SubmissionClient refuses a positive verdict below EXTRACTION_CONFIDENCE_THRESHOLD
+    // (constants.ts). A change to the rungs therefore moves that refusal and the
+    // `extraction.*` markers, not the decision (0.56.0 reverted such a change for that reason).
     //
     // Strategy 1: JSON code fence (0.95) — model explicitly wrapped output
     // Strategy 2: Whole/inline JSON (0.9/0.75) — found parseable JSON in text
     // Strategy 3: Structured text (0.5) — regex matched decision/score patterns
     // Strategy 4: Fallback (0.0) — nothing found, emit ERROR/0 defaults
 
-    // A JSON rung WINS only when what it found carries a verdict: a decision or a score. Until
-    // 0.56.0 any object that parsed won its rung, so `{"analysisRecords":[]}` returned
-    // `inline_json` at 0.9 with decision UNKNOWN and the text rung, which could have read a
-    // `PASS`/`FAIL` line, never ran (R-D12 live run, 2026-11-01: Haiku under jsonTool mode).
-    // A verdictless object is kept as a CANDIDATE: its records survive if nothing better is found.
-    //
-    // The text rung reads only the prose OUTSIDE the verdictless JSON spans. Its patterns
-    // (`status: x`, `score: n`) match keys inside JSON too, so scanning the object itself would
-    // read a finding's `"status": "open"` as the decision or a category's `"score": 8` as the
-    // overall score. When the whole reply is JSON there is no prose, and nothing is read.
-    let verdictless: { output: ParsedOutput; method: ExtractionResult['method']; confidence: number; warnings: string[] } | undefined;
-    const spans: Array<[number, number]> = [];
-    const consider = (
-      found: { parsed: unknown; span: [number, number] } | null,
-      method: ExtractionResult['method'],
-      confidence: number,
-      rungWarnings: string[],
-    ): ExtractionResult | undefined => {
-      if (!found) return undefined;
-      const output = this.normalizer.normalizeOutput(found.parsed, agentType);
-      if (OutputExtractor.carriesVerdict(output)) {
-        return { output, method, confidence, warnings: [...warnings, ...rungWarnings] };
-      }
-      spans.push(found.span);
-      verdictless ??= { output, method, confidence, warnings: rungWarnings };
-      return undefined;
-    };
-
     // Strategy 1: Try JSON code fence (highest confidence)
-    const fenceWin = consider(this.extractFromCodeFence(content, options), 'json_code_fence', 0.95, []);
-    if (fenceWin) return fenceWin;
-
-    // Strategy 1b: Try parsing trimmed content as whole JSON object
-    const wholeWin = consider(this.extractWholeJson(content), 'inline_json', 0.9, []);
-    if (wholeWin) return wholeWin;
-
-    // Strategy 2: Try inline JSON detection. Skipped when the whole reply was one JSON object:
-    // the inline scan would find that same object (or a fragment of it) again.
-    if (spans.length === 0 || !this.extractWholeJson(content)) {
-      const inlineWin = consider(
-        this.extractInlineJson(content), 'inline_json', 0.75,
-        ['Extracted from inline JSON - consider using code fence for reliability'],
-      );
-      if (inlineWin) return inlineWin;
-    }
-
-    // Strategy 3: Fall back to structured text parsing, over the prose outside any verdictless JSON
-    const prose = OutputExtractor.withoutSpans(content, spans);
-    const textResult = prose.trim() === '' ? null : this.extractFromStructuredText(prose, agentType);
-    if (textResult && OutputExtractor.carriesVerdict(textResult)) {
-      warnings.push('Extracted from structured text patterns - JSON output recommended');
-      if (verdictless) {
-        warnings.push(
-          `The ${verdictless.method} JSON carried no decision or score; they were read from the text around it, and the JSON's other fields were kept.`,
-        );
-        return {
-          output: {
-            ...textResult,
-            ...verdictless.output,
-            decision: textResult.decision,
-            ...(textResult.score !== undefined && textResult.score !== null
-              ? { score: textResult.score, maxScore: textResult.maxScore ?? verdictless.output.maxScore }
-              : {}),
-          },
-          method: 'structured_text',
-          confidence: 0.5,
-          warnings,
-        };
-      }
-      return { output: textResult, method: 'structured_text', confidence: 0.5, warnings };
-    }
-
-    // Nothing carried a verdict. A verdictless JSON object is still the best record of what the
-    // model said (its findings, records, categories), so it is returned as before. The warning
-    // says what is missing; ABSENT_DECISION and the gate decide what that means downstream.
-    if (verdictless) {
+    const fenceResult = this.extractFromCodeFence(content, options);
+    if (fenceResult) {
       return {
-        ...verdictless,
-        warnings: [
-          ...warnings, ...verdictless.warnings,
-          `The ${verdictless.method} JSON carried no decision or score, and no text outside it did either.`,
-        ],
+        output: this.normalizer.normalizeOutput(fenceResult, agentType),
+        method: 'json_code_fence',
+        confidence: 0.95,
+        warnings,
       };
     }
 
+    // Strategy 1b: Try parsing trimmed content as whole JSON object
+    const wholeJsonResult = this.extractWholeJson(content);
+    if (wholeJsonResult) {
+      return {
+        output: this.normalizer.normalizeOutput(wholeJsonResult, agentType),
+        method: 'inline_json',
+        confidence: 0.9,
+        warnings,
+      };
+    }
+
+    // Strategy 2: Try inline JSON detection
+    const inlineResult = this.extractInlineJson(content);
+    if (inlineResult) {
+      warnings.push('Extracted from inline JSON - consider using code fence for reliability');
+      return {
+        output: this.normalizer.normalizeOutput(inlineResult, agentType),
+        method: 'inline_json',
+        confidence: 0.75,
+        warnings,
+      };
+    }
+
+    // Strategy 3: Fall back to structured text parsing
+    const textResult = this.extractFromStructuredText(content, agentType);
     if (textResult) {
       warnings.push('Extracted from structured text patterns - JSON output recommended');
-      return { output: textResult, method: 'structured_text', confidence: 0.5, warnings };
+      return {
+        output: textResult,
+        method: 'structured_text',
+        confidence: 0.5,
+        warnings,
+      };
     }
 
     // Extraction failed
@@ -222,30 +181,10 @@ export class OutputExtractor {
     };
   }
 
-  /** A decision other than the normalizer's UNKNOWN sentinel, or a numeric score. */
-  private static carriesVerdict(output: ParsedOutput): boolean {
-    return (output.decision !== undefined && output.decision !== 'UNKNOWN')
-      || (typeof output.score === 'number' && Number.isFinite(output.score));
-  }
-
-  /** `content` with each [start, end) span replaced by a newline, so lines either side stay apart. */
-  private static withoutSpans(content: string, spans: Array<[number, number]>): string {
-    if (spans.length === 0) return content;
-    const ordered = [...spans].sort((a, b) => a[0] - b[0]);
-    let out = '';
-    let at = 0;
-    for (const [start, end] of ordered) {
-      if (start < at) { at = Math.max(at, end); continue; }
-      out += content.slice(at, start) + '\n';
-      at = end;
-    }
-    return out + content.slice(at);
-  }
-
   private extractFromCodeFence(
     content: string,
     options: ExtractionOptions,
-  ): { parsed: unknown; span: [number, number] } | null {
+  ): unknown | null {
     const lang = options.codeFenceLanguage ?? 'json';
     // Prefer the disambiguated fence (introduced by report-mode invocations) so
     // example ```${lang} blocks in prose cannot claim the last-match. Fall back
@@ -269,28 +208,25 @@ export class OutputExtractor {
     const lastMatch = matches[matches.length - 1];
     if (!lastMatch?.[1]) return null;
     try {
-      const start = lastMatch.index ?? 0;
-      const span: [number, number] = [start, start + lastMatch[0].length];
-      const parsed = JSON.parse(lastMatch[1].trim()) as unknown;
-      return { parsed, span };
+      return JSON.parse(lastMatch[1].trim()) as unknown;
     } catch {
       return null;
     }
   }
 
-  private extractWholeJson(content: string): { parsed: unknown; span: [number, number] } | null {
+  private extractWholeJson(content: string): unknown | null {
     const trimmed = content.trim();
     if (!trimmed.startsWith('{') || !trimmed.endsWith('}')) return null;
     try {
       const parsed = JSON.parse(trimmed);
-      if (typeof parsed === 'object' && parsed !== null) return { parsed, span: [0, content.length] };
+      if (typeof parsed === 'object' && parsed !== null) return parsed;
     } catch {
       // Not valid JSON
     }
     return null;
   }
 
-  private extractInlineJson(content: string): { parsed: unknown; span: [number, number] } | null {
+  private extractInlineJson(content: string): unknown | null {
     const match = content.match(OutputExtractor.INLINE_JSON_PATTERN);
     if (!match) return null;
 
@@ -339,8 +275,7 @@ export class OutputExtractor {
     });
     // Sort by length desc (largest JSON object), then by field count desc
     scored.sort((a, b) => b.length - a.length || b.fieldCount - a.fieldCount);
-    const best = scored[0]!;
-    return { parsed: best.parsed, span: [best.index, best.index + best.length] };
+    return scored[0]!.parsed;
   }
 
   private extractBalancedJson(content: string, startIndex: number): string | null {
