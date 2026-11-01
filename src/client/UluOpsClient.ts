@@ -536,6 +536,8 @@ export class UluOpsClient {
    * @param options - Optional filters (`workflowType`, `limit`).
    * @returns An array of {@link RunHistoryEntry} (most recent first).
    * @throws {SdkApiError} For transport/auth failures from the submission service.
+   *   Test with `isApiErrorLike()`, not `instanceof SdkApiError`: the class can come from a
+   *   different copy of sdk-core (dual-package hazard; see the README).
    */
   async getHistory(
     project: string,
@@ -551,6 +553,8 @@ export class UluOpsClient {
    * @returns The {@link RunSubmissionResponse} for the run (correlation counts are zeroed).
    * @throws {NotFoundError} If no run exists with that id.
    * @throws {SdkApiError} For transport/auth failures from the submission service.
+   *   Test with `isApiErrorLike()`, not `instanceof SdkApiError`: the class can come from a
+   *   different copy of sdk-core (dual-package hazard; see the README).
    */
   async getRun(runId: string): Promise<RunSubmissionResponse> {
     return this.submission.getRun(runId);
@@ -565,6 +569,8 @@ export class UluOpsClient {
    * @param result - The execution result that would be submitted.
    * @returns Whether the submit would create/update/regress, plus any validation errors.
    * @throws {SdkApiError} For transport/auth failures from the submission service.
+   *   Test with `isApiErrorLike()`, not `instanceof SdkApiError`: the class can come from a
+   *   different copy of sdk-core (dual-package hazard; see the README).
    */
   async previewSubmission(
     project: string,
@@ -584,6 +590,8 @@ export class UluOpsClient {
    * @returns The {@link RunSubmissionResponse} — run id/number, dashboard URL, correlation counts.
    * @throws {SubmissionError} If the service rejects the submission.
    * @throws {SdkApiError} For transport/auth failures from the submission service.
+   *   Test with `isApiErrorLike()`, not `instanceof SdkApiError`: the class can come from a
+   *   different copy of sdk-core (dual-package hazard; see the README).
    */
   async submitResults(
     project: string,
