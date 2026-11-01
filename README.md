@@ -8,7 +8,6 @@
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](LICENSE)
 [![Node.js Version](https://img.shields.io/node/v/@uluops/core)](https://nodejs.org)
 [![TypeScript](https://img.shields.io/badge/TypeScript-5.7+-blue.svg)](https://www.typescriptlang.org/)
-[![Tests](https://img.shields.io/badge/tests-passing-brightgreen)](test/)
 
 The foundational execution engine for UluOps. Orchestrates AI-powered code analysis through a 4-layer execution hierarchy (Agent > Command > Workflow > Pipeline), manages LLM tool loops via Vercel AI SDK, and integrates with the UluOps registry and tracker — every run's findings become tracked issues with fingerprints, so a resolved finding that comes back is a regression, not a new issue.
 
@@ -73,36 +72,62 @@ const result = await client.runAgent('code-validator', './src');
 console.log(`Score: ${result.score} | Decision: ${result.decision}`);
 ```
 
-This still requires an AI provider key but no UluOps API key or network access to the registry.
-
 > **Note:** `runAgent`/`resolve` return immediately from local definitions when found. `client.list()`, however, always queries the registry first and only falls back to the bundled definitions after the request fails — in a genuinely offline environment that means a few seconds of retry/backoff before the local list returns.
 
 > **Workflows and pipelines.** Local resolution applies the same WDL/PDL authoring→runtime normalization (e.g. `steps[]` → `commands[]`/`agentRefs[]`) the registry applies server-side, so `runWorkflow`/`runPipeline` resolve from local definitions too — provided every definition they reference (sub-agents, commands) is itself resolvable, locally or from the registry.
 
 ## Table of Contents
 
+- [Prerequisites](#prerequisites)
+- [Quick Start](#quick-start)
+  - [Offline Quick Start (No UluOps API Key)](#offline-quick-start-no-uluops-api-key)
 - [Overview](#overview)
 - [Installation](#installation)
 - [Authentication](#authentication)
+  - [UluOps API Key](#uluops-api-key)
+  - [AI Provider Keys](#ai-provider-keys)
 - [Usage](#usage)
   - [Agent Execution](#agent-execution)
   - [Command Execution](#command-execution)
   - [Workflow Execution](#workflow-execution)
+  - [Auto-Routing](#auto-routing)
   - [Pipeline Execution](#pipeline-execution)
   - [Convenience Methods](#convenience-methods)
   - [Discovery](#discovery)
+  - [Cache Management](#cache-management)
   - [Result Tracking](#result-tracking)
+  - [Usage Metrics](#usage-metrics)
+  - [Cost](#cost)
+  - [Structured-output recovery](#structured-output-recovery)
   - [Extended Thinking](#extended-thinking)
   - [Integrity Verification](#integrity-verification)
+- [OpenRouter (experimental)](#openrouter-experimental)
 - [Architecture](#architecture)
 - [Execution Hierarchy](#execution-hierarchy)
 - [Advanced Exports](#advanced-exports)
+  - [Exported Constants](#exported-constants)
+  - [Direct Executor Usage](#direct-executor-usage)
+  - [Model Resolution](#model-resolution)
+  - [Decision Classification](#decision-classification)
 - [Configuration](#configuration)
+  - [Local Definition File Naming](#local-definition-file-naming)
+  - [Environment Variables](#environment-variables)
 - [TypeScript Support](#typescript-support)
+  - [Subpath Exports](#subpath-exports)
 - [Error Handling](#error-handling)
+  - [Core SDK Errors](#core-sdk-errors)
+  - [Re-exported from @uluops/sdk-core](#re-exported-from-uluopssdk-core)
+  - [Network Error Recovery](#network-error-recovery)
 - [Security](#security)
+  - [Tool Allowlist](#tool-allowlist)
+  - [Security events](#security-events)
+  - [Filesystem Sandboxing](#filesystem-sandboxing)
+  - [Preflight Checks](#preflight-checks)
+  - [Stage Steps (opt-in)](#stage-steps-opt-in)
 - [Dependencies](#dependencies)
 - [Development](#development)
+- [Maintainers](#maintainers)
+- [License](#license)
 
 ## Overview
 
@@ -174,103 +199,7 @@ const client = new UluOpsClient({
 });
 ```
 
-### OpenRouter (experimental)
-
-Route any OpenRouter model through core with an `openrouter:<slug>` model string. Install the
-provider yourself, at the version core is built against:
-
-```bash
-npm install @openrouter/ai-sdk-provider@2.10.0
-export OPENROUTER_API_KEY=your_openrouter_key   # auto-detected like the keys above
-```
-
-```typescript
-// `client` is the UluOpsClient from Quick Start.
-const result = await client.runAgent('code-validator', './src', {
-  model: 'openrouter:deepseek/deepseek-v4-flash',
-});
-```
-
-> **Data governance.** Every file the agent reads, and every shell command's output, is sent to
-> OpenRouter and on to whichever upstream provider serves the request. OpenRouter itself retains
-> no prompts unless you opt in to its prompt logging; the upstreams differ. **Since 0.49.0 core
-> sends `provider.data_collection: 'deny'` by default**, so only upstreams that do not retain or
-> train on your data are eligible. Fewer endpoints qualify; when none does (OpenRouter's routing
-> step "Filter by Data Policy" — typical of `:free` models), the run fails with a `CapabilityError`
-> that names `provider.data_collection = 'deny'` and how to opt in.
->
-> To opt in for one run, pass it per request in `runAgent`'s options:
-> `providerOptions: { openrouter: { provider: { data_collection: 'allow' } } }`. Commands,
-> workflows, pipelines and the CLI take no `providerOptions`; for them the levers are
-> `ai.openRouterDataCollection: 'allow'` in the client config or `OPENROUTER_DATA_COLLECTION=allow`
-> in the environment, and both apply to **every** run that client or shell makes. While `allow` is
-> in effect, the first OpenRouter request it applies to from each lever logs a warning naming that
-> lever. Per request beats config, config beats the environment. At every layer an empty or null
-> value means unset; any other value than `allow`/`deny` means `deny` at that layer — it does not
-> fall through to a lower layer's `allow`.
->
-> These levers are a preference, not a lock: a more specific one always overrides a less specific
-> one, so an environment `deny` cannot stop an embedding app's `allow`. To **enforce** deny, use
-> your OpenRouter account's privacy settings (openrouter.ai/settings/privacy), which apply on top of
-> all of this. `deny` is OpenRouter's per-provider data-policy flag, not zero data retention: for
-> the strictest routing add `zdr: true` (zero-retention endpoints only) and pin upstreams with
-> `provider.only`. Core keeps any `provider` fields you set and adds its own `require_parameters`.
-
-- **Pin 2.10.0.** The package's npm `latest` is 3.x, which targets `ai@7`; core runs `ai@6` and
-  refuses a different major at load with an error naming both versions. Under strict pnpm
-  isolation the package must be hoisted, because core resolves it with a dynamic `import()` from
-  its own install location (the same as the other non-bundled providers).
-- **Catalog data.** OpenRouter slugs resolve against the registry catalog (core 0.45.0+), so a
-  listed slug gets its real capabilities, context window and price. A slug the catalog does not
-  list runs on defaults and the run carries an info marker, `model.unregistered-defaults`
-  (programmatic callers of `AIProvider.generate()` also get `modelRegistered: false` on the result).
-- **Routing guards.** Core always sends `provider.require_parameters: true` (route only to
-  endpoints that support every parameter sent, the only capability guard for a routed model) and
-  `usage.include: true`; caller options cannot turn either off. Extended thinking is opt-in (see
-  [Extended Thinking](#extended-thinking)): when it is on, a capable model gets
-  `reasoning.max_tokens` from `defaultThinkingBudget`, and `anthropic/…` models also get a raised
-  `max_tokens` and the interleaved-thinking beta. Adding `reasoning` narrows the endpoints
-  `require_parameters` admits; a no-endpoint error names it and the switch that turns it off.
-- **Shell.** OpenRouter has no provider-defined shell tool, so routed agents that request `bash`
-  get a schema-fallback `bash` tool. The `allowedTools` gate applies exactly as for Anthropic's
-  native tool (`bash` stays off unless you allow it), and runs offered it carry an info marker,
-  `tools.shell-schema-fallback`. Commands run unsandboxed in the target directory, as with the
-  native tools, but are generated by whichever upstream OpenRouter routed to; allow `bash` only
-  with upstreams pinned (`provider.only`) and a target you would let that model run commands in.
-- **Errors.** Each OpenRouter failure arrives typed (core 0.48.0+):
-  - **Out of credit (402)** is a `ProviderCreditError` carrying OpenRouter's `limitSource` and its
-    own text. A **pre-flight** refusal ("can only afford N") means the balance cannot cover this
-    request's worst case (`maxTokens` × price): lowering `maxTokens` works, credit remains.
-    Otherwise the credit or the key's limit is spent. Inside a pipeline a 402 **stops the whole
-    run and fails it**: later stages are skipped, in-flight siblings are aborted, the run ends
-    `failed` (decision `FAIL`), and `wait()` / `runPipeline` throw a `PipelineError` whose message
-    is the provider's text. A user `cancel()` still ends `cancelled`. Only the agent that
-    received the 402 keeps a failing record (one critical recommendation carrying the provider's
-    text); the siblings the stop aborted are recorded `ABORTED` — see
-    [Stopped agents](#stopped-agents-aborted).
-  - **Outside a pipeline** there is no run to stop. `runAgent` and single-agent commands reject
-    with `ProviderCreditError`. A multi-agent command or a workflow contains a failing agent the
-    way it contains any crash: the result carries a failing verdict and a crash recommendation
-    whose title includes the provider's text, and it throws only if every agent failed.
-  - **Spend on a 402 mid-run is not recorded.** The completed requests of an agent that hit the
-    402, and of siblings the stop aborted, are not carried across the throw, so the run's cost
-    reads `unpriced` (see [Cost](#cost)).
-  - **No endpoint (404)** is a `CapabilityError` naming the routing step and every constraint the
-    request carried: the parameters `require_parameters` holds endpoints to, any `provider.only` /
-    `ignore` / `quantizations`, and for an allowed-providers miss, the providers that do serve
-    the model.
-  - **Unknown slug (400 "is not a valid model ID")** is a `ModelNotFoundError` naming the slug.
-  - **Rate limited (429)** is a `RateLimitError` whose `retryAfter` (seconds) comes from
-    OpenRouter's `X-RateLimit-Reset`, since it sends no `retry-after`; the message names whose
-    limit it was (`limit_source`).
-  - A context-length 400 on an uncatalogued slug names the budget it ran with, and an error
-    OpenRouter returns inside an HTTP 200 body maps by its own code.
-- **Cost.** OpenRouter's billed amount is summed per request into `costUsdBilled`, and
-  `costUsdTotal` prefers it over the registry estimate (see [Cost](#cost)). On a BYOK request the
-  upstream provider's charge is added; on a normal one it is not, since OpenRouter reports the same
-  figure twice there.
-- **Not yet:** route tagging in the Tracker. A routed run is recorded under its
-  `openrouter:<slug>` model string.
+OpenRouter models are covered in [OpenRouter (experimental)](#openrouter-experimental), after Usage.
 
 ## Usage
 
@@ -315,7 +244,7 @@ const focused = await client.runAgent('security-analyst', {
 });
 ```
 
-The prompt appears as a prominent `Directive:` section in the initial message, before project context. When omitted, behavior is identical to previous versions.
+The prompt appears as a prominent `Directive:` section in the initial message, before project context.
 
 #### Run Completeness & Degradation Markers
 
@@ -348,11 +277,9 @@ if (result.completeness !== 'complete') {
 
   > **`budget.forced-wrap-up` and `steps.forced-wrap-up`** mean the tools were withdrawn before
   > the agent finished exploring: the context budget crossed 80%, or the run reached 80% of its
-  > step limit. Both are `degraded`, so the run reads `partial`. Since 0.54.0 the wrap-up
-  > withdraws the tools (`activeTools: []`), which holds on Anthropic structured output too.
-  > From 0.42.0 to 0.53.x it set only `toolChoice: 'none'`, which that path overrides, so the
-  > brake did nothing there and the run carried `budget.brake-inert` instead; that marker now
-  > means only that the configured `contextBudget` was not a usable number.
+  > step limit. Both are `degraded`, so the run reads `partial`. The wrap-up withdraws the tools
+  > (`activeTools: []`), which holds on Anthropic structured output too. `budget.brake-inert` means
+  > the configured `contextBudget` was not a usable number.
 - The engine *observes* completeness from how the run actually executed; agents never self-report it. `deriveCompleteness(markers)` is exported to recompute an agent result's. A container's (a `CommandResult`, a stage result) is the worst of its agents' and its own markers', so recompute it from `agentResults`.
 - **`decisionCategory`**: the vocabulary-resolved category of `decision` (`'positive' | 'negative' | 'conditional' | 'neutral'`), stamped on every result. For custom-vocabulary agents (cognitive lens agents, WDL-remapped workflow decisions) gate on this — or on `resolveDecisionCategory(result)` — instead of the raw decision string. See [Decision Classification](#decision-classification).
 - `degradations: string[]` is the deprecated legacy alias (resolution-phase strings only), retained for compatibility — prefer `degradationMarkers`.
@@ -454,11 +381,16 @@ for (const stage of result.stages) {
 }
 ```
 
-**Stage & agent conditions (PDL 1.6.0).** A stage's `condition` (and per-agent `agents[].condition` in inline-agent stages) is a **run-gate**: the stage or agent runs when it is true and is skipped when it is false. A condition reads exactly three things: a declared run parameter (`params.frontend`, from `ExecutionInput.params`, declared defaults bound first), whether an ancestor stage passed (`stages.review.passed`), and an ancestor's step output (`stages.preflight.steps['Detect TypeScript'].output == 'DETECTED'`). It compares with `==` / `!=` against a string literal and combines with `!`, `&&`, `||` and parentheses; values compare as strings, and `''`, `'false'` and `'0'` are false. **An absent param is `false`** and equals nothing (so `!params.x` is `true`). Reading a step that did not pass (failed, or never ran) gives an error value that `false && …` and `true || …` absorb; otherwise the stage or agent is not run and the stage is **ERRORED** (`status: 'errored'`, `erroredReasons: ['condition_error']`, a `STAGE_ERRORED` warning on the run).
+**Stage & agent conditions (PDL 1.6.0).** A stage's `condition` (and per-agent `agents[].condition` in inline-agent stages) is a **run-gate**: the stage or agent runs when it is true and is skipped when it is false.
 
-**Conditions are checked before anything runs.** `start()` / `runPipeline()` validate every stage and agent condition, `depends_on` (a stage declared later, or the stage itself, is a load error), undeclared keys on stages, gates and agent refs, and step templates, and throw a `PipelineError` whose `context.loadErrors` lists each `{ code, at, message }` (codes as the PDL 1.6.0 spec names them, e.g. `undeclared_parameter at stage:deploy`). **Before 1.6.0** a condition core could not read made its stage run with a warning (fail-open), ordering operators and number literals were accepted, and `skip_if` was evaluated; each is now a load error. See the PDL spec for the full grammar.
+- **What it reads**, exactly three things: a declared run parameter (`params.frontend`, from `ExecutionInput.params`, declared defaults bound first), whether an ancestor stage passed (`stages.review.passed`), and an ancestor's step output (`stages.preflight.steps['Detect TypeScript'].output == 'DETECTED'`).
+- **Operators.** `==` / `!=` against a string literal, combined with `!`, `&&`, `||` and parentheses. Values compare as strings; `''`, `'false'` and `'0'` are false.
+- **An absent param is `false`** and equals nothing (so `!params.x` is `true`).
+- **A step that did not pass** (failed, or never ran) reads as an error value. `false && …` and `true || …` absorb it; otherwise the stage or agent is not run and the stage is **ERRORED** (`status: 'errored'`, `erroredReasons: ['condition_error']`, a `STAGE_ERRORED` warning on the run).
 
-**Dependencies.** A stage runs once every `depends_on` stage has ended, **whatever its status**, with one exception: the transitive dependents of a stage that ended FAILED or ERRORED behind an `abort` gate are skipped (see the failure-mode table below). A skipped dependency, or one that failed behind `fail` or `warn`, no longer skips its dependents. Whether a stage runs is otherwise decided by its own condition. (Before 1.6.0, a dependency had to complete, and the dependents of a skipped conditional stage were skipped too.)
+**Conditions are checked before anything runs.** `start()` / `runPipeline()` validate every stage and agent condition, `depends_on` (a stage declared later, or the stage itself, is a load error), undeclared keys on stages, gates and agent refs, and step templates, and throw a `PipelineError` whose `context.loadErrors` lists each `{ code, at, message }` (codes as the PDL 1.6.0 spec names them, e.g. `undeclared_parameter at stage:deploy`). A condition core cannot read, an ordering operator, a number literal and `skip_if` are each a load error. See the PDL spec for the full grammar.
+
+**Dependencies.** A stage runs once every `depends_on` stage has ended, **whatever its status**, with one exception: the transitive dependents of a stage that ended FAILED or ERRORED behind an `abort` gate are skipped (see the failure-mode table below). A skipped dependency, or one that failed behind `fail` or `warn`, no longer skips its dependents. Whether a stage runs is otherwise decided by its own condition.
 
 **Stage output forwarding (0.31.0, ON by default).** Any inline-agent stage with `depends_on` automatically receives an `## Upstream Analysis` section in each of its agents' initial messages — a severity-sorted slice (decision, `decisionCategory`, score, summary, top-5 recommendations) of every dependency's results, placed after the operator `Directive:` and before the project context. Forwarding is one hop (direct dependencies only) and never flows between parallel siblings. Controls:
 
@@ -475,9 +407,10 @@ stages:
 
 Caps (provisional; exported as `UPSTREAM_STAGE_SLICE_CAP` 8K / `UPSTREAM_STAGE_FULL_CAP` 24K / `UPSTREAM_TOTAL_CAP` 32K chars) reduce deterministically — findings first, then narratives; stage headers and verdict lines are never dropped, and all truncation is marked in-place. Fleet-wide kill switch: `ULUOPS_DISABLE_STAGE_FORWARDING=1` (or `true`). The forwarded slices ride `ExecutionInput.upstreamContext` (type `UpstreamStageContext`) — engine-populated; not an operator input.
 
-**Stage gates and the run verdict (PDL 1.6.0).** A stage's `gate:` block (PDL `$defs/gate`) judges the stage once it has run. Every stage ends with one `outcome` (`StageResult.outcome`): `PASSED`, `WARNED` (a `warn` gate failed), `FAILED`, `SKIPPED`, or `ERRORED` (it could not be judged). What a gate reads from each agent is fixed by the agent-output contract (see the decision and score paths above):
+**Stage gates and the run verdict (PDL 1.6.0).** A stage's `gate:` block (PDL `$defs/gate`) judges the stage once it has run. Every stage ends with one `outcome` (`StageResult.outcome`): `PASSED`, `WARNED` (a `warn` gate failed), `FAILED`, `SKIPPED`, or `ERRORED` (it could not be judged). What a gate reads from each agent is fixed by the agent-output contract (see [Decision Classification](#decision-classification)):
 
-- **Score.** If any `agents[]` entry declares `threshold`, the gate is in **per-agent mode**: each agent must reach its own threshold, or `gate.threshold` when it has none. Otherwise `aggregate(scores) >= gate.threshold` (`aggregate: min | max | average`, default `min`). The stage's own `result.score` is always the **average** of its agents' scores, a descriptive figure: a stage can report 78 and still fail a `min` gate of 70. Its `result.decision` reports the stage's `outcome` (`PASS`, `WARN`, `FAIL`, or `ERROR` for ERRORED; a stage a stop reached reads `FAIL` or `ABORTED`); each agent's own decision is on `agentResults`. A gate with no threshold is decision-only. A ref stage gates on its result's score, and a missing one there is not compared.
+- **Score.** If any `agents[]` entry declares `threshold`, the gate is in **per-agent mode**: each agent must reach its own threshold, or `gate.threshold` when it has none. Otherwise `aggregate(scores) >= gate.threshold` (`aggregate: min | max | average`, default `min`). A gate with no threshold is decision-only. A ref stage gates on its result's score, and a missing one there is not compared.
+- **The stage's own result is descriptive.** `result.score` is always the **average** of its agents' scores, so a stage can report 78 and still fail a `min` gate of 70. `result.decision` reports the stage's `outcome` (`PASS`, `WARN`, `FAIL`, or `ERROR` for ERRORED; a stage a stop reached reads `FAIL` or `ABORTED`); each agent's own decision is on `agentResults`.
 - **Decision** (`gate.decision`): `not_negative` (a negative fails; a conditional passes, and a blocking gate that passes one makes the run's `allGatesPassed` false, with a `CONDITIONAL_ACCEPTED` warning), `positive` (a conditional fails too), or `ignore`. Default: `not_negative` on blocking gates, `ignore` on `warn` gates. A neutral decision never fails a gate; the score decides. An absent one decides on its score only behind `warn` or in a stage with no gate: at a blocking gate it makes the agent unjudgeable (below).
 - **Unjudgeable agents.** An agent makes its stage **ERRORED** when it gave no decision at a blocking gate (`abort` or `fail`), whatever its score; when it gave no score at a gate that has a threshold; when it gave no score and no classifiable decision; or when it crashed (a timeout included: `agents[].timeout`, in ms, overrides the run's timeout for that agent). A decision counts only from the agent's output envelope (the JSON object carrying `result`, or core's structured output) or its `Decision:` line; a JSON fragment that text extraction lifts out of a truncated block is not read.
 
@@ -510,9 +443,17 @@ stages:
 | `skip` (deprecated) | as `fail` (load warning `SKIP_DEPRECATED`) | as `fail` |
 | no gate | WARNED (a failed step, a thrown stage or a negative decision; D43) | continues; never fails the run |
 
-An ERRORED stage takes its gate's mode: behind `abort` its dependents are skipped, behind `fail` it fails the run, behind `warn` it counts as WARNED. Every ERRORED stage raises a `STAGE_ERRORED` warning (`PipelineResult.warnings`, with `reason: 'agent_unjudgeable' | 'condition_error' | 'stopped'`). The stage's `skipReason` carries the same reasons as text, naming each unjudgeable agent's cause: `agent_unjudgeable: "a@1" gave no decision at a blocking gate, "b@1" crashed` (the other causes read `gave no score at a gate with a threshold` and `gave no score and no classifiable decision`). Match on `outcome` and `erroredReasons`, not on that text. A stage whose every agent was skipped by its own condition is SKIPPED, its gate not evaluated.
+- **An ERRORED stage takes its gate's mode:** behind `abort` its dependents are skipped, behind `fail` it fails the run, behind `warn` it counts as WARNED.
+- **Every ERRORED stage raises a `STAGE_ERRORED` warning** (`PipelineResult.warnings`, with `reason: 'agent_unjudgeable' | 'condition_error' | 'stopped'`). The stage's `skipReason` carries the same reasons as text, naming each unjudgeable agent's cause: `agent_unjudgeable: "a@1" gave no decision at a blocking gate, "b@1" crashed` (the other causes read `gave no score at a gate with a threshold` and `gave no score and no classifiable decision`). Match on `outcome` and `erroredReasons`, not on that text.
+- **A stage whose every agent was skipped** by its own condition is SKIPPED, its gate not evaluated.
 
-**The run verdict.** `PipelineResult.allGatesPassed` is false when a stage ended FAILED, a stage ended ERRORED behind `abort` or `fail`, a blocking gate accepted a CONDITIONAL, or a stop (cancel, deadline, credit limit) reached a stage before the run ended; otherwise true. `decision` follows it: `FAIL` when false, `WARN` when a stage WARNED or ended ERRORED behind `warn`, else `PASS`. A tracked run saves `allGatesPassed` exactly as computed, and its raw markdown begins with a `params:` line holding the resolved run parameters. An abort no longer ends the run: `wait()` and `runPipeline()` resolve with `status: 'complete'` and `decision: 'FAIL'`; skipped stages carry `skipReason: 'gate_abort' | 'gate_early_exit' | 'condition_not_met' | ...`. Note: a `steps:` stage behind a blocking gate (`abort`, `fail`, `skip`) that cannot execute because `allowStageSteps` is off **refuses the run before any stage starts** instead of passing through — an unexecutable mandatory gate is a configuration error (see [Stage Steps](#stage-steps-opt-in)).
+**The run verdict.**
+
+- **`PipelineResult.allGatesPassed`** is false when a stage ended FAILED, a stage ended ERRORED behind `abort` or `fail`, a blocking gate accepted a CONDITIONAL, or a stop (cancel, deadline, credit limit) reached a stage before the run ended; otherwise true.
+- **`decision`** follows it: `FAIL` when false, `WARN` when a stage WARNED or ended ERRORED behind `warn`, else `PASS`.
+- **An abort does not throw.** `wait()` and `runPipeline()` resolve with `status: 'complete'` and `decision: 'FAIL'`; skipped stages carry `skipReason: 'gate_abort' | 'gate_early_exit' | 'condition_not_met' | ...`.
+- **A tracked run** saves `allGatesPassed` exactly as computed, and its raw markdown begins with a `params:` line holding the resolved run parameters.
+- **An unexecutable mandatory gate refuses the run.** A `steps:` stage behind a blocking gate (`abort`, `fail`, `skip`) that cannot execute because `allowStageSteps` is off refuses the run before any stage starts (see [Stage Steps](#stage-steps-opt-in)).
 
 Async execution with handle-based control:
 
@@ -542,9 +483,7 @@ signal stops the run exactly like `cancel()` — status `cancelled`, later stage
 `AbortSignal.timeout(ms)` (its abort reason is a `TimeoutError`), the run ends **`failed`**,
 `wait()` throws a `PipelineError` naming the deadline, and the agents still in flight are
 recorded as crashes — the slow agent is the likeliest broken one, so a deadline is never filed
-away as a neutral stop. (Before the release that added stopped-agent recording, your own signal
-aborted the provider calls but left the run `running`, so later stages were dispatched against a
-dead signal and the run could end `completed`.)
+away as a neutral stop.
 
 ### Convenience Methods
 
@@ -642,7 +581,7 @@ On the auto-tracking path, a failed submission (e.g. a free-tier `402 PROJECT_LI
   | `classification` | ≤50, optional | categorical, so **nulled** rather than truncated — a clipped category is a different category — original in `data.rawClassification` |
   | `data` | a plain object | entries-form `[{key,value}]` converted; any other array, primitive or `null` → `{}` or `{ rawData }` |
 
-  `recordType` is deliberately **not** checked against a fixed vocabulary. The tracker stores it as a bounded string so registry-defined agents can emit new record shapes without a coordinated release; this package used to re-narrow it client-side against a 47-value set and silently rewrite anything outside it to `evidence_finding`. If you consume `recordType`, expect a materially wider set than before v0.36.0 — 307 distinct values were already in storage from other write paths.
+  `recordType` is deliberately **not** checked against a fixed vocabulary. The tracker stores it as a bounded string so registry-defined agents can emit new record shapes without a coordinated release. If you consume `recordType`, expect a wide, open set (over 300 distinct values are in storage).
 
 ### Usage Metrics
 
@@ -725,9 +664,8 @@ estimate against the bill. Reconcile against an invoice only when `costBasis` is
 (core 0.56.0). On Claude, core asks for structured output through a json tool
 (`structuredOutputMode: 'jsonTool'`), because native enforcement with the filesystem tools answers
 HTTP 400 "The compiled grammar is too large". That tool is not `strict`, so the provider enforces
-nothing: an answer can miss a required field or break a nested one. Both were seen live on Haiku 4.5.
-In 8 of 8 first answers decision, score and maxScore were all missing. In 2 of 8 sampled repair
-answers the verdict was present but `analysisRecords` was a malformed JSON string.
+nothing: an answer can miss a required field or break a nested one (both seen live; see the 0.56.0
+CHANGELOG entry).
 
 When the SDK rejects the answer, core tries, in order:
 
@@ -742,8 +680,7 @@ When the SDK rejects the answer, core tries, in order:
    (`structured-output.repaired`, `info`). An answer that fails only on optional content is salvaged
    as in step 1. Optional content the repair answer leaves out, or salvage drops, is **carried over**
    from the first answer when the first answer had it in valid form (`structuredOutputRepair.carriedOver`
-   names the fields). Live, Haiku's first answer held the findings and its repair answer usually
-   dropped them. The verdict always comes from the repair answer.
+   names the fields). The verdict always comes from the repair answer.
 3. **Fallback.** Otherwise the run falls back to text extraction as before
    (`structured-output.repair-failed`, `info`; the `extraction.*` markers carry any loss). This
    includes the case where no repair turn was possible because the provider reported no
@@ -813,11 +750,6 @@ reasoning even with thinking off. The counter is `ai.modelOverride`. Thinking co
 `costUsd` like any output (see [Cost](#cost)); reasoning tokens are in `reasoning_tokens`
 (every non-Google model family) or `thinking_tokens` (Google-family models, direct or `google/*` through OpenRouter).
 
-**Release order.** `@uluops/registry-sdk` 0.61.0 started surfacing the `reasoning` capability that
-the registry always served. Core 0.50.0 and older auto-enable thinking wherever that capability is
-set; a consumer that injects registry-sdk 0.61.0 into an older core's public `ModelCatalog` turns
-that on. Upgrade core and the SDK together (core pins the SDK exactly, so a plain install is safe).
-
 ### Integrity Verification
 
 Pin a definition's expected hashes so execution is **refused** if the resolved
@@ -851,9 +783,103 @@ try {
 
 > **Trust bootstrap.** This ships the verification *mechanism* and explicit pin inputs, not pin *provenance*. A pin seeded from a first unpinned `resolve()` against an already-compromised registry is trust-on-first-use. A pin manifest (lockfile) is the natural completion.
 
+## OpenRouter (experimental)
+
+Route any OpenRouter model through core with an `openrouter:<slug>` model string. Install the
+provider yourself, at the version core is built against:
+
+```bash
+npm install @openrouter/ai-sdk-provider@2.10.0
+export OPENROUTER_API_KEY=your_openrouter_key   # auto-detected like the keys above
+```
+
+```typescript
+// `client` is the UluOpsClient from Quick Start.
+const result = await client.runAgent('code-validator', './src', {
+  model: 'openrouter:deepseek/deepseek-v4-flash',
+});
+```
+
+> **Data governance.** Every file the agent reads, and every shell command's output, is sent to
+> OpenRouter and on to whichever upstream provider serves the request. OpenRouter itself retains
+> no prompts unless you opt in to its prompt logging; the upstreams differ. **Since 0.49.0 core
+> sends `provider.data_collection: 'deny'` by default**, so only upstreams that do not retain or
+> train on your data are eligible. Fewer endpoints qualify; when none does (OpenRouter's routing
+> step "Filter by Data Policy" — typical of `:free` models), the run fails with a `CapabilityError`
+> that names `provider.data_collection = 'deny'` and how to opt in.
+>
+> To opt in for one run, pass it per request in `runAgent`'s options:
+> `providerOptions: { openrouter: { provider: { data_collection: 'allow' } } }`. Commands,
+> workflows, pipelines and the CLI take no `providerOptions`; for them the levers are
+> `ai.openRouterDataCollection: 'allow'` in the client config or `OPENROUTER_DATA_COLLECTION=allow`
+> in the environment, and both apply to **every** run that client or shell makes. While `allow` is
+> in effect, the first OpenRouter request it applies to from each lever logs a warning naming that
+> lever. Per request beats config, config beats the environment. At every layer an empty or null
+> value means unset; any other value than `allow`/`deny` means `deny` at that layer — it does not
+> fall through to a lower layer's `allow`.
+>
+> These levers are a preference, not a lock: a more specific one always overrides a less specific
+> one, so an environment `deny` cannot stop an embedding app's `allow`. To **enforce** deny, use
+> your OpenRouter account's privacy settings (openrouter.ai/settings/privacy), which apply on top of
+> all of this. `deny` is OpenRouter's per-provider data-policy flag, not zero data retention: for
+> the strictest routing add `zdr: true` (zero-retention endpoints only) and pin upstreams with
+> `provider.only`. Core keeps any `provider` fields you set and adds its own `require_parameters`.
+
+- **Pin 2.10.0.** The package's npm `latest` is 3.x, which targets `ai@7`; core runs `ai@6` and
+  refuses a different major at load with an error naming both versions. Under strict pnpm
+  isolation the package must be hoisted, because core resolves it with a dynamic `import()` from
+  its own install location (the same as the other non-bundled providers).
+- **Catalog data.** OpenRouter slugs resolve against the registry catalog (core 0.45.0+), so a
+  listed slug gets its real capabilities, context window and price. A slug the catalog does not
+  list runs on defaults and the run carries an info marker, `model.unregistered-defaults`
+  (programmatic callers of `AIProvider.generate()` also get `modelRegistered: false` on the result).
+- **Routing guards.** Core always sends `provider.require_parameters: true` (route only to
+  endpoints that support every parameter sent, the only capability guard for a routed model) and
+  `usage.include: true`; caller options cannot turn either off. Extended thinking is opt-in (see
+  [Extended Thinking](#extended-thinking)): when it is on, a capable model gets
+  `reasoning.max_tokens` from `defaultThinkingBudget`, and `anthropic/…` models also get a raised
+  `max_tokens` and the interleaved-thinking beta. Adding `reasoning` narrows the endpoints
+  `require_parameters` admits; a no-endpoint error names it and the switch that turns it off.
+- **Shell.** OpenRouter has no provider-defined shell tool, so routed agents that request `bash`
+  get a schema-fallback `bash` tool. The `allowedTools` gate applies exactly as for Anthropic's
+  native tool (`bash` stays off unless you allow it), and runs offered it carry an info marker,
+  `tools.shell-schema-fallback`. Commands run unsandboxed in the target directory, as with the
+  native tools, but are generated by whichever upstream OpenRouter routed to; allow `bash` only
+  with upstreams pinned (`provider.only`) and a target you would let that model run commands in.
+- **Errors.** Each OpenRouter failure arrives typed (core 0.48.0+):
+  - **Out of credit (402)** is a `ProviderCreditError` carrying OpenRouter's `limitSource` and its
+    own text. A **pre-flight** refusal ("can only afford N") means the balance cannot cover this
+    request's worst case (`maxTokens` × price): lowering `maxTokens` works, credit remains.
+    Otherwise the credit or the key's limit is spent. Inside a pipeline a 402 **stops the whole
+    run and fails it**; what that does to later stages, in-flight siblings and their records is
+    in [Stopped agents](#stopped-agents-aborted).
+  - **Outside a pipeline** there is no run to stop. `runAgent` and single-agent commands reject
+    with `ProviderCreditError`. A multi-agent command or a workflow contains a failing agent the
+    way it contains any crash: the result carries a failing verdict and a crash recommendation
+    whose title includes the provider's text, and it throws only if every agent failed.
+  - **Spend on a 402 mid-run is not recorded.** The completed requests of an agent that hit the
+    402, and of siblings the stop aborted, are not carried across the throw, so the run's cost
+    reads `unpriced` (see [Cost](#cost)).
+  - **No endpoint (404)** is a `CapabilityError` naming the routing step and every constraint the
+    request carried: the parameters `require_parameters` holds endpoints to, any `provider.only` /
+    `ignore` / `quantizations`, and for an allowed-providers miss, the providers that do serve
+    the model.
+  - **Unknown slug (400 "is not a valid model ID")** is a `ModelNotFoundError` naming the slug.
+  - **Rate limited (429)** is a `RateLimitError` whose `retryAfter` (seconds) comes from
+    OpenRouter's `X-RateLimit-Reset`, since it sends no `retry-after`; the message names whose
+    limit it was (`limit_source`).
+  - A context-length 400 on an uncatalogued slug names the budget it ran with, and an error
+    OpenRouter returns inside an HTTP 200 body maps by its own code.
+- **Cost.** OpenRouter's billed amount is summed per request into `costUsdBilled`, and
+  `costUsdTotal` prefers it over the registry estimate (see [Cost](#cost)). On a BYOK request the
+  upstream provider's charge is added; on a normal one it is not, since OpenRouter reports the same
+  figure twice there.
+- **Not yet:** route tagging in the Tracker. A routed run is recorded under its
+  `openrouter:<slug>` model string.
+
 ## Architecture
 
-For a detailed, hop-by-hop trace of every execution chain (resolution → LLM generation → persistence), see [ARCHITECTURE.md](./ARCHITECTURE.md).
+For a detailed, hop-by-hop trace of every execution chain (resolution → LLM generation → persistence), see [ARCHITECTURE.md](https://github.com/Uluops/-uluops-core/blob/main/ARCHITECTURE.md) (in the repository; not shipped to npm).
 
 ```text
 UluOpsClient (facade)
@@ -944,12 +970,12 @@ import {
 } from '@uluops/core';
 ```
 
-Upstream stage-forwarding bounds (see [Stage context forwarding](#pipeline-execution)) are exported
+Upstream stage-forwarding bounds (see [Stage output forwarding](#pipeline-execution)) are exported
 from the same entry point:
 
 ```typescript
 import {
-  UPSTREAM_STAGE_SLICE_CAP,      // per-stage cap for the default recommendation slice
+  UPSTREAM_STAGE_SLICE_CAP,      //  8000 — per-stage cap for the default recommendation slice
   UPSTREAM_STAGE_FULL_CAP,       // 24000 — per-stage cap when the producer declared `forward: full`
   UPSTREAM_FULL_HEAD_CHARS,      // 16000 — head retained from a `forward: full` rawOutput
   UPSTREAM_FULL_TAIL_CHARS,      //  8000 — tail retained; the middle is the safest loss
@@ -1075,8 +1101,7 @@ const resolved = await catalog.resolve('sonnet', {
 // unaffected; if you CONSTRUCT one (test fixtures, adapters) you must add the field.
 
 // Model ids containing '/' (OpenRouter slugs) resolve against their catalog row as of 0.45.0
-// (registry-sdk 0.58.0 uses the registry's query-string lookup for them). Before 0.45.0 the
-// lookup always missed and such ids resolved with registered: false and default capabilities.
+// (registry-sdk 0.58.0 uses the registry's query-string lookup for them).
 const routed = await catalog.resolve('openrouter:anthropic/claude-haiku-4.5');
 // → { provider: 'openrouter', modelId: 'anthropic/claude-haiku-4.5', registered: true,
 //      contextWindow: 200000, capabilities: {...}, cost: {...}, ... }
@@ -1213,16 +1238,11 @@ const client = new UluOpsClient({
 });
 ```
 
-> ### `contextBudget`'s 80% wrap-up brake (fixed for Anthropic structured output in 0.54.0)
->
-> The brake returns `{ toolChoice: 'none', activeTools: [] }` from the AI SDK's `prepareStep`
-> once the context crosses 80% of the budget. Through 0.53.x it returned only
-> `toolChoice: 'none'`, and Anthropic's `structuredOutputMode: 'jsonTool'`, core's default for
-> every Claude structured-output call, hard-overrides `toolChoice`, so the brake did nothing on
-> that path and the model kept calling tools. Withdrawing `activeTools` is applied by the AI SDK
-> before the provider builds the request, so it holds there (probed live 2026-10-26 on
-> claude-sonnet-5), and `budget.forced-wrap-up` is now reported wherever the brake engages. The
-> eviction half (Anthropic context management at 50%) is unchanged.
+> **`contextBudget`'s wrap-up brake:** at 80% of the budget, `prepareStep` withdraws the tools
+> (`{ toolChoice: 'none', activeTools: [] }`), which holds on Anthropic structured output too, and
+> the run carries `budget.forced-wrap-up` (see [Run Completeness & Degradation
+> Markers](#run-completeness--degradation-markers)). Separately, Anthropic context management
+> evicts old tool results at 50%.
 
 ### Local Definition File Naming
 
@@ -1461,13 +1481,10 @@ members you have not handled.
 >
 > The cause is a dual-package hazard: `@uluops/core`, `@uluops/registry-sdk` and
 > `@uluops/ops-sdk` each carry an exact pin of `@uluops/sdk-core`, and exact pins dedupe only
-> while they are **equal**. Whenever they drift apart — core 0.43.5 pinned 0.17.0 beside a
-> registry-sdk that nested 0.15.0 — two copies are installed, two distinct `SdkApiError`
-> class objects exist, and an error minted inside one is not an `instanceof` the other. The
-> split was open again from 0.44.0 (core sdk-core 0.18.1, registry-sdk 0.54.0 nesting 0.18.0)
-> until the release that pins registry-sdk 0.58.0: now all three resolve sdk-core 0.18.1 and one
-> copy is hoisted. That alignment is a property of the current pins, not a guarantee: the next
-> unpaired bump reopens it silently.
+> while they are **equal**. Whenever they drift apart, two copies are installed, two distinct
+> `SdkApiError` class objects exist, and an error minted inside one is not an `instanceof` the
+> other. The current pins align, so one copy is hoisted, but that is a property of the pins, not
+> a guarantee: the next unpaired bump reopens it silently.
 > `isSdkApiError` and its aliases are themselves `instanceof`-based and are **not** an escape
 > hatch.
 >
@@ -1491,9 +1508,6 @@ members you have not handled.
 >
 > The guard deliberately tests `statusCode`, **not** `name`: a 402 arrives as the base
 > `SdkApiError` while a 404 arrives as `NotFoundError`, so a name check would miss one of them.
->
-> This is why several `@throws {SdkApiError}` JSDoc tags in `SubmissionClient` describe what is
-> thrown but should not be read as a recommendation to match it with `instanceof`.
 
 ### Network Error Recovery
 
@@ -1614,26 +1628,9 @@ Per-step results (`name`, `status`, `exitCode`, `output`, `durationMs`) are retu
 ## Development
 
 ```bash
-# Install dependencies
 npm install
-
-# Type check
-npm run typecheck
-
-# Run tests
-npm test
-
-# Run tests in watch mode
-npm run test:watch
-
-# Run tests with coverage
-npm run test:coverage
-
-# Lint
-npm run lint
-
-# Build
-npm run build
+npm run typecheck && npm run lint && npm test && npm run build
+npm run test:watch      # or test:coverage
 ```
 
 ## Maintainers

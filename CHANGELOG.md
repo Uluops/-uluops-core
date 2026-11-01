@@ -219,6 +219,18 @@ beside it suspect too. Tracker `ced3416c`.
 
 ## [0.54.0] - 2026-10-27
 
+**What breaks for you.** Each item is detailed under *Upgrade impact* below:
+- **`wait()` / `runPipeline()` resolve instead of throwing** when a stage fails behind `abort`. The run completes with `status: 'complete'` and `decision: 'FAIL'`. Code that relied on the `PipelineError` throw must read `decision` / `allGatesPassed`.
+- **`ulu exec pipeline` exits 0 on an aborted pipeline** until the CLI sets its exit code from the decision.
+- **Runs that used to start are refused** before any stage runs: every PDL 1.6.0 load error throws from `start()` / `runPipeline()` (`context.loadErrors`).
+- **The saved-verdict cutover.** Pipeline runs saved by this release compute `allGatesPassed` by a different rule from runs saved before it.
+- **Type-level breaking:**
+  - `StageDefinition.skip_if` is removed.
+  - Code that builds a `PipelineResult` or `PipelineMetrics` must add the three new required fields.
+  - An exhaustive `switch` over `StageResult.status` must handle `'errored'`.
+  - `AgentRuntime.defaults.thresholds` and `AgentRuntime.config.threshold` are removed.
+- **Agents get 100 tool-loop steps by default** (was 50). At 80% of the limit the tools are withdrawn (`steps.forced-wrap-up`, degraded).
+
 **PDL 1.6.0, build unit P3a: where steps run and how parameters reach them** (design spec pdl-1_6_0
 v0.8.3, D15, D20, D22, D38, D39; normative text `uluops-pdl-spec-v1.6.0.md`, *Execution Semantics →
 Steps*; checklist v0.1.3 §P3a). P3b (conditions, load validation), P4a (decisions, scores) and P4b
