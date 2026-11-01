@@ -1,7 +1,7 @@
 import { describe, it, expect, vi, beforeEach } from 'vitest';
 import { crashMetrics } from '../../src/utils/crashMetrics.js';
 import { registerRunTrip, unregisterRunTrip } from '../../src/utils/runTrip.js';
-import { AIProvider } from '../../src/ai/AIProvider.js';
+import { AIProvider, salvageStructuredObject } from '../../src/ai/AIProvider.js';
 import { TokenBudgetTracker } from '../../src/ai/TokenBudgetTracker.js';
 import type { ModelCatalog, ResolvedModel } from '../../src/ai/ModelCatalog.js';
 import type { ResolvedConfig } from '../../src/types/config.js';
@@ -3509,7 +3509,7 @@ describe('AIProvider — one repair turn when the structured answer fails the sc
     expect(prepare({ stepNumber: 0, steps: [] })).toMatchObject({ activeTools: [] });
 
     expect(result.structuredOutput).toEqual(repaired);
-    expect(result.structuredOutputRepair).toEqual({ outcome: 'repaired', issues: 3 });
+    expect(result.structuredOutputRepair).toEqual({ outcome: 'repaired', issues: 3, repairTurn: true });
     // Both calls are reported: 3 steps, 3x the per-step usage.
     expect(result.steps).toBe(3);
     expect(result.usage.output_tokens).toBe(300);
@@ -3562,7 +3562,7 @@ describe('AIProvider — one repair turn when the structured answer fails the sc
     expect(warn.mock.calls.map(c => String(c[0])).some(m => m.includes('Schema issues: categories.0.priority'))).toBe(true);
     expect(result.structuredOutput).toBeUndefined();
     expect(result.text).toBe('{"categories":[]}');
-    expect(result.structuredOutputRepair).toEqual({ outcome: 'failed', issues: 3 });
+    expect(result.structuredOutputRepair).toEqual({ outcome: 'failed', issues: 3, repairTurn: true });
   });
 
   it('does not repair when no step reported the conversation', async () => {
@@ -3580,7 +3580,7 @@ describe('AIProvider — one repair turn when the structured answer fails the sc
     vi.mocked(generateText).mockRejectedValueOnce(makeApiCallError('overloaded', 529) as never);
     const result = await run();
     expect(result.text).toBe('{"analysisRecords":[]}');
-    expect(result.structuredOutputRepair).toEqual({ outcome: 'failed', issues: 3 });
+    expect(result.structuredOutputRepair).toEqual({ outcome: 'failed', issues: 3, repairTurn: true });
   });
 
   it('throws a provider credit refusal from the repair call, as it would from the first', async () => {
@@ -3592,5 +3592,116 @@ describe('AIProvider — one repair turn when the structured answer fails the sc
     }) as never);
     const err = await run().then(() => null, (e: unknown) => e);
     expect(err).toBeInstanceOf(ProviderCreditError);
+  });
+});
+
+describe('salvageStructuredObject — keep an answer that failed only on optional content (R-D12, 2026-11-01)', () => {
+  const verdict = { decision: 'FAIL', score: 35, maxScore: 100 };
+  // The live shape: 2 of 8 sampled repair answers sent analysisRecords as a JSON string with broken
+  // brackets inside (repair-sample-2026-11-01/results.json #1, #6).
+  const liveMalformed = '[{"recordType":"evidence_claim","recordId":"EC-1","title":"x","data":[{"key":"lineNumber","8}]}]';
+
+  it('drops a malformed string-encoded analysisRecords and keeps the verdict', () => {
+    const r = salvageStructuredObject(JSON.stringify({ ...verdict, summary: 's', analysisRecords: liveMalformed }), agentOutputSchema);
+    expect(r?.actions).toEqual([{ path: 'analysisRecords', action: 'dropped' }]);
+    expect(r?.value).toMatchObject({ ...verdict, summary: 's' });
+    expect((r?.value as Record<string, unknown>)['analysisRecords']).toBeUndefined();
+  });
+
+  it('decodes a well-formed string-encoded array in place instead of dropping it', () => {
+    const records = [{ recordType: 'evidence_claim', recordId: 'EC-1', title: 'x', data: [{ key: 'k', value: 'v' }] }];
+    const r = salvageStructuredObject(JSON.stringify({ ...verdict, analysisRecords: JSON.stringify(records) }), agentOutputSchema);
+    expect(r?.actions).toEqual([{ path: 'analysisRecords', action: 'decoded' }]);
+    expect((r?.value as { analysisRecords: unknown[] }).analysisRecords).toHaveLength(1);
+  });
+
+  it('never salvages an answer whose required verdict fields fail — those get the repair turn', () => {
+    expect(salvageStructuredObject('{"analysisRecords":[]}', agentOutputSchema)).toBeUndefined();
+    expect(salvageStructuredObject(JSON.stringify({ ...verdict, score: '35' }), agentOutputSchema)).toBeUndefined();
+  });
+
+  it('drops only an off-enum OPTIONAL leaf, keeping the issue that carries it', () => {
+    const answer = { ...verdict, categories: [{ name: 'Q', score: 10, maxScore: 30, findings: [
+      { criterion: 'c', pointsEarned: 10, pointsPossible: 30, issues: [{ title: 'Off-by-one', priority: 'high' }] },
+    ] }] };
+    const r = salvageStructuredObject(JSON.stringify(answer), agentOutputSchema);
+    expect(r?.actions).toEqual([{ path: 'categories.0.findings.0.issues.0.priority', action: 'dropped' }]);
+    const issue = (r?.value as typeof answer).categories[0]!.findings[0]!.issues[0]!;
+    expect(issue.title).toBe('Off-by-one');
+    expect('priority' in issue).toBe(false);
+  });
+
+  it('drops the innermost array element when a REQUIRED nested key is missing, not the whole category', () => {
+    const answer = { ...verdict, categories: [{ name: 'Q', score: 10, maxScore: 30, findings: [
+      { criterion: 'ok', pointsEarned: 10, pointsPossible: 30, issues: [] },
+      { pointsEarned: 0, pointsPossible: 0, issues: [] },
+    ] }] };
+    const r = salvageStructuredObject(JSON.stringify(answer), agentOutputSchema);
+    expect(r?.actions).toEqual([{ path: 'categories.0.findings.1', action: 'dropped' }]);
+    expect((r?.value as typeof answer).categories[0]!.findings.map(f => f.criterion)).toEqual(['ok']);
+  });
+
+  it('returns undefined for a valid answer, non-JSON text, and a non-zod schema', () => {
+    expect(salvageStructuredObject(JSON.stringify(verdict), agentOutputSchema)).toBeUndefined();
+    expect(salvageStructuredObject('not json', agentOutputSchema)).toBeUndefined();
+    expect(salvageStructuredObject(JSON.stringify({ ...verdict, analysisRecords: 'x' }), {})).toBeUndefined();
+  });
+});
+
+describe('AIProvider — salvage runs before the repair turn and on its answer (R-D12, 2026-11-01)', () => {
+  beforeEach(async () => {
+    vi.clearAllMocks();
+    const { generateText } = await import('ai');
+    vi.mocked(generateText).mockReset();
+  });
+  const catalog = () => mockCatalog({
+    resolve: vi.fn().mockResolvedValue(makeResolvedModel({
+      capabilities: { tools: true, vision: true, streaming: true, extendedThinking: false, structuredOutput: true } as never,
+    } as never)),
+  } as never);
+  const history = [{ role: 'assistant', content: [{ type: 'text', text: '{}' }] }];
+  const verdict = { decision: 'FAIL', score: 35, maxScore: 100 };
+  const failWith = (text: string, withHistory = true) => async (opts: unknown) => {
+    (opts as { onStepFinish?: (s: unknown) => void }).onStepFinish?.({
+      finishReason: 'stop', text, toolCalls: [], usage: { inputTokens: 100, outputTokens: 10 },
+      ...(withHistory ? { response: { messages: history } } : {}),
+    });
+    const value = JSON.parse(text);
+    throw new NoObjectGeneratedError({
+      message: 'No object generated: response did not match schema.', text, finishReason: 'stop',
+      cause: TypeValidationError.wrap({ value, cause: agentOutputSchema.safeParse(value).error }),
+    } as never);
+  };
+  const run = () => new AIProvider(mockConfig, catalog(), noopLogger).generate({
+    model: 'haiku', system: 's', prompt: 'p', tools: { read_file: {} } as never,
+    output: { schema: agentOutputSchema, name: 'AgentResult' } as never,
+  });
+
+  it('salvages a first answer with a valid verdict without sending a repair turn', async () => {
+    const { generateText } = await import('ai');
+    vi.mocked(generateText).mockImplementationOnce(failWith(JSON.stringify({ ...verdict, analysisRecords: '[{oops' })) as never);
+    const result = await run();
+    expect(generateText).toHaveBeenCalledTimes(1);
+    expect(result.structuredOutput).toMatchObject(verdict);
+    expect(result.structuredOutputRepair).toEqual({
+      outcome: 'salvaged', issues: 1, repairTurn: false, salvaged: [{ path: 'analysisRecords', action: 'dropped' }],
+    });
+  });
+
+  it('salvages without the conversation (no repair is possible, salvage needs none)', async () => {
+    const { generateText } = await import('ai');
+    vi.mocked(generateText).mockImplementationOnce(failWith(JSON.stringify({ ...verdict, analysisRecords: '[{oops' }), false) as never);
+    const result = await run();
+    expect(result.structuredOutputRepair?.outcome).toBe('salvaged');
+  });
+
+  it('salvages the repair answer when it fixed the verdict but broke optional content (the attempt-4 case)', async () => {
+    const { generateText } = await import('ai');
+    vi.mocked(generateText).mockImplementationOnce(failWith('{"analysisRecords":[]}') as never);
+    vi.mocked(generateText).mockImplementationOnce(failWith(JSON.stringify({ ...verdict, analysisRecords: '[{oops' })) as never);
+    const result = await run();
+    expect(generateText).toHaveBeenCalledTimes(2);
+    expect(result.structuredOutput).toMatchObject(verdict);
+    expect(result.structuredOutputRepair).toMatchObject({ outcome: 'salvaged', issues: 3, repairTurn: true });
   });
 });

@@ -1136,7 +1136,7 @@ describe('AgentExecutor', () => {
     // 0.56.0 (R-D12 live, 2026-11-01). Fails on 0.55.0: no structuredOutputRepair, no marker.
     it('a structured-output repair emits an info marker, repaired or failed, without touching completeness', async () => {
       for (const outcome of ['repaired', 'failed'] as const) {
-        const ai = mockAIProvider({ structuredOutputRepair: { outcome, issues: 3 } });
+        const ai = mockAIProvider({ structuredOutputRepair: { outcome, issues: 3, repairTurn: true } });
         const executor = new AgentExecutor(baseConfig, ai, noopLogger);
 
         const result = await executor.execute(makeValidatorDef(), { target: tmpDir });
@@ -1146,6 +1146,21 @@ describe('AgentExecutor', () => {
         expect(marker).toMatchObject({ phase: 'execution', severity: 'info' });
         expect(marker?.detail).toContain('3 issues');
         expect(result.completeness).toBe('complete');
+      }
+    });
+
+    it('a salvage that DROPPED content is degraded (partial); one that only decoded is info', async () => {
+      const cases = [
+        { salvaged: [{ path: 'analysisRecords', action: 'dropped' as const }], severity: 'degraded', completeness: 'partial', detail: 'Dropped: analysisRecords' },
+        { salvaged: [{ path: 'analysisRecords', action: 'decoded' as const }], severity: 'info', completeness: 'complete', detail: 'Decoded from a string: analysisRecords' },
+      ];
+      for (const c of cases) {
+        const ai = mockAIProvider({ structuredOutputRepair: { outcome: 'salvaged', issues: 1, repairTurn: false, salvaged: c.salvaged } });
+        const result = await new AgentExecutor(baseConfig, ai, noopLogger).execute(makeValidatorDef(), { target: tmpDir });
+        const marker = result.degradationMarkers?.find(d => d.code === 'structured-output.salvaged');
+        expect(marker).toMatchObject({ phase: 'execution', severity: c.severity });
+        expect(marker?.detail).toContain(c.detail);
+        expect(result.completeness).toBe(c.completeness);
       }
     });
 

@@ -272,6 +272,148 @@ function schemaIssuesOf(error: unknown): Array<{ path: string; message: string }
   return [];
 }
 
+/** One salvage step on a structured answer, by the path it acted on. */
+export interface SalvageAction {
+  path: string;
+  /** `decoded`: a string that encoded the expected array or object was parsed in place.
+   *  `dropped`: the value at `path` (an optional key or one array element) was removed. */
+  action: 'decoded' | 'dropped';
+}
+
+/** `analysisRecords dropped, categories.0.findings.1 dropped` for a log line. */
+function describeSalvage(actions: SalvageAction[]): string {
+  return actions.map(a => `${a.path} ${a.action}`).join(', ');
+}
+
+/** The schema's object shape when it is a zod object, else undefined (salvage then does nothing). */
+function zodShape(schema: unknown): Record<string, { safeParse: (v: unknown) => { success: boolean } }> | undefined {
+  const shape = (schema as { shape?: unknown } | undefined)?.shape;
+  if (!shape || typeof shape !== 'object') return undefined;
+  if (typeof (schema as { safeParse?: unknown }).safeParse !== 'function') return undefined;
+  return shape as Record<string, { safeParse: (v: unknown) => { success: boolean } }>;
+}
+
+type ZodIssueLike = { path: PropertyKey[]; code?: string; expected?: string };
+
+/**
+ * Keep a structured answer that failed the schema only on OPTIONAL content.
+ *
+ * Returns undefined (no salvage) when the text is not a JSON object, the schema is not a zod object,
+ * or any issue touches a REQUIRED top-level field: the verdict (`decision`, `score`, `maxScore` for
+ * `agentOutputSchema`) is the model's to give, never core's to invent, and those answers get the
+ * repair turn. Required keys are derived from the schema (a key whose schema rejects `undefined`),
+ * not listed here.
+ *
+ * Otherwise, one issue at a time, until the object passes or a bound is hit:
+ *  1. DECODE: the value is a string where an array or object was expected, and it parses as JSON
+ *     of that type: parse it in place. This is the shape Haiku produced live (`analysisRecords` as a
+ *     string); the live samples were malformed inside, so in practice step 2 usually follows.
+ *  2. DROP, smallest first: the leaf key (when the schema accepts its absence), else the innermost
+ *     array element containing the issue, else the top-level optional key. A candidate is accepted
+ *     only when the issue's own path no longer fails, so a required nested key is never "fixed" by
+ *     deleting it into a different failure.
+ * Every action is returned so the run can say what it lost. The value returned is the schema's parse
+ * of the result (preprocessors applied), as the SDK's would be.
+ */
+export function salvageStructuredObject(
+  text: string | undefined,
+  schema: unknown,
+): { value: unknown; actions: SalvageAction[] } | undefined {
+  const shape = zodShape(schema);
+  if (!shape || !text) return undefined;
+  let obj: unknown;
+  try {
+    obj = JSON.parse(text);
+  } catch {
+    return undefined;
+  }
+  if (!obj || typeof obj !== 'object' || Array.isArray(obj)) return undefined;
+  const required = new Set(Object.keys(shape).filter(k => !shape[k]!.safeParse(undefined).success));
+  const parse = (v: unknown) => (schema as { safeParse: (v: unknown) => { success: boolean; data?: unknown; error?: { issues: ZodIssueLike[] } } }).safeParse(v);
+  const key = (path: PropertyKey[]) => path.map(String).join('.');
+  const actions: SalvageAction[] = [];
+  let current = structuredClone(obj) as Record<string, unknown>;
+
+  for (let round = 0; round < 50; round++) {
+    const result = parse(current);
+    if (result.success) return actions.length > 0 ? { value: result.data, actions } : undefined;
+    const issue = result.error?.issues[0];
+    if (!issue || issue.path.length === 0) return undefined;
+    if (required.has(String(issue.path[0]))) return undefined;
+    const stillFails = (candidate: unknown) => {
+      const r = parse(candidate);
+      return !r.success && (r.error?.issues ?? []).some(i => key(i.path) === key(issue.path));
+    };
+
+    // 1. Decode a string-encoded array or object.
+    const at = getAt(current, issue.path);
+    if (typeof at === 'string' && issue.code === 'invalid_type' && (issue.expected === 'array' || issue.expected === 'object')) {
+      let decoded: unknown;
+      try { decoded = JSON.parse(at); } catch { decoded = undefined; }
+      const fits = issue.expected === 'array' ? Array.isArray(decoded) : !!decoded && typeof decoded === 'object' && !Array.isArray(decoded);
+      if (fits) {
+        const candidate = structuredClone(current);
+        setAt(candidate, issue.path, decoded);
+        if (!stillFails(candidate)) {
+          current = candidate;
+          actions.push({ path: key(issue.path), action: 'decoded' });
+          continue;
+        }
+      }
+    }
+
+    // 2. Drop, smallest first.
+    const targets: PropertyKey[][] = [];
+    if (typeof issue.path[issue.path.length - 1] !== 'number') targets.push(issue.path);
+    for (let i = issue.path.length - 1; i > 0; i--) {
+      if (typeof issue.path[i] === 'number') { targets.push(issue.path.slice(0, i + 1)); break; }
+    }
+    targets.push(issue.path.slice(0, 1));
+    let applied = false;
+    for (const target of targets) {
+      if (target.length === 1 && required.has(String(target[0]))) continue;
+      const candidate = structuredClone(current);
+      if (!removeAt(candidate, target)) continue;
+      if (stillFails(candidate)) continue;
+      current = candidate;
+      actions.push({ path: key(target), action: 'dropped' });
+      applied = true;
+      break;
+    }
+    if (!applied) return undefined;
+  }
+  return undefined;
+}
+
+function getAt(root: unknown, path: PropertyKey[]): unknown {
+  let node: unknown = root;
+  for (const seg of path) {
+    if (!node || typeof node !== 'object') return undefined;
+    node = (node as Record<PropertyKey, unknown>)[seg as string];
+  }
+  return node;
+}
+
+function setAt(root: unknown, path: PropertyKey[], value: unknown): void {
+  const parent = getAt(root, path.slice(0, -1));
+  if (parent && typeof parent === 'object') (parent as Record<PropertyKey, unknown>)[path[path.length - 1] as string] = value;
+}
+
+/** Remove the value at `path`: splice an array element, delete an object key. False when absent. */
+function removeAt(root: unknown, path: PropertyKey[]): boolean {
+  const parent = getAt(root, path.slice(0, -1));
+  const last = path[path.length - 1];
+  if (Array.isArray(parent) && typeof last === 'number' && last < parent.length) {
+    parent.splice(last, 1);
+    return true;
+  }
+  if (parent && typeof parent === 'object' && !Array.isArray(parent) && Object.prototype.hasOwnProperty.call(parent, last as string)) {
+    delete (parent as Record<PropertyKey, unknown>)[last as string];
+    return true;
+  }
+  return false;
+}
+
 function emptyStepTotals(): StepTotals {
   return {
     // FABRICATION-OK: accumulator SEEDS. Presence is carried by the sawUsage/sawNoCache/sawCacheRead/
@@ -392,13 +534,21 @@ export interface AIGenerateResult<TOutput = unknown> {
   structuredOutput?: TOutput;
 
   /**
-   * Set when the model's structured answer failed the output schema and one repair turn was sent
-   * (see AIProvider.repairStructuredOutput). `repaired`: the second answer passed, and
-   * `structuredOutput` is that answer. `failed`: it did not, and the run fell back to text
-   * extraction. `issues` is how many schema issues the FIRST answer had. Absent when no repair
-   * was attempted.
+   * Set when the model's structured answer failed the output schema and core recovered it or tried
+   * to (see AIProvider.recoverStructuredOutput).
+   * - `repaired`: a repair turn was sent and its answer passed; `structuredOutput` is that answer.
+   * - `salvaged`: an answer whose required fields were valid failed only on optional content, which
+   *   was decoded or dropped (`salvaged` lists each action by path); `structuredOutput` is the
+   *   result. `repairTurn` says whether it was the first answer (false) or the repair's (true).
+   * - `failed`: nothing passed, and the run fell back to text extraction.
+   * `issues` is how many schema issues the FIRST answer had. Absent when no recovery was attempted.
    */
-  structuredOutputRepair?: { outcome: 'repaired' | 'failed'; issues: number };
+  structuredOutputRepair?: {
+    outcome: 'repaired' | 'salvaged' | 'failed';
+    issues: number;
+    repairTurn: boolean;
+    salvaged?: SalvageAction[];
+  };
 
   /**
    * What the thinking gate did on this call (spec §3, §7.3): applied or not, and why not. Set on the
@@ -707,7 +857,7 @@ export class AIProvider {
     try {
       result = await this.executeGeneration(options, languageModel, system, providerOptions, useStructuredOutput, isReasoning, stepTotals, requestShape);
     } catch (error) {
-      const repaired = await this.repairStructuredOutput(error, {
+      const repaired = await this.recoverStructuredOutput(error, {
         options, languageModel, system, providerOptions, useStructuredOutput, isReasoning, stepTotals, requestShape, resolved, thinking,
       });
       if (repaired) return repaired;
@@ -1089,31 +1239,39 @@ export class AIProvider {
    * Handle generate errors — structured output fallback or error mapping.
    */
   /**
-   * One corrective turn when the model's structured answer fails the output schema.
+   * Recover a structured answer that failed the output schema: salvage it, else one repair turn,
+   * else salvage the repair's answer, else fall back to text extraction as before.
    *
    * WHY: on Claude, structured output goes through a json TOOL (`structuredOutputMode: 'jsonTool'`,
    * buildAnthropicOptions), and that tool is not `strict`, so the provider does not enforce the
    * schema's `required` list. Native enforcement is not available at this schema size: with the
    * filesystem tools it answers HTTP 400 "The compiled grammar is too large" (live, 2026-11-01,
    * claude-haiku-4-5, `output_config.format`). The SDK's zod parse is the first check, and it
-   * runs after the answer. In the R-D12 live run Haiku filled one optional field and none of the
-   * three required ones in three of three answers, so the verdict was lost while the findings
-   * were not.
+   * runs after the answer. Two failures were seen live (R-D12, 2026-11-01):
+   *  - the verdict is missing: Haiku filled one optional field and none of decision, score and
+   *    maxScore in 8 of 8 first answers. Only the model can supply a verdict, so this gets the
+   *    repair turn.
+   *  - the verdict is present and one OPTIONAL subtree breaks the schema: 2 of 8 sampled repair
+   *    answers sent `analysisRecords` as a JSON string with broken brackets inside. Rejecting the
+   *    whole object over it lost the verdict (and D47 then ignored the flat JSON at the gate). This
+   *    is SALVAGED (salvageStructuredObject): the subtree is decoded if it is a well-formed string
+   *    encoding, else dropped, and each action is recorded.
+   * Salvage runs on the first answer before any repair (Alex 2026-11-01: a repair recovered the
+   * dropped findings in 1 of 6 sampled answers, so a call rarely buys content back) and on the
+   * repair's answer.
    *
    * The repair replays the run's own conversation (so the model answers from what it read, not
    * from nothing), adds one user message listing the schema issues, and withdraws the tools.
    * It is attempted once, only for a schema or parse failure (NoObjectGeneratedError), and only
    * when a step reported the conversation. Its usage accumulates into the same StepTotals, so the
-   * result reports both calls. Returns undefined when no repair was attempted, so the caller's
-   * existing error handling runs unchanged.
+   * result reports both calls. Returns undefined when nothing was recovered and no repair was
+   * attempted, so the caller's existing error handling runs unchanged.
    *
-   * A repair that fails the schema again falls back to text extraction, as before, reading the
-   * repair's text when it has any (it is the later and more complete answer). A repair that
-   * fails for another reason also falls back, with a warning, EXCEPT a cancellation or a
-   * provider credit refusal, which go to handleGenerateError and are thrown, as they would be
-   * on the first call.
+   * A repair that fails for a reason other than the schema falls back, with a warning, EXCEPT a
+   * cancellation or a provider credit refusal, which go to handleGenerateError and are thrown, as
+   * they would be on the first call.
    */
-  private async repairStructuredOutput(
+  private async recoverStructuredOutput(
     error: unknown,
     ctx: {
       options: AIGenerateOptions;
@@ -1130,10 +1288,34 @@ export class AIProvider {
   ): Promise<AIGenerateResult | undefined> {
     const { options, stepTotals, resolved, thinking } = ctx;
     if (!ctx.useStructuredOutput || !NoObjectGeneratedError.isInstance(error)) return undefined;
+    const schema = (options.output as { schema?: unknown } | undefined)?.schema;
+    const issues = schemaIssuesOf(error);
+    const recovered = (
+      text: string, finishReason: string, repairTurn: boolean, outcome: 'repaired' | 'salvaged' | 'failed',
+      structured?: unknown, salvaged?: SalvageAction[],
+    ): AIGenerateResult => ({
+      // Built from StepTotals, like a fallback: after a repair the totals hold BOTH calls, where the
+      // repair's own result.usage would report only the second.
+      ...this.buildFallbackResult(resolved, text, stepTotals, finishReason),
+      ...(structured !== undefined ? { structuredOutput: structured } : {}),
+      structuredOutputRepair: {
+        outcome, issues: issues.length, repairTurn,
+        ...(salvaged && salvaged.length > 0 ? { salvaged } : {}),
+      },
+      thinking,
+    });
+
+    // 1. Salvage the first answer when only optional content is broken.
+    const first = salvageStructuredObject(error.text, schema);
+    if (first) {
+      this.logger.warn(`Structured output failed the schema on optional content only; salvaged it (${describeSalvage(first.actions)}).`);
+      return recovered(error.text ?? '', error.finishReason ?? 'stop', false, 'salvaged', first.value, first.actions);
+    }
+
+    // 2. One repair turn, which needs the conversation.
     const history = stepTotals.responseMessages;
     if (!history || history.length === 0 || options.abortSignal?.aborted) return undefined;
 
-    const issues = schemaIssuesOf(error);
     const fields = [...new Set(issues.map(i => i.path).filter(p => p !== ''))];
     const listed = issues.length > 0
       ? issues.slice(0, 12).map(i => `- ${i.path === '' ? '(top level)' : i.path}: ${i.message}`).join('\n')
@@ -1167,7 +1349,13 @@ export class AIProvider {
       );
     } catch (repairError) {
       if (NoObjectGeneratedError.isInstance(repairError) || NoOutputGeneratedError.isInstance(repairError)) {
-        const text = NoObjectGeneratedError.isInstance(repairError) && repairError.text ? repairError.text : (error.text ?? '');
+        const repairText = NoObjectGeneratedError.isInstance(repairError) ? repairError.text : undefined;
+        // 3. Salvage the repair's answer.
+        const second = salvageStructuredObject(repairText, schema);
+        if (second) {
+          this.logger.warn(`The repair turn's answer failed the schema on optional content only; salvaged it (${describeSalvage(second.actions)}).`);
+          return recovered(repairText ?? '', (NoObjectGeneratedError.isInstance(repairError) ? repairError.finishReason : undefined) ?? 'stop', true, 'salvaged', second.value, second.actions);
+        }
         // The second answer's issues are logged by path: the first answer's are known (they were sent),
         // and without these a repair that fixed the required fields but broke a nested one is
         // indistinguishable from one that ignored the note (R-D12 attempt 4: decision and score
@@ -1177,25 +1365,15 @@ export class AIProvider {
           'The repair turn did not produce a valid object either — falling back to text extraction.'
           + (again.length > 0 ? ` Schema issues: ${again.slice(0, 12).map(i => `${i.path || '(top level)'}: ${i.message}`).join('; ')}` : ''),
         );
-        return {
-          ...this.buildFallbackResult(resolved, text, stepTotals, error.finishReason ?? 'error'),
-          structuredOutputRepair: { outcome: 'failed', issues: issues.length },
-          thinking,
-        };
+        return recovered(repairText || (error.text ?? ''), error.finishReason ?? 'error', true, 'failed');
       }
       const mapped = this.mapError(repairError, timeoutMs, resolved, options.abortSignal);
       if (options.abortSignal?.aborted || mapped instanceof ProviderCreditError) {
         return this.handleGenerateError(repairError, resolved, true, timeoutMs, stepTotals, options.abortSignal, thinking);
       }
       this.logger.warn(`The repair turn failed (${formatErrorMessage(repairError)}) — falling back to text extraction of the first answer.`);
-      return {
-        ...this.buildFallbackResult(resolved, error.text ?? '', stepTotals, error.finishReason ?? 'error'),
-        structuredOutputRepair: { outcome: 'failed', issues: issues.length },
-        thinking,
-      };
+      return recovered(error.text ?? '', error.finishReason ?? 'error', true, 'failed');
     }
-    // Built from StepTotals, like a fallback: the totals hold BOTH calls, where the repair's own
-    // result.usage would report only the second.
     const finishReason = repairResult.finishReason;
     let structured: unknown;
     try {
@@ -1206,12 +1384,7 @@ export class AIProvider {
     this.logger.info(structured === undefined
       ? `The repair turn finished (${finishReason}) without an object — falling back to text extraction.`
       : 'The repair turn produced a valid object.');
-    return {
-      ...this.buildFallbackResult(resolved, repairResult.text || (error.text ?? ''), stepTotals, finishReason),
-      structuredOutput: structured,
-      structuredOutputRepair: { outcome: structured === undefined ? 'failed' : 'repaired', issues: issues.length },
-      thinking,
-    };
+    return recovered(repairResult.text || (error.text ?? ''), finishReason, true, structured === undefined ? 'failed' : 'repaired', structured);
   }
 
   /**

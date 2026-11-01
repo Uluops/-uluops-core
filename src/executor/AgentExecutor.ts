@@ -672,20 +672,38 @@ export class AgentExecutor {
       });
     }
 
-    // The structured answer failed the output schema and one repair turn was sent
-    // (AIProvider.repairStructuredOutput). INFO both ways: a repaired object passed the schema, so
-    // the verdict is the model's own; a failed repair fell back to text extraction, whose
-    // `extraction.*` markers already carry any loss. The marker says the second turn happened.
+    // The structured answer failed the output schema and core recovered it or tried to
+    // (AIProvider.recoverStructuredOutput).
+    // - repaired / repair-failed: INFO. A repaired object passed the schema, so the verdict is the
+    //   model's own; a failed recovery fell back to text extraction, whose `extraction.*` markers
+    //   already carry any loss.
+    // - salvaged: DEGRADED when content was dropped (the model said something the result no longer
+    //   carries, e.g. its analysisRecords), INFO when it was only decoded in place. The verdict is
+    //   the model's own either way: salvage never touches a required field.
     if (result.structuredOutputRepair) {
-      const { outcome, issues } = result.structuredOutputRepair;
-      markers.push({
-        code: outcome === 'repaired' ? 'structured-output.repaired' : 'structured-output.repair-failed',
-        phase: 'execution',
-        severity: 'info',
-        detail: outcome === 'repaired'
-          ? `The first structured answer failed the output schema (${issues} issue${issues === 1 ? '' : 's'}); one repair turn produced a valid object.`
-          : `The first structured answer failed the output schema (${issues} issue${issues === 1 ? '' : 's'}); the repair turn did not produce a valid object, so the result came from text extraction.`,
-      });
+      const { outcome, issues, repairTurn, salvaged = [] } = result.structuredOutputRepair;
+      const first = `The first structured answer failed the output schema (${issues} issue${issues === 1 ? '' : 's'})`;
+      if (outcome === 'salvaged') {
+        const dropped = salvaged.filter(a => a.action === 'dropped').map(a => a.path);
+        const decoded = salvaged.filter(a => a.action === 'decoded').map(a => a.path);
+        markers.push({
+          code: 'structured-output.salvaged',
+          phase: 'execution',
+          severity: dropped.length > 0 ? 'degraded' : 'info',
+          detail: `${first}; ${repairTurn ? "the repair turn's answer" : 'it'} kept its verdict and failed only on optional content.`
+            + (dropped.length > 0 ? ` Dropped: ${dropped.join(', ')}.` : '')
+            + (decoded.length > 0 ? ` Decoded from a string: ${decoded.join(', ')}.` : ''),
+        });
+      } else {
+        markers.push({
+          code: outcome === 'repaired' ? 'structured-output.repaired' : 'structured-output.repair-failed',
+          phase: 'execution',
+          severity: 'info',
+          detail: outcome === 'repaired'
+            ? `${first}; one repair turn produced a valid object.`
+            : `${first}; ${repairTurn ? 'the repair turn did not produce a valid object' : 'no repair turn was possible'}, so the result came from text extraction.`,
+        });
+      }
     }
 
     if (budgetTracker.contextEvicted) {
