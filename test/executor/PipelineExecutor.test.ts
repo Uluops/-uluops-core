@@ -2294,3 +2294,20 @@ describe('PipelineExecutor — an UNGATED stage that verified nothing enters the
     expect(result.score).toBe(43);
   });
 });
+
+// 0.56.0: CommandResult carries its agents (agentResults, completeness) for submission. A command-ref
+// stage must still be judged by the command's own decision (PDL D9): the agents ride on the result,
+// never on the stage's agentResults, which gating reads.
+describe('PipelineExecutor — a command-ref stage is judged by the command, not by the agents it carries', () => {
+  it('an agent with an absent verdict inside a PASS command does not make an abort stage ERRORED', async () => {
+    const inner = { ...makeCommandResult(), type: 'agent', verdict: { class: 'absent', saved: 'UNKNOWN', score: null, warnings: [] }, completeness: 'failed' };
+    const cmd = makeCommandResult({ decision: 'PASS', decisionCategory: 'positive', score: 90, agentResults: [inner], completeness: 'failed' } as never);
+    const executor = new PipelineExecutor(makeWorkflowExecutor(), makeCommandExecutor([cmd]), agentExec, makeRegistry(), noopLogger);
+    const result = await executor.execute(makePipelineDef({
+      stages: [{ id: 'gate', name: 'Gate', type: 'command', ref: 'cmd-a@1.0.0', gate: { on_failure: 'abort' } }],
+    }), { target: '/tmp/test' });
+    expect(result.stages[0]!.outcome).toBe('PASSED');
+    expect(result.stages[0]!.agentResults).toBeUndefined();
+    expect((result.stages[0]!.result as { agentResults?: unknown[] }).agentResults).toHaveLength(1);
+  });
+});

@@ -8,35 +8,69 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) 
 
 ## [0.56.0] - 2026-11-01
 
-**A structured answer that fails the output schema gets one repair turn, and a JSON object with no
-verdict no longer wins extraction.** Found by the R-D12 live run (2026-11-01, specs
-`pdl-1_6_0/verification/live-rd12/RESULTS.md`): on `claude-haiku-4-5` the agent's final structured
-answer was `{"analysisRecords":[]}`. Core's json tool is not `strict`, so the provider does not enforce
-`required`. The SDK's zod parse rejected the answer, and the fallback read it as `inline_json` at 0.9
-with no decision, so the stage was ERRORED (`agent_unjudgeable`) while the agent's findings were intact.
+**Structured answers that fail the output schema are salvaged or repaired; a JSON object with no
+verdict no longer wins extraction; a command result carries the agents it ran.** Found by the R-D12
+live runs (2026-11-01, specs `pdl-1_6_0/verification/live-rd12/RESULTS.md`, attempts 2-4, and
+`repair-sample-2026-11-01/`). On `claude-haiku-4-5` the agent's final structured answer was
+`{"analysisRecords":[]}`. Core's json tool is not `strict`, so the provider does not enforce `required`.
+The SDK's zod parse rejected the answer, and the fallback read it as `inline_json` at 0.9 with no
+decision, so the stage was ERRORED (`agent_unjudgeable`) while the agent's findings were intact.
+
+### Upgrade impact
+
+- **Tracker rows and analysis data for commands change** (behaviour change, no signature change). A
+  command run, a command-ref pipeline stage, and each command in a workflow phase now submit one
+  `agents[]` row per agent the command ran, under that agent's own name, `definitionVersion` and
+  summary. Until now they submitted one row under the COMMAND's name and version with no summary. They
+  also now submit `analysis_summary` and `analysis_records` extracted from those agents, where until now
+  they submitted none. Registry execution recording (`recordExecutions`) records the agents too:
+  until now it recorded the command's name and version as an `agent` execution. Comparing per-agent
+  history across this boundary compares two attributions. A crash record built without its agent
+  (`toCommandRecord`) keeps the old single command row.
+- **Gating is unchanged.** A command-ref stage is still judged by the command's own decision (PDL D9).
+  The agents ride on the command result, never on the stage's `agentResults`.
+- **A structured-output failure can now cost one more request** (the repair turn), and a salvaged
+  answer that dropped content reads `partial` (`structured-output.salvaged`, degraded).
 
 ### Added
 
-- **Structured-output repair turn** (`AIProvider.repairStructuredOutput`). On a schema or parse failure
-  (`NoObjectGeneratedError`) of structured output, core replays the run's conversation with one user
-  message naming each schema issue and the tools withdrawn, once. A valid second answer becomes
-  `structuredOutput`. Usage and cost cover both requests. A cancellation or a provider credit refusal
-  from the repair is thrown as it would be from the first request; any other repair error falls back
-  to text extraction of the first answer. No repair is attempted when no step reported the
-  conversation.
-- `AIGenerateResult.structuredOutputRepair?: { outcome: 'repaired' | 'failed'; issues: number }`.
-- Degradation markers `structured-output.repaired` and `structured-output.repair-failed` (both
-  `info`).
-- The repair request does not feed the context-budget tracker. With the tools withdrawn, their schemas
-  leave the input, and the tracker's step-over-step shrink rule would read that as a provider eviction:
-  live, 9065 then 8565 input tokens marked a run `context.evicted` (degraded) with nothing evicted. The
-  repair's usage still counts toward cost and step totals.
+- **Structured-output recovery** (`AIProvider.recoverStructuredOutput`), on a schema or parse failure
+  (`NoObjectGeneratedError`) of structured output:
+  1. **Salvage** (`salvageStructuredObject`, exported). The answer is kept when its required fields
+     (derived from the schema: `decision`, `score`, `maxScore` for `agentOutputSchema`) are valid. An
+     optional value sent as a string encoding the expected array or object is decoded in place.
+     Otherwise the smallest failing piece is dropped (the key, else the innermost array element, else
+     the top-level optional field), and each action is recorded. Salvage never supplies a verdict.
+     Live sample: 2 of 8 repair answers sent `analysisRecords` as a malformed JSON string; rejected
+     whole, the object lost its verdict, and the gate then ignored the flat JSON (D47).
+  2. **Repair turn.** When salvage does not apply, the run's conversation is replayed once, with one
+     user message naming each schema issue and the tools withdrawn. A valid answer becomes
+     `structuredOutput`; one failing only on optional content is salvaged. Usage and cost cover both
+     requests. A cancellation or a provider credit refusal from the repair is thrown as it would be
+     from the first request; any other repair error falls back to text extraction of the first
+     answer. No repair is attempted when no step reported the conversation. A failed repair logs its
+     answer's schema issues by path.
+  3. Otherwise, text extraction as before.
+- `AIGenerateResult.structuredOutputRepair?: { outcome: 'repaired' | 'salvaged' | 'failed'; issues;
+  repairTurn; salvaged?: { path, action: 'decoded' | 'dropped' }[] }`.
+- Degradation markers `structured-output.repaired` (info), `structured-output.salvaged` (`degraded`
+  when content was dropped, `info` when it was only decoded) and `structured-output.repair-failed`
+  (info).
+- **`CommandResult.agentResults`** (the agent results the command ran, unchanged) and
+  **`CommandResult.completeness`** (the worst among them and the command's own markers). Until now
+  `CommandExecutor` rebuilt the command result from a fixed field list, dropping each agent's markers,
+  completeness, verdict, `rawOutput` and `rawJson`. `CommandResult.degradationMarkers` still carries
+  only core's stop marks.
 
 ### Changed
 
-- **A repaired run costs one more request** (behaviour change, no signature change). It is the
-  run's conversation replayed once, with no tools, so its input is about the size of the run's last
-  step.
+- The repair request does not feed the context-budget tracker. With the tools withdrawn, their schemas
+  leave the input, and the tracker's step-over-step shrink rule read that as a provider eviction:
+  live, 9065 then 8565 input tokens marked a run `context.evicted` (degraded) with nothing evicted. The
+  repair's usage still counts toward cost and step totals.
+- `forward: full` on a ref stage still degrades to `auto`; its log line now says why correctly (a ref
+  stage forwards the command or workflow result, not its agents' raw output). It said the result
+  "carries no rawOutput", which `agentResults` made untrue.
 
 ### Fixed
 

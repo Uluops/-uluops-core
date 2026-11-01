@@ -1670,3 +1670,64 @@ describe('agent summary over the wire cap', () => {
     expect(warnings.some(w => /summary truncated 3000→2000/.test(w))).toBe(true);
   });
 });
+
+// 0.56.0 (R-D12, 2026-11-01). Until now a CommandResult was rebuilt from a fixed field list, so a
+// command run, a command-ref pipeline stage and a workflow's commands submitted no analysis data,
+// and their agents[] rows (and registry execution recording) carried the COMMAND's identity.
+describe('SubmissionClient — a command submits the agents it ran', () => {
+  beforeEach(() => { vi.clearAllMocks(); });
+  const okSave = () => mockSave.mockResolvedValueOnce({
+    run: { id: 'r', projectId: 'p', runNumber: 1, workflowType: 'w', allGatesPassed: true, averageScore: 1 },
+    agents: [], correlation: { newIssues: 0, recurringIssues: 0, regressions: 0 },
+  });
+  const agent = (): AgentResult => ({ ...makeAgentResultWithRecords('cv', 2), name: 'code-validator', version: '0.1.0', summary: 'two findings' });
+  const command = (withAgents: boolean) => ({
+    type: 'command' as const, agentType: 'validator' as const, name: 'validate', version: '1.0.3', definitionHash: 'sha256:c',
+    decision: 'PASS', score: 85, maxScore: 100, recommendations: [], durationMs: 1000,
+    metrics: { durationMs: 1000, model: 'claude-haiku-4-5', toolCalls: 3, inputTokens: 100, outputTokens: 50, totalEffectiveTokens: 150 },
+    ...(withAgents ? { agentResults: [agent()] } : {}),
+  });
+  const sent = () => mockSave.mock.calls[0]![0] as { agents: Array<Record<string, unknown>>; analysisRecords?: unknown[] };
+
+  it('a direct command run: one row per agent, with the agent identity, and its analysis records', async () => {
+    okSave();
+    await new SubmissionClient(baseConfig, testLogger).submit(makeSubmission({
+      result: command(true) as never, resolvedDefinition: makeResolvedDefinitionForAnalysis(),
+    }));
+    expect(sent().agents.map(a => [a.name, a.definitionVersion, a.summary])).toEqual([['code-validator', '0.1.0', 'two findings']]);
+    expect(sent().analysisRecords).toHaveLength(2);
+  });
+
+  it('a command-ref pipeline stage: rows and analysis come from the command\'s agent results', async () => {
+    okSave();
+    const pipeline = makePipelineResultWithAgents([]);
+    pipeline.stages = [{ id: 'cmd', name: 'cmd', type: 'command', status: 'completed', result: command(true) } as never];
+    await new SubmissionClient(baseConfig, testLogger).submit(makeSubmission({ result: pipeline, resolvedDefinition: makeResolvedDefinitionForAnalysis() }));
+    expect(sent().agents.map(a => a.name)).toEqual(['code-validator']);
+    expect(sent().analysisRecords).toHaveLength(2);
+  });
+
+  it('a workflow: each phase command contributes its agents\' rows and analysis', async () => {
+    okSave();
+    const workflow = {
+      type: 'workflow', name: 'wf', version: '2.0.0', definitionHash: 'sha256:wf', decision: 'SHIP', score: 85,
+      recommendations: [], durationMs: 1000,
+      metrics: { inputTokens: 0, outputTokens: 0, totalEffectiveTokens: 0, durationMs: 1000, model: 'mixed', phasesExecuted: 1, phasesPassed: 1, phasesWarned: 0, phasesBlocked: 0, phasesSkipped: 0, phasesAborted: 0, commands: [] },
+      phases: [{ id: 'p1', name: 'P1', decision: 'passed', gateThreshold: 70, score: 85, durationMs: 500, commands: [command(true)] }],
+    };
+    await new SubmissionClient(baseConfig, testLogger).submit(makeSubmission({ result: workflow as never, resolvedDefinition: makeResolvedDefinitionForAnalysis() }));
+    expect(sent().agents.map(a => a.name)).toEqual(['code-validator']);
+    expect(sent().analysisRecords).toHaveLength(2);
+  });
+
+  it('a command result without its agents (a crash record) keeps the command-level row', async () => {
+    okSave();
+    await new SubmissionClient(baseConfig, testLogger).submit(makeSubmission({ result: command(false) as never }));
+    expect(sent().agents.map(a => [a.name, a.definitionVersion])).toEqual([['validate', '1.0.3']]);
+  });
+
+  it('extractAgents (registry execution recording) names the agent, not the command', () => {
+    const client = new SubmissionClient(baseConfig, testLogger);
+    expect(client.extractAgents(command(true) as never)).toEqual([{ name: 'code-validator', version: '0.1.0' }]);
+  });
+});

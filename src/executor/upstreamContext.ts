@@ -139,7 +139,7 @@ export function buildUpstreamContext(
 
     if (result.result) {
       if (mode === 'full') {
-        log?.(`forward: full on ref stage "${dep}" degrades to auto — CommandResult/WorkflowResult carries no rawOutput`);
+        log?.(`forward: full on ref stage "${dep}" degrades to auto — a ref stage forwards the command or workflow result, not the raw output of the agents inside it`);
       }
       const r = result.result;
       entries.push({

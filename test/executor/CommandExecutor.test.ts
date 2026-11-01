@@ -922,3 +922,38 @@ describe('CommandExecutor — all-crashed throws regardless of dispatch mode', (
     expect(result.score).toBe(90);
   });
 });
+
+// 0.56.0 (R-D12, 2026-11-01). Fails on 0.55.0: the command result was rebuilt from a fixed field
+// list, so the agent's markers, completeness and raw output never left wrapAgentResult.
+describe('CommandExecutor — the command result carries the agents it ran', () => {
+  const marker = { code: 'structured-output.salvaged', phase: 'execution' as const, severity: 'degraded' as const };
+
+  it('single-agent: agentResults is the agent result itself, and completeness is its completeness', async () => {
+    const agent = makeValidatorResult({ completeness: 'partial', degradationMarkers: [marker], rawOutput: 'raw' } as never);
+    const result = await new CommandExecutor(makeAgentExecutor([agent]), makeRegistry()).execute(makeCommandDef(), { target: '/tmp/test' });
+    expect(result.agentResults).toHaveLength(1);
+    expect(result.agentResults![0]).toBe(agent);
+    expect(result.agentResults![0]!.degradationMarkers?.map(m => m.code)).toEqual(['structured-output.salvaged']);
+    expect(result.completeness).toBe('partial');
+    // Not lifted onto the command's own channel (stop marks only; command.ts).
+    expect(result.degradationMarkers).toBeUndefined();
+    // Gating still reads the command's own fields (PDL D9).
+    expect(result.decision).toBe('PASS');
+  });
+
+  it('multi-agent: every agent result is carried, and completeness is the worst of them', async () => {
+    const results = [
+      makeValidatorResult({ name: 'agent-a', score: 80, completeness: 'complete' } as never),
+      makeValidatorResult({ name: 'agent-b', score: 90, completeness: 'failed' } as never),
+    ];
+    const def = makeCommandDef({ agents: ['agent-a@1.0.0', 'agent-b@1.0.0'], aggregation: { method: 'average' } });
+    const result = await new CommandExecutor(makeAgentExecutor(results), makeRegistry()).execute(def, { target: '/tmp/test' });
+    expect(result.agentResults?.map(r => r.name)).toEqual(['agent-a', 'agent-b']);
+    expect(result.completeness).toBe('failed');
+  });
+
+  it('omits completeness when no agent reported one', async () => {
+    const result = await new CommandExecutor(makeAgentExecutor([makeValidatorResult()]), makeRegistry()).execute(makeCommandDef(), { target: '/tmp/test' });
+    expect(result.completeness).toBeUndefined();
+  });
+});

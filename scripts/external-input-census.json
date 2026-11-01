@@ -1,12 +1,12 @@
 {
   "counts": {
+    "json-parse": 7,
     "public-api-arg": 32,
     "ai-sdk-response": 38,
     "dynamic-import": 1,
     "service-response": 28,
     "process-env": 22,
     "model-tool-args": 18,
-    "json-parse": 5,
     "string-to-number": 4,
     "authored-yaml": 1
   },
@@ -34,6 +34,8 @@
     "src/ai/AIProvider.ts|ai-sdk-response|structuredOutput: useStructuredOutput && result.finishReason === 'stop'",
     "src/ai/AIProvider.ts|ai-sdk-response|{ steps: result.steps.length, billedSteps: 0, billedUsd: 0 },",
     "src/ai/AIProvider.ts|dynamic-import|const mod = await import(AIProvider.packageFor(providerName)) as Record<string, unknown>;",
+    "src/ai/AIProvider.ts|json-parse|obj = JSON.parse(text);",
+    "src/ai/AIProvider.ts|json-parse|try { decoded = JSON.parse(at); } catch { decoded = undefined; }",
     "src/ai/AIProvider.ts|public-api-arg|?? usableBudget(this.config.contextBudget)",
     "src/ai/AIProvider.ts|public-api-arg|abortSignal: mergeAbortSignals(options, this.config.timeout),",
     "src/ai/AIProvider.ts|public-api-arg|budget: this.config.defaultThinkingBudget,",

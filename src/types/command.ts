@@ -1,5 +1,6 @@
 import type { ExecutionResult, ExecutionMetrics, Domain, AgentType } from './execution.js';
-import type { DegradationMarker } from './degradation.js';
+import type { DegradationMarker, Completeness } from './degradation.js';
+import type { AgentResult } from './agent.js';
 
 /**
  * Command definition - Agent(s) + execution context
@@ -138,9 +139,26 @@ export interface CommandResult extends ExecutionResult {
    * FAIL), `execution.child-crashed` (a real crash inside), `execution.deadline` (a crash record a
    * caller deadline produced). Never inferred from the decision string, which a model can emit
    * freely. Not a general channel: an agent's own markers (`budget.*`, `context.*`) are not lifted
-   * onto a command.
+   * onto a command. They stay on the agent, which `agentResults` carries (0.56.0).
    */
   degradationMarkers?: DegradationMarker[];
+
+  /**
+   * The agent result(s) this command ran, unchanged: one for a single-agent command, one per agent for
+   * a multi-agent command (crash records included). Until 0.56.0 the command result was rebuilt from a
+   * fixed field list and these were dropped, with each agent's markers, completeness, verdict,
+   * rawOutput and rawJson. As a result a command run, or a command-ref pipeline stage, submitted no
+   * analysis data, and its tracker row carried the command's identity, not the agent's. Submission
+   * reads these now. Gating does not: a command-ref stage is still judged by the command's own
+   * decision (PDL D9). Absent on a crash record built without an agent (`toCommandRecord`).
+   */
+  agentResults?: AgentResult[];
+
+  /**
+   * The worst completeness among `agentResults` and this command's own markers (`failed` > `partial`
+   * > `complete`). Absent when no agent reported one and the command carries no markers.
+   */
+  completeness?: Completeness;
 }
 
 /**

@@ -323,6 +323,8 @@ export function salvageStructuredObject(
   if (!shape || !text) return undefined;
   let obj: unknown;
   try {
+    // EXTERNAL-OK: model output, but nothing reads it before `schema.safeParse` below, and the value
+    // returned is that parse (agentOutputSchema enforces finite numbers); salvage only removes parts.
     obj = JSON.parse(text);
   } catch {
     return undefined;
@@ -349,6 +351,7 @@ export function salvageStructuredObject(
     const at = getAt(current, issue.path);
     if (typeof at === 'string' && issue.code === 'invalid_type' && (issue.expected === 'array' || issue.expected === 'object')) {
       let decoded: unknown;
+      // EXTERNAL-OK: as above; the decoded value is kept only if the schema then accepts that path.
       try { decoded = JSON.parse(at); } catch { decoded = undefined; }
       const fits = issue.expected === 'array' ? Array.isArray(decoded) : !!decoded && typeof decoded === 'object' && !Array.isArray(decoded);
       if (fits) {

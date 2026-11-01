@@ -651,7 +651,9 @@ export class SubmissionClient {
       ? this.extractWorkflowAgents(result)
       : this.isPipelineResult(result)
         ? this.extractPipelineAgents(result)
-        : [this.resultToAgent(result)];
+        : this.isCommandResult(result)
+          ? this.commandRows(result)
+          : [this.resultToAgent(result)];
 
     // Extract analysis summary and records from agent results
     let analysisSummary: AnalysisSummaryInput | undefined;
@@ -665,23 +667,28 @@ export class SubmissionClient {
           ? this.capWithWarning(analysis.records, MAX_ANALYSIS_RECORDS, 'analysis records', 'analysisRecords')
           : undefined;
         for (const w of analysis.warnings ?? []) this.logger.warn(w);
-      } else if (this.isPipelineResult(result)) {
-        // Extract analysis from each preserved AgentResult across pipeline stages
+      } else {
+        // Every other result type carries its agents' results somewhere: a pipeline on each stage
+        // (inline stages) or on a command-ref stage's CommandResult, a workflow on each phase's
+        // commands, a command directly (0.56.0; before it, the last three submitted no analysis).
+        const children = this.isPipelineResult(result)
+          ? (result as PipelineResult).stages.flatMap(stage => stage.agentResults && stage.agentResults.length > 0
+            ? stage.agentResults
+            : this.isCommandResult(stage.result) ? (stage.result.agentResults ?? []) : [])
+          : this.isWorkflowResult(result)
+            ? result.phases.flatMap(phase => phase.commands.flatMap(cmd => cmd.agentResults ?? []))
+            : this.isCommandResult(result) ? (result.agentResults ?? []) : [];
         const allRecords: AnalysisRecordInput[] = [];
-        for (const stage of (result as PipelineResult).stages) {
-          if (stage.agentResults) {
-            for (const agent of stage.agentResults) {
-              // A synthesized record (crash or aborted placeholder) has no analysis to extract and
-              // must never become the run-level summary — first in a stage, it used to win the
-              // "first summary" race below (aborted-agent-recording §5.2).
-              if (agent.version === CRASH_PLACEHOLDER_VERSION) continue;
-              const analysis = this.analysisExtractor.extract(agent, submission.resolvedDefinition);
-              if (analysis.records.length > 0) allRecords.push(...analysis.records);
-              // Use the first agent's summary as the run-level summary
-              if (!analysisSummary && analysis.summary) analysisSummary = analysis.summary;
-              for (const w of analysis.warnings ?? []) this.logger.warn(w);
-            }
-          }
+        for (const agent of children) {
+          // A synthesized record (crash or aborted placeholder) has no analysis to extract and
+          // must never become the run-level summary — first in a stage, it used to win the
+          // "first summary" race below (aborted-agent-recording §5.2).
+          if (agent.version === CRASH_PLACEHOLDER_VERSION) continue;
+          const analysis = this.analysisExtractor.extract(agent, submission.resolvedDefinition);
+          if (analysis.records.length > 0) allRecords.push(...analysis.records);
+          // Use the first agent's summary as the run-level summary
+          if (!analysisSummary && analysis.summary) analysisSummary = analysis.summary;
+          for (const w of analysis.warnings ?? []) this.logger.warn(w);
         }
         if (allRecords.length > 0) {
           analysisRecords = this.capWithWarning(allRecords, MAX_ANALYSIS_RECORDS, 'analysis records', 'analysisRecords');
@@ -789,7 +796,9 @@ export class SubmissionClient {
       ? this.extractWorkflowAgents(result)
       : this.isPipelineResult(result)
         ? this.extractPipelineAgents(result)
-        : [this.resultToAgent(result)];
+        : this.isCommandResult(result)
+          ? this.commandRows(result)
+          : [this.resultToAgent(result)];
     return entries.map(a => ({ name: a.name, version: a.definitionVersion }));
   }
 
@@ -813,7 +822,7 @@ export class SubmissionClient {
       // and its aborted steps are real not-completed records. `skipped` never ran.
       if (phase.decision === 'skipped') continue;
       for (const cmd of phase.commands) {
-        agents.push(this.commandToAgent(cmd));
+        agents.push(...this.commandRows(cmd));
       }
     }
 
@@ -854,7 +863,7 @@ export class SubmissionClient {
       if (stage.type === 'workflow' && this.isWorkflowResult(stage.result as WorkflowResult)) {
         agents.push(...this.extractWorkflowAgents(stage.result as WorkflowResult));
       } else {
-        agents.push(this.commandToAgent(stage.result as CommandResult));
+        agents.push(...this.commandRows(stage.result as CommandResult));
       }
     }
 
@@ -908,6 +917,23 @@ export class SubmissionClient {
     if (summary === undefined || MAX_AGENT_SUMMARY === null || summary.length <= MAX_AGENT_SUMMARY) return summary;
     this.logger.warn(`Agent "${agent}" summary truncated ${summary.length}→${MAX_AGENT_SUMMARY} chars (the tracker caps it)`);
     return `${summary.slice(0, MAX_AGENT_SUMMARY - 1)}…`;
+  }
+
+  /**
+   * A command's tracker rows: one per agent it ran, each with that agent's own name, version and
+   * summary (0.56.0). A command result built without its agents (a crash record from
+   * `toCommandRecord`) keeps the single command-level row it always had. `extractAgents` uses the
+   * same rows, so registry execution recording now records the agents a command ran: before, it
+   * recorded the COMMAND's name and version as an `agent` execution.
+   */
+  private commandRows(cmd: CommandResult): ReturnType<typeof this.resultToAgent>[] {
+    return cmd.agentResults && cmd.agentResults.length > 0
+      ? cmd.agentResults.map(agent => this.resultToAgent(agent))
+      : [this.commandToAgent(cmd)];
+  }
+
+  private isCommandResult(result: unknown): result is CommandResult {
+    return !!result && typeof result === 'object' && (result as { type?: unknown }).type === 'command';
   }
 
   /**
