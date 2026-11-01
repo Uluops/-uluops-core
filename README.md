@@ -735,12 +735,15 @@ When the SDK rejects the answer, core tries, in order:
    are valid, core keeps it. An optional value sent as a string that encodes the expected array or
    object is decoded in place. Otherwise the smallest failing piece is dropped: the key, else the
    array element, else the top-level optional field. No request is sent. The run carries
-   `structured-output.salvaged`, which is `degraded` when something was dropped (its `detail` names
-   each path) and `info` when it was only decoded. Salvage never supplies a verdict.
+   `structured-output.salvaged`, which is `degraded` when something was dropped and not carried back
+   (its `detail` names each path) and `info` otherwise. Salvage never supplies a verdict.
 2. **Repair.** Otherwise core sends one more request: the run's conversation so far, a message naming
    each schema issue, and no tools. A valid answer becomes the structured output
    (`structured-output.repaired`, `info`). An answer that fails only on optional content is salvaged
-   as in step 1.
+   as in step 1. Optional content the repair answer leaves out, or salvage drops, is **carried over**
+   from the first answer when the first answer had it in valid form (`structuredOutputRepair.carriedOver`
+   names the fields). Live, Haiku's first answer held the findings and its repair answer usually
+   dropped them. The verdict always comes from the repair answer.
 3. **Fallback.** Otherwise the run falls back to text extraction as before
    (`structured-output.repair-failed`, `info`; the `extraction.*` markers carry any loss).
 

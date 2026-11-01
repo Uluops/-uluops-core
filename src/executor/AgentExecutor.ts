@@ -681,18 +681,22 @@ export class AgentExecutor {
     //   carries, e.g. its analysisRecords), INFO when it was only decoded in place. The verdict is
     //   the model's own either way: salvage never touches a required field.
     if (result.structuredOutputRepair) {
-      const { outcome, issues, repairTurn, salvaged = [] } = result.structuredOutputRepair;
+      const { outcome, issues, repairTurn, salvaged = [], carriedOver = [] } = result.structuredOutputRepair;
+      const carried = carriedOver.length > 0 ? ` Carried over from the first answer: ${carriedOver.join(', ')}.` : '';
       const first = `The first structured answer failed the output schema (${issues} issue${issues === 1 ? '' : 's'})`;
       if (outcome === 'salvaged') {
         const dropped = salvaged.filter(a => a.action === 'dropped').map(a => a.path);
+        // A dropped field the carry-over restored from the first answer is not content lost.
+        const lost = dropped.filter(path => !carriedOver.includes(path));
         const decoded = salvaged.filter(a => a.action === 'decoded').map(a => a.path);
         markers.push({
           code: 'structured-output.salvaged',
           phase: 'execution',
-          severity: dropped.length > 0 ? 'degraded' : 'info',
+          severity: lost.length > 0 ? 'degraded' : 'info',
           detail: `${first}; ${repairTurn ? "the repair turn's answer" : 'it'} kept its verdict and failed only on optional content.`
             + (dropped.length > 0 ? ` Dropped: ${dropped.join(', ')}.` : '')
-            + (decoded.length > 0 ? ` Decoded from a string: ${decoded.join(', ')}.` : ''),
+            + (decoded.length > 0 ? ` Decoded from a string: ${decoded.join(', ')}.` : '')
+            + carried,
         });
       } else {
         markers.push({
@@ -700,7 +704,7 @@ export class AgentExecutor {
           phase: 'execution',
           severity: 'info',
           detail: outcome === 'repaired'
-            ? `${first}; one repair turn produced a valid object.`
+            ? `${first}; one repair turn produced a valid object.${carried}`
             : `${first}; ${repairTurn ? 'the repair turn did not produce a valid object' : 'no repair turn was possible'}, so the result came from text extraction.`,
         });
       }

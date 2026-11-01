@@ -388,6 +388,52 @@ export function salvageStructuredObject(
   return undefined;
 }
 
+/**
+ * Give a repaired answer back the optional top-level content its first answer had.
+ *
+ * A key is carried over only when it is OPTIONAL in the schema (a required field, i.e. the verdict,
+ * always comes from the repair answer), absent from the repaired object, and present in the first
+ * answer in a form its own field schema accepts. The merged object must then pass the whole schema,
+ * or nothing is carried. Returns the value to use and the keys taken; `keys` is empty when nothing
+ * qualified.
+ */
+export function carryOverOptional(
+  firstText: string | undefined,
+  repaired: unknown,
+  schema: unknown,
+): { value: unknown; keys: string[] } {
+  const none = { value: repaired, keys: [] as string[] };
+  const shape = zodShape(schema);
+  if (!shape || !firstText || !repaired || typeof repaired !== 'object' || Array.isArray(repaired)) return none;
+  let first: unknown;
+  try {
+    // EXTERNAL-OK: model output; each value taken from it is validated by its field schema, and the
+    // merged object by the whole schema, before anything uses it.
+    first = JSON.parse(firstText);
+  } catch {
+    return none;
+  }
+  if (!first || typeof first !== 'object' || Array.isArray(first)) return none;
+  const merged: Record<string, unknown> = { ...(repaired as Record<string, unknown>) };
+  const keys: string[] = [];
+  for (const [k, field] of Object.entries(shape)) {
+    if (!field.safeParse(undefined).success) continue; // required: the repair answer's alone
+    if (merged[k] !== undefined) continue;
+    const candidate = (first as Record<string, unknown>)[k];
+    if (candidate === undefined || candidate === null) continue;
+    // An empty array or object restores nothing, and would make the marker claim a carry-over
+    // (attempt 3's first answer was `{"analysisRecords":[]}`).
+    if (Array.isArray(candidate) ? candidate.length === 0 : typeof candidate === 'object' && Object.keys(candidate).length === 0) continue;
+    const parsed = (field as unknown as { safeParse: (v: unknown) => { success: boolean; data?: unknown } }).safeParse(candidate);
+    if (!parsed.success || parsed.data === undefined) continue;
+    merged[k] = parsed.data;
+    keys.push(k);
+  }
+  if (keys.length === 0) return none;
+  const whole = (schema as { safeParse: (v: unknown) => { success: boolean; data?: unknown } }).safeParse(merged);
+  return whole.success ? { value: whole.data, keys } : none;
+}
+
 function getAt(root: unknown, path: PropertyKey[]): unknown {
   let node: unknown = root;
   for (const seg of path) {
@@ -551,6 +597,9 @@ export interface AIGenerateResult<TOutput = unknown> {
     issues: number;
     repairTurn: boolean;
     salvaged?: SalvageAction[];
+    /** Top-level optional fields taken from the FIRST answer because the repair answer left them out
+     *  (or salvage dropped them) and the first answer had them in schema-valid form. */
+    carriedOver?: string[];
   };
 
   /**
@@ -1296,17 +1345,29 @@ export class AIProvider {
     const recovered = (
       text: string, finishReason: string, repairTurn: boolean, outcome: 'repaired' | 'salvaged' | 'failed',
       structured?: unknown, salvaged?: SalvageAction[],
-    ): AIGenerateResult => ({
-      // Built from StepTotals, like a fallback: after a repair the totals hold BOTH calls, where the
-      // repair's own result.usage would report only the second.
-      ...this.buildFallbackResult(resolved, text, stepTotals, finishReason),
-      ...(structured !== undefined ? { structuredOutput: structured } : {}),
-      structuredOutputRepair: {
-        outcome, issues: issues.length, repairTurn,
-        ...(salvaged && salvaged.length > 0 ? { salvaged } : {}),
-      },
-      thinking,
-    });
+    ): AIGenerateResult => {
+      // A repair answer that left out optional content the first answer had in valid form gets it
+      // back (carryOverOptional): live, Haiku's first answer carried 3-4 schema-valid analysisRecords
+      // and the repair answer dropped them in 2 of 3 diagnostic runs and 5 of 6 sampled answers.
+      const carried = repairTurn && structured !== undefined
+        ? carryOverOptional(error.text, structured, schema)
+        : undefined;
+      if (carried && carried.keys.length > 0) {
+        this.logger.info(`Carried over from the first answer, which the repair answer left out: ${carried.keys.join(', ')}.`);
+      }
+      return {
+        // Built from StepTotals, like a fallback: after a repair the totals hold BOTH calls, where the
+        // repair's own result.usage would report only the second.
+        ...this.buildFallbackResult(resolved, text, stepTotals, finishReason),
+        ...(structured !== undefined ? { structuredOutput: carried ? carried.value : structured } : {}),
+        structuredOutputRepair: {
+          outcome, issues: issues.length, repairTurn,
+          ...(salvaged && salvaged.length > 0 ? { salvaged } : {}),
+          ...(carried && carried.keys.length > 0 ? { carriedOver: carried.keys } : {}),
+        },
+        thinking,
+      };
+    };
 
     // 1. Salvage the first answer when only optional content is broken.
     const first = salvageStructuredObject(error.text, schema);

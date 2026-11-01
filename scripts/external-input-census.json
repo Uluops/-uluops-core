@@ -1,6 +1,6 @@
 {
   "counts": {
-    "json-parse": 7,
+    "json-parse": 8,
     "public-api-arg": 32,
     "ai-sdk-response": 38,
     "dynamic-import": 1,
@@ -34,6 +34,7 @@
     "src/ai/AIProvider.ts|ai-sdk-response|structuredOutput: useStructuredOutput && result.finishReason === 'stop'",
     "src/ai/AIProvider.ts|ai-sdk-response|{ steps: result.steps.length, billedSteps: 0, billedUsd: 0 },",
     "src/ai/AIProvider.ts|dynamic-import|const mod = await import(AIProvider.packageFor(providerName)) as Record<string, unknown>;",
+    "src/ai/AIProvider.ts|json-parse|first = JSON.parse(firstText);",
     "src/ai/AIProvider.ts|json-parse|obj = JSON.parse(text);",
     "src/ai/AIProvider.ts|json-parse|try { decoded = JSON.parse(at); } catch { decoded = undefined; }",
     "src/ai/AIProvider.ts|public-api-arg|?? usableBudget(this.config.contextBudget)",

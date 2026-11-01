@@ -1,7 +1,7 @@
 import { describe, it, expect, vi, beforeEach } from 'vitest';
 import { crashMetrics } from '../../src/utils/crashMetrics.js';
 import { registerRunTrip, unregisterRunTrip } from '../../src/utils/runTrip.js';
-import { AIProvider, salvageStructuredObject } from '../../src/ai/AIProvider.js';
+import { AIProvider, salvageStructuredObject, carryOverOptional } from '../../src/ai/AIProvider.js';
 import { TokenBudgetTracker } from '../../src/ai/TokenBudgetTracker.js';
 import type { ModelCatalog, ResolvedModel } from '../../src/ai/ModelCatalog.js';
 import type { ResolvedConfig } from '../../src/types/config.js';
@@ -3703,5 +3703,65 @@ describe('AIProvider — salvage runs before the repair turn and on its answer (
     expect(generateText).toHaveBeenCalledTimes(2);
     expect(result.structuredOutput).toMatchObject(verdict);
     expect(result.structuredOutputRepair).toMatchObject({ outcome: 'salvaged', issues: 3, repairTurn: true });
+  });
+});
+
+describe('carry-over — a repair answer gets back the valid optional content its first answer had (R-D12, 2026-11-01)', () => {
+  // Live: Haiku's first answers carried 3, 0, 3 and 4 schema-valid analysisRecords; the repair answer
+  // dropped them in 2 of 3 diagnostic runs (attempts 3-4) and 5 of 6 sampled answers.
+  const records = [{ recordType: 'evidence_claim', recordId: 'EC-1', title: 'Off-by-one', data: [{ key: 'line', value: '5' }] }];
+  const verdict = { decision: 'FAIL', score: 28, maxScore: 100 };
+
+  it('carries a valid optional field the repair answer left out', () => {
+    const r = carryOverOptional(JSON.stringify({ analysisRecords: records }), verdict, agentOutputSchema);
+    expect(r.keys).toEqual(['analysisRecords']);
+    expect(r.value).toMatchObject({ ...verdict, analysisRecords: [{ recordId: 'EC-1' }] });
+  });
+
+  it('never overrides what the repair answer gave, and never takes a required field from the first answer', () => {
+    const own = [{ ...records[0]!, recordId: 'EC-9' }];
+    const r = carryOverOptional(JSON.stringify({ decision: 'PASS', score: 99, maxScore: 100, analysisRecords: records }), { ...verdict, analysisRecords: own }, agentOutputSchema);
+    expect(r.keys).toEqual([]);
+    expect(r.value).toMatchObject({ decision: 'FAIL', score: 28, analysisRecords: [{ recordId: 'EC-9' }] });
+  });
+
+  it('does not carry an empty array (the attempt-3 first answer was {"analysisRecords":[]})', () => {
+    expect(carryOverOptional('{"analysisRecords":[]}', verdict, agentOutputSchema).keys).toEqual([]);
+  });
+
+  it('does not carry a first-answer value its field schema rejects', () => {
+    const r = carryOverOptional(JSON.stringify({ analysisRecords: '[{oops' }), verdict, agentOutputSchema);
+    expect(r.keys).toEqual([]);
+  });
+
+  it('end to end: the repaired result carries the first answer\'s records and says so', async () => {
+    const { generateText } = await import('ai');
+    vi.mocked(generateText).mockReset();
+    const first = JSON.stringify({ analysisRecords: records });
+    vi.mocked(generateText).mockImplementationOnce((async (opts: unknown) => {
+      (opts as { onStepFinish?: (s: unknown) => void }).onStepFinish?.({
+        finishReason: 'stop', text: first, toolCalls: [], usage: { inputTokens: 100, outputTokens: 10 },
+        response: { messages: [{ role: 'assistant', content: [{ type: 'text', text: first }] }] },
+      });
+      const value = JSON.parse(first);
+      throw new NoObjectGeneratedError({
+        message: 'No object generated: response did not match schema.', text: first, finishReason: 'stop',
+        cause: TypeValidationError.wrap({ value, cause: agentOutputSchema.safeParse(value).error }),
+      } as never);
+    }) as never);
+    vi.mocked(generateText).mockImplementationOnce((async (opts: unknown) => {
+      (opts as { onStepFinish?: (s: unknown) => void }).onStepFinish?.({ finishReason: 'stop', text: '{}', toolCalls: [], usage: { inputTokens: 100, outputTokens: 10 } });
+      return { finishReason: 'stop', text: JSON.stringify(verdict), output: verdict, steps: [{}] };
+    }) as never);
+    const result = await new AIProvider(mockConfig, mockCatalog({
+      resolve: vi.fn().mockResolvedValue(makeResolvedModel({
+        capabilities: { tools: true, vision: true, streaming: true, extendedThinking: false, structuredOutput: true } as never,
+      } as never)),
+    } as never), noopLogger).generate({
+      model: 'haiku', system: 's', prompt: 'p', tools: { read_file: {} } as never,
+      output: { schema: agentOutputSchema, name: 'AgentResult' } as never,
+    });
+    expect(result.structuredOutput).toMatchObject({ ...verdict, analysisRecords: [{ recordId: 'EC-1' }] });
+    expect(result.structuredOutputRepair).toMatchObject({ outcome: 'repaired', repairTurn: true, carriedOver: ['analysisRecords'] });
   });
 });

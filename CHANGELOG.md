@@ -51,11 +51,17 @@ decision, so the stage was ERRORED (`agent_unjudgeable`) while the agent's findi
      answer. No repair is attempted when no step reported the conversation. A failed repair logs its
      answer's schema issues by path.
   3. Otherwise, text extraction as before.
+- **Carry-over** (`carryOverOptional`, exported). When a repair turn's answer leaves out (or salvage
+  drops) an OPTIONAL top-level field that the first answer had in schema-valid form, the first
+  answer's value is used. The verdict always comes from the repair answer, and the merged object must
+  pass the whole schema. Live, Haiku's first answers carried 3-4 schema-valid `analysisRecords`, and
+  the repair answer dropped them in 2 of 3 diagnostic runs and 5 of 6 sampled answers. Without this,
+  the repair kept the verdict and lost the findings.
 - `AIGenerateResult.structuredOutputRepair?: { outcome: 'repaired' | 'salvaged' | 'failed'; issues;
-  repairTurn; salvaged?: { path, action: 'decoded' | 'dropped' }[] }`.
+  repairTurn; salvaged?: { path, action: 'decoded' | 'dropped' }[]; carriedOver?: string[] }`.
 - Degradation markers `structured-output.repaired` (info), `structured-output.salvaged` (`degraded`
-  when content was dropped, `info` when it was only decoded) and `structured-output.repair-failed`
-  (info).
+  when content was dropped and not carried back from the first answer, else `info`) and
+  `structured-output.repair-failed` (info). A carry-over is named in the marker's `detail`.
 - **`CommandResult.agentResults`** (the agent results the command ran, unchanged) and
   **`CommandResult.completeness`** (the worst among them and the command's own markers). Until now
   `CommandExecutor` rebuilt the command result from a fixed field list, dropping each agent's markers,

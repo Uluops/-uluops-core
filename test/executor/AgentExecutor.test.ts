@@ -1164,6 +1164,18 @@ describe('AgentExecutor', () => {
       }
     });
 
+    it('a salvage whose dropped field was carried back from the first answer is info, not degraded', async () => {
+      const ai = mockAIProvider({ structuredOutputRepair: {
+        outcome: 'salvaged', issues: 3, repairTurn: true,
+        salvaged: [{ path: 'analysisRecords', action: 'dropped' }], carriedOver: ['analysisRecords'],
+      } });
+      const result = await new AgentExecutor(baseConfig, ai, noopLogger).execute(makeValidatorDef(), { target: tmpDir });
+      const marker = result.degradationMarkers?.find(d => d.code === 'structured-output.salvaged');
+      expect(marker).toMatchObject({ severity: 'info' });
+      expect(marker?.detail).toContain('Carried over from the first answer: analysisRecords');
+      expect(result.completeness).toBe('complete');
+    });
+
     it('usage shape drift emits an info marker without touching completeness', async () => {
       const ai = mockAIProvider({ usageShapeDrift: ['anthropic'] });
       const executor = new AgentExecutor(baseConfig, ai, noopLogger);
