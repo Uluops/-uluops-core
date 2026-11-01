@@ -19,10 +19,20 @@ export interface CommandDefinition {
     /** References to wrapped agent(s) as refs (name@version format) */
     agents: string[];
 
-    /** Execution configuration */
-    execution: {
-      /** Model selection (alias, tier, or provider:modelId — resolved via ModelCatalog) */
-      model: {
+    /**
+     * Execution configuration. Optional, as in the CDL 2.0.0 schema (which requires only
+     * `interface`): a command may declare no `execution` block, or one holding only `preflight`
+     * (the normalizer builds that shape). Until 0.55.0 this type declared the block and its `model`
+     * always present, which a schema-valid definition does not guarantee; an unguarded read of
+     * `execution.model.default` threw a TypeError on such a command.
+     */
+    execution?: {
+      /**
+       * Model selection (alias, tier, or provider:modelId — resolved via ModelCatalog). Optional;
+       * when absent the command runs on the operator override, else the agent's own model.
+       * `default` is required when `model` is present, as in the schema.
+       */
+      model?: {
         default: string;
         allowed?: string[];
       };

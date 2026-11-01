@@ -46,6 +46,15 @@ beside it suspect too. Tracker `ced3416c`.
   (which records each agent, not the stage), and upstream forwarding (which forwards the agents). A
   consumer that read the stage's `decision` as "did any agent object" should read
   `agentResults[].decisionCategory` instead.
+- **`CommandDefinition['command']['execution']` and its `model` are optional (compile-time, type
+  only).** The type now matches the CDL 2.0.0 schema, which requires only `interface`. A command may
+  declare no `execution` block, or one holding only `preflight`. Code that builds a `CommandDefinition`
+  is unaffected: the looser type accepts everything it accepted before. Code that reads
+  `def.command.execution.model.default` (or `.timeout`, `.thresholds`, `.preflight`, `.sequential`)
+  without a guard now fails to compile under `strictNullChecks`. That read is the one that threw at
+  runtime on a schema-valid command (Fixed, below), so the compile error points at a latent crash, not
+  a new one. Guard it: `def.command.execution?.model?.default`. `default` stays required whenever
+  `model` is present, as in the schema.
 - **`skipReason` text.** An `agent_unjudgeable` reason now names each agent's cause:
   `agent_unjudgeable: "a" gave no decision at a blocking gate, "b" crashed`. Before, it was one phrase
   for the whole list. `erroredReasons` and the `STAGE_ERRORED` warning are unchanged.
@@ -64,8 +73,9 @@ beside it suspect too. Tracker `ced3416c`.
   verification). CDL 2.0.0 makes both optional, and the normalizer creates the block holding only a
   moved `preflight`. But `CommandExecutor` read `execution.model.default`, `timeout`, `thresholds` and
   `sequential` without a guard: "Cannot read properties of undefined (reading 'default')". These reads
-  are now guarded. With no model declared, the agent's own model applies. `CommandDefinition`'s type
-  still declares both fields always present, which is wider than the schema.
+  are now guarded. With no model declared, the agent's own model applies. The type now declares both
+  optional (Upgrade impact, above), so the compiler refuses the unguarded read that let this ship: the
+  old type declared both always present, a stronger claim than the schema makes.
 - **A relative target failed every `$ARGUMENTS` path preflight check** (consumer-validate run #122,
   dx-validator). The registry's `validate` command checks `path: $ARGUMENTS`, and so does the README's
   `runCommand('validate', { target: './src' })`. Core substituted the raw target into the path and then

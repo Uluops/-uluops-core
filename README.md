@@ -358,7 +358,7 @@ At **80% of the limit** the tools are withdrawn, so the agent writes its answer 
 
 ### Command Execution
 
-Execute saved command configurations. Uses model, thresholds, and aggregation from the command definition. Ideal for CI/CD:
+Execute saved command configurations. Uses model, thresholds, and aggregation from the command definition when it declares them (the `execution` block is optional; with no model declared, the agent's own model applies). Ideal for CI/CD:
 
 ```typescript
 const result = await client.runCommand('validate', { target: './src' });

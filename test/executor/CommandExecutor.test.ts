@@ -118,6 +118,22 @@ describe('CommandExecutor', () => {
         }
       });
     }
+
+    // Type-level: the cases above cast to CommandDefinition, so they compile under any type. These
+    // do not cast. Under the pre-0.55.0 type (`execution` and `model` required) the two literals
+    // fail `npm run typecheck`, and the `@ts-expect-error` is unused, which is also an error.
+    it('the CommandDefinition type admits both shapes and refuses an unguarded model read', () => {
+      const iface = { name: 'c', version: '1.0.0', displayName: 'C', description: 'c', domain: 'software' } as const;
+      const noBlock = { command: { interface: iface, agents: ['a@1.0.0'] } } satisfies CommandDefinition;
+      const preflightOnly = { command: { interface: iface, agents: ['a@1.0.0'], execution: { preflight: [] } } } satisfies CommandDefinition;
+      // Never called: it is checked by the compiler only (at runtime it would throw on `noBlock`).
+      const unguarded = (def: CommandDefinition): string =>
+        // @ts-expect-error `execution` and `model` are optional; this read must be guarded
+        def.command.execution.model.default;
+      void unguarded;
+      const read = (def: CommandDefinition): string | undefined => def.command.execution?.model?.default;
+      expect([read(noBlock), read(preflightOnly)]).toEqual([undefined, undefined]);
+    });
   });
 
   describe('multi-agent execution', () => {

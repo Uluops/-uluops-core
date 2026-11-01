@@ -22,16 +22,6 @@ import { worstExtractionConfidence } from '../utils/worstExtractionConfidence.js
 
 const noopLogger: Logger = { debug() {}, info() {}, warn() {}, error() {} };
 
-type CommandExecution = CommandDefinition['command']['execution'];
-/**
- * A command's `execution` block as the CDL schema allows it: absent, or without `model`. The
- * `CommandDefinition` type declares both always present, which a schema-valid definition does not
- * guarantee; every read in this file goes through here.
- */
-function executionOf(def: CommandDefinition): (Omit<Partial<CommandExecution>, 'model'> & { model?: Partial<CommandExecution['model']> }) | undefined {
-  return def.command.execution as (Omit<Partial<CommandExecution>, 'model'> & { model?: Partial<CommandExecution['model']> }) | undefined;
-}
-
 /**
  * Executes command definitions.
  *
@@ -102,10 +92,10 @@ export class CommandExecutor {
 
     // CDL 2.0.0 makes `execution` optional, and the normalizer creates it holding only a moved
     // `preflight` when that is all a command declares, so neither the block nor its `model` can be
-    // assumed (CommandDefinition's type says both are always present; it is wider than the schema).
-    // Read through this, never `def.command.execution.*` directly: the unguarded read threw a
-    // TypeError on a schema-valid command (R-D12 live verification, 2026-10-31).
-    const execution = executionOf(def);
+    // assumed. The type says so (both optional since 0.55.0); before that it declared both always
+    // present, and an unguarded read threw a TypeError on a schema-valid command (R-D12 live
+    // verification, 2026-10-31).
+    const execution = def.command.execution;
     // Model resolution: operator override > CDL default > the agent's own model (undefined here).
     const model = overrides?.model ?? execution?.model?.default;
 
@@ -346,7 +336,7 @@ export class CommandExecutor {
       score: agentResult.score,
       maxScore: agentResult.maxScore,
       extractionConfidence: agentResult.extractionConfidence,
-      threshold: executionOf(def)?.thresholds?.pass,
+      threshold: def.command.execution?.thresholds?.pass,
       categories: agentResult.categories?.map(mapCategory),
       artifacts: agentResult.artifacts,
       recommendations: agentResult.recommendations,
@@ -397,8 +387,8 @@ export class CommandExecutor {
     }
 
     // Determine overall decision
-    const threshold = executionOf(def)?.thresholds?.pass ?? DEFAULT_PASS_THRESHOLD;
-    const warnThreshold = executionOf(def)?.thresholds?.warn ?? DEFAULT_WARN_THRESHOLD;
+    const threshold = def.command.execution?.thresholds?.pass ?? DEFAULT_PASS_THRESHOLD;
+    const warnThreshold = def.command.execution?.thresholds?.warn ?? DEFAULT_WARN_THRESHOLD;
     let decision: string;
     let decisionCategory: DecisionCategory;
 
