@@ -83,7 +83,7 @@ export interface AIConfig {
    * means the PROVIDER DEFAULT, not "no thinking". Also read from `ULUOPS_EXTENDED_THINKING`; this
    * field wins over the variable, and `runAgent`'s per-run `extendedThinking` wins over both. Any
    * other value — booleans included — is `'off'` at the layer that set it, with a warning; it does
-   * not fall through. Mapped in this release: OpenAI, Google, OpenRouter. Direct Anthropic is not
+   * not fall through. Mapped as of 0.51.0: OpenAI, Google, OpenRouter. Direct Anthropic is not
    * mapped yet (planned with the structured-output degrade); it records "not applied: no-mapping". Each run records what was
    * requested and applied on `AgentResult.runConditions`.
    * @default 'off'

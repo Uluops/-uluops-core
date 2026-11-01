@@ -613,11 +613,13 @@ interface AgentResultBase {
    * The conditions this run executed under that change what its score means — today, extended
    * thinking: what was requested, what was applied, and why not (thinking-capability-restore spec
    * §7.3). Set on success, on returning fallbacks, and (through the thrown-error carrier) on crash
-   * placeholders. In-process only in this release: not submitted to the tracker (issue 862356e6).
+   * placeholders. In-process only as of 0.51.0: not submitted to the tracker (issue 862356e6).
    */
   runConditions?: RunConditions;
 
-  /** Full parsed JSON from LLM output (pre-Zod-strip) — the raw structured-output
+  /** Internal: not part of the public API surface.
+   *
+   * Full parsed JSON from LLM output (pre-Zod-strip) — the raw structured-output
    * object as the model produced it, not `agentOutputSchema.parse()`'s result.
    * Two distinct things live here that the typed result does not carry:
    *   1. The five schema fields `AgentExecutor.mapStructuredOutput` does not
@@ -626,8 +628,7 @@ interface AgentResultBase {
    *      decision, score, maxScore, summary, categories, artifacts.
    *   2. Keys genuinely outside `agentOutputSchema` — notably the `analysis`
    *      block recovered by `AnalysisSummaryExtractor.analysisFromRawJson`.
-   * Both are read back untyped by AnalysisSummaryExtractor at submission time.
-   * Internal: not part of the public API surface. */
+   * Both are read back untyped by AnalysisSummaryExtractor at submission time. */
   rawJson?: unknown;
 }
 

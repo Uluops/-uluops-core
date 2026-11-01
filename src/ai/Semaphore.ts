@@ -29,7 +29,7 @@ export class Semaphore {
     // and `new Semaphore(config.maxConcurrency)` reads a public field.
     //
     // The guard covered the two values someone thought of and missed the one that had the
-    // worst failure mode, which is this release's whole subject.
+    // worst failure mode, which is 0.42.0's whole subject.
     this.available = Math.max(1, Math.floor(finitePositive(permits) ?? DEFAULT_MAX_CONCURRENCY));
   }
 

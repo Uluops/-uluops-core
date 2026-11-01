@@ -62,7 +62,7 @@ export class TokenBudgetTracker {
     // ZERO IS A DELIBERATE VALUE HERE ("no budget"), pinned by a test asserting
     // `percentUsed: 0, remaining: 0`. NaN/Infinity/negative are MALFORMED. Collapsing the
     // two would replace a documented contract with a fallback — the mirror image of the
-    // defect this release is about: over-generalizing a class until it swallows an
+    // defect 0.42.0 is about: over-generalizing a class until it swallows an
     // intentional case. `deriveContextBudget` treats 0 as unusable because a zero
     // *derivation* has no threshold to compute; a zero tracker is just a tracker of zero.
     const usable = finiteNonNegative(budget);

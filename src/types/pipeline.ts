@@ -86,9 +86,10 @@ export interface GateDefinition {
    *  and ignore this. A load error in per-agent mode. PDL schema default 'min'. */
   aggregate?: 'min' | 'max' | 'average';
 
-  /** Gate-decision D1-D3: `not_negative` (a negative fails; a conditional passes, and at a
+  /** `not_negative` (a negative fails; a conditional passes, and at a
    *  blocking gate makes `allGatesPassed` false), `positive` (a negative or a conditional fails),
-   *  `ignore`. Absent: `not_negative` on blocking gates, `ignore` on `warn` gates. */
+   *  `ignore`. Absent: `not_negative` on blocking gates, `ignore` on `warn` gates.
+   *  (Gate-decision D1-D3.) */
   decision?: 'not_negative' | 'positive' | 'ignore';
 
   /** Flow action when the gate fails. PDL schema default 'abort'. */
@@ -148,8 +149,8 @@ export interface StageDefinition {
   /** Stage dependencies */
   depends_on?: string[];
 
-  /** Producer-side forwarding mode (stage-output-forwarding spec §3.1).
-   *  What this stage's outputs offer to stages that depend_on it:
+  /** Producer-side forwarding mode: what this stage's outputs offer to stages that depend_on it
+   *  (stage-output-forwarding spec §3.1):
    *  - 'auto' (default, absent): the standard severity-sorted slice
    *  - 'none': never forwarded (ordering-only stages, gates)
    *  - 'full': slice plus head+tail-retained rawOutput — the explicit
@@ -157,7 +158,7 @@ export interface StageDefinition {
    *    have no rawOutput and degrade to 'auto'. */
   forward?: 'auto' | 'none' | 'full';
 
-  /** Consumer-side forwarding mode (stage-output-forwarding spec §3.1).
+  /** Consumer-side forwarding mode (stage-output-forwarding spec §3.1):
    *  - 'auto' (default): this stage's agents receive slices of all
    *    non-suppressed depends_on outputs in their initial message
    *  - 'none': depend for ordering only; agents get a clean context. */

@@ -76,16 +76,6 @@ type MappableUsage =
   & Partial<Pick<LanguageModelUsage, 'inputTokenDetails' | 'outputTokenDetails'>>;
 
 /**
- * Per-step totals accumulated during the tool loop.
- *
- * Exists because the ERROR paths cannot reach `result.totalUsage`: when the SDK throws
- * NoObjectGeneratedError, the result object never materializes, and the error carries
- * only `lastStep.usage`. Reporting that as the run total understated a real 7-step run
- * by 96% ($0.00987 against $0.2556) and zeroed steps/toolCalls. The SDK computes
- * `totalUsage` by summing per-step usage, so summing the same values here reproduces it
- * on the path where the result is gone.
- */
-/**
  * What a wrap-up returns from prepareStep: no tools for this step, so the model writes its answer.
  *
  * `activeTools: []` is the half that works on Anthropic structured output: `jsonTool` mode
@@ -98,6 +88,16 @@ type MappableUsage =
  */
 const WITHDRAW_TOOLS = { toolChoice: 'none' as const, activeTools: [] as never[] };
 
+/**
+ * Per-step totals accumulated during the tool loop.
+ *
+ * Exists because the ERROR paths cannot reach `result.totalUsage`: when the SDK throws
+ * NoObjectGeneratedError, the result object never materializes, and the error carries
+ * only `lastStep.usage`. Reporting that as the run total understated a real 7-step run
+ * by 96% ($0.00987 against $0.2556) and zeroed steps/toolCalls. The SDK computes
+ * `totalUsage` by summing per-step usage, so summing the same values here reproduces it
+ * on the path where the result is gone.
+ */
 interface StepTotals {
   steps: number;
   toolCalls: number;
@@ -153,8 +153,8 @@ interface StepTotals {
    * its result through the SAME extraction the success path uses. Without these,
    * buildFallbackResult called mapUsage with one of three arguments: all four provider
    * extract tiers were dead, Google thinking tokens landed in `reasoning_tokens`, an
-   * unknown provider's cache pool went unpriced, and both drift instruments this release
-   * added (providerWarnings, usageShapeDrift) were absent from every degraded result —
+   * unknown provider's cache pool went unpriced, and both drift instruments added in 0.42.0
+   * (providerWarnings, usageShapeDrift) were absent from every degraded result —
    * dark precisely where drift bites.
    */
   providerMetadata?: Record<string, unknown>;
@@ -825,6 +825,8 @@ export class AIProvider {
    * @throws {CapabilityError} If the resolved model lacks a required capability.
    * @throws {RateLimitError} If the provider returns a 429 after retries are exhausted.
    * @throws {SdkApiError} For other provider/API errors surfaced by the AI SDK.
+   *   Test with `isApiErrorLike()`, not `instanceof SdkApiError`: the class can come from a
+   *   different copy of sdk-core (dual-package hazard; see the README).
    */
   async generate(options: AIGenerateOptions): Promise<AIGenerateResult> {
     // Gate every generation through the shared concurrency limiter so that
@@ -933,7 +935,7 @@ export class AIProvider {
       // stepTotals; everything else falls through to mapError and RETHROWS, discarding the
       // accumulated usage. Claiming "reporting the usage that was already billed"
       // unconditionally was a false state written on the very path this try exists to
-      // protect — the release's own defect, in a log line.
+      // protect — 0.42.0's own defect, in a log line.
       const willReportUsage = useStructuredOutput;
       this.logger.warn(
         `Result assembly failed after a successful provider call: ${formatErrorMessage(error)}`
@@ -1288,9 +1290,6 @@ export class AIProvider {
   }
 
   /**
-   * Handle generate errors — structured output fallback or error mapping.
-   */
-  /**
    * Recover a structured answer that failed the output schema: salvage it, else one repair turn,
    * else salvage the repair's answer, else fall back to text extraction as before.
    *
@@ -1519,6 +1518,9 @@ export class AIProvider {
     };
   }
 
+  /**
+   * Handle generate errors — structured output fallback or error mapping.
+   */
   private handleGenerateError(
     error: unknown,
     resolved: ResolvedModel,
@@ -1689,10 +1691,6 @@ export class AIProvider {
   }
 
   /**
-   * Build top-level providerOptions for generateText().
-   * Dispatches to provider-specific builders.
-   */
-  /**
    * Provider-specific option builders. New providers add an entry here
    * instead of adding a new if-branch to buildProviderOptions.
    */
@@ -1778,6 +1776,10 @@ export class AIProvider {
 
   private readonly dataCollectionNoticeShown = new Set<string>();
 
+  /**
+   * Build top-level providerOptions for generateText().
+   * Dispatches to provider-specific builders.
+   */
   private buildProviderOptions(
     resolved: ResolvedModel,
     userOptions?: ProviderOptions,
@@ -2352,9 +2354,6 @@ export class AIProvider {
    * watch the UNIFIED usage shape rather than provider metadata, which is a different
    * instrument, not a tuning of this one.
    *
-   * (This block previously claimed both "fixed" and "recorded as a decision to make" about
-   * the same live code. Both halves were true of different providers; neither said so.)
-   *
    * SCOPE WIDENED 2026-08-24. It also now reports providers that are present in the
    * payload but have NO entry in the table at all — the `ai.additionalProviders`
    * population. Those were previously invisible to it, because it iterated the table
@@ -2444,7 +2443,7 @@ export class AIProvider {
     // SDK-standard path uses. These four tiers previously assigned raw. mapUsage's own
     // doc states the rule — "Provider payloads are EXTERNAL data; `?? 0` reads like a
     // numeric guarantee and is not one" — and enforced it only on the primary path, while
-    // these tiers ARE the legacy/unknown-provider fallback route this release exists to
+    // these tiers ARE the legacy/unknown-provider fallback route 0.42.0 exists to
     // correct. Measured: `cacheReadInputTokens: -5000` against 10,000 reported input
     // produced input_tokens 15,000 (a 50% inflation) and $0.0435 against a true $0.030 —
     // finite the whole way, so both sumCostUsd's and sumTokenMetrics' finiteness guards
@@ -2467,7 +2466,7 @@ export class AIProvider {
     if (!meta) return;
     base.cached_input_tokens ??= optionalTokenCount(meta.cachedPromptTokens);
     // optionalTokenCount, not `|| undefined`: the latter maps a genuine reported 0 to
-    // "not reported", which is the absent-vs-zero conflation this release corrects,
+    // "not reported", which is the absent-vs-zero conflation 0.42.0 corrects,
     // pointing the other way.
     base.reasoning_tokens ??= optionalTokenCount(meta.reasoningTokens);
   }
@@ -2524,10 +2523,6 @@ export class AIProvider {
     }
   }
 
-  /**
-   * Map AI SDK errors to sdk-core error types.
-   * AI SDK normalizes all provider errors to APICallError with statusCode.
-   */
   /**
    * Map a provider APICallError to the sdk-core error type its status implies.
    * Extracted from mapError so that method reads as a dispatch table rather than
@@ -2655,6 +2650,10 @@ export class AIProvider {
     return mapped;
   }
 
+  /**
+   * Map AI SDK errors to sdk-core error types.
+   * AI SDK normalizes all provider errors to APICallError with statusCode.
+   */
   private mapError(
     error: unknown,
     timeoutMs?: number,
@@ -2771,13 +2770,11 @@ function mergeAbortSignals(
   // called from exactly one site in this package (the `generate()` body above), which is
   // the reason that is worth stating.
   //
-  // The stronger sentence that stood here — "there is no reachable path that installs
-  // none" — was an unconditional reachability claim with nothing discharging it: no
-  // enumeration, no test asserting this is the only installer. A ship-gate review flagged
-  // it, correctly, as true of the paths someone thought to check while claiming more. The
-  // defect it replaced was invisible for the same reason: everyone believed the bound was
-  // installed. The claim is now scoped to what a reader can verify by grepping for
-  // `generateText(` in `src/`.
+  // The claim is scoped to what a reader can verify by grepping for `generateText(` in
+  // `src/`. An unconditional "there is no reachable path that installs none" would have
+  // nothing discharging it: no enumeration, no test asserting this is the only installer.
+  // The defect below was invisible for the same reason: everyone believed the bound was
+  // installed.
   //
   // This tested `options.timeoutMs ?` — truthiness — so a `0` was dropped and the request
   // ran with NO abort signal. `0` is the conventional Node spelling of "no timeout"
