@@ -6,6 +6,45 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) 
 
 ## [Unreleased]
 
+## [0.56.0] - 2026-11-01
+
+**A structured answer that fails the output schema gets one repair turn, and a JSON object with no
+verdict no longer wins extraction.** Found by the R-D12 live run (2026-11-01, specs
+`pdl-1_6_0/verification/live-rd12/RESULTS.md`): on `claude-haiku-4-5` the agent's final structured
+answer was `{"analysisRecords":[]}`. Core's json tool is not `strict`, so the provider does not enforce
+`required`. The SDK's zod parse rejected the answer, and the fallback read it as `inline_json` at 0.9
+with no decision, so the stage was ERRORED (`agent_unjudgeable`) while the agent's findings were intact.
+
+### Added
+
+- **Structured-output repair turn** (`AIProvider.repairStructuredOutput`). On a schema or parse failure
+  (`NoObjectGeneratedError`) of structured output, core replays the run's conversation with one user
+  message naming each schema issue and the tools withdrawn, once. A valid second answer becomes
+  `structuredOutput`. Usage and cost cover both requests. A cancellation or a provider credit refusal
+  from the repair is thrown as it would be from the first request; any other repair error falls back
+  to text extraction of the first answer. No repair is attempted when no step reported the
+  conversation.
+- `AIGenerateResult.structuredOutputRepair?: { outcome: 'repaired' | 'failed'; issues: number }`.
+- Degradation markers `structured-output.repaired` and `structured-output.repair-failed` (both
+  `info`).
+
+### Changed
+
+- **A repaired run costs one more request** (behaviour change, no signature change). It is the
+  run's conversation replayed once, with no tools, so its input is about the size of the run's last
+  step.
+
+### Fixed
+
+- **`OutputExtractor`: a JSON object carrying neither a decision nor a score no longer wins its
+  rung** (semantics change on `extractWithMetadata`'s result). Until now any parseable object won, so
+  the text rung never ran. Such an object is now a candidate. The structured-text rung reads the prose
+  **outside** its span (patterns like `status: x` would otherwise match text inside the JSON's string
+  values), and if that carries a verdict it wins at 0.5 with the JSON's other fields kept. Otherwise
+  the object is returned as before (same method and confidence), with a warning naming what is
+  missing. **Gating is unaffected:** `readAgentVerdict` reads the output envelope and the `Decision:`
+  and `Score:` lines itself. This changes the displayed and submitted decision and score only.
+
 ## [0.55.0] - 2026-10-31
 
 **PDL 1.6.0, R-D12: an absent decision at a blocking gate is ERRORED** (design spec pdl-1_6_0 v0.9.1,

@@ -1133,6 +1133,22 @@ describe('AgentExecutor', () => {
       expect(marker?.detail).toContain('step 81 of a 100-step limit');
     });
 
+    // 0.56.0 (R-D12 live, 2026-11-01). Fails on 0.55.0: no structuredOutputRepair, no marker.
+    it('a structured-output repair emits an info marker, repaired or failed, without touching completeness', async () => {
+      for (const outcome of ['repaired', 'failed'] as const) {
+        const ai = mockAIProvider({ structuredOutputRepair: { outcome, issues: 3 } });
+        const executor = new AgentExecutor(baseConfig, ai, noopLogger);
+
+        const result = await executor.execute(makeValidatorDef(), { target: tmpDir });
+
+        const code = outcome === 'repaired' ? 'structured-output.repaired' : 'structured-output.repair-failed';
+        const marker = result.degradationMarkers?.find(d => d.code === code);
+        expect(marker).toMatchObject({ phase: 'execution', severity: 'info' });
+        expect(marker?.detail).toContain('3 issues');
+        expect(result.completeness).toBe('complete');
+      }
+    });
+
     it('usage shape drift emits an info marker without touching completeness', async () => {
       const ai = mockAIProvider({ usageShapeDrift: ['anthropic'] });
       const executor = new AgentExecutor(baseConfig, ai, noopLogger);

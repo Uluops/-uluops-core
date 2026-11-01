@@ -270,7 +270,9 @@ export class OutputExtractor {
     if (!lastMatch?.[1]) return null;
     try {
       const start = lastMatch.index ?? 0;
-      return { parsed: JSON.parse(lastMatch[1].trim()) as unknown, span: [start, start + lastMatch[0].length] };
+      const span: [number, number] = [start, start + lastMatch[0].length];
+      const parsed = JSON.parse(lastMatch[1].trim()) as unknown;
+      return { parsed, span };
     } catch {
       return null;
     }

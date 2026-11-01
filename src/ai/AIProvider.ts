@@ -13,7 +13,7 @@ import {
 } from 'ai';
 import { createRequire } from 'node:module';
 import { z } from 'zod';
-import type { LanguageModelUsage } from 'ai';
+import type { LanguageModelUsage, ModelMessage } from 'ai';
 import type { ProviderOptions } from '@ai-sdk/provider-utils';
 
 /** Bound on RetryError unwrapping in mapError — real SDK chains are 1–2 deep. */
@@ -101,6 +101,10 @@ const WITHDRAW_TOOLS = { toolChoice: 'none' as const, activeTools: [] as never[]
 interface StepTotals {
   steps: number;
   toolCalls: number;
+  /** The conversation so far, as the SDK's last finished step reported it (a deep clone,
+   *  cumulative across steps). The structured-output repair turn replays it; absent when no
+   *  step reported one, and then no repair is attempted. */
+  responseMessages?: ModelMessage[];
   /** The step at which tools were withdrawn for the step-limit wrap-up, and the limit it served;
    *  undefined when the run never reached it. Carried here so both result paths report it. */
   stepWrapUp?: { atStep: number; maxSteps: number };
@@ -242,6 +246,32 @@ function addStepBill<T extends Pick<StepTotals, 'billedSteps' | 'billedUsd'>>(t:
   return t;
 }
 
+/**
+ * The schema issues behind a NoObjectGeneratedError, as `path: message` pairs. The SDK nests them
+ * under `cause` (a TypeValidationError), whose own `cause` is either the issues ARRAY (standard
+ * schema) or an error carrying `.issues` (zod). Walked defensively: an unknown shape yields [], and
+ * the repair note then quotes the error message instead.
+ */
+function schemaIssuesOf(error: unknown): Array<{ path: string; message: string }> {
+  let node: unknown = error;
+  for (let depth = 0; depth < 5 && node && typeof node === 'object'; depth++) {
+    const candidate = Array.isArray(node) ? node : (node as { issues?: unknown }).issues;
+    if (Array.isArray(candidate)) {
+      return candidate.flatMap((issue) => {
+        if (!issue || typeof issue !== 'object') return [];
+        const raw = (issue as { path?: unknown }).path;
+        const path = Array.isArray(raw)
+          ? raw.map(seg => (seg && typeof seg === 'object' && 'key' in seg ? String((seg as { key: unknown }).key) : String(seg))).join('.')
+          : '';
+        const message = typeof (issue as { message?: unknown }).message === 'string' ? (issue as { message: string }).message : 'invalid';
+        return [{ path, message }];
+      });
+    }
+    node = (node as { cause?: unknown }).cause;
+  }
+  return [];
+}
+
 function emptyStepTotals(): StepTotals {
   return {
     // FABRICATION-OK: accumulator SEEDS. Presence is carried by the sawUsage/sawNoCache/sawCacheRead/
@@ -360,6 +390,15 @@ export interface AIGenerateResult<TOutput = unknown> {
    *  When present, this is already validated against the schema — no extraction needed.
    *  Generic type parameter allows callers to preserve Zod schema output types. */
   structuredOutput?: TOutput;
+
+  /**
+   * Set when the model's structured answer failed the output schema and one repair turn was sent
+   * (see AIProvider.repairStructuredOutput). `repaired`: the second answer passed, and
+   * `structuredOutput` is that answer. `failed`: it did not, and the run fell back to text
+   * extraction. `issues` is how many schema issues the FIRST answer had. Absent when no repair
+   * was attempted.
+   */
+  structuredOutputRepair?: { outcome: 'repaired' | 'failed'; issues: number };
 
   /**
    * What the thinking gate did on this call (spec §3, §7.3): applied or not, and why not. Set on the
@@ -668,6 +707,10 @@ export class AIProvider {
     try {
       result = await this.executeGeneration(options, languageModel, system, providerOptions, useStructuredOutput, isReasoning, stepTotals, requestShape);
     } catch (error) {
+      const repaired = await this.repairStructuredOutput(error, {
+        options, languageModel, system, providerOptions, useStructuredOutput, isReasoning, stepTotals, requestShape, resolved, thinking,
+      });
+      if (repaired) return repaired;
       return this.handleGenerateError(error, resolved, useStructuredOutput, resolveRequestTimeoutMs(options.timeoutMs, this.config.timeout), stepTotals, options.abortSignal, thinking);
     }
     // Result ASSEMBLY gets its own try, separate from the provider call above.
@@ -739,6 +782,7 @@ export class AIProvider {
     isReasoning = false,
     stepTotals: StepTotals = emptyStepTotals(),
     thinkingShape: { maxOutputTokens?: number; headers?: Record<string, string> } = {},
+    repair?: { messages: ModelMessage[] },
   ) {
     let stepCount = 0;
     const budgetTracker = options.budgetTracker;
@@ -767,6 +811,8 @@ export class AIProvider {
     // the tools are withdrawn and the next turn is the answer. At least one step keeps its tools.
     const wrapUpAt = Math.max(1, Math.floor(maxSteps * STEP_WRAP_UP_FRACTION));
     const prepareStep = (args: { stepNumber: number; steps: Array<{ usage: { inputTokens?: number; outputTokens?: number } }> }) => {
+      // The repair turn answers from what the run already read: no tools, from its first step.
+      if (repair) return WITHDRAW_TOOLS;
       const fromBudget = budgetPrepare?.(args) ?? {};
       if (args.stepNumber >= wrapUpAt) {
         if (!stepTotals.stepWrapUp) {
@@ -784,12 +830,12 @@ export class AIProvider {
     return generateText({
       model: languageModel,
       system,
-      prompt: options.prompt,
+      ...(repair ? { messages: repair.messages } : { prompt: options.prompt }),
       tools: options.tools,
       // The OpenRouter thinking rule may raise max_tokens by the budget (spec §6.4, probe P4).
       maxOutputTokens: thinkingShape.maxOutputTokens ?? options.maxTokens ?? DEFAULT_MAX_TOKENS,
       ...(thinkingShape.headers ? { headers: thinkingShape.headers } : {}),
-      stopWhen: stepCountIs(maxSteps + (useStructuredOutput ? 2 : 0)),
+      stopWhen: stepCountIs(repair ? 3 : maxSteps + (useStructuredOutput ? 2 : 0)),
       ...(isReasoning ? {} : { temperature: options.temperature ?? DEFAULT_TEMPERATURE }),
       maxRetries: options.maxRetries,
       // EXTERNAL-OK: both arguments are resolved by `resolveRequestTimeoutMs` — a seam
@@ -807,6 +853,9 @@ export class AIProvider {
         // then pass a partial sum as complete (1c crew: code-auditor F2).
         stepTotals.steps += 1;
         stepCount++;
+        // The cumulative conversation, kept for the structured-output repair turn. A plain read of
+        // a field the SDK always sets (a structuredClone), so it cannot throw ahead of the counters.
+        if (step.response?.messages) stepTotals.responseMessages = step.response.messages as ModelMessage[];
         // EXTERNAL-OK: reads a COUNT or an enum off the SDK result, not a priced quantity. An array length and a
     // finishReason string carry no money and no threshold.
         const toolNames = step.toolCalls?.map(tc => tc.toolName) ?? [];
@@ -1039,6 +1088,118 @@ export class AIProvider {
   /**
    * Handle generate errors — structured output fallback or error mapping.
    */
+  /**
+   * One corrective turn when the model's structured answer fails the output schema.
+   *
+   * WHY: on Claude, structured output goes through a json TOOL (`structuredOutputMode: 'jsonTool'`,
+   * buildAnthropicOptions), and that tool is not `strict`, so the provider does not enforce the
+   * schema's `required` list. Native enforcement is not available at this schema size: with the
+   * filesystem tools it answers HTTP 400 "The compiled grammar is too large" (live, 2026-11-01,
+   * claude-haiku-4-5, `output_config.format`). The SDK's zod parse is the first check, and it
+   * runs after the answer. In the R-D12 live run Haiku filled one optional field and none of the
+   * three required ones in three of three answers, so the verdict was lost while the findings
+   * were not.
+   *
+   * The repair replays the run's own conversation (so the model answers from what it read, not
+   * from nothing), adds one user message listing the schema issues, and withdraws the tools.
+   * It is attempted once, only for a schema or parse failure (NoObjectGeneratedError), and only
+   * when a step reported the conversation. Its usage accumulates into the same StepTotals, so the
+   * result reports both calls. Returns undefined when no repair was attempted, so the caller's
+   * existing error handling runs unchanged.
+   *
+   * A repair that fails the schema again falls back to text extraction, as before, reading the
+   * repair's text when it has any (it is the later and more complete answer). A repair that
+   * fails for another reason also falls back, with a warning, EXCEPT a cancellation or a
+   * provider credit refusal, which go to handleGenerateError and are thrown, as they would be
+   * on the first call.
+   */
+  private async repairStructuredOutput(
+    error: unknown,
+    ctx: {
+      options: AIGenerateOptions;
+      languageModel: Parameters<AIProvider['executeGeneration']>[1];
+      system: Parameters<AIProvider['executeGeneration']>[2];
+      providerOptions: Parameters<AIProvider['executeGeneration']>[3];
+      useStructuredOutput: boolean;
+      isReasoning: boolean;
+      stepTotals: StepTotals;
+      requestShape: { maxOutputTokens?: number; headers?: Record<string, string> };
+      resolved: ResolvedModel;
+      thinking: ThinkingOutcome;
+    },
+  ): Promise<AIGenerateResult | undefined> {
+    const { options, stepTotals, resolved, thinking } = ctx;
+    if (!ctx.useStructuredOutput || !NoObjectGeneratedError.isInstance(error)) return undefined;
+    const history = stepTotals.responseMessages;
+    if (!history || history.length === 0 || options.abortSignal?.aborted) return undefined;
+
+    const issues = schemaIssuesOf(error);
+    const fields = [...new Set(issues.map(i => i.path).filter(p => p !== ''))];
+    const listed = issues.length > 0
+      ? issues.slice(0, 12).map(i => `- ${i.path === '' ? '(top level)' : i.path}: ${i.message}`).join('\n')
+      : `- ${error.message}`;
+    const note = [
+      'Your final answer did not match the required output format, so it could not be read:',
+      listed,
+      '',
+      'Do not call any more tools. Using what you have already read and found, give your final answer '
+        + 'again as one complete object that matches the required format'
+        + (fields.length > 0 ? `, including ${fields.join(', ')}` : '')
+        + '. Keep the findings you already reported.',
+    ].join('\n');
+    this.logger.warn(
+      `Structured output failed the schema (${issues.length} issue${issues.length === 1 ? '' : 's'}`
+      + `${fields.length > 0 ? `: ${fields.join(', ')}` : ''}) — sending one repair turn.`,
+    );
+
+    const timeoutMs = resolveRequestTimeoutMs(options.timeoutMs, this.config.timeout);
+    let repairResult;
+    try {
+      repairResult = await this.executeGeneration(
+        options, ctx.languageModel, ctx.system, ctx.providerOptions, true, ctx.isReasoning, stepTotals, ctx.requestShape,
+        { messages: [{ role: 'user', content: options.prompt }, ...history, { role: 'user', content: note }] },
+      );
+    } catch (repairError) {
+      if (NoObjectGeneratedError.isInstance(repairError) || NoOutputGeneratedError.isInstance(repairError)) {
+        const text = NoObjectGeneratedError.isInstance(repairError) && repairError.text ? repairError.text : (error.text ?? '');
+        this.logger.warn('The repair turn did not produce a valid object either — falling back to text extraction.');
+        return {
+          ...this.buildFallbackResult(resolved, text, stepTotals, error.finishReason ?? 'error'),
+          structuredOutputRepair: { outcome: 'failed', issues: issues.length },
+          thinking,
+        };
+      }
+      const mapped = this.mapError(repairError, timeoutMs, resolved, options.abortSignal);
+      if (options.abortSignal?.aborted || mapped instanceof ProviderCreditError) {
+        return this.handleGenerateError(repairError, resolved, true, timeoutMs, stepTotals, options.abortSignal, thinking);
+      }
+      this.logger.warn(`The repair turn failed (${formatErrorMessage(repairError)}) — falling back to text extraction of the first answer.`);
+      return {
+        ...this.buildFallbackResult(resolved, error.text ?? '', stepTotals, error.finishReason ?? 'error'),
+        structuredOutputRepair: { outcome: 'failed', issues: issues.length },
+        thinking,
+      };
+    }
+    // Built from StepTotals, like a fallback: the totals hold BOTH calls, where the repair's own
+    // result.usage would report only the second.
+    const finishReason = repairResult.finishReason;
+    let structured: unknown;
+    try {
+      structured = finishReason === 'stop' ? repairResult.output : undefined;
+    } catch {
+      structured = undefined;
+    }
+    this.logger.info(structured === undefined
+      ? `The repair turn finished (${finishReason}) without an object — falling back to text extraction.`
+      : 'The repair turn produced a valid object.');
+    return {
+      ...this.buildFallbackResult(resolved, repairResult.text || (error.text ?? ''), stepTotals, finishReason),
+      structuredOutput: structured,
+      structuredOutputRepair: { outcome: structured === undefined ? 'failed' : 'repaired', issues: issues.length },
+      thinking,
+    };
+  }
+
   /**
    * The degraded-but-usable result returned when structured output could not be
    * produced and the run falls back to text extraction. Shared by both fallback

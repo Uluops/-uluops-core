@@ -1,6 +1,6 @@
 {
   "counts": {
-    "public-api-arg": 31,
+    "public-api-arg": 32,
     "ai-sdk-response": 38,
     "dynamic-import": 1,
     "service-response": 28,
@@ -39,6 +39,7 @@
     "src/ai/AIProvider.ts|public-api-arg|budget: this.config.defaultThinkingBudget,",
     "src/ai/AIProvider.ts|public-api-arg|const budget = usableBudget(this.config.contextBudget) ?? DEFAULT_CONTEXT_BUDGET;",
     "src/ai/AIProvider.ts|public-api-arg|const mapped = new TimeoutError(resolveRequestTimeoutMs(timeoutMs, this.config.timeout));",
+    "src/ai/AIProvider.ts|public-api-arg|const timeoutMs = resolveRequestTimeoutMs(options.timeoutMs, this.config.timeout);",
     "src/ai/AIProvider.ts|public-api-arg|return this.handleGenerateError(error, resolved, useStructuredOutput, resolveRequestTimeoutMs(options.timeoutMs, this.config.timeout), stepTotals, options.abortSignal, thinking);",
     "src/ai/AIProvider.ts|public-api-arg|return this.handleGenerateError(error, resolved, useStructuredOutput, resolveRequestTimeoutMs(options.timeoutMs, this.config.timeout), stepTotals, options.abortSignal, thinking);#2",
     "src/ai/AIProvider.ts|public-api-arg|this.concurrencyLimiter = new Semaphore(config.maxConcurrency ?? DEFAULT_MAX_CONCURRENCY);",
@@ -143,8 +144,8 @@
     "src/executor/upstreamContext.ts|process-env|const v = process.env[UPSTREAM_KILL_SWITCH_ENV];",
     "src/parser/OutputExtractor.ts|json-parse|const parsed = JSON.parse(jsonStr);",
     "src/parser/OutputExtractor.ts|json-parse|const parsed = JSON.parse(jsonStr);#2",
+    "src/parser/OutputExtractor.ts|json-parse|const parsed = JSON.parse(lastMatch[1].trim()) as unknown;",
     "src/parser/OutputExtractor.ts|json-parse|const parsed = JSON.parse(trimmed);",
-    "src/parser/OutputExtractor.ts|json-parse|return JSON.parse(lastMatch[1].trim()) as unknown;",
     "src/parser/OutputNormalizer.ts|string-to-number|if (typeof s === 'string' && s.trim() !== '' && !isNaN(Number(s))) return { value: s, source: at };",
     "src/registry/RegistryClient.ts|authored-yaml|parsed = yaml.parse(yamlContent);",
     "src/registry/RegistryClient.ts|public-api-arg|timeout: config.timeout,",

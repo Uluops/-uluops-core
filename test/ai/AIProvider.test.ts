@@ -6,7 +6,8 @@ import { TokenBudgetTracker } from '../../src/ai/TokenBudgetTracker.js';
 import type { ModelCatalog, ResolvedModel } from '../../src/ai/ModelCatalog.js';
 import type { ResolvedConfig } from '../../src/types/config.js';
 import type { Logger } from '@uluops/sdk-core';
-import { APICallError, RetryError, NoOutputGeneratedError, NoObjectGeneratedError } from 'ai';
+import { APICallError, RetryError, NoOutputGeneratedError, NoObjectGeneratedError, TypeValidationError } from 'ai';
+import { agentOutputSchema } from '../../src/parser/outputSchemas.js';
 import {
   RateLimitError,
   UnauthorizedError,
@@ -3431,5 +3432,127 @@ describe('AIProvider — provider 402 (OpenRouter 1d)', () => {
       unregisterRunTrip(signal);
     }
     expect(trip).not.toHaveBeenCalled();
+  });
+});
+
+describe('AIProvider — one repair turn when the structured answer fails the schema (R-D12 live, 2026-11-01)', () => {
+  // Under jsonTool mode the json tool is not `strict`, so `required` is not enforced by the provider.
+  // Haiku's live answer was `{"analysisRecords":[]}`: the SDK's zod parse rejected it and the verdict
+  // was lost. These pin the repair: replay the conversation, name the issues, withdraw the tools.
+  beforeEach(async () => {
+    vi.clearAllMocks();
+    const { generateText } = await import('ai');
+    vi.mocked(generateText).mockReset();
+  });
+
+  const structuredCatalog = () => mockCatalog({
+    resolve: vi.fn().mockResolvedValue(
+      makeResolvedModel({
+        capabilities: { tools: true, vision: true, streaming: true, extendedThinking: false, structuredOutput: true } as never,
+        cost: { input: 3, output: 15 },
+      } as never),
+    ),
+  } as never);
+
+  const history = [
+    { role: 'assistant', content: [{ type: 'tool-call', toolCallId: 't1', toolName: 'read_file', input: { path: 'math.ts' } }] },
+    { role: 'tool', content: [{ type: 'tool-result', toolCallId: 't1', toolName: 'read_file', output: { type: 'text', value: 'code' } }] },
+    { role: 'assistant', content: [{ type: 'text', text: '{"analysisRecords":[]}' }] },
+  ];
+  const usage = { inputTokens: 1_000, outputTokens: 100 };
+
+  /** The first call: two steps that report the conversation, then the real schema failure. */
+  const failFirstCall = async (withMessages = true) => {
+    const { generateText } = await import('ai');
+    const value = { analysisRecords: [] };
+    const zodError = agentOutputSchema.safeParse(value).error;
+    vi.mocked(generateText).mockImplementationOnce((async (opts: unknown) => {
+      const o = opts as { onStepFinish?: (s: unknown) => void };
+      o.onStepFinish?.({ finishReason: 'tool-calls', text: '', toolCalls: [{ toolName: 'read_file' }], usage, ...(withMessages ? { response: { messages: history.slice(0, 2) } } : {}) });
+      o.onStepFinish?.({ finishReason: 'stop', text: '{"analysisRecords":[]}', toolCalls: [], usage, ...(withMessages ? { response: { messages: history } } : {}) });
+      throw new NoObjectGeneratedError({
+        message: 'No object generated: response did not match schema.',
+        cause: TypeValidationError.wrap({ value, cause: zodError }),
+        text: '{"analysisRecords":[]}',
+        finishReason: 'stop',
+      } as never);
+    }) as never);
+  };
+
+  const run = () => new AIProvider(mockConfig, structuredCatalog(), noopLogger).generate({
+    model: 'haiku', system: 's', prompt: 'review ./target', tools: { read_file: {} } as never,
+    output: { type: 'output-object', schema: {} } as never,
+  });
+
+  it('replays the conversation with the issues named, withdraws the tools, and returns the repaired object', async () => {
+    await failFirstCall();
+    const { generateText } = await import('ai');
+    const repaired = { decision: 'FAIL', score: 41, maxScore: 100, analysisRecords: [] };
+    let repairOpts: Record<string, unknown> | undefined;
+    vi.mocked(generateText).mockImplementationOnce((async (opts: unknown) => {
+      repairOpts = opts as Record<string, unknown>;
+      (opts as { onStepFinish?: (s: unknown) => void }).onStepFinish?.({ finishReason: 'stop', text: JSON.stringify(repaired), toolCalls: [], usage });
+      return { finishReason: 'stop', text: JSON.stringify(repaired), output: repaired, steps: [{}], usage, totalUsage: usage };
+    }) as never);
+
+    const result = await run();
+
+    expect(generateText).toHaveBeenCalledTimes(2);
+    const messages = repairOpts!['messages'] as Array<{ role: string; content: unknown }>;
+    expect(repairOpts!['prompt']).toBeUndefined();
+    expect(messages[0]).toEqual({ role: 'user', content: 'review ./target' });
+    expect(messages.slice(1, 4)).toEqual(history);
+    const note = messages[4]!;
+    expect(note.role).toBe('user');
+    for (const field of ['decision', 'score', 'maxScore']) expect(String(note.content)).toContain(field);
+    const prepare = repairOpts!['prepareStep'] as (a: unknown) => unknown;
+    expect(prepare({ stepNumber: 0, steps: [] })).toMatchObject({ activeTools: [] });
+
+    expect(result.structuredOutput).toEqual(repaired);
+    expect(result.structuredOutputRepair).toEqual({ outcome: 'repaired', issues: 3 });
+    // Both calls are reported: 3 steps, 3x the per-step usage.
+    expect(result.steps).toBe(3);
+    expect(result.usage.output_tokens).toBe(300);
+  });
+
+  it('falls back to the repair text when the second answer fails the schema too', async () => {
+    await failFirstCall();
+    const { generateText } = await import('ai');
+    vi.mocked(generateText).mockRejectedValueOnce(new NoObjectGeneratedError({
+      message: 'No object generated: response did not match schema.', text: '{"categories":[]}', finishReason: 'stop',
+    } as never));
+    const result = await run();
+    expect(result.structuredOutput).toBeUndefined();
+    expect(result.text).toBe('{"categories":[]}');
+    expect(result.structuredOutputRepair).toEqual({ outcome: 'failed', issues: 3 });
+  });
+
+  it('does not repair when no step reported the conversation', async () => {
+    await failFirstCall(false);
+    const { generateText } = await import('ai');
+    const result = await run();
+    expect(generateText).toHaveBeenCalledTimes(1);
+    expect(result.text).toBe('{"analysisRecords":[]}');
+    expect(result.structuredOutputRepair).toBeUndefined();
+  });
+
+  it('falls back to the first answer, without throwing, when the repair call fails for another reason', async () => {
+    await failFirstCall();
+    const { generateText } = await import('ai');
+    vi.mocked(generateText).mockRejectedValueOnce(makeApiCallError('overloaded', 529) as never);
+    const result = await run();
+    expect(result.text).toBe('{"analysisRecords":[]}');
+    expect(result.structuredOutputRepair).toEqual({ outcome: 'failed', issues: 3 });
+  });
+
+  it('throws a provider credit refusal from the repair call, as it would from the first', async () => {
+    await failFirstCall();
+    const { generateText } = await import('ai');
+    vi.mocked(generateText).mockRejectedValueOnce(new APICallError({
+      message: 'can only afford 10', url: 'u', requestBodyValues: {}, statusCode: 402,
+      data: { error: { code: 402, message: 'x' } },
+    }) as never);
+    const err = await run().then(() => null, (e: unknown) => e);
+    expect(err).toBeInstanceOf(ProviderCreditError);
   });
 });
