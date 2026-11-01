@@ -112,7 +112,7 @@ export class UluOpsClient {
    * // With overrides and an integrity pin:
    * await client.runAgent('security-analyst', { target: './src' }, {
    *   model: 'opus',
-   *   expectedHash: 'sha256-…',
+   *   expectedHash: 'sha256:…',
    * });
    * ```
    */

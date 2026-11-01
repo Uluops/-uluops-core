@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest';
-import { crashPlaceholder } from '../../src/utils/crashPlaceholder.js';
+import { crashPlaceholder, toCommandRecord, abortedPlaceholder, withDeadlineMark } from '../../src/utils/crashPlaceholder.js';
 import { MaxStepsExhaustedError } from '../../src/errors/index.js';
 
 /**
@@ -80,5 +80,20 @@ describe('crashPlaceholder — one construction, all classification fields stamp
     // it is a parameter with a default rather than a literal hardcoded at three sites.
     expect(crashPlaceholder('a@1', new Error('x')).agentType).toBe('validator');
     expect(crashPlaceholder('a@1', new Error('x'), { agentType: 'generator' }).agentType).toBe('generator');
+  });
+});
+
+// 0.56.0 fold (consumer-validate run #123). Fails on 625f776: a command record built from a crash
+// carried the critical stop mark but no completeness, so it read as complete by absence.
+describe('toCommandRecord — a crash record keeps its completeness', () => {
+  it('a stopped (aborted) record becomes a failed command record', () => {
+    const rec = toCommandRecord(abortedPlaceholder('a@1.0.0', new Error('stopped')));
+    expect(rec.degradationMarkers?.map(m => m.code)).toEqual(['execution.run-stopped']);
+    expect(rec.completeness).toBe('failed');
+  });
+
+  it('a deadline-marked crash record becomes a failed command record', () => {
+    const rec = toCommandRecord(withDeadlineMark(crashPlaceholder('a@1.0.0', new Error('deadline'))));
+    expect(rec.completeness).toBe('failed');
   });
 });

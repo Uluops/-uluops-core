@@ -115,7 +115,7 @@ The `@uluops/core` SDK provides:
 - **Filesystem Sandboxing** - ToolHandler restricts LLM file access to the target directory with symlink-aware path validation
 - **Content-Addressed Integrity Verification** - Registry-resolved definitions carry a SHA-256 YAML content hash (`sha256:…`) and, for agents/commands, a `promptHash` over the frozen rendered prompt. Hashing uses the shared `@uluops/sdk-core` implementation, so the client and registry hash identically. Remote resolution executes the **frozen `runtimeMd`** the `promptHash` certifies (not a live re-render). Callers can pin `expectedHash`/`expectedPromptHash` (from a trusted channel) on `resolve()`/`ExecutionOptions`; pins are verified **fail-closed** on every resolve path (cache/local/remote) and a mismatch throws `IntegrityError`. Verification is opt-in — unpinned resolves behave as before. See [Integrity Verification](#integrity-verification).
 - **Universal Agent Output** - Single `agentOutputSchema` with categories + artifacts for all 6 agent types (validator, executor, analyst, generator, explorer, forecaster)
-- **Structured Output Extraction** - 4-strategy fallback: AI SDK structured output > JSON code fence > inline JSON > regex text parsing. A JSON object that carries no decision and no score does not win its rung: the text rung reads the prose outside it (0.56.0). When a structured answer fails the output schema it is salvaged or repaired before falling back (see *Structured-output recovery* below)
+- **Structured Output Extraction** - 4-strategy fallback: AI SDK structured output > JSON code fence > inline JSON > regex text parsing. When a structured answer fails the output schema it is salvaged or repaired before falling back (see *Structured-output recovery* below)
 - **Result Tracking** - Automatic submission of every run's findings to the tracker: issue correlation by fingerprint, regression detection, per-agent execution recording, and analytics
 - **Analysis Summary Extraction** - Automatic extraction of category scores, cognitive system metrics, epistemic assessments, and exploration maps from agent results at submission time. Execution telemetry (tokens, model, duration) travels first-class on `agents[]`, never inside analysis data
 - **Local Development Support** - Load definitions from local YAML files with registry fallback
@@ -337,14 +337,14 @@ if (result.completeness !== 'complete') {
 - **`completeness`**: `'complete' | 'partial' | 'failed'`, derived from degradation markers (any `critical` ⇒ `failed`; any `degraded` ⇒ `partial`; else `complete`). Absent ⇒ treat as `complete`. **`PASS` + `partial` is a legitimate, gate-satisfying pass** (decided 2026-07-10, recorded in `types/degradation.ts`): the agent passed the scope it could cover — forced wrap-up and context eviction are normal operation on large repos. Gates never downgrade on completeness; consumers that care about evidence span read `completeness` alongside the decision.
 - **`degradationMarkers`**: typed `{ code, phase, severity, detail? }[]`. `code` is the stable contract (e.g. `budget.forced-wrap-up`, `steps.forced-wrap-up`, `context.evicted`, `steps.near-exhaustion`, `extraction.low-confidence`, `usage.provider-metadata-shape-drift`, `provider.warnings`, `model.unregistered-defaults`, `tools.shell-schema-fallback`, `render.raw-yaml-fallback`, `structured-output.repaired`, `structured-output.salvaged`, `structured-output.repair-failed`); `detail` is human-only — never match on it. `phase` is `'resolution' | 'execution'`.
 
-- **On a command result** (`runCommand`, a command-ref pipeline stage, a workflow phase's commands),
-  the agents' own markers and completeness live on **`agentResults`**, the agent results the command ran
-  (0.56.0). The command's `completeness` is the worst among them and its own markers. Its
-  `degradationMarkers` carry only core's stop marks (`execution.run-stopped` and siblings), never an
-  agent's. Until 0.56.0 a command dropped its agents' results, so none of this was visible and command
-  runs submitted no analysis data. Tracker rows for a command are now one per agent, under the agent's
-  own name and version. Gating does not read `agentResults`: a ref stage is judged by the command's
-  decision (PDL D9).
+- **On a command result** (`runCommand`, a command-ref pipeline stage, a workflow phase's command and
+  agent steps), the agents' own markers and completeness live on **`agentResults`**, the agent results
+  the command ran (0.56.0). The command's `completeness` is the worst among them and its own markers.
+  Its `degradationMarkers` carry only core's stop marks (`execution.run-stopped` and siblings), never
+  an agent's. The same worst-of rule gives an inline-agents stage's `result.completeness`, and a
+  stopped or deadline-marked crash record reads `failed`. Tracker rows for a command are one per agent,
+  under the agent's own name and version. Gating does not read `agentResults`: a ref stage is judged by
+  the command's decision (PDL D9).
 
   > **`budget.forced-wrap-up` and `steps.forced-wrap-up`** mean the tools were withdrawn before
   > the agent finished exploring: the context budget crossed 80%, or the run reached 80% of its
@@ -353,7 +353,7 @@ if (result.completeness !== 'complete') {
   > From 0.42.0 to 0.53.x it set only `toolChoice: 'none'`, which that path overrides, so the
   > brake did nothing there and the run carried `budget.brake-inert` instead; that marker now
   > means only that the configured `contextBudget` was not a usable number.
-- The engine *observes* completeness from how the run actually executed; agents never self-report it. `deriveCompleteness(markers)` is exported if you want to recompute it.
+- The engine *observes* completeness from how the run actually executed; agents never self-report it. `deriveCompleteness(markers)` is exported to recompute an agent result's. A container's (a `CommandResult`, a stage result) is the worst of its agents' and its own markers', so recompute it from `agentResults`.
 - **`decisionCategory`**: the vocabulary-resolved category of `decision` (`'positive' | 'negative' | 'conditional' | 'neutral'`), stamped on every result. For custom-vocabulary agents (cognitive lens agents, WDL-remapped workflow decisions) gate on this — or on `resolveDecisionCategory(result)` — instead of the raw decision string. See [Decision Classification](#decision-classification).
 - `degradations: string[]` is the deprecated legacy alias (resolution-phase strings only), retained for compatibility — prefer `degradationMarkers`.
 
@@ -745,11 +745,14 @@ When the SDK rejects the answer, core tries, in order:
    names the fields). Live, Haiku's first answer held the findings and its repair answer usually
    dropped them. The verdict always comes from the repair answer.
 3. **Fallback.** Otherwise the run falls back to text extraction as before
-   (`structured-output.repair-failed`, `info`; the `extraction.*` markers carry any loss).
+   (`structured-output.repair-failed`, `info`; the `extraction.*` markers carry any loss). This
+   includes the case where no repair turn was possible because the provider reported no
+   conversation (`repairTurn: false`).
 
 `AIGenerateResult.structuredOutputRepair` records the outcome, whether a repair turn was sent, and each
 salvage action. The repair is attempted once, only for a schema or parse failure, and only when the
-provider reported the conversation. A cancellation or a provider credit refusal during the repair is
+provider reported the conversation. `salvageStructuredObject` and `carryOverOptional` are internal;
+the `SalvageAction` type is exported. A cancellation or a provider credit refusal during the repair is
 thrown, as on the first request; any other repair error falls back. The repair request does not feed
 the context-budget tracker, because withdrawing the tools shrinks its input and the tracker would
 read that as an eviction.
@@ -934,7 +937,7 @@ import {
   DEFAULT_PASS_THRESHOLD,  // 75    — default validator pass threshold
   DEFAULT_WARN_THRESHOLD,  // 50    — default warn threshold
   DEFAULT_GATE_THRESHOLD,  // 70    — default workflow phase gate
-  DEFAULT_MAX_STEPS,       // 50    — default tool-loop step ceiling
+  DEFAULT_MAX_STEPS,       // 100   — default tool-loop step ceiling
   DEFAULT_MAX_TOKENS,      // 16384 — default output tokens per generation call
   DEFAULT_TEMPERATURE,     // 0     — default sampling temperature (omitted for reasoning models)
   STARTER_DEFINITIONS_DIR, // bundled starter definitions directory (offline quick start)
@@ -1506,7 +1509,8 @@ try {
       timeoutMs: 600_000,
     });
   } else if (error instanceof RateLimitError) {
-    // Back off and retry — the SDK does not auto-retry rate limits
+    // Thrown after the AI SDK's own retries (`maxRetries`, default 2, exponential backoff) are spent:
+    // back off longer before retrying
     await new Promise(r => setTimeout(r, 5000));
   } else if (error instanceof NetworkError) {
     // Check ULUOPS_REGISTRY_URL and ULUOPS_SUBMISSION_URL environment variables

@@ -6,8 +6,7 @@ import type { CommandDefinition } from '../types/command.js';
 import type { ExecutionInput, Recommendation, SubscriptionTier } from '../types/execution.js';
 import type { CommandResult, CommandMetrics } from '../types/command.js';
 import type { AgentResult } from '../types/agent.js';
-import type { Completeness, DegradationMarker } from '../types/degradation.js';
-import { deriveCompleteness } from './degradationMarkers.js';
+import { containerCompleteness } from './degradationMarkers.js';
 import { ExecutionError } from '../errors/index.js';
 import type { Logger } from '@uluops/sdk-core';
 import { parseRef } from '../utils/parseRef.js';
@@ -347,7 +346,7 @@ export class CommandExecutor {
       // The agent result itself, so its markers, completeness, verdict and raw output reach
       // submission (0.56.0; dropped until then). Gating still reads the fields above (PDL D9).
       agentResults: [agentResult],
-      ...(agentResult.completeness ? { completeness: agentResult.completeness } : {}),
+      ...containerCompleteness([agentResult], undefined),
     };
   }
 
@@ -476,17 +475,7 @@ export class CommandExecutor {
       metrics,
       ...(markers ? { degradationMarkers: markers } : {}),
       agentResults: results,
-      ...completenessOf(results, markers),
+      ...containerCompleteness(results, markers),
     };
   }
-}
-
-const COMPLETENESS_RANK: Record<Completeness, number> = { complete: 0, partial: 1, failed: 2 };
-
-/** The worst completeness among the children and the container's own markers; absent when neither says. */
-function completenessOf(children: AgentResult[], markers: DegradationMarker[] | undefined): { completeness?: Completeness } {
-  const values = children.map(r => r.completeness).filter((c): c is Completeness => c !== undefined);
-  if (markers && markers.length > 0) values.push(deriveCompleteness(markers));
-  if (values.length === 0) return {};
-  return { completeness: values.reduce((a, b) => (COMPLETENESS_RANK[b] > COMPLETENESS_RANK[a] ? b : a)) };
 }

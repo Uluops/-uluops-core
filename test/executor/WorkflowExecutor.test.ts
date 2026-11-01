@@ -2247,3 +2247,34 @@ describe('WorkflowExecutor — thrown-workflow partial cost is never a partial s
     expect(build([priced]).metrics).toMatchObject({ costBasis: 'estimated', costUsdTotal: 0.25 });
   });
 });
+
+// 0.56.0 fold (consumer-validate run #123, wittgenstein CGC-3). Fails on 625f776: WorkflowExecutor's
+// thin wrapper carried neither agentResults nor completeness, so a workflow agent step submitted no
+// analysis data and read as complete whatever its markers said.
+describe('WorkflowExecutor — an agent step carries the agent it ran', () => {
+  it('phase command for an agent step has agentResults and the agent\'s completeness', async () => {
+    const agent = makeValidatorResult({ name: 'agent-only', score: 77, decision: 'PASS', decisionCategory: 'positive', completeness: 'partial' } as never);
+    const agentDef: ResolvedDefinition = {
+      type: 'agent', name: 'agent-only', version: '1.0.0', hash: 'sha256:a',
+      yaml: '', definition: {} as Partial<AgentDefinition>,
+      runtime: {} as ResolvedDefinition['runtime'], domain: 'software', agentType: 'validator',
+    };
+    const registry = {
+      resolve: vi.fn().mockImplementation((name: string, _version?: string, type?: string) => {
+        if (type === 'command') return Promise.reject(new ConfigurationError(`Definition "${name}" (command) not found in registry.`));
+        return Promise.resolve(agentDef);
+      }),
+    } as unknown as RegistryClient;
+    const executor = new WorkflowExecutor(makeCommandExecutor(), registry, makeAgentExecutor([agent]));
+    const result = await executor.execute(makeWorkflowDef({
+      orchestration: {
+        phases: [{ id: 'p', name: 'P', commands: ['agent-only'], gate: { threshold: 70, aggregate: 'average', on_fail: 'warn' } }],
+        on_failure: 'continue',
+      },
+    } as Partial<WorkflowDefinition['workflow']>), { target: '/tmp/test' });
+    const cmd = result.phases[0]!.commands[0]!;
+    expect(cmd.agentResults).toHaveLength(1);
+    expect(cmd.agentResults![0]!.name).toBe('agent-only');
+    expect(cmd.completeness).toBe('partial');
+  });
+});

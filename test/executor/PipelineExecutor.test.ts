@@ -2311,3 +2311,21 @@ describe('PipelineExecutor — a command-ref stage is judged by the command, not
     expect((result.stages[0]!.result as { agentResults?: unknown[] }).agentResults).toHaveLength(1);
   });
 });
+
+// 0.56.0 fold (consumer-validate run #123, wittgenstein CGC-3). Fails on 625f776: the inline stage
+// aggregate carried no completeness, so stage.result read as complete whatever its agents said.
+describe('PipelineExecutor — an inline-agents stage result carries the worst completeness of its agents', () => {
+  it('a partial agent makes the stage result partial', async () => {
+    const results = [
+      makeValidatorResult({ name: 'a', score: 90, completeness: 'complete' } as never),
+      makeValidatorResult({ name: 'b', score: 85, completeness: 'partial' } as never),
+    ];
+    const agentExecutor = { execute: vi.fn().mockResolvedValueOnce(results[0]).mockResolvedValueOnce(results[1]) } as unknown as AgentExecutor;
+    const executor = new PipelineExecutor(makeWorkflowExecutor(), makeCommandExecutor(), agentExecutor, makeRegistry(), noopLogger);
+    const result = await executor.execute(makePipelineDef({
+      stages: [{ id: 'panel', name: 'Panel', type: 'agents' as const, agents: [{ ref: 'a@1' }, { ref: 'b@1' }] }],
+    }), { target: '/tmp' });
+    expect(result.stages[0]!.agentResults).toHaveLength(2);
+    expect((result.stages[0]!.result as CommandResult).completeness).toBe('partial');
+  });
+});

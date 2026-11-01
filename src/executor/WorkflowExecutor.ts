@@ -21,6 +21,7 @@ import { topoGroupLevels } from '../utils/topoSort.js';
 import { parseRef } from '../utils/parseRef.js';
 import { resolveDecisionCategory, type DecisionCategory } from './classifyDecision.js';
 import { worstExtractionConfidence } from '../utils/worstExtractionConfidence.js';
+import { containerCompleteness } from './degradationMarkers.js';
 import type { Logger } from '@uluops/sdk-core';
 
 /**
@@ -662,6 +663,11 @@ export class WorkflowExecutor {
       durationMs: agent.metrics.durationMs,
       // FABRICATION-OK: summing a count of events; see CommandExecutor.
       metrics: { ...agent.metrics, toolCalls: agent.metrics.toolCallCount ?? 0 },
+      // The agent result itself, and its completeness, as CommandExecutor.wrapAgentResult carries
+      // them (0.56.0). Without these a workflow `agent:` step submitted no analysis data and read
+      // as complete whatever its markers said (consumer-validate run #123, wittgenstein CGC-3).
+      agentResults: [agent],
+      ...containerCompleteness([agent], undefined),
     } as CommandResult;
   }
 

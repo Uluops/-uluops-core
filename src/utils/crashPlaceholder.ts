@@ -4,6 +4,7 @@ import type { CommandResult } from '../types/command.js';
 import type { DegradationMarker } from '../types/degradation.js';
 import type { AgentType } from '../types/execution.js';
 import { crashMetrics } from './crashMetrics.js';
+import { containerCompleteness } from '../executor/degradationMarkers.js';
 
 /**
  * The single construction for "an agent was dispatched and did not come back".
@@ -214,6 +215,7 @@ export function isStoppedResult(r: {
  * a pipeline ref stage whose single agent was stopped.
  */
 export function toCommandRecord(agentRecord: AgentResult): CommandResult {
+  const stopMarks = agentRecord.degradationMarkers?.filter(m => m.code === RUN_STOPPED_CODE || m.code === 'execution.deadline');
   return {
     type: 'command',
     name: agentRecord.name,
@@ -228,7 +230,12 @@ export function toCommandRecord(agentRecord: AgentResult): CommandResult {
     durationMs: agentRecord.durationMs,
     // Only the stop marks — run-stopped, and a caller deadline's crash mark (run #113 L1) — the
     // field's meaning on a command (second re-check L3); stopVerdict reads both.
-    degradationMarkers: agentRecord.degradationMarkers?.filter(m => m.code === RUN_STOPPED_CODE || m.code === 'execution.deadline'),
+    degradationMarkers: stopMarks,
+    // The record's completeness by the shared container rule, over the agent record and the stop
+    // marks kept above: a stopped record (`failed`) or a deadline-marked crash (critical mark) is
+    // `failed`, not complete by absence (0.56.0 fold; consumer-validate run #123). It carries no
+    // agentResults, so its tracker row stays the command-level one.
+    ...containerCompleteness([agentRecord], stopMarks),
     // FABRICATION-OK: defaults UNDER the spread, as in stepCrashPlaceholder; a count of events.
     metrics: { toolCallCount: 0, toolCalls: 0, ...agentRecord.metrics },
   } as CommandResult;

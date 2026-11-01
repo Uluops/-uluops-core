@@ -13,7 +13,7 @@ export { SubmissionClient } from './submission/SubmissionClient.js';
 
 // ─── AI SDK Integration ───────────────────────────────────────────────────────
 export { AIProvider } from './ai/AIProvider.js';
-export type { AIGenerateResult, AIGenerateOptions } from './ai/AIProvider.js';
+export type { AIGenerateResult, AIGenerateOptions, SalvageAction } from './ai/AIProvider.js';
 export { ModelCatalog } from './ai/ModelCatalog.js';
 export type { ResolvedModel, ResolveOptions } from './ai/ModelCatalog.js';
 export { ToolAdapter } from './ai/ToolAdapter.js';

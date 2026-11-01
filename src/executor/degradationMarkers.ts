@@ -18,6 +18,25 @@ export function deriveCompleteness(markers: readonly DegradationMarker[]): Compl
   return sawDegraded ? 'partial' : 'complete';
 }
 
+const COMPLETENESS_RANK: Record<Completeness, number> = { complete: 0, partial: 1, failed: 2 };
+
+/**
+ * A container's completeness: the worst among its children's and its own markers' (`failed` >
+ * `partial` > `complete`). Returns `{}` when no child reported one and the container has no
+ * markers, so a spread leaves the field absent. One rule for every builder of a CommandResult
+ * (CommandExecutor, WorkflowExecutor, the PipelineExecutor stage aggregate, toCommandRecord). Until
+ * 0.56.0's fold, only CommandExecutor applied it, and the rest read as complete by absence.
+ */
+export function containerCompleteness(
+  children: ReadonlyArray<{ completeness?: Completeness }>,
+  markers: readonly DegradationMarker[] | undefined,
+): { completeness?: Completeness } {
+  const values = children.map(r => r.completeness).filter((c): c is Completeness => c !== undefined);
+  if (markers && markers.length > 0) values.push(deriveCompleteness(markers));
+  if (values.length === 0) return {};
+  return { completeness: values.reduce((a, b) => (COMPLETENESS_RANK[b] > COMPLETENESS_RANK[a] ? b : a)) };
+}
+
 /**
  * Mapping between legacy resolution-phase degradation strings (emitted by
  * RegistryClient) and the typed marker form. The legacy `degradations: string[]`

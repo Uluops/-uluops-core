@@ -63,3 +63,18 @@ describe('./types closes over the field types of what it exports', () => {
     expect(root.has(name)).toBe(true);
   });
 });
+
+// 0.56.0 (consumer-validate run #123). SalvageAction types AIGenerateResult.structuredOutputRepair.salvaged,
+// and AIGenerateResult is a root export, so a consumer must be able to name it from `.`. The two
+// recovery helpers are deliberately INTERNAL (Alex, 2026-11-01): the README documents the behaviour,
+// not the functions, and the CHANGELOG says so. Pinned here so neither drifts back.
+describe('the structured-output recovery surface', () => {
+  it('exports SalvageAction from the root, beside AIGenerateResult', () => {
+    expect(root.has('AIGenerateResult')).toBe(true);
+    expect(root.has('SalvageAction')).toBe(true);
+  });
+  it('keeps salvageStructuredObject and carryOverOptional internal', () => {
+    expect(root.has('salvageStructuredObject')).toBe(false);
+    expect(root.has('carryOverOptional')).toBe(false);
+  });
+});

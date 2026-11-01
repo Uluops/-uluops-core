@@ -8,8 +8,8 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) 
 
 ## [0.56.0] - 2026-11-01
 
-**Structured answers that fail the output schema are salvaged or repaired; a JSON object with no
-verdict no longer wins extraction; a command result carries the agents it ran.** Found by the R-D12
+**Structured answers that fail the output schema are salvaged or repaired, and a command result
+carries the agents it ran.** Found by the R-D12
 live runs (2026-11-01, specs `pdl-1_6_0/verification/live-rd12/RESULTS.md`, attempts 2-4, and
 `repair-sample-2026-11-01/`). On `claude-haiku-4-5` the agent's final structured answer was
 `{"analysisRecords":[]}`. Core's json tool is not `strict`, so the provider does not enforce `required`.
@@ -19,7 +19,7 @@ decision, so the stage was ERRORED (`agent_unjudgeable`) while the agent's findi
 ### Upgrade impact
 
 - **Tracker rows and analysis data for commands change** (behaviour change, no signature change). A
-  command run, a command-ref pipeline stage, and each command in a workflow phase now submit one
+  command run, a command-ref pipeline stage, and each command or agent step in a workflow phase now submit one
   `agents[]` row per agent the command ran, under that agent's own name, `definitionVersion` and
   summary. Until now they submitted one row under the COMMAND's name and version with no summary. They
   also now submit `analysis_summary` and `analysis_records` extracted from those agents, where until now
@@ -36,7 +36,7 @@ decision, so the stage was ERRORED (`agent_unjudgeable`) while the agent's findi
 
 - **Structured-output recovery** (`AIProvider.recoverStructuredOutput`), on a schema or parse failure
   (`NoObjectGeneratedError`) of structured output:
-  1. **Salvage** (`salvageStructuredObject`, exported). The answer is kept when its required fields
+  1. **Salvage** (`salvageStructuredObject`, internal). The answer is kept when its required fields
      (derived from the schema: `decision`, `score`, `maxScore` for `agentOutputSchema`) are valid. An
      optional value sent as a string encoding the expected array or object is decoded in place.
      Otherwise the smallest failing piece is dropped (the key, else the innermost array element, else
@@ -48,17 +48,20 @@ decision, so the stage was ERRORED (`agent_unjudgeable`) while the agent's findi
      `structuredOutput`; one failing only on optional content is salvaged. Usage and cost cover both
      requests. A cancellation or a provider credit refusal from the repair is thrown as it would be
      from the first request; any other repair error falls back to text extraction of the first
-     answer. No repair is attempted when no step reported the conversation. A failed repair logs its
-     answer's schema issues by path.
+     answer. No repair is attempted when no step reported the conversation; that fallback is recorded
+     too (`outcome: 'failed'`, `repairTurn: false`, marker `structured-output.repair-failed`). A failed
+     repair logs its answer's schema issues by path.
   3. Otherwise, text extraction as before.
-- **Carry-over** (`carryOverOptional`, exported). When a repair turn's answer leaves out (or salvage
+- **Carry-over** (`carryOverOptional`, internal). When a repair turn's answer leaves out (or salvage
   drops) an OPTIONAL top-level field that the first answer had in schema-valid form, the first
   answer's value is used. The verdict always comes from the repair answer, and the merged object must
   pass the whole schema. Live, Haiku's first answers carried 3-4 schema-valid `analysisRecords`, and
   the repair answer dropped them in 2 of 3 diagnostic runs and 5 of 6 sampled answers. Without this,
   the repair kept the verdict and lost the findings.
 - `AIGenerateResult.structuredOutputRepair?: { outcome: 'repaired' | 'salvaged' | 'failed'; issues;
-  repairTurn; salvaged?: { path, action: 'decoded' | 'dropped' }[]; carriedOver?: string[] }`.
+  repairTurn; salvaged?: { path, action: 'decoded' | 'dropped' }[]; carriedOver?: string[] }`, and the
+  `SalvageAction` type exported from the package root. The two recovery functions are internal: the
+  README documents the behaviour, not the functions (`test/exports-parity.test.ts` pins both).
 - Degradation markers `structured-output.repaired` (info), `structured-output.salvaged` (`degraded`
   when content was dropped and not carried back from the first answer, else `info`) and
   `structured-output.repair-failed` (info). A carry-over is named in the marker's `detail`.
@@ -66,7 +69,11 @@ decision, so the stage was ERRORED (`agent_unjudgeable`) while the agent's findi
   **`CommandResult.completeness`** (the worst among them and the command's own markers). Until now
   `CommandExecutor` rebuilt the command result from a fixed field list, dropping each agent's markers,
   completeness, verdict, `rawOutput` and `rawJson`. `CommandResult.degradationMarkers` still carries
-  only core's stop marks.
+  only core's stop marks. All four builders of a command result now apply one rule
+  (`containerCompleteness`): `CommandExecutor`, `WorkflowExecutor`'s agent-step wrapper (which also
+  carries `agentResults` now), the inline pipeline-stage aggregate (`stage.result.completeness`), and
+  `toCommandRecord` (a stopped or deadline-marked record reads `failed`). Until the fold only the first
+  applied it, and the others read as complete by absence (consumer-validate run #123).
 
 ### Changed
 
@@ -80,14 +87,23 @@ decision, so the stage was ERRORED (`agent_unjudgeable`) while the agent's findi
 
 ### Fixed
 
-- **`OutputExtractor`: a JSON object carrying neither a decision nor a score no longer wins its
-  rung** (semantics change on `extractWithMetadata`'s result). Until now any parseable object won, so
-  the text rung never ran. Such an object is now a candidate. The structured-text rung reads the prose
-  **outside** its span (patterns like `status: x` would otherwise match text inside the JSON's string
-  values), and if that carries a verdict it wins at 0.5 with the JSON's other fields kept. Otherwise
-  the object is returned as before (same method and confidence), with a warning naming what is
-  missing. **Gating is unaffected:** `readAgentVerdict` reads the output envelope and the `Decision:`
-  and `Score:` lines itself. This changes the displayed and submitted decision and score only.
+- README: `DEFAULT_MAX_STEPS` is 100, not 50. The rate-limit example said the SDK does not retry rate
+  limits; a `RateLimitError` is thrown after the AI SDK's own `maxRetries`. The `runAgent` JSDoc example
+  pinned `expectedHash: 'sha256-…'`; the format is `sha256:…`, and the old one could never match.
+- `agentVerdict.ts` called structured output "provider-enforced". On Claude it is checked by the AI
+  SDK's zod parse after the answer, possibly after salvage or carry-over (comment only).
+
+### Design Notes
+
+- **An extractor fall-through was built for 0.56.0 and reverted before release.** It stopped a JSON
+  object with no decision and no score from winning its extraction rung, so a prose `Decision:` line
+  beside it would be read instead. Its premise was wrong. An agent result's decision and score are the
+  gate's reading (`readAgentVerdict`), never the extractor's, so the change could not move them. What
+  it did move was `extractionConfidence`, from 0.95/0.9/0.75 down to 0.5. Below 0.7 `SubmissionClient`
+  refuses a positive verdict, and `extraction.low-confidence` marks the run partial. So a clean
+  `Decision: PASS` beside a records-only JSON block would have saved as not passed. Found by
+  wittgenstein-analyst in consumer-validate run #123 (CGC-1). A future change to the rungs moves that
+  refusal and those markers, not the decision.
 
 ## [0.55.0] - 2026-10-31
 

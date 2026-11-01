@@ -75,6 +75,13 @@ Every chain starts with `UluOpsClient.resolveByRef()`. This sub-chain is shared.
         LLM generates → tool calls → ToolHandler.fulfill() → filesystem I/O
         onStepFinish: update TokenBudgetTracker
         prepareStep: force toolChoice:'none' at 80% budget
+      [on a structured-output schema failure (NoObjectGeneratedError), 0.56.0]
+        recoverStructuredOutput():
+          salvage (required fields valid → decode or drop the failing optional part)
+          → else one repair turn (conversation replayed, issues named, tools withdrawn,
+            budget tracker not fed) → salvage its answer if needed → carry over optional
+            content the first answer had
+          → else fall back to text extraction (structuredOutputRepair records which)
 15. [BRANCH] Extract output:
       a. Structured output present → mapStructuredOutput() (confidence: 1.0)
       b. Fallback → OutputExtractor.extractWithMetadata():
@@ -107,7 +114,8 @@ Every chain starts with `UluOpsClient.resolveByRef()`. This sub-chain is shared.
       a. Single agent:
          → registry.resolve(agentRef, 'agent')
          → AgentExecutor.execute()                       → Chain 1 (hops 2-18)
-         → wrapAgentResult() — maps AgentResult to CommandResult
+         → wrapAgentResult() — maps AgentResult to CommandResult, carrying it as
+           agentResults: [agent] and its completeness (0.56.0)
       b. Multi-agent:
          [sequential (default) or parallel via Promise.allSettled]
          → each: registry.resolve → AgentExecutor.execute → collect results
@@ -115,7 +123,10 @@ Every chain starts with `UluOpsClient.resolveByRef()`. This sub-chain is shared.
            Score aggregation (all scored agents): average | min | max | weighted_average
            Decision: score present → score >= pass → PASS; score >= warn → WARN; else FAIL
            No scores → any FAILED → FAILED; any PARTIAL → PARTIAL; else COMPLETE
- 6. trackIfEnabled()
+         → agentResults: every agent result; completeness: worst of them and the
+           command's own stop marks (containerCompleteness, 0.56.0)
+ 6. trackIfEnabled() — submission emits one agents[] row per agentResults entry
+    (agent's own name and version) and extracts their analysis (0.56.0)
  7. Return CommandResult
 ```
 

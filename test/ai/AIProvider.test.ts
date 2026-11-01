@@ -3565,13 +3565,14 @@ describe('AIProvider — one repair turn when the structured answer fails the sc
     expect(result.structuredOutputRepair).toEqual({ outcome: 'failed', issues: 3, repairTurn: true });
   });
 
-  it('does not repair when no step reported the conversation', async () => {
+  it('does not repair when no step reported the conversation, and records the fallback', async () => {
+    // 0.56.0 fold: this returned undefined and left no marker (consumer-validate run #123).
     await failFirstCall(false);
     const { generateText } = await import('ai');
     const result = await run();
     expect(generateText).toHaveBeenCalledTimes(1);
     expect(result.text).toBe('{"analysisRecords":[]}');
-    expect(result.structuredOutputRepair).toBeUndefined();
+    expect(result.structuredOutputRepair).toEqual({ outcome: 'failed', issues: 3, repairTurn: false });
   });
 
   it('falls back to the first answer, without throwing, when the repair call fails for another reason', async () => {

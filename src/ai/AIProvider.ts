@@ -1377,8 +1377,17 @@ export class AIProvider {
     }
 
     // 2. One repair turn, which needs the conversation.
+    // A cancellation is not a recovery case: its error is mapped and thrown as before.
+    if (options.abortSignal?.aborted) return undefined;
     const history = stepTotals.responseMessages;
-    if (!history || history.length === 0 || options.abortSignal?.aborted) return undefined;
+    if (!history || history.length === 0) {
+      // No step reported the conversation, so no repair turn can be built. The fallback is still
+      // recorded (`failed`, `repairTurn: false`), so the run carries `structured-output.repair-failed`
+      // like every other unrecovered answer. Until the 0.56.0 fold this returned undefined and left
+      // no marker (consumer-validate run #123).
+      this.logger.warn('Structured output failed the schema and no conversation was reported, so no repair turn is possible — falling back to text extraction.');
+      return recovered(error.text ?? '', error.finishReason ?? 'error', false, 'failed');
+    }
 
     const fields = [...new Set(issues.map(i => i.path).filter(p => p !== ''))];
     const listed = issues.length > 0

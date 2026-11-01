@@ -144,7 +144,7 @@ export function readAgentVerdict(input: {
   text: string;
   vocabulary?: DecisionVocabularyMap;
   display?: DisplaySources;
-  /** True when `json` is the runtime's schema-enforced structured output, not JSON extracted from text. */
+  /** True when `json` is core's structured output (it passed `agentOutputSchema`), not JSON extracted from text. */
   structured?: boolean;
 }): AgentVerdict {
   const { agent } = input;
@@ -153,8 +153,11 @@ export function readAgentVerdict(input: {
   // Only the output envelope is the agent's JSON (D47). Text extraction can lift a fragment out of a
   // truncated block (step 0: a category object scored 17 where the agent's `result.score` was 87), so
   // extracted JSON counts only when it carries `result`. Core's structured output is the envelope by
-  // construction: the provider enforced `agentOutputSchema` on it, which is flat (`decision`, `score`
-  // at the top) and is never a fragment. Anything else falls to the `Decision:` and `Score:` lines.
+  // construction: it passed `agentOutputSchema` (flat: `decision`, `score` at the top), so it is never
+  // a fragment. "Passed" means the AI SDK's zod check after the answer, possibly after core's salvage
+  // or carry-over (AIProvider.recoverStructuredOutput). On Claude the provider enforces nothing,
+  // because the json tool is not strict. A flat object that FAILED the schema is not structured
+  // output and is read like any extracted JSON. Anything else falls to the `Decision:` and `Score:` lines.
   const candidate = asRecord(input.json);
   const obj = candidate !== undefined && (input.structured === true || 'result' in candidate) ? candidate : undefined;
   const result = asRecord(obj?.['result']);

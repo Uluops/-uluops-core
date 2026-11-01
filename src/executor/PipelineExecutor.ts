@@ -26,6 +26,7 @@ import { aggregateScores } from '../utils/aggregateScores.js';
 import { crashPlaceholder, abortedPlaceholder, toCommandRecord, withDeadlineMark, ABORTED_DECISION, CRASH_PLACEHOLDER_VERSION } from '../utils/crashPlaceholder.js';
 import { isDeadlineSignal, rejectionKind } from '../utils/runStop.js';
 import { stopVerdict, crashInside, containerMarkers, stopReached } from '../utils/stopVerdict.js';
+import { containerCompleteness } from './degradationMarkers.js';
 import { verifiedNothingExecuted } from '../utils/executionEvidence.js';
 import type { Logger } from '@uluops/sdk-core';
 import { registerRunTrip, unregisterRunTrip } from '../utils/runTrip.js';
@@ -593,6 +594,10 @@ export class PipelineExecutor {
           toolCalls: agentResults.reduce((sum, r) => sum + (r.metrics.toolCallCount ?? 0), 0),
         },
         ...(markers ? { degradationMarkers: markers } : {}),
+        // The stage's completeness by the shared container rule (0.56.0 fold): worst of its agents
+        // and its own stop marks. Until then the aggregate carried none, so it read as complete.
+        // The agents stay on the stage's own `agentResults` below, which gating and submission read.
+        ...containerCompleteness(agentResults, markers),
       },
       agentResults,
       durationMs: stageDurationMs,
