@@ -1168,7 +1168,15 @@ export class AIProvider {
     } catch (repairError) {
       if (NoObjectGeneratedError.isInstance(repairError) || NoOutputGeneratedError.isInstance(repairError)) {
         const text = NoObjectGeneratedError.isInstance(repairError) && repairError.text ? repairError.text : (error.text ?? '');
-        this.logger.warn('The repair turn did not produce a valid object either — falling back to text extraction.');
+        // The second answer's issues are logged by path: the first answer's are known (they were sent),
+        // and without these a repair that fixed the required fields but broke a nested one is
+        // indistinguishable from one that ignored the note (R-D12 attempt 4: decision and score
+        // present, rejected for something nested, issues unrecorded).
+        const again = NoObjectGeneratedError.isInstance(repairError) ? schemaIssuesOf(repairError) : [];
+        this.logger.warn(
+          'The repair turn did not produce a valid object either — falling back to text extraction.'
+          + (again.length > 0 ? ` Schema issues: ${again.slice(0, 12).map(i => `${i.path || '(top level)'}: ${i.message}`).join('; ')}` : ''),
+        );
         return {
           ...this.buildFallbackResult(resolved, text, stepTotals, error.finishReason ?? 'error'),
           structuredOutputRepair: { outcome: 'failed', issues: issues.length },

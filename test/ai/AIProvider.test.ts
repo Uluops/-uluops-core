@@ -3551,8 +3551,15 @@ describe('AIProvider — one repair turn when the structured answer fails the sc
     const { generateText } = await import('ai');
     vi.mocked(generateText).mockRejectedValueOnce(new NoObjectGeneratedError({
       message: 'No object generated: response did not match schema.', text: '{"categories":[]}', finishReason: 'stop',
+      cause: TypeValidationError.wrap({ value: {}, cause: { issues: [{ path: ['categories', 0, 'priority'], message: 'Invalid option' }] } }),
     } as never));
-    const result = await run();
+    const warn = vi.fn();
+    const result = await new AIProvider(mockConfig, structuredCatalog(), { ...noopLogger, warn }).generate({
+      model: 'haiku', system: 's', prompt: 'review ./target', tools: { read_file: {} } as never,
+      output: { type: 'output-object', schema: {} } as never,
+    });
+    // The second failure's issues are logged by path (attempt 4 could not name its nested issue).
+    expect(warn.mock.calls.map(c => String(c[0])).some(m => m.includes('Schema issues: categories.0.priority'))).toBe(true);
     expect(result.structuredOutput).toBeUndefined();
     expect(result.text).toBe('{"categories":[]}');
     expect(result.structuredOutputRepair).toEqual({ outcome: 'failed', issues: 3 });
