@@ -307,8 +307,9 @@ Total test suite: 400+ tests (56 OutputExtractor, rest across all modules)
 
 ## Report Files
 
-All gpt-5.1 reports organized under `docs/cross-model-reports/gpt/5.1/` (32 files).
-Other OpenAI model reports under `docs/cross-model-reports/gpt/{model}/`.
+The raw reports were moved out of core on 2026-11-01 (docs pass, consumer-validate run #123). They now live in
+`uluops-specifications/archive/audits/uluops-core-cross-model-reports/`: the gpt-5.1 reports in `gpt/5.1/` (32 files),
+the other OpenAI models in `gpt/{model}/`, the Gemini reports in `gemini/`, and `agent-workflow.txt`.
 Anthropic model reports are not separately stored (same-family extraction is clean).
 
 ## Cost Summary
