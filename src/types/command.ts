@@ -145,12 +145,14 @@ export interface CommandResult extends ExecutionResult {
 
   /**
    * The agent result(s) this command ran, unchanged: one for a single-agent command, one per agent for
-   * a multi-agent command (crash records included). Until 0.56.0 the command result was rebuilt from a
-   * fixed field list and these were dropped, with each agent's markers, completeness, verdict,
-   * rawOutput and rawJson. As a result a command run, or a command-ref pipeline stage, submitted no
-   * analysis data, and its tracker row carried the command's identity, not the agent's. Submission
-   * reads these now. Gating does not: a command-ref stage is still judged by the command's own
-   * decision (PDL D9). Absent on a crash record built without an agent (`toCommandRecord`).
+   * a multi-agent command (crash records included). Submission reads these. Gating does not: a
+   * command-ref stage is still judged by the command's own decision (PDL D9). Absent on a crash
+   * record built without an agent (`toCommandRecord`).
+   *
+   * Until 0.56.0 the command result was rebuilt from a fixed field list and these were dropped,
+   * with each agent's markers, completeness, verdict, rawOutput and rawJson. As a result a command
+   * run, or a command-ref pipeline stage, submitted no analysis data, and its tracker row carried
+   * the command's identity, not the agent's.
    */
   agentResults?: AgentResult[];
 

@@ -24,7 +24,7 @@ import type { Issue } from '../types/command.js';
  * So an unconstrained `z.number()` is not a weak guard, it is a guard that confers trust it
  * does not verify: `score: Infinity` arrives stamped "schema-validated".
  *
- * The consequence is the fail-open shape this release has now met three times
+ * The consequence is the fail-open shape 0.42.0 had met three times by then
  * (`usableWeight`, `usableBudget`, and here): a gate compares `score < threshold`, and
  * `Infinity < 70` is `false`, so the gate PASSES a run whose score is not a number. It then
  * JSON-serializes to `null`, so nothing downstream can tell it apart from an unscored run.

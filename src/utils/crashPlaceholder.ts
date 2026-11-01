@@ -36,9 +36,7 @@ import { containerCompleteness } from '../executor/degradationMarkers.js';
  *
  * NO PRODUCTION CALLER SUPPLIES IT TODAY. All three sites pass only `startedAt`, because a
  * crash can predate resolution and none of them holds the resolved type at the point the
- * placeholder is built. An earlier draft of this comment said "callers that do know it pass
- * it", which described behaviour no code performed — a hand-maintained claim sitting beside
- * the state it describes, which is this release's own subject. The parameter exists so the
+ * placeholder is built. The parameter exists so the
  * fabrication has ONE site instead of three, and so a caller that gains access to the real
  * type can supply it without touching this file.
  */

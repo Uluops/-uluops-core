@@ -342,13 +342,6 @@ export class SubmissionClient {
   }
 
   /**
-   * Cap an accumulated array at the wire's client-side ceiling, warning once
-   * when truncation occurs. See {@link MAX_ANALYSIS_RECORDS} / {@link MAX_RUN_AGENTS}
-   * for why this exists: the ops-sdk schema throws a ZodError past the cap,
-   * which would lose the entire run's payload — truncating loses only the
-   * tail, and the warning names exactly how much.
-   */
-  /**
    * A stable, correlatable recommendation naming what this submission dropped at the
    * client-side wire ceilings. `agent`/`title`/`failureCode` are fixed regardless of
    * WHAT was truncated, so the tracker correlates it as one persistent issue rather
@@ -374,6 +367,13 @@ export class SubmissionClient {
     };
   }
 
+  /**
+   * Cap an accumulated array at the wire's client-side ceiling, warning once
+   * when truncation occurs. See {@link MAX_ANALYSIS_RECORDS} / {@link MAX_RUN_AGENTS}
+   * for why this exists: the ops-sdk schema throws a ZodError past the cap,
+   * which would lose the entire run's payload — truncating loses only the
+   * tail, and the warning names exactly how much.
+   */
   private capWithWarning<T>(
     items: T[], max: number, label: string,
     kind?: keyof SubmissionClient['truncationTally'],
@@ -425,6 +425,8 @@ export class SubmissionClient {
    * @returns The {@link RunSubmissionResponse} — run id/number, dashboard URL, and correlation counts.
    * @throws {SubmissionError} If the service rejects the submission.
    * @throws {SdkApiError} For transport/auth failures from the underlying OpsClient.
+   *   Test with `isApiErrorLike()`, not `instanceof SdkApiError`: the class can come from a
+   *   different copy of sdk-core (dual-package hazard; see the README).
    */
   async submit(submission: RunSubmission): Promise<RunSubmissionResponse> {
     if (!this.config.trackingEnabled) {
@@ -462,6 +464,8 @@ export class SubmissionClient {
    * @param result - The execution result that would be submitted.
    * @returns Whether the submit would create/update/regress, plus any validation errors.
    * @throws {SdkApiError} For transport/auth failures from the underlying OpsClient.
+   *   Test with `isApiErrorLike()`, not `instanceof SdkApiError`: the class can come from a
+   *   different copy of sdk-core (dual-package hazard; see the README).
    */
   async previewSubmission(
     project: string,
@@ -491,6 +495,8 @@ export class SubmissionClient {
    * @param options - Optional filters: `workflowType`, `limit`.
    * @returns An array of {@link RunHistoryEntry} ordered by the service default (most recent first).
    * @throws {SdkApiError} For transport/auth failures from the underlying OpsClient.
+   *   Test with `isApiErrorLike()`, not `instanceof SdkApiError`: the class can come from a
+   *   different copy of sdk-core (dual-package hazard; see the README).
    */
   async getHistory(
     project: string,
@@ -531,6 +537,8 @@ export class SubmissionClient {
    *   zeroed here — they are only meaningful on the original {@link SubmissionClient.submit}.
    * @throws {NotFoundError} If no run exists with that id.
    * @throws {SdkApiError} For transport/auth failures from the underlying OpsClient.
+   *   Test with `isApiErrorLike()`, not `instanceof SdkApiError`: the class can come from a
+   *   different copy of sdk-core (dual-package hazard; see the README).
    */
   async getRun(runId: string): Promise<RunSubmissionResponse> {
     const run = await this.ops.runs.get(runId);
@@ -1006,22 +1014,21 @@ export class SubmissionClient {
    *
    * The omission also falsified a justification recorded elsewhere — that `costUsd` need
    * not be sent because it "is derivable from tokens + pricing". It is not derivable from
-   * a token set with the cache-served pool removed. Same shape as the rest of this
-   * release: a value computed correctly and then not carried across a boundary.
+   * a token set with the cache-served pool removed. Same shape as the rest of
+   * 0.42.0: a value computed correctly and then not carried across a boundary.
    */
   private extractTokens(metrics: ExecutionMetrics) {
     // A COMPUTED cost that cannot be carried is announced, not dropped in silence.
     //
-    // `costUsd` has no field on ops-sdk's wire type, so the whole pricing arc this release
+    // `costUsd` has no field on ops-sdk's wire type, so the whole pricing arc of 0.42.0
     // is largely about terminates in memory. That was documented in the CHANGELOG and
     // invisible at runtime — the one place `types/degradation.ts` invariant (1), "nothing
-    // degrades silently", was not honoured, inside the release that exists to enforce it.
+    // degrades silently", was not honoured, inside the release (0.42.0) that exists to enforce it.
     //
     // A warning is the whole fix available here: there is no wire field to write to and no
     // marker channel at this layer. It converts a silent drop into an observable one, so an
     // operator reconciling spend against the tracker learns why the column is empty from
-    // the run rather than from the changelog. Once per client, because it is a property of
-    // the wire type and not of any particular run — per-run warnings would be noise.
+    // the run rather than from the changelog.
     // Per-run, not per-client (ship run #95 — Alex's call, reversing ship #94's
     // once-per-client suppression). A per-client warning fires on the first run of a
     // long-lived client and then goes silent for every run after, so an operator

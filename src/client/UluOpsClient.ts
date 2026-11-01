@@ -41,6 +41,7 @@ const DEFAULT_TIMEOUT_MS = 300_000;
  * - `runAgent(name, target, options?)` — Direct agent execution with call-time options
  * - `runCommand(name, input)` — Command execution with saved configuration
  * - `runWorkflow(name, input)` — Workflow execution
+ * - `runPipeline(name, input, options?)` — Pipeline execution, synchronous to completion
  * - `run(name, input)` — Auto-detect type and route
  * - `startPipeline(name, input)` — Async pipeline execution
  */
@@ -97,7 +98,7 @@ export class UluOpsClient {
    * For reproducible CI runs, use `runCommand()` instead.
    *
    * @param name - Agent name or `name@version` ref (e.g. `'code-validator'` or `'code-validator@1.2.0'`).
-   * @param targetOrInput - Absolute path to the project directory, or a full {@link ExecutionInput} object.
+   * @param targetOrInput - Target path (absolute or relative to the current working directory), or a full {@link ExecutionInput} object.
    * @param options - Optional runtime overrides: `model`, `maxTokens`, `thresholds`, `reportMode`,
    *   and caller-pinned integrity hashes (`expectedHash`/`expectedPromptHash`).
    * @returns The {@link AgentResult} — score, decision, category breakdown, `completeness`, and `degradationMarkers`.
@@ -138,7 +139,7 @@ export class UluOpsClient {
     //
     // trackIfEnabled sat after the await, so any throw skipped it entirely — and
     // MaxStepsExhaustedError is by construction the maximum-cost run class core produces.
-    // This release taught that error to carry `billedMetrics` and wired three aggregation
+    // 0.42.0 taught that error to carry `billedMetrics` and wired three aggregation
     // sites to read them; the outermost boundary, where a user calls runAgent() directly,
     // had no consumer at all, so the most expensive runs were recorded nowhere.
     //
@@ -156,11 +157,6 @@ export class UluOpsClient {
   }
 
   /**
-   * Record a run that ended in a throw, when the error carries usage that was already
-   * billed. Best-effort: a tracking failure here must never replace the original error,
-   * which is what the caller actually needs to see.
-   */
-  /**
    * `extendedThinking` is a `runAgent` option only (spec OD-16): every other entry point takes thinking
    * from the client config and environment. An untyped caller passing it here would otherwise see it
    * dropped silently (lens D11), so the first such call warns.
@@ -176,6 +172,11 @@ export class UluOpsClient {
 
   private ignoredThinkingWarned = false;
 
+  /**
+   * Record a run that ended in a throw, when the error carries usage that was already
+   * billed. Best-effort: a tracking failure here must never replace the original error,
+   * which is what the caller actually needs to see.
+   */
   private async trackThrownRun(
     error: unknown,
     resolved: ResolvedDefinition,
@@ -240,7 +241,7 @@ export class UluOpsClient {
    * Ideal for CI/CD pipelines and team-standardized validation.
    *
    * @param name - Command name or `name@version` ref.
-   * @param input - Execution input ({@link ExecutionInput}); `target` is the absolute project path.
+   * @param input - Execution input ({@link ExecutionInput}); `target` is the project path, absolute or relative to the current working directory.
    * @param overrides - Optional runtime overrides; `model` overrides the definition's default model.
    *   `expectedHash`/`expectedPromptHash` pin the resolved definition — verified fail-closed
    *   before anything executes. Pin in CI, especially with `bash` enabled (see README →
@@ -275,7 +276,7 @@ export class UluOpsClient {
    * surfaces as a {@link WorkflowError} carrying partial phase results.
    *
    * @param name - Workflow name or `name@version` ref.
-   * @param input - Execution input ({@link ExecutionInput}); `target` is the absolute project path.
+   * @param input - Execution input ({@link ExecutionInput}); `target` is the project path, absolute or relative to the current working directory.
    * @param options - Optional integrity pins ({@link ResolvePinOptions}), verified fail-closed
    *   at resolve time. Workflows have no rendered prompt — pin `expectedHash` (YAML) only;
    *   `expectedPromptHash` throws `IntegrityError` (`kind: 'unavailable'`).
@@ -304,7 +305,7 @@ export class UluOpsClient {
    * monitor or cancel, use {@link UluOpsClient.startPipeline} instead.
    *
    * @param name - Pipeline name or `name@version` ref.
-   * @param input - Execution input ({@link ExecutionInput}); `target` is the absolute project path.
+   * @param input - Execution input ({@link ExecutionInput}); `target` is the project path, absolute or relative to the current working directory.
    * @param options - Optional integrity pins ({@link ResolvePinOptions}), verified fail-closed
    *   at resolve time. Pins cover the pipeline YAML only (`expectedHash`) — stage refs are
    *   resolved separately downstream and are NOT individually pinned (per-stage pinning is
@@ -343,7 +344,7 @@ export class UluOpsClient {
    * typed `run*` methods when it is, for a precise return type.
    *
    * @param name - Definition name or `name@version` ref (any of the four types).
-   * @param input - Execution input ({@link ExecutionInput}); `target` is the absolute project path.
+   * @param input - Execution input ({@link ExecutionInput}); `target` is the project path, absolute or relative to the current working directory.
    * @param options - Optional integrity pins ({@link ResolvePinOptions}), verified fail-closed
    *   at resolve time. `expectedPromptHash` applies to agent/command resolutions only.
    * @returns An {@link AgentResult} for agents, or an {@link ExecutionResult} for command/workflow/pipeline.
@@ -393,7 +394,7 @@ export class UluOpsClient {
    * it (when tracking is enabled), mirroring {@link UluOpsClient.runPipeline}.
    *
    * @param name - Pipeline name or `name@version` ref.
-   * @param input - Execution input ({@link ExecutionInput}); `target` is the absolute project path.
+   * @param input - Execution input ({@link ExecutionInput}); `target` is the project path, absolute or relative to the current working directory.
    * @param options - Optional integrity pins ({@link ResolvePinOptions}); same semantics as
    *   {@link UluOpsClient.runPipeline} — pipeline YAML only, verified before the run starts.
    * @returns A {@link PipelineHandle} exposing `wait()`, status polling, and cancellation.
@@ -431,7 +432,7 @@ export class UluOpsClient {
 
   /**
    * Run the built-in `validate` command against a target.
-   * @param target - Absolute path to the project directory to validate
+   * @param target - Target path to validate, absolute or relative to the current working directory
    * @param options - Optional overrides passed to the command executor
    * @returns Aggregated command result with scores and recommendations
    */
@@ -441,7 +442,7 @@ export class UluOpsClient {
 
   /**
    * Run the built-in `security` command against a target.
-   * @param target - Absolute path to the project directory to scan
+   * @param target - Target path to scan, absolute or relative to the current working directory
    * @param options - Optional overrides passed to the command executor
    * @returns Aggregated command result with security findings
    */
@@ -451,7 +452,7 @@ export class UluOpsClient {
 
   /**
    * Run the built-in `optimize` command against a target.
-   * @param target - Absolute path to the project directory to analyze
+   * @param target - Target path to analyze, absolute or relative to the current working directory
    * @param options - Optional overrides passed to the command executor
    * @returns Aggregated command result with optimization recommendations
    */
@@ -461,7 +462,7 @@ export class UluOpsClient {
 
   /**
    * Run the built-in `ship` workflow against a target.
-   * @param target - Absolute path to the project directory to validate for shipping
+   * @param target - Target path to validate for shipping, absolute or relative to the current working directory
    * @param options - Optional overrides passed to the workflow executor
    * @returns Workflow result with per-phase outcomes and aggregate decision
    */
@@ -471,7 +472,7 @@ export class UluOpsClient {
 
   /**
    * Run the built-in `post-implementation` workflow against a target.
-   * @param target - Absolute path to the project directory to validate
+   * @param target - Target path to validate, absolute or relative to the current working directory
    * @param options - Optional overrides passed to the workflow executor
    * @returns Workflow result with iterative validation outcomes
    */
@@ -849,7 +850,7 @@ export function resolveConfig(config: UluOpsConfig, env: NodeJS.ProcessEnv = pro
     maxRetries: config.maxRetries,
     // config.maxConcurrency is PUBLIC API and bypassed parseMaxConcurrency entirely — the
     // env path was validated and the programmatic path was not, which is the same
-    // primary/degraded split this release keeps finding.
+    // primary/degraded split 0.42.0 keeps finding.
     maxConcurrency: finitePositive(config.maxConcurrency)
       // EXTERNAL-OK: parseMaxConcurrency IS the seam for this value — it applies an
       // explicit Number.isFinite + range check before returning.

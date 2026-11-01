@@ -849,7 +849,7 @@ export class WorkflowExecutor {
       // a REAL measured durationMs. The literal contradicted its own sibling.
       //
       // Note the shape: an identical waiver on createBlockedPhase was corrected earlier in
-      // this same release as "a waiver whose reason the code had already outgrown", and
+      // 0.42.0 as "a waiver whose reason the code had already outgrown", and
       // this sibling was left. Same text, same file, fifty lines apart.
       durationMs: crashMetrics(reason).durationMs,
       // See crashMetrics: billed usage survives the throw; absent cost stays absent.
@@ -867,7 +867,7 @@ export class WorkflowExecutor {
     // Recover the step results the thrown error is carrying. executePhase throws
     // `WorkflowError(…, { partialResult: commandResults })` where those placeholders hold
     // real `billedMetrics` from crashMetrics — and this catch was replacing them with
-    // `commands: []`, so the billedMetrics channel this release added was severed one
+    // `commands: []`, so the billedMetrics channel 0.42.0 added was severed one
     // layer above every site that populates it. Measured: an all-crashed workflow reported
     // totalEffectiveTokens 0 while the caught error held 49,000 effective tokens.
     //

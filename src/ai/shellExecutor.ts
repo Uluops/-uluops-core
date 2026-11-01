@@ -267,7 +267,7 @@ function explain(explanation: string, shellStderr?: string): string {
  *
  * `executeShellAsString` has appended a `[truncated — N chars total]` marker since it was
  * written; this adapter substringed silently. Silence here is the same absent-vs-zero
- * conflation the rest of this release corrects, in text: the model receives a shorter
+ * conflation the rest of 0.42.0 corrects, in text: the model receives a shorter
  * string and has no way to know it is not the whole story.
  */
 function markTruncation(text: string, maxLen: number): string {

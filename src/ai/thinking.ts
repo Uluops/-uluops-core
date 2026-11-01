@@ -22,7 +22,7 @@ export type ThinkingMode = 'off' | 'on';
 export const MIN_THINKING_BUDGET = 1024;
 
 /**
- * Providers with a thinking mapping in this release (OD-12, OD-13). Direct Anthropic is not mapped
+ * Providers with a thinking mapping as of 0.51.0 (OD-12, OD-13). Direct Anthropic is not mapped
  * yet: it needs the structured-output degrade, planned but not built (OD-13). An opt-in there records
  * `'no-mapping'`, like any provider without a mapping.
  */

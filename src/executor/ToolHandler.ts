@@ -237,7 +237,7 @@ export class ToolHandler {
       //
       // The model is told those lines are empty and reasons from it — a state that never
       // happened. This reproduction is cited as FIXED in the comment on the dispatch site
-      // above, which makes it this release's own pattern occurring inside the fix that
+      // above, which makes it 0.42.0's own pattern occurring inside the fix that
       // names that pattern: the value was validated, the RELATIONSHIP between two values
       // was not.
       if (start > totalLines || start > end) {
