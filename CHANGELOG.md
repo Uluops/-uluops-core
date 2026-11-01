@@ -6,6 +6,10 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) 
 
 ## [Unreleased]
 
+## [0.56.2] - 2026-11-01
+
+Documentation only; no code change.
+
 ### Changed
 
 - **Documentation pass** (consumer-validate run #123: Dieter Rams and bored-observer, with Alex's rulings). No code change; a comparison of `src/` with comments removed shows 0 of 15 touched files differ.
