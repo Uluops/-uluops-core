@@ -1155,8 +1155,14 @@ export class AIProvider {
     const timeoutMs = resolveRequestTimeoutMs(options.timeoutMs, this.config.timeout);
     let repairResult;
     try {
+      // `budgetTracker` is left out on purpose. The tracker reads a step-over-step input drop as a
+      // provider context eviction, and the repair request is a different window: the tools are
+      // withdrawn, so their schemas leave the input. Live (R-D12 attempt 3, haiku-4-5) the repair's
+      // input was 8565 tokens after a 9065-token last step, a 5.5% drop over the 5% threshold, and
+      // the run was marked `context.evicted` (degraded, completeness partial) with nothing evicted.
+      // Its usage still reaches StepTotals, so cost and step counts include it.
       repairResult = await this.executeGeneration(
-        options, ctx.languageModel, ctx.system, ctx.providerOptions, true, ctx.isReasoning, stepTotals, ctx.requestShape,
+        { ...options, budgetTracker: undefined }, ctx.languageModel, ctx.system, ctx.providerOptions, true, ctx.isReasoning, stepTotals, ctx.requestShape,
         { messages: [{ role: 'user', content: options.prompt }, ...history, { role: 'user', content: note }] },
       );
     } catch (repairError) {

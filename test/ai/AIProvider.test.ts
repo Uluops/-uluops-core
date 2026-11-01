@@ -3515,6 +3515,37 @@ describe('AIProvider — one repair turn when the structured answer fails the sc
     expect(result.usage.output_tokens).toBe(300);
   });
 
+  it('does not read the repair request as a context eviction (tools withdrawn, smaller input)', async () => {
+    // Live, R-D12 attempt 3: last step 9065 input tokens, repair 8565 (the 7 tool schemas left the
+    // request). The tracker's 5% shrink rule marked context.evicted on a run where nothing was evicted.
+    const { generateText } = await import('ai');
+    const value = { analysisRecords: [] };
+    vi.mocked(generateText).mockImplementationOnce((async (opts: unknown) => {
+      const o = opts as { onStepFinish?: (s: unknown) => void };
+      o.onStepFinish?.({ finishReason: 'tool-calls', text: '', toolCalls: [{ toolName: 'read_file' }], usage: { inputTokens: 8_492, outputTokens: 31 }, response: { messages: history.slice(0, 2) } });
+      o.onStepFinish?.({ finishReason: 'stop', text: '{}', toolCalls: [], usage: { inputTokens: 9_065, outputTokens: 783 }, response: { messages: history } });
+      throw new NoObjectGeneratedError({
+        message: 'No object generated: response did not match schema.',
+        cause: TypeValidationError.wrap({ value, cause: agentOutputSchema.safeParse(value).error }),
+        text: '{"analysisRecords":[]}', finishReason: 'stop',
+      } as never);
+    }) as never);
+    const repaired = { decision: 'FAIL', score: 42, maxScore: 100 };
+    vi.mocked(generateText).mockImplementationOnce((async (opts: unknown) => {
+      (opts as { onStepFinish?: (s: unknown) => void }).onStepFinish?.({ finishReason: 'stop', text: '{}', toolCalls: [], usage: { inputTokens: 8_565, outputTokens: 2_652 } });
+      return { finishReason: 'stop', text: '{}', output: repaired, steps: [{}] };
+    }) as never);
+    const budgetTracker = new TokenBudgetTracker(200_000);
+    const result = await new AIProvider(mockConfig, structuredCatalog(), noopLogger).generate({
+      model: 'haiku', system: 's', prompt: 'p', tools: { read_file: {} } as never,
+      output: { type: 'output-object', schema: {} } as never, budgetTracker, contextBudget: 200_000,
+    });
+    expect(result.structuredOutputRepair?.outcome).toBe('repaired');
+    expect(budgetTracker.contextEvicted).toBe(false);
+    // The repair's usage is still reported.
+    expect(result.usage.output_tokens).toBe(31 + 783 + 2_652);
+  });
+
   it('falls back to the repair text when the second answer fails the schema too', async () => {
     await failFirstCall();
     const { generateText } = await import('ai');

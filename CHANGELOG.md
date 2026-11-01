@@ -27,6 +27,10 @@ with no decision, so the stage was ERRORED (`agent_unjudgeable`) while the agent
 - `AIGenerateResult.structuredOutputRepair?: { outcome: 'repaired' | 'failed'; issues: number }`.
 - Degradation markers `structured-output.repaired` and `structured-output.repair-failed` (both
   `info`).
+- The repair request does not feed the context-budget tracker. With the tools withdrawn, their schemas
+  leave the input, and the tracker's step-over-step shrink rule would read that as a provider eviction:
+  live, 9065 then 8565 input tokens marked a run `context.evicted` (degraded) with nothing evicted. The
+  repair's usage still counts toward cost and step totals.
 
 ### Changed
 
