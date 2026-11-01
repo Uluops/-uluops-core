@@ -33,7 +33,7 @@ import type { CommandResult } from '../types/command.js';
 import type { RunSubmission, RunSubmissionResponse, RunHistoryEntry, SubmissionQueryOptions } from '../types/submission.js';
 import { AnalysisSummaryExtractor } from '../analysis/AnalysisSummaryExtractor.js';
 import { EXTRACTION_CONFIDENCE_THRESHOLD } from '../constants.js';
-import { isCanonicalMode } from '@uluops/taxonomy';
+import { isCanonicalMode, FAILURE_CODE_PATTERN, DOMAINS } from '@uluops/taxonomy';
 import { CRASH_PLACEHOLDER_VERSION } from '../utils/crashPlaceholder.js';
 import { verifiedNothingExecuted } from '../utils/executionEvidence.js';
 import { paramsLine } from '../executor/runVerdict.js';
@@ -143,6 +143,16 @@ function repairTokenCount(value: number | undefined, logger: Logger, field: stri
  * For full issue management, analytics, and taxonomy operations,
  * use `@uluops/ops-sdk` directly.
  */
+/**
+ * The recommendation fields the API validates more strictly than ops-sdk's client schemas do. Each
+ * mirrors ops-uluops-api `run-transformers.ts` (RecommendationSchema). A value one of these rejects
+ * is OMITTED with a repair note; sent, it would fail the whole save.
+ */
+const API_FAILURE_CODE = { safeParse: (v: unknown) => ({ success: typeof v === 'string' && FailureCodeSchema.safeParse(v).success && FAILURE_CODE_PATTERN.test(v) }) };
+const API_DOMAIN_CODES: readonly string[] = DOMAINS.map(d => d.code);
+const API_FAILURE_DOMAIN = { safeParse: (v: unknown) => ({ success: typeof v === 'string' && FailureDomainSchema.safeParse(v).success && API_DOMAIN_CODES.includes(v) }) };
+const API_FAILURE_MODE = { safeParse: (v: unknown) => ({ success: typeof v === 'string' && /^[A-Z]{3}$/.test(v) }) };
+
 export class SubmissionClient {
   private _ops?: OpsClient;
   private readonly analysisExtractor = new AnalysisSummaryExtractor();
@@ -248,8 +258,11 @@ export class SubmissionClient {
       priority = 'suggested' as typeof priority;
     }
 
-    // The wire accepts any string ≤50 for failureMode, so an off-taxonomy value is NOT
-    // dropped — rule 2. It is still worth saying out loud, because a mode that is not in the
+    // The API accepts exactly three uppercase letters for failureMode (ops-uluops-api
+    // run-transformers.ts, `/^[A-Z]{3}$/`), so anything else is OMITTED below, rule 1. Until
+    // 0.56.1 this comment said "the wire accepts any string ≤50": that is ops-sdk's schema, and
+    // the API is stricter, so a mode like `INCOMPLETE` passed here and lost the whole save. A
+    // well-formed mode that is not a taxonomy member is still sent, rule 2. It is still worth saying out loud, because a mode that is not in the
     // taxonomy will not join against it downstream: `byMode` is built by iterating the
     // catalog, so a non-member vanishes from mode-level analytics entirely.
     //
@@ -262,7 +275,7 @@ export class SubmissionClient {
     // Safe to tighten here where it is not safe elsewhere: this only appends to `repairs` and
     // sends the value unchanged. Systems spec §7.3 defers membership because ENFORCING it
     // rejects data; nothing is rejected here.
-    const failureMode = clamp(r.failureMode, 50, 'failureMode');
+    const failureMode = keepIfValid(API_FAILURE_MODE, r.failureMode, 'failureMode');
     if (failureMode !== undefined) {
       // Membership is only defined on the fully-qualified code — `INC` is both STR-INC and
       // SEM-INC — so qualify from the domain in the same payload. With no domain there is
@@ -275,7 +288,7 @@ export class SubmissionClient {
       if (offTaxonomy) {
         repairs.push(
           `failureMode=${JSON.stringify(failureMode)}${qualified ? ` (as ${qualified})` : ''} ` +
-          `is off-taxonomy (sent as-is; the wire accepts any string ≤50)`,
+          `is off-taxonomy (sent as-is; the API accepts any three uppercase letters)`,
         );
       }
     }
@@ -286,8 +299,15 @@ export class SubmissionClient {
       title: clamp(r.title, 500, 'title') || '(untitled recommendation)',
       priority,
       severity: keepIfValid(SeveritySchema, r.severity, 'severity'),
-      failureCode: keepIfValid(FailureCodeSchema, r.failureCode, 'failureCode'),
-      failureDomain: keepIfValid(FailureDomainSchema, r.failureDomain, 'failureDomain'),
+      // Checked against what the API ENFORCES, not ops-sdk's looser schemas (0.56.1). The API's
+      // failureCode pattern is taxonomy's FAILURE_CODE_PATTERN: a closed DOMAIN (STR|SEM|PRA|EPI),
+      // any three-letter mode. Its failureDomain is that same enum. ops-sdk accepts any three
+      // letters for both, so a model-invented domain (`SEC-INJ/H`, `DOC`) passed here and the API
+      // refused the WHOLE save with VALIDATION_ERROR on one field (R-D12 tracking check,
+      // 2026-11-01: 2 agents and 13 analysis records lost). Mode MEMBERSHIP is deliberately not
+      // enforced (systems spec §7.3; the API does not enforce it), so `PRA-VAL/H` is kept.
+      failureCode: keepIfValid(API_FAILURE_CODE, r.failureCode, 'failureCode'),
+      failureDomain: keepIfValid(API_FAILURE_DOMAIN, r.failureDomain, 'failureDomain'),
       failureMode,
       category: clamp(r.category, 100, 'category'),
       filePath: clamp(r.filePath, 1000, 'filePath'),

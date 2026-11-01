@@ -258,13 +258,42 @@ describe('SubmissionClient', () => {
       expect(warnings.join(' ')).toContain('PRA-FRA/High');
     });
 
-    it('keeps an off-taxonomy failureMode the wire accepts, but says so', async () => {
+    it('keeps an off-taxonomy failureMode the API accepts, but says so', async () => {
+      // Rule 2: never drop a value the wire would have accepted. "The wire" is the API: three
+      // uppercase letters (run-transformers.ts). Until 0.56.1 this test used 'validation', which
+      // only ops-sdk's looser schema accepts; the API has refused it since 2026-06-07, and with it
+      // the whole save.
       const sent = await submitWith({
-        agent: 'a', title: 't', priority: 'high', failureMode: 'validation',
+        agent: 'a', title: 't', priority: 'high', failureDomain: 'STR', failureMode: 'ZZZ',
       });
-      // Rule 2: never drop a value the wire would have accepted.
-      expect(sent.failureMode).toBe('validation');
+      expect(sent.failureMode).toBe('ZZZ');
       expect(warnings.join(' ')).toContain('off-taxonomy');
+    });
+
+    it('omits a failureMode the API would refuse rather than losing the run', async () => {
+      const sent = await submitWith({ agent: 'a', title: 't', priority: 'high', failureMode: 'validation' });
+      expect(sent.failureMode).toBeUndefined();
+      expect(warnings.join(' ')).toContain('failureMode="validation" omitted');
+    });
+
+    // 0.56.1 (R-D12 tracking check, 2026-11-01: a model-invented failureCode lost a save of 2 agents
+    // and 13 analysis records). The API's failureCode pattern closes the DOMAIN (STR|SEM|PRA|EPI) and
+    // its failureDomain is that enum; ops-sdk accepts any three letters for both.
+    it('omits a failureCode whose domain the API does not have', async () => {
+      const sent = await submitWith({ agent: 'a', title: 't', priority: 'high', failureCode: 'SEC-INJ/H' });
+      expect(sent.failureCode).toBeUndefined();
+      expect(warnings.join(' ')).toContain('failureCode="SEC-INJ/H" omitted');
+    });
+
+    it('keeps a well-formed failureCode whose mode is not a taxonomy member (membership is not enforced)', async () => {
+      const sent = await submitWith({ agent: 'a', title: 't', priority: 'high', failureCode: 'PRA-VAL/H' });
+      expect(sent.failureCode).toBe('PRA-VAL/H');
+    });
+
+    it('omits a failureDomain the API does not have', async () => {
+      const sent = await submitWith({ agent: 'a', title: 't', priority: 'high', failureDomain: 'SEC' });
+      expect(sent.failureDomain).toBeUndefined();
+      expect(warnings.join(' ')).toContain('failureDomain="SEC" omitted');
     });
 
     it('coerces an invalid required priority rather than losing the run', async () => {

@@ -6,6 +6,33 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) 
 
 ## [Unreleased]
 
+## [0.56.1] - 2026-11-01
+
+**One model-invented failure code no longer loses a whole tracker save.** Found by the R-D12 tracking
+check on published 0.56.0 (specs `pdl-1_6_0/verification/live-rd12/`, attempt 7). The API refused a
+pipeline run with `VALIDATION_ERROR` on `recommendations.6.failureCode`, and the save carried 2 agents
+and 13 analysis records.
+
+### Fixed
+
+- **`SubmissionClient` now checks `failureCode`, `failureDomain` and `failureMode` against what the
+  API enforces, not against ops-sdk's looser client schemas.** The API (ops-uluops-api
+  `run-transformers.ts`) requires:
+  - `failureCode` matching `@uluops/taxonomy`'s `FAILURE_CODE_PATTERN`, with a closed domain
+    `STR|SEM|PRA|EPI` and any three-letter mode;
+  - `failureDomain` in that enum;
+  - `failureMode` of exactly three uppercase letters.
+
+  ops-sdk accepts any three letters for the code's domain and for `failureDomain`, and any string up
+  to 50 characters for `failureMode`. A value in that gap passed the sanitizer, and the API refused
+  the whole save over it. Such a value is now omitted with a repair note
+  (`repairedRecommendations`), like every other field the wire would reject.
+
+  Mode membership is still not enforced, because the API does not enforce it (systems spec §7.3).
+  `PRA-VAL/H` is sent, and an off-taxonomy mode like `STR-ZZZ` is sent with its existing warning.
+  The test that kept `failureMode: 'validation'` as "accepted by the wire" (since 0.36.x) described
+  ops-sdk's schema: the API has refused it since 2026-06-07.
+
 ## [0.56.0] - 2026-11-01
 
 **Structured answers that fail the output schema are salvaged or repaired, and a command result
