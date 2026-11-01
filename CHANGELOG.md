@@ -6,6 +6,21 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) 
 
 ## [Unreleased]
 
+### Changed
+
+- **Documentation pass** (consumer-validate run #123: Dieter Rams and bored-observer, with Alex's rulings). No code change; a comparison of `src/` with comments removed shows 0 of 15 touched files differ.
+  - **CHANGELOG:** the `Internal` and `Design Notes` sections (18 + 13) moved to the repository's `docs/changelog-internal.md` under their release headings, so the shipped CHANGELOG is consumer-facing. 0.54.0 gains a "What breaks for you" summary at the top.
+  - **README:**
+    - a complete table of contents;
+    - pipeline semantics written one topic per block;
+    - OpenRouter in its own section after Usage;
+    - history narration removed where the CHANGELOG holds it;
+    - duplicates condensed;
+    - the forwarding constants' anchor text and missing `8000` cap fixed;
+    - the ARCHITECTURE.md link made absolute, since that file is not in the package.
+  - **JSDoc:** stranded doc blocks moved onto their functions. "This release" was replaced with version numbers. `@param` targets say relative paths work. Every `@throws {SdkApiError}` tag says to test with `isApiErrorLike()`. Field docs lead with the contract.
+  - **Repository `docs/`, which is not shipped:** vendored AI SDK docs for APIs core does not call were deleted. The raw cross-model reports and a shipped integration plan moved to the specifications archive.
+
 ## [0.56.1] - 2026-11-01
 
 **One model-invented failure code no longer loses a whole tracker save.** Found by the R-D12 tracking
