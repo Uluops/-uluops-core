@@ -6,6 +6,94 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) 
 
 ## [Unreleased]
 
+## [0.57.0] - 2026-11-01
+
+**Analysis data now reaches the tracker for every agent in a run, and an agent's analysis can no
+longer cost the whole save.** Spec: `submission-analysis-fidelity` v0.2.1 (specifications repo,
+`specs/packages/-uluops-core/`), reviewed in pre-implementation runs #125–#127.
+
+### What breaks for you
+
+- **Nothing in a signature narrows.** `submitResults` / `previewSubmission` widen to accept an
+  `AgentResult`, and two optional fields are added to `AgentResult`.
+- **What is SAVED changes without any type change** (see Changed). A dashboard or query that reads
+  `analysisSummary` sees one entry per agent for composite runs where it saw one, and child agents'
+  vocabularies and weights where it saw `null` and equal shares. Nothing in the compiler or the
+  tests will tell you; this entry is the channel.
+- **A result serialized by core ≤ 0.56.2 and submitted through ≥ 0.57.0** carries no definition
+  facts. It is still extracted, those two fields are omitted, and one warning names the agents.
+  Stamp it with `definitionFacts(definition)` if you need them.
+- Tier-4 record ids are unchanged. Duplicated record ids (second and later) gain a `~n` suffix.
+
+### Added
+
+- **`AgentResult.decisionVocabulary` and `AgentResult.categoryWeights`** (both optional and
+  nullable). Core's executors stamp them from the agent's own definition when they build the result,
+  including the crash record. `null` means the definition declares none; absent means the result was
+  not stamped.
+- **`definitionFacts(definition)`** (exported): the same facts from an agent definition, for stamping
+  a result core did not build.
+- **`truncated.analysisSummaries` and `truncated.analysisSummariesInvalid`** on `submitResults`'s
+  response and `submissionTruncated` on auto-tracked results. Summaries dropped past the tracker's
+  20, or for the 2 MB body limit; summaries rejected even after repair. They add no marker
+  recommendation: summaries do not feed issue correlation, so the tally and the warning are the
+  record.
+- **`submitResults` and `previewSubmission` accept an `AgentResult`**, not only a command, workflow
+  or pipeline result.
+- **Warnings** (one each, naming agents and schema positions, never model-authored values): results
+  without definition facts; summaries dropped by the cap; a summary invalid after repair; record ids
+  suffixed for a collision; a category with no declared weight; values repaired to the tracker's
+  limits; the payload trimmed for the body limit. Agent names in warnings are stripped of control
+  characters and capped (100 characters each, at most 10 listed).
+
+### Changed
+
+- **Composite runs send one summary per agent** (up to 20). Until 0.56.2 a command, workflow or
+  pipeline run sent only its first agent's summary.
+- **Child agents carry their own definition facts.** Their `decisionVocabulary` changes from `null`
+  to the declared value, and their category weights from `round(100/n)` to the declared weights, or
+  to the weights in the agent's own `category_scores` block when it emits them (those win). A declared
+  weight is matched to a category by normalised name (case and punctuation ignored).
+- **A category with no matching declared weight gets the equal share `round(100/n)`**, not 1, with a
+  warning.
+- **Manual `submitResults` carries analysis.** It previously sent agent rows only, with no warning:
+  extraction was gated on `resolvedDefinition`, which a manual submit never passed. `previewSubmission`
+  had the same gap.
+- **Auto-tracking no longer passes `resolvedDefinition` into the submission.** Facts come from the
+  stamp on the result. `RunSubmission.resolvedDefinition` is still read when present (a top-level
+  agent run's fallback); it is not deprecated.
+- **Tier-1 analysis records (the agent's own `analysis.records[]`) are attributed to the agent that
+  produced them.** A record's own `agentName`, when it differs, is kept in `data.declaredAgentName`
+  rather than overriding the attribution. `agentType` is no longer copied from the record.
+- **Tier-1 records accept `record_id` / `record_type`** (the corpus templates' snake_case) as well as
+  `recordId` / `recordType`. Ids are stringified and sanitised the way Tier 4's are.
+- **Exploration map sections are capped at 50, not 100** — the tracker API's limit. At 51–100
+  sections the API refused the whole save.
+- **Each summary is validated on its own** against the pinned ops-sdk (7.1.0) schema, after repair.
+  One that still fails is dropped with a warning; its agent's row and records are sent. Before, one
+  invalid summary threw for the whole payload client-side.
+
+### Fixed
+
+- **Agents inside a pipeline's workflow stages get analysis.** Their stage result is
+  `{ result: WorkflowResult }` with no `agentResults`, and the extractor returned nothing for it:
+  those agents had tracker rows but no summaries and no records.
+- **A Tier-1 record with snake_case `record_id` no longer loses the whole save.** The record reached
+  the wire without `recordId`, ops-sdk refused the payload (`analysisRecords.N.recordId`), and the
+  run, every agent and every recommendation were lost. Also fixed in Tier 1: a numeric id, an empty
+  `agentName`, a stray `agentType`.
+- **Values ops-sdk accepts and the tracker API refuses are repaired before sending,** since a refusal
+  loses the whole save: category scores and weights rounded to integers (weight 1–100), at most 20
+  exploration maps, section items that are not objects dropped, audit implications cut to 500
+  characters, and `systemMetrics` / `epistemicAssessment` / record `data` over 64 KiB or 8 levels deep
+  replaced (summary blob → `null`, record data → a stub). The limits are a client copy of ops-uluops-api
+  at `e5532bc2` (`src/submission/apiOnlyBounds.ts`); when the API changes them, core must change too.
+- **The payload is kept under the API's 2 MB body limit** (1.9 MiB target) by dropping summaries, then
+  records, from the end. Each part was bounded alone; together they could reach several MiB and a 413.
+- **Repeated record ids are suffixed** (`~2`, `~3`, … the lowest free), compared as the server does
+  (case- and accent-insensitive, per agent). The first occurrence keeps its id; an agent's own `x~2`
+  is never taken. The server refused a later update over such duplicates.
+
 ## [0.56.2] - 2026-11-01
 
 Documentation only; no code change.

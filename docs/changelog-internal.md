@@ -2,6 +2,31 @@
 
 The `Internal` (test/CI/build-only) and `Design Notes` sections of `CHANGELOG.md`, by release. They were moved out of the shipped changelog on 2026-11-01 (docs pass, consumer-validate run #123): they carry no consumer-facing API impact, and the CHANGELOG ships in every npm install. This file is repository-only (`docs/` is not published). Entries are unchanged; each sits under the release heading it had.
 
+## [0.57.0] - 2026-11-01
+
+### Internal
+
+- **`test/fixtures/ops-api-save-schema.ts`** is a zod-4 translation of ops-uluops-api's save-run
+  analysis validation at `e5532bc2`, the oracle for V2–V13 in `test/submission/analysisFidelity.test.ts`.
+  It has its own control (a payload ops-sdk accepts and the fixture refuses). It drifts with the API
+  exactly as `apiOnlyBounds.ts` does; refresh both together.
+- Every V-check except the fixture control and the null-stamp control was run against the 0.56.2
+  base worktree and failed there. V11a reproduces the snake_case whole-save loss on 0.56.2.
+- 10 hand-placed mutants over the new modules and the executor stamp, all caught. `buildResult-stamp`
+  survived the first round, which is why `test/executor/AgentExecutor.test.ts` gained the stamp tests.
+- Six existing tests changed expectation, each an intended behaviour change: three now assert that
+  auto-tracking does not pass `resolvedDefinition`; the section-cap tests moved to 50; the Tier-1
+  override test now expects forced attribution plus `data.declaredAgentName`.
+
+### Design Notes
+
+- **Residuals, accepted by default (spec §8):** a dropped summary is invisible to the server (only the
+  caller's tally and warning record it); `apiOnlyBounds.ts` copies server limits and will drift; an
+  overlong `agents[].decision` is still a whole-save path; same-named agents in two stages collide in
+  the server's supersede and the dashboard's keying; the first ```` ```json ```` fence wins, so a quoted
+  fence in a reviewed artifact can stand in for the agent's analysis. The durable fix for the copied
+  limits is server-side per-entry acceptance (ops-api follow-up).
+
 ## [0.56.0] - 2026-11-01
 
 ### Design Notes

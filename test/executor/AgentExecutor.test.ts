@@ -241,6 +241,29 @@ describe('AgentExecutor', () => {
     });
   });
 
+  describe('definition facts stamped on the result (submission-analysis-fidelity spec v0.2.1, D1)', () => {
+    it('stamps the declared decision vocabulary and category weights from the agent definition', async () => {
+      const executor = new AgentExecutor(baseConfig, mockAIProvider(), noopLogger);
+      const def = makeValidatorDef();
+      (def.definition as { agent?: Record<string, unknown> }).agent = {
+        decisions: { vocabulary: { positive: 'CLEAR', conditional: 'MIXED', negative: 'BEWITCHED' } },
+        scoring: { categories: [{ name: 'Clarity', weight: 60, criteria: [] }, { name: 'Rigor', weight: 40, criteria: [] }] },
+      };
+      const result = await executor.execute(def, { target: tmpDir });
+      expect(result.decisionVocabulary).toBe('CLEAR/MIXED/BEWITCHED');
+      expect(result.categoryWeights).toEqual({ Clarity: 60, Rigor: 40 });
+    });
+
+    it('stamps null, not absent, when the definition declares neither', async () => {
+      const executor = new AgentExecutor(baseConfig, mockAIProvider(), noopLogger);
+      const def = makeValidatorDef();
+      (def.definition as { agent?: Record<string, unknown> }).agent = {};
+      const result = await executor.execute(def, { target: tmpDir });
+      expect(result).toHaveProperty('decisionVocabulary', null);
+      expect(result).toHaveProperty('categoryWeights', null);
+    });
+  });
+
   describe('validator execution', () => {
     it('executes a validator agent and returns ValidatorAgentResult', async () => {
       const ai = mockAIProvider();

@@ -535,10 +535,13 @@ const result = await client.runAgent('code-validator', './src', {
   project: 'my-project',
 });
 
-// Manual submission: submit results from a custom execution
+// Manual submission: submit a result you ran yourself (an agent result is accepted since 0.57.0).
+// Its analysis (summary + records) is extracted and sent, with the decision vocabulary and
+// category weights core stamped on the result when it ran.
 const response = await client.submitResults('my-project', 'post-implementation', result);
 console.log(`Run #${response.runNumber}: ${response.dashboardUrl}`);
 console.log(`New issues: ${response.correlation.newIssues}, Regressions: ${response.correlation.regressions}`);
+console.log('Dropped to fit the tracker:', response.truncated); // see "Truncation tallies" below
 
 // Dry run: preview what a submission would do without saving
 const preview = await client.previewSubmission('my-project', 'post-implementation', result);
@@ -569,6 +572,11 @@ On the auto-tracking path, a failed submission (e.g. a free-tier `402 PROJECT_LI
 
 **What lands in analysis data.** At submission time, `AnalysisSummaryExtractor` builds the run's `analysisSummary` + `analysisRecords`:
 
+- **One summary per agent** (since 0.57.0). An agent run sends one summary; a command, workflow or pipeline run sends one per agent it ran, including agents inside a pipeline's workflow stages (which got none before 0.57.0), up to the tracker's 20. Before 0.57.0 a composite run sent only its first agent's summary.
+- **Each agent's own definition facts.** Core stamps `decisionVocabulary` and `categoryWeights` on every `AgentResult` it builds; extraction reads them from the result, so each agent in a composite run carries its own vocabulary and declared weights (before 0.57.0 they were taken from the parent definition, which yielded `null` and equal shares). An agent that emits its own `category_scores` in its analysis block keeps those, weights included. A declared weight is matched to a category by normalised name (case and punctuation ignored); an unmatched category gets the equal share. A result not built by core's executors (hand-built, or serialized by core ≤ 0.56.2) is still extracted; those two fields are omitted and one warning names the agents. Stamp such a result with `definitionFacts(definition)` (exported).
+- **Repaired to the tracker's limits, never dropped for them.** The tracker API rejects some values ops-sdk accepts, and a rejection loses the whole save, so core repairs them before sending: category scores and weights rounded to integers, at most 20 exploration maps of at most 50 sections with object items, audit implications cut to 500 characters, and a `systemMetrics` / `epistemicAssessment` / record `data` blob over 64 KiB or 8 levels deep replaced (blob → `null`, record data → a stub). A summary that is still invalid after repair is dropped on its own, with a warning; its agent's row and records are still sent. The whole payload is kept under the tracker's 2 MB body limit by dropping summaries, then records, from the end.
+- **Record ids are unique per agent.** A record that repeats an earlier record's id (compared as the tracker does: case- and accent-insensitive) gets `~2`, `~3`, …, so the first occurrence keeps its id. Analysis-block records are read from `recordId`/`record_id` and `recordType`/`record_type` (the corpus templates' snake_case: before 0.57.0 these lost the whole save), and are always attributed to the agent that produced them; a different `agentName` in the record is kept in `data.declaredAgentName`.
+
 - `systemMetrics` carries the agent's **cognitive measurements only** — its analysis-block `system_metrics`, else structured-output `domainMetrics`, else `null`. Execution telemetry (tokens, model, duration) is never merged in; it travels on `agents[]`.
 - Extraction facts (`extraction_confidence`, `extraction_method`) are epistemic facts about the parse and merge into `epistemicAssessment` — the agent's own keys always win.
 - **Every agent-authored field on a record is sanitized against the API's storage contract, at one seam, for all four extraction tiers** (v0.36.0). The tracker validates the *whole* `analysisRecords` array before the network, so a single out-of-contract value used to lose the entire run's analysis rather than one record. Each field is normalized in the way that preserves the most meaning, and anything rejected is kept under a `raw*` key rather than dropped:
@@ -582,6 +590,8 @@ On the auto-tracking path, a failed submission (e.g. a free-tier `402 PROJECT_LI
   | `data` | a plain object | entries-form `[{key,value}]` converted; any other array, primitive or `null` → `{}` or `{ rawData }` |
 
   `recordType` is deliberately **not** checked against a fixed vocabulary. The tracker stores it as a bounded string so registry-defined agents can emit new record shapes without a coordinated release. If you consume `recordType`, expect a wide, open set (over 300 distinct values are in storage).
+
+**Truncation tallies.** `response.truncated` (and `result.submissionTruncated` on the auto-tracking path) counts what the client dropped so the save could go through: `agents` (wire cap 100), `recommendations` (500), `analysisRecords` (100, plus any dropped for the body limit), `analysisSummaries` (past 20, or dropped for the body limit) and `analysisSummariesInvalid` (rejected even after repair). Zeros are measured: `{ agents: 0, … }` means nothing was dropped. The tally is absent on `getRun()`, which reads a stored run. A dropped agent, recommendation or record also adds a marker recommendation to the run so issue correlation sees it; a dropped summary does not (summaries do not feed correlation), so the tally and the warning log are the only record that one was dropped.
 
 ### Usage Metrics
 
@@ -940,6 +950,7 @@ import {
 
   // Analysis
   AnalysisSummaryExtractor, // Auto-extract analysisSummary + analysisRecords from agent results
+  definitionFacts,     // Decision vocabulary + category weights from an agent definition; stamp them on a hand-built AgentResult before submitResults (0.57.0)
 
   // Utilities
   OutputExtractor,     // 4-strategy LLM output parser (structured > JSON fence > inline > regex)
