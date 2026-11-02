@@ -215,14 +215,15 @@ export interface ExecutionResult {
   repairedRecommendations?: number;
 
   /**
-   * How many agents/recommendations/analysis records the tracking submission dropped
-   * at the client-side wire ceilings. Mirrors {@link RunSubmissionResponse.truncated} —
-   * populated here (ship run #96, anxiety-reader F13) for the same reason as
+   * How many agents/recommendations/analysis records/analysis summaries the tracking
+   * submission dropped. Mirrors {@link RunSubmissionResponse.truncated}, which documents each
+   * key — populated here (ship run #96, anxiety-reader F13) for the same reason as
    * {@link repairedRecommendations}: `UluOpsClient.trackIfEnabled` previously kept only
    * `dashboardUrl` off the submission response, so `truncated` was computed, returned,
-   * and then unreachable from every primary entry point.
+   * and then unreachable from every primary entry point. Keep all three declarations of this
+   * shape (here, `AgentResult.submissionTruncated`, `RunSubmissionResponse.truncated`) in step.
    */
-  submissionTruncated?: { agents: number; recommendations: number; analysisRecords: number };
+  submissionTruncated?: { agents: number; recommendations: number; analysisRecords: number; analysisSummaries: number; analysisSummariesInvalid: number };
 
   /** All recommendations (flattened for workflows/pipelines) */
   recommendations: Recommendation[];

@@ -23,6 +23,7 @@ import type { PipelineHandle, PipelineResult } from '../types/pipeline.js';
 import type { DefinitionSummary, ResolvedDefinition } from '../types/registry.js';
 import type { DefinitionType } from '../types/execution.js';
 import { parseRef } from '../utils/parseRef.js';
+import { definitionFactsFromResolved } from '../analysis/definitionFacts.js';
 import { DEFAULT_MAX_CONCURRENCY, DEFAULT_MAX_STEPS, MAX_STEPS_CEILING } from '../constants.js';
 import type { RunSubmissionResponse, RunHistoryEntry, SubmissionQueryOptions } from '../types/submission.js';
 import { firstDataCollection } from '../utils/dataCollection.js';
@@ -226,6 +227,9 @@ export class UluOpsClient {
         // which is the documented "nothing known" branch, not a fabrication here.
         durationMs: metrics.durationMs,
         metrics,
+        // Stamped like every result AgentExecutor builds (spec v0.2.1 D1): with trackIfEnabled no
+        // longer passing a definition, this is the only source of the crash summary's vocabulary.
+        ...definitionFactsFromResolved(resolved),
       };
       await this.trackIfEnabled(synthesized, resolved, resolved.name, options, target);
     } catch (trackingError) {
@@ -575,7 +579,7 @@ export class UluOpsClient {
   async previewSubmission(
     project: string,
     workflowType: string,
-    result: ExecutionResult,
+    result: ExecutionResult | AgentResult,
   ): Promise<{ wouldCreate: boolean; wouldUpdate: boolean; wouldRegress: boolean; validationErrors: string[] }> {
     return this.submission.previewSubmission(project, workflowType, result);
   }
@@ -584,9 +588,23 @@ export class UluOpsClient {
    * Manually submit execution results to the submission service.
    * Delegates to {@link SubmissionClient.submit}.
    *
+   * Analysis (per-agent summaries and records) is extracted for every agent in the result, each with
+   * the decision vocabulary and category weights core stamped on it when it ran (core >= 0.57.0). A
+   * result that was not built by core's executors (hand-built, or serialized by an older core) is
+   * still submitted with its analysis; those two fields are omitted and one warning names the agents.
+   * Stamp a hand-built result with `definitionFacts` to include them.
+   *
    * @param project - Target project name.
    * @param workflowType - Workflow type (`agent`/`command`/`workflow`/`pipeline`).
-   * @param result - The execution result to submit.
+   * @param result - The execution result to submit: a command, workflow or pipeline result, or an
+   *   agent result from `runAgent` (accepted since 0.57.0).
+   *
+   * @example
+   * ```ts
+   * const result = await client.runAgent('code-validator', { target: './src' }, { trackResults: false });
+   * const saved = await client.submitResults('my-project', 'agent', result);
+   * saved.truncated; // what, if anything, was dropped to fit the tracker's limits
+   * ```
    * @returns The {@link RunSubmissionResponse} — run id/number, dashboard URL, correlation counts.
    * @throws {SubmissionError} If the service rejects the submission.
    * @throws {SdkApiError} For transport/auth failures from the submission service.
@@ -596,7 +614,7 @@ export class UluOpsClient {
   async submitResults(
     project: string,
     workflowType: string,
-    result: ExecutionResult,
+    result: ExecutionResult | AgentResult,
   ): Promise<RunSubmissionResponse> {
     return this.submission.submit({ project, workflowType, result });
   }
@@ -641,9 +659,12 @@ export class UluOpsClient {
       const response = await this.submission.submit({
         project: options?.project ?? this.config.defaultProject ?? inferredProject,
         workflowType,
-        // Pass original result — WorkflowResult.phases needed for per-agent decomposition
+        // Pass original result — WorkflowResult.phases needed for per-agent decomposition.
+        // No resolvedDefinition (spec v0.2.1 D2): every result carries its own definition facts
+        // (stamped by AgentExecutor.buildResult, or at the crash record above). Passing `resolved`
+        // here sent a composite's definition to extraction, where it masked the stamp in tests and
+        // was never the children's definition. `resolved` is still used for recordExecutions.
         result,
-        resolvedDefinition: resolved,
       });
       // Attach dashboard URL to original result for caller convenience
       result.dashboardUrl = response.dashboardUrl;

@@ -21,8 +21,15 @@ export interface RunSubmission {
   /** Optional raw markdown output */
   rawMarkdown?: string;
 
-  /** Resolved definition — enables analysis summary extraction at submission time.
-   * Passed through from UluOpsClient.trackIfEnabled() when available. */
+  /**
+   * An agent definition to take the decision vocabulary and category weights from, for a
+   * TOP-LEVEL `AgentResult` that carries no stamp of its own (hand-built, or serialized by core
+   * <= 0.56.2). Since core 0.57.0 every result core's executors build carries those two facts
+   * (`AgentResult.decisionVocabulary` / `categoryWeights`), analysis is extracted with or without
+   * this field, and `UluOpsClient` no longer sets it. It is never applied to a composite's
+   * children: a command, workflow or pipeline definition is not their definition. To stamp a
+   * hand-built result instead, use `definitionFacts` (exported).
+   */
   resolvedDefinition?: ResolvedDefinition;
 }
 
@@ -76,20 +83,27 @@ export interface RunSubmissionResponse {
   repairedRecommendations?: number;
 
   /**
-   * How many entries the client DROPPED to stay under the wire's client-side
-   * ceilings before sending — agents (100), recommendations (500), analysis
-   * records (100). Each ceiling is enforced inside `@uluops/ops-sdk` before any
-   * HTTP call and would otherwise abort the whole save, so core truncates the
-   * tail and warns; until now the warning was the only signal, and a caller
-   * reading the response had no way to know the run on the tracker is shorter
-   * than the run in memory (ship run #95, anxiety-reader). Zeros are measured:
-   * `{ agents: 0, ... }` means nothing was dropped. Absent on `getRun()` for the
-   * same reason as `repairedRecommendations`.
+   * How many entries the client DROPPED before sending, so the save could go through:
+   * - `agents` (wire cap 100), `recommendations` (500), `analysisRecords` (100, plus any
+   *   dropped from the end to keep the body under the tracker's 2 MB limit). Each cap is
+   *   enforced inside `@uluops/ops-sdk` before any HTTP call and would otherwise abort the
+   *   whole save, so core truncates the tail and warns (ship run #95, anxiety-reader).
+   * - `analysisSummaries` (core >= 0.57.0): per-agent summaries past the wire's 20, or dropped
+   *   from the end for the body limit.
+   * - `analysisSummariesInvalid` (core >= 0.57.0): summaries removed because the tracker would
+   *   have rejected them even after repair; their agents' rows and records were still sent.
+   *
+   * A dropped summary is visible only here and in the warning log: nothing on the tracker
+   * records it, so a run whose agent shows no summary may have had one dropped. Zeros are
+   * measured: `{ agents: 0, ... }` means nothing was dropped. Absent on `getRun()` for the same
+   * reason as `repairedRecommendations`.
    */
   truncated?: {
     agents: number;
     recommendations: number;
     analysisRecords: number;
+    analysisSummaries: number;
+    analysisSummariesInvalid: number;
   };
 }
 

@@ -689,8 +689,9 @@ describe('UluOpsClient', () => {
           score: agentResult.score,
           metrics: agentResult.metrics,
         }),
-        resolvedDefinition: expect.any(Object),
       }));
+      // Spec v0.2.1 D2: tracking passes no definition; every result carries its own facts.
+      expect(mockSubmissionSubmit.mock.calls[0]![0]).not.toHaveProperty('resolvedDefinition');
       expect(result.dashboardUrl).toBe('https://app.uluops.ai/runs/run-123');
     });
 
@@ -925,8 +926,9 @@ describe('UluOpsClient', () => {
         project: 'test',
         workflowType: 'validate',
         result: expect.objectContaining({ type: 'command' }),
-        resolvedDefinition: expect.any(Object),
       }));
+      // Spec v0.2.1 D2: tracking passes no definition; every result carries its own facts.
+      expect(mockSubmissionSubmit.mock.calls[0]![0]).not.toHaveProperty('resolvedDefinition');
       expect(result.dashboardUrl).toBe('https://app.uluops.ai/runs/run-123');
     });
   });
@@ -1097,8 +1099,9 @@ describe('UluOpsClient', () => {
         project: 'test',
         workflowType: 'validate',
         result: expect.objectContaining({ type: 'command' }),
-        resolvedDefinition: expect.any(Object),
       }));
+      // Spec v0.2.1 D2: tracking passes no definition; every result carries its own facts.
+      expect(mockSubmissionSubmit.mock.calls[0]![0]).not.toHaveProperty('resolvedDefinition');
       expect(result.dashboardUrl).toBe('https://app.uluops.ai/runs/run-123');
     });
   });
@@ -1601,5 +1604,41 @@ describe('UluOpsClient — extended thinking', () => {
     const client = new UluOpsClient({ apiKey: 'ulr_test-key-012345678901', ai: { providers: {}, extendedThinking: true as never } });
     expect((client as unknown as { config: { ai: { extendedThinkingMode: string } } }).config.ai.extendedThinkingMode).toBe('off');
     expect(mockLogger.warn).toHaveBeenCalledWith(expect.stringContaining('Extended thinking is OFF: ai.extendedThinking is "true"'));
+  });
+});
+
+describe('UluOpsClient — submission analysis fidelity (spec v0.2.1)', () => {
+  beforeEach(() => { vi.clearAllMocks(); });
+
+  it('V1: submitResults accepts a runAgent result (widened in 0.57.0) and passes no definition', async () => {
+    const client = new UluOpsClient({ apiKey: 'ulr_test-key-012345678901' });
+    mockSubmissionSubmit.mockResolvedValue(makeSubmissionResponse());
+    const agentResult = makeAgentResult();
+    // Type-level half of V1: on 0.56.2 this call does not compile (submitResults took ExecutionResult).
+    await client.submitResults('my-project', 'agent', agentResult);
+    expect(mockSubmissionSubmit).toHaveBeenCalledWith({ project: 'my-project', workflowType: 'agent', result: agentResult });
+  });
+
+  it('V9: a thrown run\'s crash record carries its agent\'s stamped vocabulary', async () => {
+    const client = new UluOpsClient({ apiKey: 'ulr_test-key-012345678901', trackingEnabled: true });
+    const resolved = makeResolvedDef('agent', 'code-validator');
+    (resolved.definition as unknown as { agent: Record<string, unknown> }).agent = {
+      interface: { name: 'code-validator', version: '1.0.0', displayName: 'cv', description: 'd', domain: 'software', agentType: 'validator' },
+      decisions: { vocabulary: { positive: 'PASS', conditional: 'REVIEW', negative: 'FAIL' } },
+    };
+    mockRegistryResolve.mockResolvedValue(resolved);
+    // A thrown run is tracked only when it billed usage (hasBilledMetrics).
+    mockAgentExecutorExecute.mockRejectedValue(new MaxStepsExhaustedError('exhausted', 50, 'tool-calls', {
+      inputTokens: 1000, outputTokens: 100, totalEffectiveTokens: 1100, durationMs: 10, model: 'anthropic:claude-sonnet-4-5', costUsd: 0.01,
+    }));
+    mockSubmissionSubmit.mockResolvedValue({ runId: 'r', runNumber: 1 });
+
+    await expect(client.runAgent('code-validator', '/tmp/test')).rejects.toBeInstanceOf(MaxStepsExhaustedError);
+
+    const submitted = mockSubmissionSubmit.mock.calls[0]![0] as { result: AgentResult; resolvedDefinition?: unknown };
+    // The crash record is the only source of the vocabulary now: tracking passes no definition.
+    expect(submitted).not.toHaveProperty('resolvedDefinition');
+    expect(submitted.result.decisionVocabulary).toBe('PASS/REVIEW/FAIL');
+    expect(submitted.result.categoryWeights).toBeNull();
   });
 });

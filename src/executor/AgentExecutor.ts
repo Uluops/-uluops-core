@@ -18,6 +18,8 @@ import type { ResolvedConfig } from '../types/config.js';
 import type { ResolvedDefinition, AgentRuntime, ExecutorRuntime } from '../types/registry.js';
 import type { ExecutionInput, ExecutionOptions, ExecutionMetrics, ResolvedExecutionContext, Recommendation } from '../types/execution.js';
 import type { AgentResult } from '../types/agent.js';
+import type { AgentDefinition } from '../types/agent.js';
+import { definitionFacts } from '../analysis/definitionFacts.js';
 import type { AgentType } from '../types/execution.js';
 import type { ParsedOutput, ExtractionResult } from '../types/parser.js';
 import { mapCategory } from './mapCategory.js';
@@ -854,6 +856,11 @@ export class AgentExecutor {
       degradationMarkers: degradationMarkers.length > 0 ? degradationMarkers : undefined,
       completeness,
       rawJson: parsed.rawJson,
+      // The two definition facts analysis extraction needs, stamped where every other
+      // definition-derived field is (submission-analysis-fidelity spec v0.2.1, D1). Carried on
+      // the result so a composite run's children are extracted against their OWN definitions,
+      // and so a serialized result keeps them.
+      ...definitionFacts(definitionOf(resolved)),
     };
   }
 
@@ -1204,4 +1211,10 @@ function capByThresholds(
   if (score < thresholds.warn) return 'negative';
   if (score < thresholds.pass && category === 'positive') return 'conditional';
   return category;
+}
+
+/** The agent definition inside a resolved definition, when it is one. */
+function definitionOf(resolved: ResolvedDefinition): AgentDefinition | undefined {
+  const def = resolved.definition;
+  return def && typeof def === 'object' && 'agent' in def ? (def as AgentDefinition) : undefined;
 }

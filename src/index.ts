@@ -21,6 +21,7 @@ export { TokenBudgetTracker } from './ai/TokenBudgetTracker.js';
 
 // ─── Analysis ────────────────────────────────────────────────────────────────
 export { AnalysisSummaryExtractor, type AnalysisExtractionResult } from './analysis/index.js';
+export { definitionFacts, type DefinitionFacts } from './analysis/definitionFacts.js';
 
 // ─── Utilities ────────────────────────────────────────────────────────────────
 export { OutputExtractor } from './parser/OutputExtractor.js';

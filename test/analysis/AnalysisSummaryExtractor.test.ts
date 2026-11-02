@@ -312,7 +312,9 @@ describe('AnalysisSummaryExtractor', () => {
     // truncation-with-warning, and (required) that exactly-at-the-cap is
     // passed through unchanged with no warning — without the control, a cap
     // that truncated everything to zero would pass just as well.
-    it('truncates exploration map sections over the wire cap (100) and warns naming the drop', () => {
+    it('truncates exploration map sections over the API cap (50) and warns naming the drop', () => {
+      // The API's cap (ops-api business-objects/analysis-summary.ts:85), stricter than ops-sdk's 100
+      // that this used to mirror: 51-100 sections passed core and the SDK and lost the whole save.
       const sections = Array.from({ length: 150 }, (_, i) => ({
         type: 'topology', label: `Section ${i}`, entities: [], relationships: [],
       }));
@@ -330,16 +332,16 @@ describe('AnalysisSummaryExtractor', () => {
       const { summary, warnings } = extractor.extract(result, resolved);
 
       expect(summary.explorationMaps).toHaveLength(1);
-      expect(summary.explorationMaps![0]!.sections).toHaveLength(100);
+      expect(summary.explorationMaps![0]!.sections).toHaveLength(50);
       expect(warnings).toBeDefined();
       const w = warnings!.find(m => m.includes('bateson-explorer'));
       expect(w).toBeDefined();
       expect(w).toMatch(/150/);
-      expect(w).toMatch(/50/);
+      expect(w).toMatch(/100/);
     });
 
-    it('control: exactly 100 exploration map sections pass through untouched with no warning', () => {
-      const sections = Array.from({ length: 100 }, (_, i) => ({
+    it('control: exactly 50 exploration map sections pass through untouched with no warning', () => {
+      const sections = Array.from({ length: 50 }, (_, i) => ({
         type: 'topology', label: `Section ${i}`, entities: [], relationships: [],
       }));
       const result = makeAgentResult({
@@ -355,7 +357,7 @@ describe('AnalysisSummaryExtractor', () => {
       const resolved = makeResolvedDefinition();
       const { summary, warnings } = extractor.extract(result, resolved);
 
-      expect(summary.explorationMaps![0]!.sections).toHaveLength(100);
+      expect(summary.explorationMaps![0]!.sections).toHaveLength(50);
       expect(warnings).toBeUndefined();
     });
 
@@ -1284,9 +1286,11 @@ describe('AnalysisSummaryExtractor', () => {
       }
     });
 
-    it('lets a record override the run-level agent, for multi-agent payloads', () => {
-      // Tier 1 honours a per-record agentName (`rec.agentName ?? result.name`). This is the
-      // capability the MCP layer could not use, because its schema never declared the field.
+    it('attributes every Tier-1 record to the agent that produced it, keeping a declared name in data', () => {
+      // Until core 0.57.0 Tier 1 honoured a per-record agentName (`rec.agentName ?? result.name`).
+      // Spec v0.2.1 D5 builds Tier-1 records from an allowlist and attributes them to this result's
+      // agent: an empty agentName failed ops-sdk's min(1) and lost the whole save, and a record filed
+      // under another name had no summary beside it. The declared name is kept, in data.
       const result = makeAgentResult({
         rawOutput: fenceWith({
           records: [
@@ -1296,7 +1300,9 @@ describe('AnalysisSummaryExtractor', () => {
         }),
       });
       const { records } = extractor.extract(result, makeResolvedDefinition());
-      expect(records.map((r) => r.agentName)).toEqual(['anxiety-reader', 'test-validator']);
+      expect(records.map((r) => r.agentName)).toEqual(['test-validator', 'test-validator']);
+      expect(records[0]!.data).toEqual({ declaredAgentName: 'anxiety-reader' });
+      expect(records[1]!.data).toEqual({});
     });
   });
 

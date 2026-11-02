@@ -4,8 +4,10 @@ import type { AnalysisSummaryInput, AnalysisRecordInput, CategoryScore, Explorat
 
 /** One typed section of an exploration map (the ops-sdk union member). */
 type ExplorationSection = ExplorationMap['sections'][number];
-import type { AgentResult, AgentDefinition } from '../types/agent.js';
+import type { AgentResult } from '../types/agent.js';
 import type { ResolvedDefinition } from '../types/registry.js';
+import { definitionFactsFromResolved, stampedFacts } from './definitionFacts.js';
+import { listForLog } from '../utils/listForLog.js';
 
 /**
  * Max length of the agent-local analysis recordId accepted by the tracker.
@@ -37,14 +39,14 @@ const ANALYSIS_RECORD_ID_MAX_LENGTH = 100;
 const ANALYSIS_RECORD_TYPE_MAX_LENGTH = 50;
 
 /**
- * Max sections per exploration map accepted by the tracker. Mirrors
- * `sections: z.array(...).max(100)` inside `explorationMaps` on
- * `AnalysisSummaryEntrySchema` (ops-sdk `SaveRunInputSchema`). Local constant
- * for the same reason as ANALYSIS_RECORD_ID_MAX_LENGTH above — that cap is
- * enforced client-side in ops-sdk before any HTTP call, so an unbounded
- * section count throws a ZodError that costs the whole analysis summary.
+ * Max sections per exploration map accepted by the tracker. This is the API's limit
+ * (ops-uluops-api `business-objects/analysis-summary.ts:85`, `sections: z.array(...).max(50)`),
+ * which is stricter than ops-sdk's client-side 100. Until core 0.57.0 this was 100 and said it
+ * "mirrors the @uluops/ops-sdk client-side schema cap": a map with 51-100 sections then passed core
+ * and the SDK and the API refused the whole save (submission-analysis-fidelity spec v0.2.1 §1.7).
+ * Mirror the stricter of the two.
  */
-const MAX_EXPLORATION_MAP_SECTIONS = 100;
+const MAX_EXPLORATION_MAP_SECTIONS = 50;
 
 /** Fallback when a record carries no usable type at all. */
 const FALLBACK_RECORD_TYPE = 'evidence_finding';
@@ -106,6 +108,13 @@ export interface AnalysisExtractionResult {
    * when extraction produced no repairs.
    */
   warnings?: string[];
+  /**
+   * True when the decision vocabulary or category weights could not be determined: the result
+   * carries no stamp (built outside core's executors, or serialized by core <= 0.56.2) and no agent
+   * definition was passed. Distinct from a definition that declares none (stamped `null`), which is
+   * complete and is never flagged. Submission names these agents in one warning per run.
+   */
+  factsUnavailable?: boolean;
 }
 
 /**
@@ -168,16 +177,47 @@ export class AnalysisSummaryExtractor {
    * marker. Callers must not write a try/catch expecting the documented failure — there
    * is no throwing path through extract().
    */
-  extract(result: AgentResult, resolved: ResolvedDefinition): AnalysisExtractionResult {
+  extract(result: AgentResult, resolved?: ResolvedDefinition): AnalysisExtractionResult {
     const analysisBlock = this.resolveAnalysisBlock(result);
     const warnings: string[] = [];
+    const facts = this.resolveFacts(result, resolved);
 
     const extraction: AnalysisExtractionResult = {
-      summary: this.buildSummary(result, resolved, analysisBlock, warnings),
+      summary: this.buildSummary(result, facts, analysisBlock, warnings),
       records: this.buildAnalysisRecords(result, analysisBlock, warnings),
     };
     if (warnings.length > 0) extraction.warnings = warnings;
+    if (facts.decisionVocabulary === undefined || facts.categoryWeights === undefined) {
+      extraction.factsUnavailable = true;
+    }
     return extraction;
+  }
+
+  /**
+   * The two definition facts, per field: the result's own stamp (core >= 0.57.0 stamps every
+   * result it builds), else the passed agent definition, else unavailable (`undefined`). The stamp
+   * comes first so a caller's definition can never replace an agent's own (spec v0.2.1 D2: a
+   * composite's definition reaching its children was §1.2's defect). `null` is a value: the
+   * definition declares none.
+   */
+  private resolveFacts(result: AgentResult, resolved?: ResolvedDefinition): {
+    decisionVocabulary: string | null | undefined;
+    categoryWeights: Map<string, number> | null | undefined;
+  } {
+    const stamped = stampedFacts(result);
+    const fromDefinition = stamped.decisionVocabulary === undefined || stamped.categoryWeights === undefined
+      ? definitionFactsFromResolved(resolved)
+      : undefined;
+    return {
+      decisionVocabulary: stamped.decisionVocabulary !== undefined
+        ? stamped.decisionVocabulary
+        : fromDefinition?.decisionVocabulary,
+      categoryWeights: stamped.categoryWeights !== undefined
+        ? stamped.categoryWeights
+        : fromDefinition
+          ? (fromDefinition.categoryWeights ? new Map(Object.entries(fromDefinition.categoryWeights)) : null)
+          : undefined,
+    };
   }
 
   /**
@@ -210,18 +250,19 @@ export class AnalysisSummaryExtractor {
 
   private buildSummary(
     result: AgentResult,
-    resolved: ResolvedDefinition,
+    facts: { decisionVocabulary: string | null | undefined; categoryWeights: Map<string, number> | null | undefined },
     analysisBlock: AgentAnalysisBlock | null,
     warnings: string[],
   ): AnalysisSummaryInput {
-    const definition = this.getAgentDefinition(resolved);
-
     return {
       agentName: result.name,
       decision: result.decision,
       score: result.score,
-      decisionVocabulary: this.buildDecisionVocabulary(definition),
-      categoryScores: analysisBlock?.category_scores ?? this.buildCategoryScores(result, definition),
+      decisionVocabulary: facts.decisionVocabulary ?? null,
+      // The agent's own analysis block wins when it emits category_scores (its weights included):
+      // that is the agent's statement of how it scored. Declared weights fill in only when it
+      // does not (spec v0.2.1 G1, D6). Integer repair happens at submission (apiOnlyBounds).
+      categoryScores: analysisBlock?.category_scores ?? this.buildCategoryScores(result, facts.categoryWeights, warnings),
       systemMetrics: this.buildSystemMetrics(result, analysisBlock, warnings),
       epistemicAssessment: this.withExtractionFacts(
         this.resolveEpistemicAssessment(analysisBlock, result.rawJson),
@@ -276,48 +317,27 @@ export class AnalysisSummaryExtractor {
     }
   }
 
-  // ─── Decision Vocabulary ────────────────────────────────────────────────
-
-  /**
-   * Build decision vocabulary string from definition.
-   * Format: "POSITIVE/CONDITIONAL/NEGATIVE" or "COMPLETE/PARTIAL/FAILED" for executors.
-   */
-  private buildDecisionVocabulary(definition?: AgentDefinition): string | null {
-    const agent = definition?.agent;
-    if (!agent) return null;
-
-    const decisions = agent.decisions?.vocabulary;
-    if (decisions) {
-      const parts = [decisions.positive, decisions.conditional, decisions.negative].filter(Boolean);
-      return parts.length > 0 ? parts.join('/') : null;
-    }
-
-    const completion = agent.completion?.vocabulary;
-    if (completion) {
-      const parts = [completion.complete, completion.partial, completion.failed].filter(Boolean);
-      return parts.length > 0 ? parts.join('/') : null;
-    }
-
-    return null;
-  }
-
   // ─── Category Scores ────────────────────────────────────────────────────
 
   /**
-   * Map result categories to CategoryScore[] using definition weights.
+   * Map result categories to CategoryScore[] using the declared weights.
    * Preserves raw score/maxScore ratio rather than normalizing to percentage.
+   *
+   * A category is matched to its declared weight by normalised name (lowercase, each run of
+   * non-alphanumerics replaced by one space, trimmed), so `Scale/Scope` matches `scale scope`.
+   * An unmatched category gets the equal share, never 1: until 0.57.0 an unmatched name fell to
+   * weight 1 whenever the definition declared categories, and stamping the definition onto every
+   * child (spec v0.2.1 D1) would have spread that to every composite run.
    */
-  private buildCategoryScores(result: AgentResult, definition?: AgentDefinition): CategoryScore[] | null {
+  private buildCategoryScores(
+    result: AgentResult,
+    declared: Map<string, number> | null | undefined,
+    warnings: string[],
+  ): CategoryScore[] | null {
     if (!result.categories || result.categories.length === 0) return null;
 
-    const definitionCategories = definition?.agent?.scoring?.categories;
     const weightMap = new Map<string, number>();
-
-    if (definitionCategories) {
-      for (const cat of definitionCategories) {
-        weightMap.set(cat.name, cat.weight);
-      }
-    }
+    for (const [name, weight] of declared ?? []) weightMap.set(normaliseCategoryName(name), weight);
 
     // Only score-bearing categories can become a CategoryScore (its `score` is a number).
     // Scoreless categories (score === null) are skipped — not fabricated to 0.
@@ -328,13 +348,20 @@ export class AnalysisSummaryExtractor {
     );
     if (scored.length === 0) return null;
 
-    const equalWeight = definitionCategories ? undefined : Math.round(100 / scored.length);
-
-    return scored.map(cat => ({
-      name: cat.name,
-      weight: weightMap.get(cat.name) ?? equalWeight ?? 1,
-      score: cat.score,
-    }));
+    const equalWeight = Math.round(100 / scored.length);
+    const unmatched: string[] = [];
+    const scores = scored.map(cat => {
+      const declaredWeight = weightMap.get(normaliseCategoryName(cat.name));
+      if (declaredWeight === undefined && weightMap.size > 0) unmatched.push(cat.name);
+      return { name: cat.name, weight: declaredWeight ?? equalWeight, score: cat.score };
+    });
+    if (unmatched.length > 0) {
+      warnings.push(
+        `Agent "${result.name}": ${unmatched.length} categor${unmatched.length === 1 ? 'y' : 'ies'} matched no declared ` +
+        `category (${listForLog(unmatched)}); given the equal share ${equalWeight}.`,
+      );
+    }
+    return scores;
   }
 
   // ─── System Metrics ─────────────────────────────────────────────────────
@@ -814,12 +841,17 @@ export class AnalysisSummaryExtractor {
     analysisBlock: AgentAnalysisBlock | null,
     warnings: string[],
   ): AnalysisRecordInput[] {
-    // Tier 1: analysis block records (JSON code fence)
+    // Tier 1: analysis block records (JSON code fence). Built from an allowlist, never spread
+    // (spec v0.2.1 D5). The spread forwarded whatever the agent wrote: the corpus's rendered
+    // templates emit `record_id`/`record_type` (snake_case), so `recordId` was missing and ops-sdk
+    // refused the WHOLE save client-side; an `agentType` off the enum, a numeric id (which threw
+    // inside safeRecordId, out of a method documented never to throw) and an empty agentName did
+    // the same. Records are attributed to this result's agent; a different declared name is kept
+    // in data.declaredAgentName rather than used as the record's identity.
     if (analysisBlock?.records && Array.isArray(analysisBlock.records) && analysisBlock.records.length > 0) {
-      return analysisBlock.records.map(rec => ({
-        ...rec,
-        agentName: rec.agentName ?? result.name,
-      }));
+      return (analysisBlock.records as unknown[])
+        .filter((rec): rec is Record<string, unknown> => !!rec && typeof rec === 'object' && !Array.isArray(rec))
+        .map(rec => this.tierOneRecord(rec, result.name));
     }
 
     // Tier 2: structured output analysisRecords
@@ -861,6 +893,32 @@ export class AnalysisSummaryExtractor {
         taxonomyVersion: rec.taxonomyVersion,
       },
     }));
+  }
+
+  /** One Tier-1 record, built from named fields only (see collectAnalysisRecords). */
+  private tierOneRecord(rec: Record<string, unknown>, agentName: string): AnalysisRecordInput {
+    const rawId = rec.recordId ?? rec.record_id;
+    const title = rec.title;
+    const declaredName = rec.agentName ?? rec.agent_name;
+    const data = rec.data;
+    const record: AnalysisRecordInput = {
+      agentName,
+      // Typed and bounded by the sanitizers in buildAnalysisRecords, like every other tier.
+      recordType: (rec.recordType ?? rec.record_type) as string,
+      recordId: this.safeRecordId(
+        rawId === undefined || rawId === null ? undefined : String(rawId),
+        `${agentName}/${String(title)}`,
+      ),
+      title: title as string,
+      classification: (rec.classification ?? null) as string | null,
+      severity: rec.severity == null ? null : String(rec.severity),
+      data: data as Record<string, unknown>,
+    };
+    if (typeof declaredName === 'string' && declaredName.trim() !== '' && declaredName !== agentName) {
+      const base = data && typeof data === 'object' && !Array.isArray(data) ? data as Record<string, unknown> : {};
+      record.data = { ...base, declaredAgentName: declaredName };
+    }
+    return record;
   }
 
   /**
@@ -1035,18 +1093,6 @@ export class AnalysisSummaryExtractor {
   }
 
   /**
-   * Get AgentDefinition from ResolvedDefinition, if available.
-   */
-  private getAgentDefinition(resolved: ResolvedDefinition): AgentDefinition | undefined {
-    if (resolved.type !== 'agent') return undefined;
-    const def = resolved.definition;
-    if (def && typeof def === 'object' && 'agent' in def) {
-      return def as AgentDefinition;
-    }
-    return undefined;
-  }
-
-  /**
    * Produce a recordId that fits within the tracker's recordId limit.
    * Uses the candidate id (failureCode or an agent-provided recordId) verbatim when
    * it fits, otherwise falls back to a bounded deterministic hash. The cap was 20;
@@ -1055,6 +1101,12 @@ export class AnalysisSummaryExtractor {
    */
   private safeRecordId(failureCode: string | undefined, fallbackInput: string): string {
     if (failureCode && failureCode.length <= ANALYSIS_RECORD_ID_MAX_LENGTH) return failureCode;
-    return 'r-' + createHash('sha256').update(failureCode ?? fallbackInput).digest('hex').substring(0, 16);
+    return 'r-' + createHash('sha256').update(failureCode || fallbackInput).digest('hex').substring(0, 16);
   }
 }
+
+/** Category-name key for weight matching: lowercase, runs of non-alphanumerics → one space, trimmed. */
+function normaliseCategoryName(name: string): string {
+  return name.toLowerCase().replace(/[^\p{L}\p{N}]+/gu, ' ').trim();
+}
+

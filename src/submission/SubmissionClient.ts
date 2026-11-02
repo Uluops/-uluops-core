@@ -32,6 +32,10 @@ import type { PipelineResult } from '../types/pipeline.js';
 import type { CommandResult } from '../types/command.js';
 import type { RunSubmission, RunSubmissionResponse, RunHistoryEntry, SubmissionQueryOptions } from '../types/submission.js';
 import { AnalysisSummaryExtractor } from '../analysis/AnalysisSummaryExtractor.js';
+import { analysisChildren } from './analysisChildren.js';
+import { repairSummary, repairRecord } from './apiOnlyBounds.js';
+import { isolateSummaries, guardRecordKeys, enforcePayloadBudget } from './payloadGuards.js';
+import { listForLog } from '../utils/listForLog.js';
 import { EXTRACTION_CONFIDENCE_THRESHOLD } from '../constants.js';
 import { isCanonicalMode, FAILURE_CODE_PATTERN, DOMAINS } from '@uluops/taxonomy';
 import { CRASH_PLACEHOLDER_VERSION } from '../utils/crashPlaceholder.js';
@@ -50,6 +54,16 @@ import { paramsLine } from '../executor/runVerdict.js';
  * never let a ceiling become a submission-aborting throw.
  */
 const MAX_ANALYSIS_RECORDS = 100;
+
+/** Max per-agent analysis summaries in one `runs.save` (ops-sdk and ops-api: `analysisSummary` array `.max(20)`). */
+const MAX_ANALYSIS_SUMMARIES = 20;
+
+/** What one submission dropped, by kind. See {@link RunSubmissionResponse.truncated}. */
+type SubmissionTruncation = NonNullable<RunSubmissionResponse['truncated']>;
+
+function emptyTally(): SubmissionTruncation {
+  return { agents: 0, recommendations: 0, analysisRecords: 0, analysisSummaries: 0, analysisSummariesInvalid: 0 };
+}
 
 /**
  * Ceiling on `agents` in one `runs.save` payload. Mirrors
@@ -165,8 +179,7 @@ export class SubmissionClient {
    * per call, how many entries it dropped — this just tallies that by kind instead of
    * discarding it after the log line (ship run #95, anxiety-reader).
    */
-  private truncationTally: { agents: number; recommendations: number; analysisRecords: number } =
-    { agents: 0, recommendations: 0, analysisRecords: 0 };
+  private truncationTally: SubmissionTruncation = emptyTally();
 
   /**
    * Repair one recommendation so it cannot abort the submission.
@@ -420,8 +433,11 @@ export class SubmissionClient {
    * When `config.trackingEnabled` is false, returns a synthesized local response
    * without any network call. Otherwise transforms the result and POSTs it.
    *
-   * @param submission - The run to submit. `submission.resolvedDefinition`, when
-   *   present, enables richer per-agent analysis extraction.
+   * @param submission - The run to submit. Analysis is extracted for every agent result in it, each
+   *   with the decision vocabulary and category weights stamped on that result by core's executors
+   *   (core >= 0.57.0). `submission.resolvedDefinition` is consulted only for a top-level AgentResult
+   *   that carries no stamp (hand-built, or serialized by an older core); it is never applied to a
+   *   composite's children.
    * @returns The {@link RunSubmissionResponse} — run id/number, dashboard URL, and correlation counts.
    * @throws {SubmissionError} If the service rejects the submission.
    * @throws {SdkApiError} For transport/auth failures from the underlying OpsClient.
@@ -668,9 +684,9 @@ export class SubmissionClient {
   private transformToOpsInput(submission: RunSubmission): {
     input: Parameters<OpsClient['runs']['save']>[0];
     repairedRecommendations: number;
-    truncated: { agents: number; recommendations: number; analysisRecords: number };
+    truncated: SubmissionTruncation;
   } {
-    this.truncationTally = { agents: 0, recommendations: 0, analysisRecords: 0 };
+    this.truncationTally = emptyTally();
     const { result } = submission;
 
     // Workflow/pipeline results: decompose phases/stages into per-agent entries.
@@ -683,46 +699,7 @@ export class SubmissionClient {
           ? this.commandRows(result)
           : [this.resultToAgent(result)];
 
-    // Extract analysis summary and records from agent results
-    let analysisSummary: AnalysisSummaryInput | undefined;
-    let analysisRecords: AnalysisRecordInput[] | undefined;
-
-    if (submission.resolvedDefinition) {
-      if (this.isAgentResult(result)) {
-        const analysis = this.analysisExtractor.extract(result as AgentResult, submission.resolvedDefinition);
-        analysisSummary = analysis.summary;
-        analysisRecords = analysis.records.length > 0
-          ? this.capWithWarning(analysis.records, MAX_ANALYSIS_RECORDS, 'analysis records', 'analysisRecords')
-          : undefined;
-        for (const w of analysis.warnings ?? []) this.logger.warn(w);
-      } else {
-        // Every other result type carries its agents' results somewhere: a pipeline on each stage
-        // (inline stages) or on a command-ref stage's CommandResult, a workflow on each phase's
-        // commands, a command directly (0.56.0; before it, the last three submitted no analysis).
-        const children = this.isPipelineResult(result)
-          ? (result as PipelineResult).stages.flatMap(stage => stage.agentResults && stage.agentResults.length > 0
-            ? stage.agentResults
-            : this.isCommandResult(stage.result) ? (stage.result.agentResults ?? []) : [])
-          : this.isWorkflowResult(result)
-            ? result.phases.flatMap(phase => phase.commands.flatMap(cmd => cmd.agentResults ?? []))
-            : this.isCommandResult(result) ? (result.agentResults ?? []) : [];
-        const allRecords: AnalysisRecordInput[] = [];
-        for (const agent of children) {
-          // A synthesized record (crash or aborted placeholder) has no analysis to extract and
-          // must never become the run-level summary — first in a stage, it used to win the
-          // "first summary" race below (aborted-agent-recording §5.2).
-          if (agent.version === CRASH_PLACEHOLDER_VERSION) continue;
-          const analysis = this.analysisExtractor.extract(agent, submission.resolvedDefinition);
-          if (analysis.records.length > 0) allRecords.push(...analysis.records);
-          // Use the first agent's summary as the run-level summary
-          if (!analysisSummary && analysis.summary) analysisSummary = analysis.summary;
-          for (const w of analysis.warnings ?? []) this.logger.warn(w);
-        }
-        if (allRecords.length > 0) {
-          analysisRecords = this.capWithWarning(allRecords, MAX_ANALYSIS_RECORDS, 'analysis records', 'analysisRecords');
-        }
-      }
-    }
+    const { analysisSummary, analysisRecords } = this.buildAnalysis(submission);
 
     // sanitizeRecommendation returns { sanitized, repairs } per recommendation — take
     // .sanitized for the wire payload, tally .repairs.length for the run-level count.
@@ -739,9 +716,65 @@ export class SubmissionClient {
     }
 
     const preCapRecommendationCount = sanitizedRecommendations.length;
-    let cappedRecommendations = this.capWithWarning(
+    const cappedRecommendations = this.capWithWarning(
       sanitizedRecommendations.map(r => r.sanitized), MAX_RECOMMENDATIONS, 'recommendations', 'recommendations',
     );
+
+    const input: Parameters<OpsClient['runs']['save']>[0] = {
+      project: submission.project,
+      workflowType: submission.workflowType,
+      idempotencyKey: submission.idempotencyKey,
+      agents,
+      recommendations: cappedRecommendations,
+      timestamp: new Date().toISOString(),
+      rawMarkdown: this.rawMarkdownFor(submission),
+      summary: {
+        allGatesPassed: this.savedVerdict(result),
+        // OMIT when scoreless — the tracker computes the average over scored agents
+        // or stores null. Never fabricate 0. (score-nullability spec, averageScore decision.)
+        //
+        // ALSO OMIT when the score is a NON-null number that nothing measured. aggregateScores'
+        // empty-input branch returns 0 when no phase/stage ran — deliberately, so that a GATED
+        // pipeline stage over an all-skipped workflow blocks instead of fail-opening (2026-08-24).
+        // That 0 is a gate signal, and PipelineExecutor.gateFailed confirms "nothing ran" from
+        // execution counts before acting on it. Standalone, or under a stage with no gate, no
+        // gate ever reads it and the same 0 arrived here as a measurement: `0 != null` is true,
+        // and the tracker stored a scored run that verified nothing, indistinguishable from a
+        // genuine failing one (748fcc02, 1082d5fb). Same positive-evidence check as the gate,
+        // same polarity as the null case above: send what is real, omit what is not. The run
+        // itself still submits — its agents, recommendations and skip structure are real data.
+        //
+        // CLAMPED, not forwarded raw: per-agent scores are clamped at [0,100]
+        // (AgentExecutor), but `aggregation.method: 'sum'` is an authorable
+        // AggregationMethod and summing two 90-score agents legitimately produces
+        // 180 here — outside the wire's `min(0).max(100)` and enough to abort the
+        // whole save (ship run #95, code-auditor).
+        ...(result.score != null && !verifiedNothingExecuted(result)
+          ? { averageScore: clampAverageScore(result.score, this.logger) }
+          : {}),
+      },
+      definitionType: result.type,
+      definitionName: result.name,
+      definitionVersion: result.version !== 'unknown' ? result.version : undefined,
+      definitionHash: result.definitionHash?.replace(/^sha256:/, ''),
+      definitionMinSubscription: result.minSubscription,
+      analysisSummary,
+      analysisRecords,
+    };
+
+    // D7 byte guard (spec v0.2.1): each field is bounded on its own, but together they can pass
+    // the API's 2 MB body limit, which answers 413 for the whole save. Runs before the truncation
+    // marker below so a record dropped here is announced like any other dropped record.
+    const budget = enforcePayloadBudget(input);
+    if (budget.droppedSummaries > 0 || budget.droppedRecords > 0) {
+      this.truncationTally.analysisSummaries += budget.droppedSummaries;
+      this.truncationTally.analysisRecords += budget.droppedRecords;
+      this.logger.warn(
+        `Submission payload exceeded the tracker's body limit; dropped ${budget.droppedSummaries} analysis ` +
+        `summar${budget.droppedSummaries === 1 ? 'y' : 'ies'} and ${budget.droppedRecords} analysis record(s) from the end.`,
+      );
+    }
+
     // Truncation (here or in agents/analysisRecords, tallied above) previously had NO
     // channel onto the wire itself — only a local log line and the `truncated` response
     // field, which the tracker's issue correlation never sees. A recommendation absent
@@ -749,60 +782,117 @@ export class SubmissionClient {
     // REGRESSION — silent data loss becomes fabricated issue-lifecycle history. Put a
     // stable, correlatable marker on the wire itself whenever anything was dropped
     // (ship run #96, anxiety-reader F8).
+    //
+    // Summaries do NOT raise the marker (spec v0.2.1 D3, Alex 2026-11-01): they never feed issue
+    // correlation, so a marker would file a permanent critical issue for every wide pipeline. Their
+    // loss is reported in `truncated.analysisSummaries` / `analysisSummariesInvalid` and a warning.
     if (preCapRecommendationCount > cappedRecommendations.length
       || this.truncationTally.agents > 0
       || this.truncationTally.analysisRecords > 0) {
-      if (cappedRecommendations.length >= MAX_RECOMMENDATIONS) {
-        cappedRecommendations = cappedRecommendations.slice(0, MAX_RECOMMENDATIONS - 1);
-      }
-      cappedRecommendations = [...cappedRecommendations, this.buildTruncationMarker(preCapRecommendationCount - cappedRecommendations.length)];
+      let recs = cappedRecommendations;
+      if (recs.length >= MAX_RECOMMENDATIONS) recs = recs.slice(0, MAX_RECOMMENDATIONS - 1);
+      input.recommendations = [...recs, this.buildTruncationMarker(preCapRecommendationCount - recs.length)];
     }
 
     return {
-      input: {
-        project: submission.project,
-        workflowType: submission.workflowType,
-        idempotencyKey: submission.idempotencyKey,
-        agents,
-        recommendations: cappedRecommendations,
-        timestamp: new Date().toISOString(),
-        rawMarkdown: this.rawMarkdownFor(submission),
-        summary: {
-          allGatesPassed: this.savedVerdict(result),
-          // OMIT when scoreless — the tracker computes the average over scored agents
-          // or stores null. Never fabricate 0. (score-nullability spec, averageScore decision.)
-          //
-          // ALSO OMIT when the score is a NON-null number that nothing measured. aggregateScores'
-          // empty-input branch returns 0 when no phase/stage ran — deliberately, so that a GATED
-          // pipeline stage over an all-skipped workflow blocks instead of fail-opening (2026-08-24).
-          // That 0 is a gate signal, and PipelineExecutor.gateFailed confirms "nothing ran" from
-          // execution counts before acting on it. Standalone, or under a stage with no gate, no
-          // gate ever reads it and the same 0 arrived here as a measurement: `0 != null` is true,
-          // and the tracker stored a scored run that verified nothing, indistinguishable from a
-          // genuine failing one (748fcc02, 1082d5fb). Same positive-evidence check as the gate,
-          // same polarity as the null case above: send what is real, omit what is not. The run
-          // itself still submits — its agents, recommendations and skip structure are real data.
-          //
-          // CLAMPED, not forwarded raw: per-agent scores are clamped at [0,100]
-          // (AgentExecutor), but `aggregation.method: 'sum'` is an authorable
-          // AggregationMethod and summing two 90-score agents legitimately produces
-          // 180 here — outside the wire's `min(0).max(100)` and enough to abort the
-          // whole save (ship run #95, code-auditor).
-          ...(result.score != null && !verifiedNothingExecuted(result)
-            ? { averageScore: clampAverageScore(result.score, this.logger) }
-            : {}),
-        },
-        definitionType: result.type,
-        definitionName: result.name,
-        definitionVersion: result.version !== 'unknown' ? result.version : undefined,
-        definitionHash: result.definitionHash?.replace(/^sha256:/, ''),
-        definitionMinSubscription: result.minSubscription,
-        analysisSummary,
-        analysisRecords,
-      },
+      input,
       repairedRecommendations,
       truncated: { ...this.truncationTally },
     };
+  }
+
+  /**
+   * The run's analysis summaries and records (submission-analysis-fidelity spec v0.2.1, D2-D5).
+   *
+   * Every agent result in the run is extracted, each against the facts stamped on it; a composite's
+   * definition is never applied to its children (§1.2). Then, in order: repair to the API-only
+   * bounds (D6), isolate summaries that would still fail ops-sdk's schema (D4), cap summaries at
+   * the wire's 20, cap records at 100, and make record keys unique per agent (D5). An agent run
+   * keeps the single-object summary form; a composite run sends one summary per agent.
+   */
+  private buildAnalysis(submission: RunSubmission): {
+    analysisSummary: AnalysisSummaryInput | AnalysisSummaryInput[] | undefined;
+    analysisRecords: AnalysisRecordInput[] | undefined;
+  } {
+    const { result } = submission;
+    const isAgentRun = this.isAgentResult(result);
+    const children = isAgentRun ? [result as AgentResult] : analysisChildren(result);
+
+    let summaries: AnalysisSummaryInput[] = [];
+    let records: AnalysisRecordInput[] = [];
+    const unstamped: string[] = [];
+    for (const agent of children) {
+      // A caller's definition is consulted only for a top-level AgentResult without a stamp.
+      const analysis = this.analysisExtractor.extract(agent, isAgentRun ? submission.resolvedDefinition : undefined);
+      summaries.push(analysis.summary);
+      records.push(...analysis.records);
+      if (analysis.factsUnavailable) unstamped.push(agent.name);
+      for (const w of analysis.warnings ?? []) this.logger.warn(w);
+    }
+    if (unstamped.length > 0) {
+      this.logger.warn(
+        `Analysis for ${listForLog(unstamped)}: decision vocabulary and category weights unavailable ` +
+        `(result was not built by core >= 0.57.0).`,
+      );
+    }
+
+    // D6: repair to the API-only bounds, keeping the data.
+    summaries = summaries.map(summary => {
+      const { summary: repaired, repairs } = repairSummary(summary);
+      if (repairs.length > 0) {
+        this.logger.warn(
+          `Analysis summary for ${listForLog([String(summary.agentName ?? 'unknown')])} repaired to the tracker's limits: ${repairs.join('; ')}.`,
+        );
+      }
+      return repaired;
+    });
+    let repairedRecords = 0;
+    records = records.map(record => {
+      const { record: repaired, repaired: changed } = repairRecord(record);
+      if (changed) repairedRecords++;
+      return repaired;
+    });
+    if (repairedRecords > 0) {
+      this.logger.warn(`${repairedRecords} analysis record(s) had data over the tracker's 64 KiB / depth-8 limit; replaced with a stub.`);
+    }
+
+    // D4: isolate what repair could not fix.
+    const { valid, invalid } = isolateSummaries(summaries);
+    if (invalid.length > 0) {
+      this.truncationTally.analysisSummariesInvalid += invalid.length;
+      this.logger.warn(
+        `Dropped ${invalid.length} analysis summar${invalid.length === 1 ? 'y' : 'ies'} the tracker would reject ` +
+        `(${listForLog(invalid.map(i => `${i.agentName} at ${i.position}`))}); their agents' rows and records are kept.`,
+      );
+    }
+    summaries = valid;
+
+    // D3: the wire takes at most 20 summaries. No marker (see transformToOpsInput).
+    if (summaries.length > MAX_ANALYSIS_SUMMARIES) {
+      const dropped = summaries.slice(MAX_ANALYSIS_SUMMARIES);
+      this.truncationTally.analysisSummaries += dropped.length;
+      this.logger.warn(
+        `Submission produced ${summaries.length} analysis summaries, exceeding the wire limit of ${MAX_ANALYSIS_SUMMARIES}; ` +
+        `dropped ${listForLog(dropped.map(d => String(d.agentName ?? 'unknown')))}.`,
+      );
+      summaries = summaries.slice(0, MAX_ANALYSIS_SUMMARIES);
+    }
+
+    records = this.capWithWarning(records, MAX_ANALYSIS_RECORDS, 'analysis records', 'analysisRecords');
+
+    // D5: unique (agent, recordId) keys under the server's fold.
+    const guarded = guardRecordKeys(records);
+    for (const [agentName, count] of guarded.renamedByAgent) {
+      this.logger.warn(
+        `${count} analysis record(s) from ${listForLog([agentName])} shared a record id with an earlier one; suffixed with ~n.`,
+      );
+    }
+    records = guarded.records;
+
+    const analysisSummary = isAgentRun
+      ? summaries[0]
+      : summaries.length > 0 ? summaries : undefined;
+    return { analysisSummary, analysisRecords: records.length > 0 ? records : undefined };
   }
 
   /**

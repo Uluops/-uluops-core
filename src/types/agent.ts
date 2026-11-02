@@ -556,11 +556,12 @@ interface AgentResultBase {
   repairedRecommendations?: number;
 
   /**
-   * How many agents/recommendations/analysis records the tracking submission dropped
-   * at the client-side wire ceilings. Mirrors `ExecutionResult.submissionTruncated`
-   * (ship run #96, anxiety-reader F13).
+   * How many agents/recommendations/analysis records/analysis summaries the tracking
+   * submission dropped. Mirrors `ExecutionResult.submissionTruncated` and
+   * `RunSubmissionResponse.truncated`, which documents each key (ship run #96,
+   * anxiety-reader F13; summary keys since core 0.57.0).
    */
-  submissionTruncated?: { agents: number; recommendations: number; analysisRecords: number };
+  submissionTruncated?: { agents: number; recommendations: number; analysisRecords: number; analysisSummaries: number; analysisSummariesInvalid: number };
 
   /** Execution metrics */
   metrics: ExecutionMetrics;
@@ -679,4 +680,21 @@ export interface AgentResult extends AgentResultBase {
 
   /** Generated artifacts (executor agents) */
   artifacts?: ArtifactResult[];
+
+  /**
+   * The agent definition's declared decision tokens, joined with '/', stamped at build time
+   * (core >= 0.57.0; `definitionFacts`). `null`: the definition declares none. Absent: the result
+   * was not built by core's executors (hand-built, or serialized by core <= 0.56.2), and tracker
+   * submission warns that the vocabulary is unavailable. Read by analysis extraction so each agent
+   * in a composite run is submitted with its own vocabulary, not its parent's.
+   */
+  decisionVocabulary?: string | null;
+
+  /**
+   * The agent definition's declared category weights by category name, stamped at build time
+   * (core >= 0.57.0; `definitionFacts`). `null`: the definition declares no scoring categories.
+   * Absent: not stamped (see `decisionVocabulary`). Used when the agent's own analysis block emits
+   * no `category_scores`; the block's weights take precedence when it does.
+   */
+  categoryWeights?: Record<string, number> | null;
 }
