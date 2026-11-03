@@ -1,5 +1,5 @@
 import type { AnalysisRejection } from '@uluops/ops-sdk';
-import type { Domain, AgentType, ExecutionMetrics, Recommendation, SubscriptionTier, TrackingError } from './execution.js';
+import type { Domain, AgentType, ExecutionMetrics, Recommendation, SubscriptionTier, TrackingError, SubmissionTruncation } from './execution.js';
 import type { Finding, ArtifactResult } from './command.js';
 import type { DegradationMarker, Completeness } from './degradation.js';
 
@@ -562,7 +562,7 @@ interface AgentResultBase {
    * `RunSubmissionResponse.truncated`, which documents each key (ship run #96,
    * anxiety-reader F13; summary keys since core 0.57.0).
    */
-  submissionTruncated?: { agents: number; recommendations: number; analysisRecords: number; analysisSummaries: number; analysisSummariesInvalid: number };
+  submissionTruncated?: SubmissionTruncation;
 
   /**
    * Agents whose analysis the tracker rejected while keeping the run (core >= 0.58.0). Mirrors

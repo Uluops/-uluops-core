@@ -679,7 +679,10 @@ export class UluOpsClient {
       result.submissionTruncated = response.truncated;
       // The tracker's per-agent rejection (ops-api R2): the run is saved, so this is not
       // trackingFailed. Mirrored for the same reason as the two fields above.
+      // Set or cleared on every pass, like the fields above, so a result tracked twice
+      // never keeps the first pass's value (R3 review, code-auditor).
       if (response.analysisRejected !== undefined) result.analysisRejected = response.analysisRejected;
+      else delete result.analysisRejected;
 
       await this.recordExecutions(resolved, result, response.runId);
     } catch (error) {

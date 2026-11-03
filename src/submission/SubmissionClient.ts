@@ -95,6 +95,16 @@ const MAX_RECOMMENDATIONS = 500;
  * Confirmed: an unclamped 200 aborts the whole `runs.save`, losing every agent,
  * recommendation and analysis record for the run (ship run #95, code-auditor).
  */
+/** `1 record` / `2 records`. */
+function plural(n: number, one: string, many: string): string {
+  return `${String(n)} ${n === 1 ? one : many}`;
+}
+
+/** A non-negative finite number from an open `detail` record, else 0. */
+function numberOr(v: unknown): number {
+  return typeof v === 'number' && Number.isFinite(v) && v >= 0 ? v : 0;
+}
+
 function clampMaxScore(value: number, logger: Logger): number {
   // NaN is neither >=0 nor <=100, so it fell into the clamp branch below — and
   // Math.max(0, Math.min(100, NaN)) is NaN, which still aborts the whole save.
@@ -456,14 +466,24 @@ export class SubmissionClient {
     const response = await this.ops.runs.save(input);
     // The server's per-agent verdict (ops-api R2). Logged per agent here because before this a
     // fully rejected save left trackingFailed false and said nothing (spec perverse read P1).
+    // R3 review (tracker run #3): the folded `units_omitted` row is N agents, not one entry
+    // (code-auditor, test-architect S5); a replay's rejection is history (code-auditor); and the
+    // run's dashboard URL gives an automated caller somewhere to act (perverse-outcome F8).
     const rejected = response.analysisWrite?.rejected;
-    for (const r of rejected ?? []) {
-      this.logger.warn(
-        `Run #${String(response.run.runNumber)} saved, but the tracker rejected the analysis of ` +
-        `${r.agentName === null ? '(an entry that is its own unit)' : JSON.stringify(r.agentName)} ` +
-        `(${r.reason}; ${String(r.recordsRejected)} records, ${String(r.summariesRejected)} summaries not stored). ` +
-        `Repair with ops-sdk runs.update on run ${response.run.id}; do not submit again (that creates a second run).`,
-      );
+    if (rejected !== undefined && rejected.length > 0) {
+      const runRef = `Run #${String(response.run.runNumber)}`;
+      const where = `${this.buildDashboardUrl(response.run)} (run id ${response.run.id})`;
+      const replay = response.deduplicated ? ' This was a replay of an earlier identical save: the rejection is from that save and may have been repaired since.' : '';
+      for (const r of rejected) {
+        const counts = `${plural(r.recordsRejected, 'record', 'records')} and ${plural(r.summariesRejected, 'summary', 'summaries')} not stored`;
+        const what = r.reason === 'units_omitted'
+          ? `${plural(numberOr(r.detail['unitsOmitted']), 'more agent', 'more agents')} not itemized (${counts}; the run's analysis shows which agents have none)`
+          : `${r.agentName === null ? '(an entry that is its own unit)' : JSON.stringify(r.agentName)} (${r.reason}; ${counts})`;
+        this.logger.warn(
+          `${runRef} saved, but the tracker rejected the analysis of ${what}.${replay} ` +
+          `Repair with ops-sdk runs.update on ${where}; do not submit again (that creates a second run).`,
+        );
+      }
     }
 
     return {

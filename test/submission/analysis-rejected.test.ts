@@ -73,10 +73,25 @@ describe('SubmissionClient.submit: analysisRejected', () => {
     await new SubmissionClient(config, logger).submit(submission);
     const mine = warnings.filter(w => w.includes('rejected the analysis'));
     expect(mine).toHaveLength(2);
-    expect(mine[0]).toContain('Run #7 saved, but the tracker rejected the analysis of "agent-a" (entry_invalid; 2 records, 1 summaries not stored)');
-    expect(mine[0]).toContain('runs.update on run run-uuid-7');
+    expect(mine[0]).toContain('Run #7 saved, but the tracker rejected the analysis of "agent-a" (entry_invalid; 2 records and 1 summary not stored).');
+    expect(mine[0]).toMatch(/runs\.update on https:\/\/app\.example\.com\S* \(run id run-uuid-7\)/);
     expect(mine[0]).toContain('do not submit again');
     expect(mine[1]).toContain('(an entry that is its own unit)');
+  });
+
+  it('the folded units_omitted row is reported as N agents, not as one entry (R3 review S5)', async () => {
+    const FOLDED = { agentName: null, reason: 'units_omitted', recordsRejected: 9, summariesRejected: 3, detail: { unitsOmitted: 3, recordsRejected: 9, summariesRejected: 3 } };
+    mockSave.mockResolvedValueOnce(reply(echo([REJECTED_A, FOLDED])));
+    await new SubmissionClient(config, logger).submit(submission);
+    const folded = warnings.find(w => w.includes('not itemized'));
+    expect(folded).toContain('the analysis of 3 more agents not itemized (9 records and 3 summaries not stored;');
+    expect(folded).not.toContain('its own unit');
+  });
+
+  it('a deduplicated replay says the rejection is from the earlier save', async () => {
+    mockSave.mockResolvedValueOnce({ ...reply(echo([REJECTED_A])), deduplicated: true });
+    await new SubmissionClient(config, logger).submit(submission);
+    expect(warnings.find(w => w.includes('rejected the analysis'))).toContain('This was a replay of an earlier identical save');
   });
 
   it('an empty rejected[] is kept as [] (the server reported: nothing rejected) and warns nothing', async () => {

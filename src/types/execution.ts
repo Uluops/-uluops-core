@@ -224,7 +224,7 @@ export interface ExecutionResult {
    * and then unreachable from every primary entry point. Keep all three declarations of this
    * shape (here, `AgentResult.submissionTruncated`, `RunSubmissionResponse.truncated`) in step.
    */
-  submissionTruncated?: { agents: number; recommendations: number; analysisRecords: number; analysisSummaries: number; analysisSummariesInvalid: number };
+  submissionTruncated?: SubmissionTruncation;
 
   /**
    * Agents whose analysis the tracker rejected while keeping the run (core >= 0.58.0). Mirrors
@@ -555,3 +555,25 @@ export interface Recommendation {
   /** Fingerprint for correlation (populated by validation API) */
   fingerprint?: string;
 }
+
+/**
+ * What the client dropped before sending so the save could go through (core >= 0.57.0).
+ * Shared by `RunSubmissionResponse.truncated` and `submissionTruncated` on results.
+ */
+export interface SubmissionTruncation {
+  /** Agents past the wire cap of 100. */
+  agents: number;
+  /** Recommendations past the wire cap of 500. */
+  recommendations: number;
+  /** Analysis records past 100, or dropped from the end for the 2 MB body limit. */
+  analysisRecords: number;
+  /** Summaries past the wire's 20, or dropped from the end for the body limit. */
+  analysisSummaries: number;
+  /**
+   * @deprecated Always 0 since core 0.58.0; removed in the next major. 0.57.0 counted the
+   * summaries it dropped for failing ops-sdk's entry schema. 0.58.0 sends them, and the
+   * tracker's verdict arrives in `analysisRejected`.
+   */
+  analysisSummariesInvalid: number;
+}
+

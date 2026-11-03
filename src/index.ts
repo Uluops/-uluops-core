@@ -67,6 +67,7 @@ export type {
   ExecutionOptions,
   Recommendation,
   TrackingError,
+  SubmissionTruncation,
 } from './types/execution.js';
 
 // ─── Types: Agent ─────────────────────────────────────────────────────────────

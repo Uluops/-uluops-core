@@ -1,5 +1,5 @@
 import type { AnalysisRejection } from '@uluops/ops-sdk';
-import type { ExecutionResult, Recommendation } from './execution.js';
+import type { ExecutionResult, Recommendation, SubmissionTruncation } from './execution.js';
 import type { AgentResult } from './agent.js';
 import type { ResolvedDefinition } from './registry.js';
 
@@ -100,13 +100,7 @@ export interface RunSubmissionResponse {
    * measured: `{ agents: 0, ... }` means nothing was dropped. Absent on `getRun()` for the same
    * reason as `repairedRecommendations`.
    */
-  truncated?: {
-    agents: number;
-    recommendations: number;
-    analysisRecords: number;
-    analysisSummaries: number;
-    analysisSummariesInvalid: number;
-  };
+  truncated?: SubmissionTruncation;
 
   /**
    * Agents whose analysis the tracker REJECTED while keeping the run (core >= 0.58.0; ops-api
