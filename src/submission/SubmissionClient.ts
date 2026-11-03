@@ -439,10 +439,13 @@ export class SubmissionClient {
    *   that carries no stamp (hand-built, or serialized by an older core); it is never applied to a
    *   composite's children.
    * @returns The {@link RunSubmissionResponse} — run id/number, dashboard URL, and correlation counts.
-   * @throws {SubmissionError} If the service rejects the submission.
-   * @throws {SdkApiError} For transport/auth failures from the underlying OpsClient.
-   *   Test with `isApiErrorLike()`, not `instanceof SdkApiError`: the class can come from a
-   *   different copy of sdk-core (dual-package hazard; see the README).
+   *   When the tracker rejects an agent's analysis but keeps the run, the response carries
+   *   `analysisRejected` and each rejected agent is logged at `warn`; nothing throws.
+   * @throws {InputValidationError} (from `@uluops/ops-sdk`) If the payload fails the SDK's
+   *   client-side checks. Analysis is checked as an envelope only (ops-sdk >= 7.3.0).
+   * @throws {SdkApiError} For transport/auth failures and server refusals from the underlying
+   *   OpsClient. Test with `isApiErrorLike()`, not `instanceof SdkApiError`: the class can come
+   *   from a different copy of sdk-core (dual-package hazard; see the README).
    */
   async submit(submission: RunSubmission): Promise<RunSubmissionResponse> {
     if (!this.config.trackingEnabled) {
@@ -451,6 +454,17 @@ export class SubmissionClient {
 
     const { input, repairedRecommendations, truncated } = this.transformToOpsInput(submission);
     const response = await this.ops.runs.save(input);
+    // The server's per-agent verdict (ops-api R2). Logged per agent here because before this a
+    // fully rejected save left trackingFailed false and said nothing (spec perverse read P1).
+    const rejected = response.analysisWrite?.rejected;
+    for (const r of rejected ?? []) {
+      this.logger.warn(
+        `Run #${String(response.run.runNumber)} saved, but the tracker rejected the analysis of ` +
+        `${r.agentName === null ? '(an entry that is its own unit)' : JSON.stringify(r.agentName)} ` +
+        `(${r.reason}; ${String(r.recordsRejected)} records, ${String(r.summariesRejected)} summaries not stored). ` +
+        `Repair with ops-sdk runs.update on run ${response.run.id}; do not submit again (that creates a second run).`,
+      );
+    }
 
     return {
       runId: response.run.id,
@@ -467,6 +481,7 @@ export class SubmissionClient {
       deduplicated: response.deduplicated,
       repairedRecommendations,
       truncated,
+      ...(rejected !== undefined && { analysisRejected: rejected }),
     };
   }
 

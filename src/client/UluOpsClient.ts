@@ -606,7 +606,9 @@ export class UluOpsClient {
    * saved.truncated; // what, if anything, was dropped to fit the tracker's limits
    * ```
    * @returns The {@link RunSubmissionResponse} — run id/number, dashboard URL, correlation counts.
-   * @throws {SubmissionError} If the service rejects the submission.
+   * @throws {InputValidationError} (from `@uluops/ops-sdk`) If the payload fails the SDK's
+   *   client-side envelope checks. A rejected agent's analysis does not throw: see
+   *   {@link RunSubmissionResponse.analysisRejected}.
    * @throws {SdkApiError} For transport/auth failures from the submission service.
    *   Test with `isApiErrorLike()`, not `instanceof SdkApiError`: the class can come from a
    *   different copy of sdk-core (dual-package hazard; see the README).
@@ -675,6 +677,9 @@ export class UluOpsClient {
       // this field exists to announce (ship run #96, anxiety-reader F13).
       result.repairedRecommendations = response.repairedRecommendations;
       result.submissionTruncated = response.truncated;
+      // The tracker's per-agent rejection (ops-api R2): the run is saved, so this is not
+      // trackingFailed. Mirrored for the same reason as the two fields above.
+      if (response.analysisRejected !== undefined) result.analysisRejected = response.analysisRejected;
 
       await this.recordExecutions(resolved, result, response.runId);
     } catch (error) {

@@ -715,6 +715,33 @@ describe('UluOpsClient', () => {
       expect(result.submissionTruncated).toEqual({ agents: 0, recommendations: 12, analysisRecords: 0 });
     });
 
+    // analysis-never-loses-the-run R3: the tracker kept the run and rejected one agent's
+    // analysis. That is not a tracking failure. On 0.57.0 analysisRejected is undefined here.
+    it('surfaces analysisRejected onto the result without setting trackingFailed', async () => {
+      const client = new UluOpsClient({ apiKey: 'ulr_test-key-012345678901', trackingEnabled: true });
+      mockRegistryResolve.mockResolvedValue(makeResolvedDef('agent', 'code-validator'));
+      mockAgentExecutorExecute.mockResolvedValue(makeAgentResult());
+      const rejected = [{ agentName: 'code-validator', reason: 'entry_invalid', recordsRejected: 3, summariesRejected: 1, detail: {} }];
+      mockSubmissionSubmit.mockResolvedValueOnce(makeSubmissionResponse({ analysisRejected: rejected }));
+
+      const result = await client.runAgent('code-validator', '/tmp/test');
+
+      expect(result.dashboardUrl).toBe('https://app.uluops.ai/runs/run-123'); // tracking ran
+      expect(result.analysisRejected).toEqual(rejected);
+      expect(result.trackingFailed).toBeUndefined();
+    });
+
+    it('leaves analysisRejected unset when the response carries none', async () => {
+      const client = new UluOpsClient({ apiKey: 'ulr_test-key-012345678901', trackingEnabled: true });
+      mockRegistryResolve.mockResolvedValue(makeResolvedDef('agent', 'code-validator'));
+      mockAgentExecutorExecute.mockResolvedValue(makeAgentResult());
+
+      const result = await client.runAgent('code-validator', '/tmp/test');
+
+      expect(result.dashboardUrl).toBe('https://app.uluops.ai/runs/run-123');
+      expect(result).not.toHaveProperty('analysisRejected');
+    });
+
     it('control: repairedRecommendations/submissionTruncated are absent when tracking fails', async () => {
       const client = new UluOpsClient({ apiKey: 'ulr_test-key-012345678901', trackingEnabled: true });
       mockRegistryResolve.mockResolvedValue(makeResolvedDef('agent', 'code-validator'));

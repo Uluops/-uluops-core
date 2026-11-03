@@ -1,3 +1,4 @@
+import type { AnalysisRejection } from '@uluops/ops-sdk';
 import type { Domain, AgentType, ExecutionMetrics, Recommendation, SubscriptionTier, TrackingError } from './execution.js';
 import type { Finding, ArtifactResult } from './command.js';
 import type { DegradationMarker, Completeness } from './degradation.js';
@@ -562,6 +563,13 @@ interface AgentResultBase {
    * anxiety-reader F13; summary keys since core 0.57.0).
    */
   submissionTruncated?: { agents: number; recommendations: number; analysisRecords: number; analysisSummaries: number; analysisSummariesInvalid: number };
+
+  /**
+   * Agents whose analysis the tracker rejected while keeping the run (core >= 0.58.0). Mirrors
+   * {@link RunSubmissionResponse.analysisRejected}; set by tracking when the server reported it.
+   * Not a tracking failure: `trackingFailed` stays unset, because the run was saved.
+   */
+  analysisRejected?: AnalysisRejection[];
 
   /** Execution metrics */
   metrics: ExecutionMetrics;

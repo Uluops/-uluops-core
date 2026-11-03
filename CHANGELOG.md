@@ -6,6 +6,19 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) 
 
 ## [Unreleased]
 
+## [0.58.0] - 2026-11-03
+
+### Added
+- **`analysisRejected` on `RunSubmissionResponse`, `ExecutionResult` and `AgentResult`** (ops-uluops-api analysis-never-loses-the-run spec v0.2.3 §3.5, phase R3). Since ops-api R2 the tracker keeps the run and rejects one agent's analysis as a unit, reporting it in the save echo's `analysisWrite.rejected`. `submit()` built its response field by field and dropped the echo, so a fully rejected save left `trackingFailed` unset and said nothing anywhere (the spec's perverse read, P1). Now the list is mapped through (`[]` when the server reported nothing rejected; absent for a server before R2, a local response and `getRun()`), carried onto the result on the auto-tracking path like `submissionTruncated`, and each rejected agent is logged at `warn` with the run, the repair (`runs.update` on that run) and the warning that submitting again creates a second run. `trackingFailed` is not set: the run was saved.
+
+### Changed
+- `@uluops/ops-sdk` 7.1.0 → **7.3.0** (exact). 7.1.0 stripped `analysisWrite.rejected`, and 7.3.0 validates analysis as an envelope only, so an entry the server would reject for one agent no longer throws `InputValidationError` client-side and costs the whole save. sdk-core stays 0.19.0 (one copy in the tree).
+- **Docs only: `@throws {SubmissionError}` removed** from `SubmissionClient.submit` and `UluOpsClient.submitResults`. No method in `src/` throws it (`/usr/bin/grep -rn "new SubmissionError" src` → 0, 2026-11-03). The JSDoc now names what does throw: the SDK's `InputValidationError` (envelope checks) and `SdkApiError`. The README error table says the same. The class and its codes stay exported.
+
+### Not changed — recorded so the next reader does not re-derive it
+- **Core still drops a summary it predicts the tracker would reject** (`truncated.analysisSummariesInvalid`, 0.57.0). That guard predates ops-api R2: then, one invalid summary cost the whole save. Now the server would reject that agent's summary and records together, so the client-side drop keeps the agent's records where the server would not. Whether to keep it is an open question for analysis-never-loses-the-run (it is not in R3's list); it is left unchanged here.
+- Core's repairs (score rounding, text truncation, recommendation sanitizing) stay: they preserve data that would otherwise be rejected (spec §3.5).
+
 ## [0.57.0] - 2026-11-01
 
 **Analysis data now reaches the tracker for every agent in a run, and an agent's analysis can no

@@ -1,3 +1,4 @@
+import type { AnalysisRejection } from '@uluops/ops-sdk';
 /**
  * Definition type discriminator.
  *
@@ -224,6 +225,13 @@ export interface ExecutionResult {
    * shape (here, `AgentResult.submissionTruncated`, `RunSubmissionResponse.truncated`) in step.
    */
   submissionTruncated?: { agents: number; recommendations: number; analysisRecords: number; analysisSummaries: number; analysisSummariesInvalid: number };
+
+  /**
+   * Agents whose analysis the tracker rejected while keeping the run (core >= 0.58.0). Mirrors
+   * {@link RunSubmissionResponse.analysisRejected}; set by tracking when the server reported it.
+   * Not a tracking failure: `trackingFailed` stays unset, because the run was saved.
+   */
+  analysisRejected?: AnalysisRejection[];
 
   /** All recommendations (flattened for workflows/pipelines) */
   recommendations: Recommendation[];

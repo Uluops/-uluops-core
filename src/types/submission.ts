@@ -1,3 +1,4 @@
+import type { AnalysisRejection } from '@uluops/ops-sdk';
 import type { ExecutionResult, Recommendation } from './execution.js';
 import type { AgentResult } from './agent.js';
 import type { ResolvedDefinition } from './registry.js';
@@ -105,6 +106,20 @@ export interface RunSubmissionResponse {
     analysisSummaries: number;
     analysisSummariesInvalid: number;
   };
+
+  /**
+   * Agents whose analysis the tracker REJECTED while keeping the run (core >= 0.58.0; ops-api
+   * R2, analysis-never-loses-the-run). The server judges analysis per agent: one invalid entry
+   * rejects that agent's records and summary as a unit, and the save still succeeds. Each item is
+   * ops-sdk's {@link AnalysisRejection}: `agentName` (null for an entry that is its own unit, and
+   * for the `units_omitted` row), an open-string `reason`, the counts not stored, and `detail`.
+   *
+   * Unlike {@link truncated}, this is the SERVER's verdict, not a client-side drop. Present when
+   * the server reported it (`[]` = nothing rejected); absent for a server before R2, a local
+   * (tracking-off) response and `getRun()`. Repair with ops-sdk's `runs.update` on this run,
+   * sending each rejected agent's complete set; submitting again creates a second run.
+   */
+  analysisRejected?: AnalysisRejection[];
 }
 
 /**
