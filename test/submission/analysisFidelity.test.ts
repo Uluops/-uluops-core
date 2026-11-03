@@ -233,22 +233,31 @@ describe('V4 — summary cap at 20 (D3)', () => {
   });
 });
 
-describe('V5 — per-summary isolation (D4)', () => {
-  it('a summary the SDK would reject is dropped alone; rows and records of both agents are kept', async () => {
+// V5 was "per-summary isolation (D4)": a summary that failed ops-sdk's entry schema was dropped.
+// Removed in 0.58.0 (analysis-never-loses-the-run R3): the tracker judges each agent, keeps the
+// run, and reports `analysisRejected`. The case below is the old V5 input. Its 101-character
+// category name fails ops-sdk's AnalysisSummaryEntrySchema but passes the API's (category `name`
+// has no cap there), so 0.57.0 dropped a summary the tracker stores. Control: on e1844cf
+// (the 0.58.0 branch before this change) the summary is absent from the payload.
+describe('V5 — summaries are sent, not pre-judged (D4 removed, 0.58.0)', () => {
+  it('a summary the SDK entry schema refuses is sent unchanged; no drop is counted or logged', async () => {
     okSave();
     const bad = stampedAgent('bad', { rawOutput: '```json\n' + JSON.stringify({ analysis: {
       category_scores: [{ name: 'x'.repeat(101), weight: 50, score: 10 }],
       records: [{ recordId: 'B1', recordType: 'fear', title: 'kept', data: {} }],
     } }) + '\n```' });
     const good = stampedAgent('good', { categories: [{ name: 'Alpha', score: 5 }] });
-    // The input is what it claims: the bad summary's category name fails the entry schema.
     const response = await new SubmissionClient(baseConfig, testLogger).submit({ project: 'p', workflowType: 'command', result: commandResult('c', [bad, good]) as never });
     const { input, sdkOk, apiOk } = captured();
-    expect((input.analysisSummary as Array<{ agentName: string }>).map(s => s.agentName)).toEqual(['good']);
-    expect(response.truncated?.analysisSummariesInvalid).toBe(1);
+    const sent = input.analysisSummary as Array<{ agentName: string; categoryScores?: Array<{ name: string }> }>;
+    expect(sent.map(s => s.agentName)).toEqual(['bad', 'good']);
+    expect(sent[0]?.categoryScores?.[0]?.name).toHaveLength(101);
+    expect(response.truncated?.analysisSummariesInvalid).toBe(0);
+    expect(warnings.some(m => m.includes('the tracker would reject'))).toBe(false);
     expect((input.analysisRecords as Array<{ recordId: string }>).some(r => r.recordId === 'B1')).toBe(true);
-    const w = warnings.find(m => m.includes('the tracker would reject'));
-    expect(w).toContain('"bad at categoryScores[0].name"');
+    // The instrument: the old proxy refuses this summary, the API's schema accepts it.
+    const { AnalysisSummaryEntrySchema } = await import('@uluops/ops-sdk');
+    expect(AnalysisSummaryEntrySchema.safeParse(sent[0]).success).toBe(false);
     expect([sdkOk, apiOk]).toEqual([true, true]);
   });
 });

@@ -1,9 +1,8 @@
-import { AnalysisSummaryEntrySchema } from '@uluops/ops-sdk';
 import type { AnalysisSummaryInput, AnalysisRecordInput } from '@uluops/ops-sdk';
 
 /**
  * Guards that keep one agent's analysis from costing a whole run's save (submission-analysis-
- * fidelity spec v0.2.1, D4, D5, D7). Each one changes the payload by the least it can, counts what
+ * fidelity spec v0.2.1, D5, D7; D4 removed in 0.58.0). Each one changes the payload by the least it can, counts what
  * it changed, and leaves the warning text to the caller (SubmissionClient), which owns the logger.
  */
 
@@ -13,52 +12,11 @@ const RECORD_ID_MAX_LENGTH = 100;
 /** Under the API's `express.json({ limit: '2mb' })` (ops-uluops-api src/index.ts:72), with margin for headers and rounding. */
 export const MAX_PAYLOAD_BYTES = Math.floor(1.9 * 1024 * 1024);
 
-// ─── D4: per-summary isolation ─────────────────────────────────────────────
-
-/**
- * Validate each summary on its own against ops-sdk's `AnalysisSummaryEntrySchema`, the schema
- * that otherwise throws for the WHOLE payload client-side. A summary that fails is removed; its
- * agent's row and records are kept. Runs after apiOnlyBounds repair, so it catches only what repair
- * cannot fix. The returned position is a schema path (`categoryScores[3].name`), never a value.
- */
-export function isolateSummaries(summaries: AnalysisSummaryInput[]): {
-  valid: AnalysisSummaryInput[];
-  invalid: Array<{ agentName: string; position: string }>;
-} {
-  const valid: AnalysisSummaryInput[] = [];
-  const invalid: Array<{ agentName: string; position: string }> = [];
-  for (const summary of summaries) {
-    const parsed = AnalysisSummaryEntrySchema.safeParse(summary);
-    if (parsed.success) {
-      valid.push(summary);
-    } else {
-      invalid.push({
-        agentName: typeof summary.agentName === 'string' ? summary.agentName : 'unknown',
-        position: schemaPosition(parsed.error.issues[0]?.path ?? []),
-      });
-    }
-  }
-  return { valid, invalid };
-}
-
-/**
- * A zod issue path as a schema position: array indices in brackets, and only the first two named
- * segments, so a model-authored key inside a free-form record (systemMetrics.<key>) is never echoed.
- */
-function schemaPosition(path: readonly PropertyKey[]): string {
-  let out = '';
-  let named = 0;
-  for (const seg of path) {
-    if (typeof seg === 'number') {
-      out += `[${seg}]`;
-    } else {
-      if (named >= 2) { out += '…'; break; }
-      out += (out ? '.' : '') + String(seg).replace(/[^A-Za-z0-9_]/g, '');
-      named++;
-    }
-  }
-  return out || '(root)';
-}
+// ─── D4: per-summary isolation — removed in 0.58.0 ──────────────────────────
+// `isolateSummaries` dropped each summary that failed ops-sdk's AnalysisSummaryEntrySchema. Its
+// premise (one bad summary throws for the whole save, client-side) ended with ops-sdk 7.3.0's
+// envelope-only validation; the tracker now judges each agent and reports `analysisRejected`.
+// See SubmissionClient.buildAnalysis.
 
 // ─── D5: record key guard ──────────────────────────────────────────────────
 

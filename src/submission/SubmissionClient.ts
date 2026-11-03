@@ -34,7 +34,7 @@ import type { RunSubmission, RunSubmissionResponse, RunHistoryEntry, SubmissionQ
 import { AnalysisSummaryExtractor } from '../analysis/AnalysisSummaryExtractor.js';
 import { analysisChildren } from './analysisChildren.js';
 import { repairSummary, repairRecord } from './apiOnlyBounds.js';
-import { isolateSummaries, guardRecordKeys, enforcePayloadBudget } from './payloadGuards.js';
+import { guardRecordKeys, enforcePayloadBudget } from './payloadGuards.js';
 import { listForLog } from '../utils/listForLog.js';
 import { EXTRACTION_CONFIDENCE_THRESHOLD } from '../constants.js';
 import { isCanonicalMode, FAILURE_CODE_PATTERN, DOMAINS } from '@uluops/taxonomy';
@@ -800,7 +800,7 @@ export class SubmissionClient {
     //
     // Summaries do NOT raise the marker (spec v0.2.1 D3, Alex 2026-11-01): they never feed issue
     // correlation, so a marker would file a permanent critical issue for every wide pipeline. Their
-    // loss is reported in `truncated.analysisSummaries` / `analysisSummariesInvalid` and a warning.
+    // loss is reported in `truncated.analysisSummaries` and a warning.
     if (preCapRecommendationCount > cappedRecommendations.length
       || this.truncationTally.agents > 0
       || this.truncationTally.analysisRecords > 0) {
@@ -821,7 +821,7 @@ export class SubmissionClient {
    *
    * Every agent result in the run is extracted, each against the facts stamped on it; a composite's
    * definition is never applied to its children (§1.2). Then, in order: repair to the API-only
-   * bounds (D6), isolate summaries that would still fail ops-sdk's schema (D4), cap summaries at
+   * bounds (D6), cap summaries at
    * the wire's 20, cap records at 100, and make record keys unique per agent (D5). An agent run
    * keeps the single-object summary form; a composite run sends one summary per agent.
    */
@@ -871,16 +871,13 @@ export class SubmissionClient {
       this.logger.warn(`${repairedRecords} analysis record(s) had data over the tracker's 64 KiB / depth-8 limit; replaced with a stub.`);
     }
 
-    // D4: isolate what repair could not fix.
-    const { valid, invalid } = isolateSummaries(summaries);
-    if (invalid.length > 0) {
-      this.truncationTally.analysisSummariesInvalid += invalid.length;
-      this.logger.warn(
-        `Dropped ${invalid.length} analysis summar${invalid.length === 1 ? 'y' : 'ies'} the tracker would reject ` +
-        `(${listForLog(invalid.map(i => `${i.agentName} at ${i.position}`))}); their agents' rows and records are kept.`,
-      );
-    }
-    summaries = valid;
+    // D4 (per-summary isolation) was removed in 0.58.0. It parsed each summary against ops-sdk's
+    // AnalysisSummaryEntrySchema and dropped the failures, because on ops-sdk <= 7.2.0 that schema
+    // ran over the whole payload and one bad summary cost the run. ops-sdk 7.3.0 checks analysis
+    // as an envelope only, and the tracker (ops-api R2) judges each agent itself, keeps the run,
+    // and records the rejection where it can be seen and repaired (`analysisRejected`). The drop
+    // was also the wrong proxy: the SDK schema refused summaries the tracker stores (a category
+    // name over 100 characters, an empty decision). Repair above stays: it keeps data.
 
     // D3: the wire takes at most 20 summaries. No marker (see transformToOpsInput).
     if (summaries.length > MAX_ANALYSIS_SUMMARIES) {

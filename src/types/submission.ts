@@ -91,8 +91,9 @@ export interface RunSubmissionResponse {
    *   whole save, so core truncates the tail and warns (ship run #95, anxiety-reader).
    * - `analysisSummaries` (core >= 0.57.0): per-agent summaries past the wire's 20, or dropped
    *   from the end for the body limit.
-   * - `analysisSummariesInvalid` (core >= 0.57.0): summaries removed because the tracker would
-   *   have rejected them even after repair; their agents' rows and records were still sent.
+   * - `analysisSummariesInvalid`: **always 0 since core 0.58.0, deprecated**, kept so a reader of
+   *   the 0.57.0 shape does not break. 0.57.0 dropped summaries that failed ops-sdk's entry schema
+   *   after repair; 0.58.0 sends them, and the tracker's verdict arrives in {@link analysisRejected}.
    *
    * A dropped summary is visible only here and in the warning log: nothing on the tracker
    * records it, so a run whose agent shows no summary may have had one dropped. Zeros are
