@@ -6,6 +6,11 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) 
 
 ## [Unreleased]
 
+## [0.58.1] - 2026-11-03
+
+### Added
+- **`trackedRun` on `ExecutionResult` and `AgentResult`: `{ runId, runNumber, project }` of the tracker run the result was saved as.** The submission response always had `runId` and `runNumber`, but the auto-tracking path copied only `dashboardUrl` onto the result, so a caller holding a result with `analysisRejected` could not name the run to repair. The obvious lookup, the project's latest run, can return another run on a busy project, and an analysis update sent there succeeds and repairs nothing (cli 0.45.0 perverse-outcome review, P1). `project` is the name the submission sent: the `project` option, else the config default, else the target directory's basename. Set on every tracked pass and removed when the pass saved nothing (tracking off, no API key, a failed submission, or a local client's `runId: 'local'` response), so a result tracked twice never keeps a stale run. Additive; no other field changes.
+
 ## [0.58.0] - 2026-11-03
 
 ### Added

@@ -742,6 +742,40 @@ describe('UluOpsClient', () => {
       expect(result).not.toHaveProperty('analysisRejected');
     });
 
+    // core 0.58.1: the run a tracked result was saved as, so a caller can address it (cli 0.45.0
+    // review P1: `runs latest` can name another run). On 0.58.0 trackedRun is undefined here.
+    it('surfaces trackedRun (runId, runNumber, the project sent) onto the result', async () => {
+      const client = new UluOpsClient({ apiKey: 'ulr_test-key-012345678901', trackingEnabled: true });
+      mockRegistryResolve.mockResolvedValue(makeResolvedDef('agent', 'code-validator'));
+      mockAgentExecutorExecute.mockResolvedValue(makeAgentResult());
+      mockSubmissionSubmit.mockResolvedValueOnce(makeSubmissionResponse({ runId: 'run-777', runNumber: 42 }));
+
+      const explicit = await client.runAgent('code-validator', '/tmp/test', { project: 'ops-sdk' });
+      expect(explicit.trackedRun).toEqual({ runId: 'run-777', runNumber: 42, project: 'ops-sdk' });
+
+      // No project given: the inferred one (target dir basename) is what was sent, and is reported.
+      const inferred = await client.runAgent('code-validator', '/tmp/my-repo');
+      expect(inferred.trackedRun).toEqual({ runId: 'run-123', runNumber: 1, project: 'my-repo' });
+      expect(mockSubmissionSubmit.mock.calls.at(-1)?.[0]).toMatchObject({ project: 'my-repo' });
+    });
+
+    it('leaves trackedRun unset for a local response, a failed submission, and tracking off', async () => {
+      const client = new UluOpsClient({ apiKey: 'ulr_test-key-012345678901', trackingEnabled: true });
+      mockRegistryResolve.mockResolvedValue(makeResolvedDef('agent', 'code-validator'));
+      mockAgentExecutorExecute.mockResolvedValue(makeAgentResult());
+
+      mockSubmissionSubmit.mockResolvedValueOnce(makeSubmissionResponse({ runId: 'local', runNumber: 0, dashboardUrl: '' }));
+      expect(await client.runAgent('code-validator', '/tmp/test')).not.toHaveProperty('trackedRun');
+
+      mockSubmissionSubmit.mockRejectedValueOnce(new Error('network error'));
+      const failed = await client.runAgent('code-validator', '/tmp/test');
+      expect(failed.trackingFailed).toBe(true);
+      expect(failed).not.toHaveProperty('trackedRun');
+
+      const off = new UluOpsClient({ apiKey: 'ulr_test-key-012345678901', trackingEnabled: false });
+      expect(await off.runAgent('code-validator', '/tmp/test')).not.toHaveProperty('trackedRun');
+    });
+
     it('control: repairedRecommendations/submissionTruncated are absent when tracking fails', async () => {
       const client = new UluOpsClient({ apiKey: 'ulr_test-key-012345678901', trackingEnabled: true });
       mockRegistryResolve.mockResolvedValue(makeResolvedDef('agent', 'code-validator'));

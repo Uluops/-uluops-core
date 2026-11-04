@@ -233,6 +233,9 @@ export interface ExecutionResult {
    */
   analysisRejected?: AnalysisRejection[];
 
+  /** The tracker run this result was saved as (core >= 0.58.1). See {@link TrackedRun}. */
+  trackedRun?: TrackedRun;
+
   /** All recommendations (flattened for workflows/pipelines) */
   recommendations: Recommendation[];
 
@@ -554,6 +557,25 @@ export interface Recommendation {
 
   /** Fingerprint for correlation (populated by validation API) */
   fingerprint?: string;
+}
+
+
+/**
+ * The tracker run a tracked execution was saved as (core >= 0.58.1): enough to address it with
+ * `ulu runs update <project> -n <runNumber>` or ops-sdk `runs.updateById(runId)`. Before 0.58.1 a
+ * caller had only `dashboardUrl`, so a repair of rejected analysis had to look the run up, and
+ * the obvious lookup (`runs latest`) can return another run on a busy project (cli 0.45.0
+ * perverse-outcome review P1, 2026-11-03).
+ *
+ * Absent when the result was not saved: tracking off, no API key, a failed submission
+ * (`trackingFailed`), or a local (tracking-off) client, whose response carries `runId: 'local'`.
+ * `project` is the name the submission sent (explicit option, config default, or the target
+ * directory's basename), which the tracker resolves by name.
+ */
+export interface TrackedRun {
+  runId: string;
+  runNumber: number;
+  project: string;
 }
 
 /**

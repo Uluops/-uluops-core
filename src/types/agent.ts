@@ -1,5 +1,5 @@
 import type { AnalysisRejection } from '@uluops/ops-sdk';
-import type { Domain, AgentType, ExecutionMetrics, Recommendation, SubscriptionTier, TrackingError, SubmissionTruncation } from './execution.js';
+import type { Domain, AgentType, ExecutionMetrics, Recommendation, SubscriptionTier, TrackingError, SubmissionTruncation, TrackedRun } from './execution.js';
 import type { Finding, ArtifactResult } from './command.js';
 import type { DegradationMarker, Completeness } from './degradation.js';
 
@@ -570,6 +570,9 @@ interface AgentResultBase {
    * Not a tracking failure: `trackingFailed` stays unset, because the run was saved.
    */
   analysisRejected?: AnalysisRejection[];
+
+  /** The tracker run this result was saved as (core >= 0.58.1). See {@link TrackedRun}. */
+  trackedRun?: TrackedRun;
 
   /** Execution metrics */
   metrics: ExecutionMetrics;

@@ -658,8 +658,9 @@ export class UluOpsClient {
       // Without this, running `exec agent dx-validator ./my-project` would create a project
       // named "dx-validator" instead of "my-project".
       const inferredProject = target ? path.basename(path.resolve(target)) : resolved.name;
+      const project = options?.project ?? this.config.defaultProject ?? inferredProject;
       const response = await this.submission.submit({
-        project: options?.project ?? this.config.defaultProject ?? inferredProject,
+        project,
         workflowType,
         // Pass original result — WorkflowResult.phases needed for per-agent decomposition.
         // No resolvedDefinition (spec v0.2.1 D2): every result carries its own definition facts
@@ -683,10 +684,18 @@ export class UluOpsClient {
       // never keeps the first pass's value (R3 review, code-auditor).
       if (response.analysisRejected !== undefined) result.analysisRejected = response.analysisRejected;
       else delete result.analysisRejected;
+      // Which run this was saved as, so a caller can address it (e.g. to repair rejected
+      // analysis) without looking it up (core 0.58.1). A local client's response is not a run.
+      if (response.runId && response.runId !== 'local') {
+        result.trackedRun = { runId: response.runId, runNumber: response.runNumber, project };
+      } else {
+        delete result.trackedRun;
+      }
 
       await this.recordExecutions(resolved, result, response.runId);
     } catch (error) {
       result.trackingFailed = true;
+      delete result.trackedRun;
       const errMsg = error instanceof Error ? error.message : String(error);
       const errName = error instanceof Error ? error.constructor.name : typeof error;
       // SdkApiError carries statusCode/code/details/requestId; duck-type to stay
