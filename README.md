@@ -281,7 +281,7 @@ if (result.completeness !== 'complete') {
   > (`activeTools: []`), which holds on Anthropic structured output too. `budget.brake-inert` means
   > the configured `contextBudget` was not a usable number.
 - The engine *observes* completeness from how the run actually executed; agents never self-report it. `deriveCompleteness(markers)` is exported to recompute an agent result's. A container's (a `CommandResult`, a stage result) is the worst of its agents' and its own markers', so recompute it from `agentResults`.
-- **`decisionCategory`**: the vocabulary-resolved category of `decision` (`'positive' | 'negative' | 'conditional' | 'neutral'`), stamped on every result. For custom-vocabulary agents (cognitive lens agents, WDL-remapped workflow decisions) gate on this — or on `resolveDecisionCategory(result)` — instead of the raw decision string. See [Decision Classification](#decision-classification).
+- **`decisionCategory`**: the vocabulary-resolved category of `decision` (`'positive' | 'negative' | 'conditional' | 'invalid' | 'neutral'`), stamped on every result. `'invalid'` is the reserved decision `INVALID`: the run could not judge the target (one of its own `run` auto-fails could not be corrected), its score is null, and every gate fails closed on it. For custom-vocabulary agents (cognitive lens agents, WDL-remapped workflow decisions) gate on this — or on `resolveDecisionCategory(result)` — instead of the raw decision string. See [Decision Classification](#decision-classification).
 - `degradations: string[]` is the deprecated legacy alias (resolution-phase strings only), retained for compatibility — prefer `degradationMarkers`.
 
 > Empty-output step exhaustion is a thrown [`MaxStepsExhaustedError`](#error-handling), not a marker; near-exhaustion *with* output is the `steps.near-exhaustion` marker. With the step wrap-up (0.54.0) both should be rare: at 80% of the limit the tools are withdrawn and the next turn is the answer.
@@ -411,7 +411,7 @@ Caps (provisional; exported as `UPSTREAM_STAGE_SLICE_CAP` 8K / `UPSTREAM_STAGE_F
 
 - **Score.** If any `agents[]` entry declares `threshold`, the gate is in **per-agent mode**: each agent must reach its own threshold, or `gate.threshold` when it has none. Otherwise `aggregate(scores) >= gate.threshold` (`aggregate: min | max | average`, default `min`). A gate with no threshold is decision-only. A ref stage gates on its result's score, and a missing one there is not compared.
 - **The stage's own result is descriptive.** `result.score` is always the **average** of its agents' scores, so a stage can report 78 and still fail a `min` gate of 70. `result.decision` reports the stage's `outcome` (`PASS`, `WARN`, `FAIL`, or `ERROR` for ERRORED; a stage a stop reached reads `FAIL` or `ABORTED`); each agent's own decision is on `agentResults`.
-- **Decision** (`gate.decision`): `not_negative` (a negative fails; a conditional passes, and a blocking gate that passes one makes the run's `allGatesPassed` false, with a `CONDITIONAL_ACCEPTED` warning), `positive` (a conditional fails too), or `ignore`. Default: `not_negative` on blocking gates, `ignore` on `warn` gates. A neutral decision never fails a gate; the score decides. An absent one decides on its score only behind `warn` or in a stage with no gate: at a blocking gate it makes the agent unjudgeable (below).
+- **Decision** (`gate.decision`): `not_negative` (a negative fails; a conditional passes, and a blocking gate that passes one makes the run's `allGatesPassed` false, with a `CONDITIONAL_ACCEPTED` warning), `positive` (a conditional fails too), or `ignore`. Default: `not_negative` on blocking gates, `ignore` on `warn` gates. An `INVALID` decision fails the gate at every key, `ignore` included (its score is null, so no threshold can catch it). A neutral decision never fails a gate; the score decides. An absent one decides on its score only behind `warn` or in a stage with no gate: at a blocking gate it makes the agent unjudgeable (below).
 - **Unjudgeable agents.** An agent makes its stage **ERRORED** when it gave no decision at a blocking gate (`abort` or `fail`), whatever its score; when it gave no score at a gate that has a threshold; when it gave no score and no classifiable decision; or when it crashed (a timeout included: `agents[].timeout`, in ms, overrides the run's timeout for that agent). A decision counts only from the agent's output envelope (the JSON object carrying `result`, or core's structured output) or its `Decision:` line; a JSON fragment that text extraction lifts out of a truncated block is not read.
 
 ```yaml
@@ -958,7 +958,7 @@ import {
   OutputExtractor,     // 4-strategy LLM output parser (structured > JSON fence > inline > regex)
   ToolHandler,         // Sandboxed filesystem tools (read_file, list_files, search_content, get_file_info, get_directory_tree, get_symbols)
   parseRef,            // Parse "name@version" reference strings
-  classifyDecision,    // Classify decision strings into positive/negative/conditional/neutral
+  classifyDecision,    // Classify decision strings into positive/negative/conditional/invalid/neutral
   buildVocabularyMap,  // Build custom decision vocabulary from agent definitions
   resolveDecisionCategory, // Aggregation-safe gating — prefers the result's stamped decisionCategory over raw-string classification
   deriveCompleteness,         // Recompute completeness from a DegradationMarker[]
@@ -1152,6 +1152,7 @@ classifyDecision('COMPLETE'); // → 'positive'
 classifyDecision('FAIL');     // → 'negative'
 classifyDecision('WARN');     // → 'conditional'
 classifyDecision('PARTIAL');  // → 'conditional' (progress, not failure)
+classifyDecision('INVALID');  // → 'invalid' (the run could not judge; not a pole)
 classifyDecision('MAYBE');    // → 'neutral' (unknown)
 
 // Custom vocabulary from agent definition — cognitive lens agents use these

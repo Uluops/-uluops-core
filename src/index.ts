@@ -27,7 +27,7 @@ export { definitionFacts, type DefinitionFacts } from './analysis/definitionFact
 export { OutputExtractor } from './parser/OutputExtractor.js';
 export { ToolHandler } from './executor/ToolHandler.js';
 export { parseRef } from './utils/parseRef.js';
-export { classifyDecision, buildVocabularyMap, resolveDecisionCategory } from './executor/classifyDecision.js';
+export { classifyDecision, buildVocabularyMap, resolveDecisionCategory, INVALID_DECISION } from './executor/classifyDecision.js';
 export type { DecisionCategory, DecisionVocabularyMap } from './executor/classifyDecision.js';
 export { deriveCompleteness, resolutionMarkersFromLegacy } from './executor/degradationMarkers.js';
 export type { DegradationMarker, DegradationPhase, DegradationSeverity, Completeness } from './types/degradation.js';

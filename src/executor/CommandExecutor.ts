@@ -14,7 +14,7 @@ import { sumTokenMetrics } from '../utils/sumTokenMetrics.js';
 import { rollupCost } from '../utils/costRollup.js';
 import { DEFAULT_PASS_THRESHOLD, DEFAULT_WARN_THRESHOLD } from '../constants.js';
 import { mapCategory } from './mapCategory.js';
-import { resolveDecisionCategory, type DecisionCategory } from './classifyDecision.js';
+import { resolveDecisionCategory, INVALID_DECISION, type DecisionCategory } from './classifyDecision.js';
 import { aggregateScores, type AggregationMethod } from '../utils/aggregateScores.js';
 import { crashPlaceholder, abortedPlaceholder, withDeadlineMark, ABORTED_DECISION } from '../utils/crashPlaceholder.js';
 import { rejectionKind } from '../utils/runStop.js';
@@ -431,6 +431,19 @@ export class CommandExecutor {
       const partial = results.some(r => resolveDecisionCategory(r, this.warnUnclassified) === 'conditional');
       decision = failed ? 'FAILED' : partial ? 'PARTIAL' : 'COMPLETE';
       decisionCategory = failed ? 'negative' : partial ? 'conditional' : 'positive';
+    }
+
+    // A child that reported INVALID (ADL S2b spec v0.3.16, OQ-47b) could not judge: one of its own
+    // `run` auto-fails failed and could not be corrected. Its score is null, so the average above never
+    // saw it, and without this the command would decide on the children that did judge. It decides
+    // INVALID instead, fail-closed, unless the command already decides negative: a negative verdict
+    // from a child that did judge is the more specific statement, and gates block on both. This
+    // overrides the scored-lens-negative WARN cap above too, so a run that could not judge is never
+    // laundered into WARN. A crash or stop (below) still decides over it.
+    if (decisionCategory !== 'negative' &&
+        results.some(r => resolveDecisionCategory(r, this.warnUnclassified) === 'invalid')) {
+      decision = INVALID_DECISION;
+      decisionCategory = 'invalid';
     }
 
     // "Crash decides" (utils/stopVerdict.ts, Alex 2026-10-05 OD-12): once a run stop reached any

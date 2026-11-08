@@ -2278,3 +2278,47 @@ describe('WorkflowExecutor — an agent step carries the agent it ran', () => {
     expect(cmd.completeness).toBe('partial');
   });
 });
+
+// ── INVALID: the run could not judge (ADL S2b spec v0.3.16, OQ-47b) ─────────────────────────────
+describe('WorkflowExecutor: a child that reported INVALID', () => {
+  const invalid = (score: number | null) =>
+    makeCommandResult({ decision: 'INVALID', decisionCategory: 'invalid', score, maxScore: score === null ? null : 100 });
+
+  it('blocks a phase whose only child is INVALID (null score: the threshold gate never sees it)', async () => {
+    const executor = new WorkflowExecutor(makeCommandExecutor([invalid(null)]), makeRegistry());
+    const result = await executor.execute(makeWorkflowDef(), { target: '/tmp/test' });
+    expect(result.phases[0]!.decision).toBe('blocked');
+    expect(result.decision).toBe('BLOCK');
+  });
+
+  it('blocks even when a scored sibling clears the threshold: INVALID is not averaged away', async () => {
+    const executor = new WorkflowExecutor(makeCommandExecutor([makeCommandResult({ score: 95 }), invalid(null)]), makeRegistry());
+    const def = makeWorkflowDef({
+      orchestration: { phases: [{ id: 'v', name: 'V', commands: ['cmd', 'cmd'], gate: { threshold: 70, aggregate: 'average', on_fail: 'stop' } }], on_failure: 'stop' },
+    });
+    const result = await executor.execute(def, { target: '/tmp/test' });
+    expect(result.phases[0]!.decision).toBe('blocked');
+  });
+
+  it('blocks, not warns, when the INVALID child carries a score: it is not the scored-lens-negative cap', async () => {
+    const executor = new WorkflowExecutor(makeCommandExecutor([invalid(88)]), makeRegistry());
+    const result = await executor.execute(makeWorkflowDef(), { target: '/tmp/test' });
+    expect(result.phases[0]!.decision).toBe('blocked');
+  });
+
+  it('honours on_fail warn', async () => {
+    const executor = new WorkflowExecutor(makeCommandExecutor([invalid(null)]), makeRegistry());
+    const def = makeWorkflowDef({
+      orchestration: { phases: [{ id: 'v', name: 'V', commands: ['cmd'], gate: { threshold: 70, aggregate: 'average', on_fail: 'warn' } }], on_failure: 'continue' },
+    });
+    const result = await executor.execute(def, { target: '/tmp/test' });
+    expect(result.phases[0]!.decision).toBe('warned');
+    expect(result.decision).toBe('HOLD');
+  });
+
+  it('control: an unstamped INVALID string resolves through the register and blocks too', async () => {
+    const executor = new WorkflowExecutor(makeCommandExecutor([makeCommandResult({ decision: 'INVALID', score: null, maxScore: null })]), makeRegistry());
+    const result = await executor.execute(makeWorkflowDef(), { target: '/tmp/test' });
+    expect(result.phases[0]!.decision).toBe('blocked');
+  });
+});

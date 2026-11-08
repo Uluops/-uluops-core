@@ -565,6 +565,16 @@ export class WorkflowExecutor {
         commandResults.some(r => r.score != null && resolveDecisionCategory(r, this.warnUnclassified) === 'negative')) {
       decision = 'warned';
     }
+    // A child that reported INVALID (ADL S2b spec v0.3.16, OQ-47b) could not judge the target. Its
+    // score is null, so the gate above never saw it (`evaluateGate` passes a null aggregate), and the
+    // two category checks above act on `negative` only. It gates categorically, scored or not, with or
+    // without a declared gate, honouring the phase's declared posture: `blocked`, or `warned` under
+    // `on_fail: warn`. Not the lens cap's `warned`-at-most: a run that could not judge is not a verdict
+    // that disagrees with its score, it is the absence of one.
+    if (decision !== 'blocked' &&
+        commandResults.some(r => resolveDecisionCategory(r, this.warnUnclassified) === 'invalid')) {
+      decision = phase.gate?.on_fail === 'warn' ? 'warned' : 'blocked';
+    }
     // "Crash decides" (utils/stopVerdict.ts, OD-12): once a stop reached any step, the gate, the
     // scoreless guard and the lens cap above do not stand. `blocked` if anything inside really
     // crashed (a deadline's steps count), else 'aborted' — no on_fail softening either way.

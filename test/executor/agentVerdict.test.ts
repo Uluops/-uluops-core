@@ -4,7 +4,7 @@
  * themselves, including the spec's register table against sdk-core (the parity check, D17).
  */
 import { describe, it, expect } from 'vitest';
-import { decisionToken, readAgentVerdict, isUnjudgeable } from '../../src/executor/agentVerdict.js';
+import { decisionToken, readAgentVerdict, isUnjudgeable, unjudgeableCause } from '../../src/executor/agentVerdict.js';
 import { classifyDecision, buildVocabularyMap } from '../../src/executor/classifyDecision.js';
 import { classifiesItsDecisions, blockingGatedAgentRefs, agentsMissingVocabulary } from '../../src/executor/vocabularyPrecheck.js';
 import { OutputNormalizer } from '../../src/parser/OutputNormalizer.js';
@@ -272,5 +272,40 @@ describe('the pre-launch vocabulary check (D9)', () => {
     );
     expect(missing).toEqual(['bare']);
     expect(unresolved).toEqual(['ghost']);
+  });
+});
+
+
+// ── INVALID: the run could not judge (ADL S2b spec v0.3.16, OQ-47a, OQ-47c) ─────────────────────
+describe('readAgentVerdict: INVALID', () => {
+  it('classifies INVALID from the Decision line through the register, beside any vocabulary', () => {
+    const v = readAgentVerdict({ agent: 'a', json: undefined, text: 'Decision: INVALID', vocabulary: gateVocab });
+    expect(v.class).toBe('invalid');
+    expect(v.saved).toBe('INVALID');
+  });
+
+  it('saves no score for an INVALID run, and says so (OQ-47c)', () => {
+    const v = readAgentVerdict({ agent: 'a', json: { result: { decision: 'INVALID', score: 84 } }, text: '' });
+    expect(v.class).toBe('invalid');
+    expect(v.score).toBeNull();
+    expect(v.warnings).toContainEqual({ code: 'INVALID_SCORE_DROPPED', agent: 'a', value: 84 });
+  });
+
+  it('a Score: line beside Decision: INVALID is dropped the same way', () => {
+    const v = readAgentVerdict({ agent: 'a', json: undefined, text: 'Score: 91\nDecision: INVALID' });
+    expect(v.score).toBeNull();
+    expect(v.warnings.map(w => w.code)).toContain('INVALID_SCORE_DROPPED');
+  });
+
+  it('control: a scored positive keeps its score and gets no drop warning', () => {
+    const v = readAgentVerdict({ agent: 'a', json: { result: { decision: 'PROCEED', score: 84 } }, text: '', vocabulary: gateVocab });
+    expect(v.score).toBe(84);
+    expect(v.warnings.map(w => w.code)).not.toContain('INVALID_SCORE_DROPPED');
+  });
+
+  it('INVALID is judgeable at a threshold gate: judgeGate names it, the stage is not ERRORED for a missing score', () => {
+    expect(unjudgeableCause({ class: 'invalid', score: null }, { hasThreshold: true, blocking: true })).toBeUndefined();
+    // control: a positive with no score at a threshold stays unjudgeable
+    expect(unjudgeableCause({ class: 'positive', score: null }, { hasThreshold: true, blocking: true })).toBe('no_score_at_threshold');
   });
 });

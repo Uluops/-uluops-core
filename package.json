@@ -60,7 +60,7 @@
     "@ai-sdk/openai": "3.0.124",
     "@uluops/ops-sdk": "7.3.0",
     "@uluops/registry-sdk": "0.64.1",
-    "@uluops/sdk-core": "0.19.0",
+    "@uluops/sdk-core": "0.20.0",
     "@uluops/taxonomy": "1.0.3",
     "ai": "6.0.300",
     "glob": "11.1.0",

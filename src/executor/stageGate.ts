@@ -98,6 +98,12 @@ export interface GateJudgement {
  * conditional passes, and a passing blocking gate reports it as accepted. `ignore`: not compared.
  * Neutral and absent never fail here; the score decides (§3.2 item 5). An absent decision at a
  * blocking gate never reaches this function: D12 has made its stage ERRORED (`unjudgeableCause`).
+ *
+ * **Invalid** (ADL S2b spec v0.3.16, OQ-47b): a member that reported INVALID could not judge, and fails
+ * the gate at every key, `ignore` included. Its score is null (OQ-47c), so neither the per-agent
+ * threshold nor the aggregate below can catch it; letting `ignore` pass it would let a run that could
+ * not judge through a gate whose author only meant "do not compare verdicts". The stage then follows
+ * the gate's mode like any failure (`judgedOutcome`): WARNED behind `warn`, else FAILED.
  */
 export function judgeGate(
   gate: GateDefinition | undefined,
@@ -110,7 +116,8 @@ export function judgeGate(
   const conditional: string[] = [];
 
   for (const m of members) {
-    if (m.class === 'negative' && key !== 'ignore') causes.push(`"${m.name}" decided negative`);
+    if (m.class === 'invalid') causes.push(`"${m.name}" reported INVALID: the run could not judge`);
+    else if (m.class === 'negative' && key !== 'ignore') causes.push(`"${m.name}" decided negative`);
     else if (m.class === 'conditional' && key === 'positive') causes.push(`"${m.name}" decided conditional at a positive gate`);
     else if (m.class === 'conditional' && key === 'not_negative') conditional.push(m.name);
   }

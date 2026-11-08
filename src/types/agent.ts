@@ -654,7 +654,11 @@ export type VerdictWarning =
   | { code: 'DECISION_CONFLICT'; agent: string; json: string; line: string }
   | { code: 'FALLBACK_DECISION_SOURCE'; agent: string; source: string }
   | { code: 'FALLBACK_SCORE_SOURCE'; agent: string; source: string }
-  | { code: 'SCORE_INVALID'; agent: string; value: string };
+  | { code: 'SCORE_INVALID'; agent: string; value: string }
+  /** The decision was `INVALID` (the run could not judge, ADL S2b OQ-47c) and the agent also wrote a
+   *  score: the score is not saved, because a score from a run that could not judge would enter every
+   *  average downstream. `value` is the score as read, kept here so the drop is visible. */
+  | { code: 'INVALID_SCORE_DROPPED'; agent: string; value: number };
 
 /** {@link AgentResultBase.verdict}. */
 export interface AgentVerdictRecord {

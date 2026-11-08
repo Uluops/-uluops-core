@@ -220,6 +220,14 @@ export function readAgentVerdict(input: {
     }
   }
 
+  // OQ-47c (ADL S2b spec v0.3.16): an INVALID run saves no score. The agent states the score it would
+  // have given in its report's prose; in `score` it would enter the phase average, the tracker's trends
+  // and every rah input, and each would have to learn to skip INVALID rows. Dropped visibly, never silently.
+  if (cls === 'invalid' && score !== null) {
+    warnings.push({ code: 'INVALID_SCORE_DROPPED', agent, value: score });
+    score = null;
+  }
+
   return { class: cls, saved, score, warnings };
 }
 
@@ -241,6 +249,10 @@ export function unjudgeableCause(
   gate: { hasThreshold: boolean; blocking: boolean },
 ): UnjudgeableCause | undefined {
   if (verdict.class === 'absent' && gate.blocking) return 'absent_at_blocking_gate';
+  // INVALID is a judgement, not a missing one: the run judged itself unable to judge the target. Its
+  // score is null by OQ-47c, so without this a gate with a threshold would make the stage ERRORED
+  // ("gave no score") and hide the cause; `judgeGate` fails it by name instead.
+  if (verdict.class === 'invalid') return undefined;
   if (verdict.score !== null) return undefined;
   if (gate.hasThreshold) return 'no_score_at_threshold';
   return verdict.class === 'neutral' || verdict.class === 'absent' ? 'no_score_no_decision' : undefined;

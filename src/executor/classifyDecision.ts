@@ -21,3 +21,11 @@ export {
   type DecisionCategory,
   type DecisionVocabularyMap,
 } from '@uluops/sdk-core/decisions';
+
+/**
+ * The one reserved run-invalid decision string (ADL S2b spec v0.3.16, OQ-47a). The sdk-core register
+ * classifies it `invalid`, and no vocabulary may claim it. Core writes it when a container (a command)
+ * must report that a child could not judge. It is a literal here because the register keeps its strings
+ * in a `switch`; `classifyDecision(INVALID_DECISION) === 'invalid'` is asserted in the tests.
+ */
+export const INVALID_DECISION = 'INVALID';

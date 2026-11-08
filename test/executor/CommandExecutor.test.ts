@@ -957,3 +957,53 @@ describe('CommandExecutor — the command result carries the agents it ran', () 
     expect(result.completeness).toBeUndefined();
   });
 });
+
+// ── INVALID: the run could not judge (ADL S2b spec v0.3.16, OQ-47b) ─────────────────────────────
+describe('CommandExecutor: a child that reported INVALID', () => {
+  const run = (results: AgentResult[]) =>
+    new CommandExecutor(makeAgentExecutor(results), makeRegistry()).execute(makeCommandDef({
+      agents: results.map((_, i) => `agent-${i}@1.0.0`),
+      aggregation: { method: 'average' },
+    }), { target: '/tmp/test' });
+  const invalid = makeValidatorResult({ name: 'agent-1', decision: 'INVALID', decisionCategory: 'invalid', score: null, maxScore: null });
+
+  it('decides INVALID when a scored sibling passes: the INVALID child is not in the average and is not dropped', async () => {
+    const result = await run([makeValidatorResult({ name: 'agent-0', score: 90 }), invalid]);
+    expect(result.score).toBe(90);
+    expect(result.decision).toBe('INVALID');
+    expect(result.decisionCategory).toBe('invalid');
+  });
+
+  it('decides INVALID over the scored-lens-negative WARN cap: a run that could not judge is not laundered into WARN', async () => {
+    const result = await run([
+      makeValidatorResult({ name: 'agent-0', decision: 'DISORDERED', decisionCategory: 'negative', score: 82 }),
+      invalid,
+    ]);
+    expect(result.decisionCategory).toBe('invalid');
+  });
+
+  it('a negative command stays negative: the valid verdict is the more specific statement', async () => {
+    const result = await run([makeValidatorResult({ name: 'agent-0', decision: 'FAIL', decisionCategory: 'negative', score: 30 }), invalid]);
+    expect(result.decision).toBe('FAIL');
+    expect(result.decisionCategory).toBe('negative');
+  });
+
+  it('an all-INVALID command decides INVALID with no score (aggregation path: two children)', async () => {
+    const result = await run([{ ...invalid, name: 'agent-0' }, invalid]);
+    expect(result.score ?? null).toBeNull();
+    expect(result.decision).toBe('INVALID');
+    expect(result.decisionCategory).toBe('invalid');
+  });
+
+  it('a single INVALID agent is wrapped with its decision and category intact', async () => {
+    const result = await run([invalid]);
+    expect(result.decision).toBe('INVALID');
+    expect(result.decisionCategory).toBe('invalid');
+    expect(result.score ?? null).toBeNull();
+  });
+
+  it('a scoreless negative sibling wins over INVALID (FAILED)', async () => {
+    const result = await run([makeValidatorResult({ name: 'agent-0', decision: 'MUTILATED', decisionCategory: 'negative', score: null, maxScore: null }), invalid]);
+    expect(result.decisionCategory).toBe('negative');
+  });
+});

@@ -65,6 +65,19 @@ describe('judgeGate: decision', () => {
     expect(r).toMatchObject({ failed: true, conditionalAccepted: [] });
   });
 
+  it('INVALID fails at every key, ignore included, with or without a score (OQ-47b)', () => {
+    for (const decision of ['positive', 'not_negative', 'ignore'] as const) {
+      const r = judgeGate({ on_failure: 'fail', decision }, [m('a', 'invalid', null), m('b', 'positive', 95)], false);
+      expect(r.failed).toBe(true);
+      expect(r.causes).toEqual(['"a" reported INVALID: the run could not judge']);
+    }
+    expect(judgeGate(undefined, [m('a', 'invalid', null)], false).failed).toBe(true);
+    // per-agent mode: a null score escapes the threshold check, so only the decision rule catches it
+    expect(judgeGate({ on_failure: 'fail', threshold: 70 }, [m('a', 'invalid', null, 70)], true).failed).toBe(true);
+    // the stage follows the gate's mode like any failure
+    expect(judgedOutcome(true, gateMode({ on_failure: 'warn' }))).toBe('WARNED');
+  });
+
   it('neutral and absent never fail; ignore compares nothing', () => {
     expect(judgeGate({ on_failure: 'fail' }, [m('a', 'neutral', 90), m('b', 'absent', 90)], false).failed).toBe(false);
     expect(judgeGate({ on_failure: 'fail', decision: 'ignore' }, [m('a', 'negative', 90)], false).failed).toBe(false);
