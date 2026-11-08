@@ -20,6 +20,8 @@ import {
 } from './fixtures.js';
 
 import type { Logger } from '@uluops/sdk-core';
+import { AgentExecutor as RealAgentExecutor } from '../../src/executor/AgentExecutor.js';
+import { config as harnessConfig, provider as harnessProvider, resolvedStub } from './pdlConformanceHarness.js';
 
 const noopLogger: Logger = { debug() {}, info() {}, warn() {}, error() {} };
 const agentExec = {} as AgentExecutor;
@@ -2327,5 +2329,45 @@ describe('PipelineExecutor — an inline-agents stage result carries the worst c
     }), { target: '/tmp' });
     expect(result.stages[0]!.agentResults).toHaveLength(2);
     expect((result.stages[0]!.result as CommandResult).completeness).toBe('partial');
+  });
+
+  // INVALID end to end (ADL S2b spec v0.3.16, OQ-47a-c): a real AgentExecutor reads the stub's text, the
+  // real verdict reader classifies it, and the stage gate judges it.
+  describe('INVALID end to end', () => {
+    const run = async (gate: Record<string, unknown> | undefined) => {
+      const agent = new RealAgentExecutor(harnessConfig, harnessProvider('Conformance stub output.\nDecision: INVALID\nScore: 80\n'), noopLogger);
+      const registry = { resolve: async () => ({ ...resolvedStub('stub-explorer-a'), runtime: { ...resolvedStub('stub-explorer-a').runtime, prompt: 'stub' } }) };
+      const executor = new PipelineExecutor({} as never, {} as never, agent, registry as never, noopLogger);
+      const def = makePipelineDef({
+        stages: [{ id: 'panel', name: 'Panel', type: 'agents' as const, agents: [{ ref: 'stub-explorer-a' }], ...(gate ? { gate: gate as never } : {}) }],
+      });
+      return executor.execute(def, { target: '/tmp/test' });
+    };
+
+    it('a fail-mode gate: FAILED stage, null score, INVALID_SCORE_DROPPED, allGatesPassed false', async () => {
+      const result = await run({ on_failure: 'fail', decision: 'ignore' });
+      const stage = result.stages[0]!;
+      expect(stage.outcome).toBe('FAILED');
+      const a = stage.agentResults![0]!;
+      expect(a.decision).toBe('INVALID');
+      expect(a.score ?? null).toBeNull();
+      expect(a.verdict?.warnings).toContainEqual({ code: 'INVALID_SCORE_DROPPED', agent: expect.any(String), value: 80 });
+      expect(result.allGatesPassed).toBe(false);
+    });
+
+    it('behind a warn gate: WARNED stage, still a null score and the warning; a warned stage does not flip allGatesPassed (runVerdict §3.1), the run decision is WARN', async () => {
+      const result = await run({ on_failure: 'warn' });
+      const stage = result.stages[0]!;
+      expect(stage.outcome).toBe('WARNED');
+      expect(stage.agentResults![0]!.score ?? null).toBeNull();
+      expect(stage.agentResults![0]!.verdict?.warnings.map(w => w.code)).toContain('INVALID_SCORE_DROPPED');
+      expect(result.allGatesPassed).toBe(true);
+      expect(result.decision).toBe('WARN');
+    });
+
+    it('at a threshold gate it is failed by name, not ERRORED as "gave no score"', async () => {
+      const result = await run({ on_failure: 'fail', threshold: 70 });
+      expect(result.stages[0]!.outcome).toBe('FAILED');
+    });
   });
 });

@@ -65,17 +65,33 @@ describe('judgeGate: decision', () => {
     expect(r).toMatchObject({ failed: true, conditionalAccepted: [] });
   });
 
-  it('INVALID fails at every key, ignore included, with or without a score (OQ-47b)', () => {
-    for (const decision of ['positive', 'not_negative', 'ignore'] as const) {
-      const r = judgeGate({ on_failure: 'fail', decision }, [m('a', 'invalid', null), m('b', 'positive', 95)], false);
-      expect(r.failed).toBe(true);
-      expect(r.causes).toEqual(['"a" reported INVALID: the run could not judge']);
-    }
+  it.each(['positive', 'not_negative', 'ignore'] as const)('INVALID fails at key %s, with a sibling that passes (OQ-47b)', (decision) => {
+    const r = judgeGate({ on_failure: 'fail', decision }, [m('a', 'invalid', null), m('b', 'positive', 95)], false);
+    expect(r.failed).toBe(true);
+    expect(r.causes).toEqual(['"a" reported INVALID: the run could not judge']);
+  });
+
+  it.each(['positive', 'not_negative', 'ignore'] as const)('INVALID fails at key %s with a score beside it', (decision) => {
+    expect(judgeGate({ on_failure: 'fail', decision }, [m('a', 'invalid', 80)], false).failed).toBe(true);
+  });
+
+  it('INVALID fails with no gate at all', () => {
     expect(judgeGate(undefined, [m('a', 'invalid', null)], false).failed).toBe(true);
-    // per-agent mode: a null score escapes the threshold check, so only the decision rule catches it
+  });
+
+  it('per-agent mode: a null score escapes the threshold check, so only the decision rule catches INVALID', () => {
     expect(judgeGate({ on_failure: 'fail', threshold: 70 }, [m('a', 'invalid', null, 70)], true).failed).toBe(true);
-    // the stage follows the gate's mode like any failure
-    expect(judgedOutcome(true, gateMode({ on_failure: 'warn' }))).toBe('WARNED');
+  });
+
+  it.each([
+    ['warn', 'WARNED'],
+    ['fail', 'FAILED'],
+    ['abort', 'FAILED'],
+  ] as const)('the stage follows the gate mode %s like any failure: %s', (on_failure, expected) => {
+    const gate: GateDefinition = { on_failure, decision: 'ignore' };
+    const judged = judgeGate(gate, [m('a', 'invalid', null)], false);
+    expect(judged.failed).toBe(true);
+    expect(judgedOutcome(judged.failed, gateMode(gate))).toBe(expected);
   });
 
   it('neutral and absent never fail; ignore compares nothing', () => {

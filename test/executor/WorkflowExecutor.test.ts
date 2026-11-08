@@ -1,5 +1,6 @@
 import { describe, it, expect, vi } from 'vitest';
 import { WorkflowExecutor } from '../../src/executor/WorkflowExecutor.js';
+import { PipelineExecutor } from '../../src/executor/PipelineExecutor.js';
 import type { CommandExecutor } from '../../src/executor/CommandExecutor.js';
 import type { ResolvedDefinition } from '../../src/types/registry.js';
 import type { WorkflowDefinition, WorkflowResult } from '../../src/types/workflow.js';
@@ -7,7 +8,7 @@ import type { CommandDefinition } from '../../src/types/command.js';
 import type { AgentDefinition } from '../../src/types/agent.js';
 import type { RegistryClient } from '../../src/registry/RegistryClient.js';
 import { WorkflowError, ConfigurationError, MaxStepsExhaustedError } from '../../src/errors/index.js';
-import { makeCommandResult, makeCommandExecutor, makeNamedCommandExecutor, makeRegistry, makeAgentExecutor, makeValidatorResult } from './fixtures.js';
+import { makeCommandResult, makeCommandExecutor, makeNamedCommandExecutor, makeRegistry, makeAgentExecutor, makeValidatorResult, makeWorkflowExecutor } from './fixtures.js';
 
 function makeWorkflowDef(overrides?: Partial<WorkflowDefinition['workflow']>): ResolvedDefinition {
   return {
@@ -2288,7 +2289,9 @@ describe('WorkflowExecutor: a child that reported INVALID', () => {
     const executor = new WorkflowExecutor(makeCommandExecutor([invalid(null)]), makeRegistry());
     const result = await executor.execute(makeWorkflowDef(), { target: '/tmp/test' });
     expect(result.phases[0]!.decision).toBe('blocked');
-    expect(result.decision).toBe('BLOCK');
+    // INVALID dominates BLOCK at the workflow (ruled 2026-11-08, run #89).
+    expect(result.decision).toBe('INVALID');
+    expect(result.decisionCategory).toBe('invalid');
   });
 
   it('blocks even when a scored sibling clears the threshold: INVALID is not averaged away', async () => {
@@ -2313,12 +2316,73 @@ describe('WorkflowExecutor: a child that reported INVALID', () => {
     });
     const result = await executor.execute(def, { target: '/tmp/test' });
     expect(result.phases[0]!.decision).toBe('warned');
-    expect(result.decision).toBe('HOLD');
+    expect(result.decision).toBe('INVALID');
   });
 
   it('control: an unstamped INVALID string resolves through the register and blocks too', async () => {
     const executor = new WorkflowExecutor(makeCommandExecutor([makeCommandResult({ decision: 'INVALID', score: null, maxScore: null })]), makeRegistry());
     const result = await executor.execute(makeWorkflowDef(), { target: '/tmp/test' });
     expect(result.phases[0]!.decision).toBe('blocked');
+  });
+
+  // INVALID dominates at the workflow (Alex 2026-11-08, review run #89).
+  it('a workflow with an INVALID command in a phase decides INVALID/invalid, ahead of BLOCK from a sibling phase', async () => {
+    const executor = new WorkflowExecutor(makeCommandExecutor([
+      makeCommandResult({ decision: 'FAIL', decisionCategory: 'negative', score: 20 }),
+      invalid(null),
+    ]), makeRegistry());
+    const def = makeWorkflowDef({
+      orchestration: { phases: [
+        { id: 'a', name: 'A', commands: ['cmd'], gate: { threshold: 70, aggregate: 'average', on_fail: 'warn' } },
+        { id: 'b', name: 'B', commands: ['cmd'], gate: { threshold: 70, aggregate: 'average', on_fail: 'warn' } },
+      ], on_failure: 'continue' },
+    });
+    const result = await executor.execute(def, { target: '/tmp/test' });
+    expect(result.decision).toBe('INVALID');
+    expect(result.decisionCategory).toBe('invalid');
+    // R2: the score stays as computed (the phase that judged).
+    expect(result.score).toBe(20);
+  });
+
+  it('INVALID is not remappable through aggregation.decision', async () => {
+    const executor = new WorkflowExecutor(makeCommandExecutor([invalid(null)]), makeRegistry());
+    const def = makeWorkflowDef({
+      aggregation: { score: { method: 'average' }, decision: { SHIP: 'GO', HOLD: 'WAIT', BLOCK: 'STOP' } },
+    });
+    const result = await executor.execute(def, { target: '/tmp/test' });
+    expect(result.decision).toBe('INVALID');
+    expect(result.decisionCategory).toBe('invalid');
+  });
+
+  it('a pipeline ref stage to a workflow holding an INVALID command fails at gate key ignore', async () => {
+    const wf = new WorkflowExecutor(makeCommandExecutor([invalid(null)]), makeRegistry());
+    const wfDef = makeWorkflowDef();
+    const registry = makeRegistry({ 'test-workflow': wfDef });
+    const pipeline = new PipelineExecutor(wf, makeCommandExecutor(), makeAgentExecutor(), registry, { debug() {}, info() {}, warn() {}, error() {} });
+    const def = {
+      type: 'pipeline', name: 'p', version: '1.0.0', hash: 'h', yaml: '', domain: 'software', runtime: {},
+      definition: { pipeline: {
+        interface: { name: 'p', version: '1.0.0', displayName: 'P', description: 'd', domain: 'software' },
+        stages: [{ id: 's', name: 'S', type: 'workflow', ref: 'test-workflow@1.0.0', gate: { on_failure: 'fail', decision: 'ignore' } }],
+      } },
+    } as unknown as ResolvedDefinition;
+    const out = await pipeline.execute(def, { target: '/tmp/test' });
+    expect(out.stages[0]!.result!.decision).toBe('INVALID');
+    expect(out.stages[0]!.outcome).toBe('FAILED');
+    expect(out.allGatesPassed).toBe(false);
+  });
+
+  it('a pipeline ref stage to an INVALID command fails at gate key ignore', async () => {
+    const pipeline = new PipelineExecutor(makeWorkflowExecutor(), makeCommandExecutor([invalid(null)]), makeAgentExecutor(), makeRegistry(), { debug() {}, info() {}, warn() {}, error() {} });
+    const def = {
+      type: 'pipeline', name: 'p', version: '1.0.0', hash: 'h', yaml: '', domain: 'software', runtime: {},
+      definition: { pipeline: {
+        interface: { name: 'p', version: '1.0.0', displayName: 'P', description: 'd', domain: 'software' },
+        stages: [{ id: 's', name: 'S', type: 'command', ref: 'cmd@1.0.0', gate: { on_failure: 'fail', decision: 'ignore' } }],
+      } },
+    } as unknown as ResolvedDefinition;
+    const out = await pipeline.execute(def, { target: '/tmp/test' });
+    expect(out.stages[0]!.outcome).toBe('FAILED');
+    expect(out.allGatesPassed).toBe(false);
   });
 });

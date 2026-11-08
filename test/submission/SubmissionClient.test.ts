@@ -879,6 +879,20 @@ describe('SubmissionClient', () => {
       expect(noConf.allGatesPassed).toBe(true);
     });
 
+    it('INVALID is not a passed gate: stamped, or an unstamped string beside a high score', async () => {
+      const client = new SubmissionClient({ ...baseConfig, trackingEnabled: false }, testLogger);
+
+      const stamped = await client.submit(makeSubmission({
+        result: { ...makeResult({ decision: 'INVALID' }), decisionCategory: 'invalid' as const },
+      }));
+      expect(stamped.allGatesPassed).toBe(false);
+
+      const unstamped = await client.submit(makeSubmission({
+        result: makeResult({ decision: 'INVALID', score: 95 }),
+      }));
+      expect(unstamped.allGatesPassed).toBe(false);
+    });
+
     it('uses decisionCategory for non-standard positive decisions', async () => {
       const client = new SubmissionClient({ ...baseConfig, trackingEnabled: false }, testLogger);
 

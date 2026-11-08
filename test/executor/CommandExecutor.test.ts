@@ -5,7 +5,11 @@ import type { AgentExecutor } from '../../src/executor/AgentExecutor.js';
 import type { ResolvedDefinition } from '../../src/types/registry.js';
 import type { AgentResult } from '../../src/types/agent.js';
 import type { CommandDefinition } from '../../src/types/command.js';
-import { makeAgentExecutor, makeRegistry, makeValidatorResult } from './fixtures.js';
+import { CRASH_PLACEHOLDER_VERSION, RUN_STOPPED_CODE } from '../../src/utils/crashPlaceholder.js';
+import { DEADLINE_CODE } from '../../src/utils/stopVerdict.js';
+import { WorkflowExecutor } from '../../src/executor/WorkflowExecutor.js';
+import { PipelineExecutor } from '../../src/executor/PipelineExecutor.js';
+import { makeAgentExecutor, makeRegistry, makeValidatorResult, makeWorkflowExecutor } from './fixtures.js';
 
 function makeCommandDef(overrides?: Record<string, unknown>): ResolvedDefinition {
   return {
@@ -979,13 +983,92 @@ describe('CommandExecutor: a child that reported INVALID', () => {
       makeValidatorResult({ name: 'agent-0', decision: 'DISORDERED', decisionCategory: 'negative', score: 82 }),
       invalid,
     ]);
+    expect(result.decision).toBe('INVALID');
     expect(result.decisionCategory).toBe('invalid');
   });
 
-  it('a negative command stays negative: the valid verdict is the more specific statement', async () => {
+  it('INVALID dominates a decided negative: a failing sibling does not keep the command negative (ruled 2026-11-08, run #89)', async () => {
     const result = await run([makeValidatorResult({ name: 'agent-0', decision: 'FAIL', decisionCategory: 'negative', score: 30 }), invalid]);
-    expect(result.decision).toBe('FAIL');
+    expect(result.decision).toBe('INVALID');
+    expect(result.decisionCategory).toBe('invalid');
+    // R2: the score stays the average of the children that did judge.
+    expect(result.score).toBe(30);
+  });
+
+  it('[PASS@90 scored, scoreless FAILED, INVALID] decides INVALID, and at a pipeline `ignore` gate the stage fails', async () => {
+    const children = [
+      makeValidatorResult({ name: 'agent-0', score: 90 }),
+      makeValidatorResult({ name: 'agent-1', decision: 'FAILED', decisionCategory: 'negative', score: null, maxScore: null }),
+      { ...invalid, name: 'agent-2' },
+    ];
+    const result = await run(children);
+    expect(result.decision).toBe('INVALID');
+    expect(result.decisionCategory).toBe('invalid');
+    // The review's consequence: a ref stage on this command sees class `invalid`, and every key fails it.
+    const cmdExec = { execute: vi.fn().mockResolvedValue(result) } as never;
+    const pipeline = new PipelineExecutor(makeWorkflowExecutor(), cmdExec, {} as AgentExecutor, makeRegistry(), { debug() {}, info() {}, warn() {}, error() {} });
+    const def = {
+      type: 'pipeline', name: 'p', version: '1.0.0', hash: 'h', yaml: '', domain: 'software', runtime: {},
+      definition: { pipeline: {
+        interface: { name: 'p', version: '1.0.0', displayName: 'P', description: 'd', domain: 'software' },
+        stages: [{ id: 's', name: 'S', type: 'command', ref: 'test-command@1.0.0', gate: { on_failure: 'fail', decision: 'ignore' } }],
+      } },
+    } as unknown as ResolvedDefinition;
+    const out = await pipeline.execute(def, { target: '/tmp/test' });
+    expect(out.stages[0]!.outcome).toBe('FAILED');
+    expect(out.allGatesPassed).toBe(false);
+  });
+
+  it('in a gated workflow phase, [PASS@90, scoreless FAILED, INVALID] makes the phase blocked, not warned, and the workflow INVALID', async () => {
+    const children = [
+      makeValidatorResult({ name: 'agent-0', score: 90 }),
+      makeValidatorResult({ name: 'agent-1', decision: 'FAILED', decisionCategory: 'negative', score: null, maxScore: null }),
+      { ...invalid, name: 'agent-2' },
+    ];
+    const cmdDef = makeCommandDef({ agents: children.map((_, i) => `agent-${i}@1.0.0`), aggregation: { method: 'average' } });
+    const registry = makeRegistry({ 'test-command': cmdDef });
+    const wf = new WorkflowExecutor(new CommandExecutor(makeAgentExecutor(children), registry), registry);
+    const wfDef = {
+      type: 'workflow', name: 'wf', version: '1.0.0', hash: 'h', yaml: '', domain: 'software', runtime: {},
+      definition: { workflow: {
+        interface: { name: 'wf', version: '1.0.0', displayName: 'W', description: 'd', domain: 'software' },
+        orchestration: { phases: [{ id: 'p', name: 'P', commands: ['test-command'], gate: { threshold: 70, aggregate: 'average', on_fail: 'stop' } }], on_failure: 'stop' },
+        aggregation: { score: { method: 'average' }, decision: { SHIP: 'SHIP', HOLD: 'HOLD', BLOCK: 'BLOCK' } },
+      } },
+    } as unknown as ResolvedDefinition;
+    const result = await wf.execute(wfDef, { target: '/tmp/test' });
+    expect(result.phases[0]!.commands[0]!.decision).toBe('INVALID');
+    // Before R1 the command stayed negative (scoreless FAILED), and a scored negative only caps at `warned`.
+    expect(result.phases[0]!.decision).toBe('blocked');
+    expect(result.decision).toBe('INVALID');
+    expect(result.decisionCategory).toBe('invalid');
+  });
+
+  it('an unstamped INVALID child (decision string only) decides INVALID through the register', async () => {
+    const unstamped = makeValidatorResult({ name: 'agent-1', decision: 'INVALID', score: null, maxScore: null });
+    const result = await run([makeValidatorResult({ name: 'agent-0', score: 90 }), unstamped]);
+    expect(result.decision).toBe('INVALID');
+    expect(result.decisionCategory).toBe('invalid');
+  });
+
+  it('a crashed child that hit a stop, beside an INVALID child: the stop verdict wins (negative)', async () => {
+    const crashed = makeValidatorResult({
+      name: 'agent-0', version: CRASH_PLACEHOLDER_VERSION, decision: 'FAIL', decisionCategory: 'negative', score: null, maxScore: null,
+      degradationMarkers: [{ code: DEADLINE_CODE, phase: 'execution', severity: 'degraded' }],
+    } as Partial<AgentResult>);
+    const result = await run([crashed, invalid]);
     expect(result.decisionCategory).toBe('negative');
+    expect(result.decision).toBe('FAILED');
+  });
+
+  it('a stopped (not crashed) child beside an INVALID child: ABORTED wins', async () => {
+    const stopped = makeValidatorResult({
+      name: 'agent-0', decision: 'PASS', score: 90,
+      degradationMarkers: [{ code: RUN_STOPPED_CODE, phase: 'execution', severity: 'degraded' }],
+    } as Partial<AgentResult>);
+    const result = await run([stopped, invalid]);
+    expect(result.decision).toBe('ABORTED');
+    expect(result.decisionCategory).toBe('neutral');
   });
 
   it('an all-INVALID command decides INVALID with no score (aggregation path: two children)', async () => {
@@ -1002,8 +1085,9 @@ describe('CommandExecutor: a child that reported INVALID', () => {
     expect(result.score ?? null).toBeNull();
   });
 
-  it('a scoreless negative sibling wins over INVALID (FAILED)', async () => {
+  it('INVALID dominates a scoreless negative sibling too', async () => {
     const result = await run([makeValidatorResult({ name: 'agent-0', decision: 'MUTILATED', decisionCategory: 'negative', score: null, maxScore: null }), invalid]);
-    expect(result.decisionCategory).toBe('negative');
+    expect(result.decision).toBe('INVALID');
+    expect(result.decisionCategory).toBe('invalid');
   });
 });

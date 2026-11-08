@@ -435,13 +435,14 @@ export class CommandExecutor {
 
     // A child that reported INVALID (ADL S2b spec v0.3.16, OQ-47b) could not judge: one of its own
     // `run` auto-fails failed and could not be corrected. Its score is null, so the average above never
-    // saw it, and without this the command would decide on the children that did judge. It decides
-    // INVALID instead, fail-closed, unless the command already decides negative: a negative verdict
-    // from a child that did judge is the more specific statement, and gates block on both. This
-    // overrides the scored-lens-negative WARN cap above too, so a run that could not judge is never
-    // laundered into WARN. A crash or stop (below) still decides over it.
-    if (decisionCategory !== 'negative' &&
-        results.some(r => resolveDecisionCategory(r, this.warnUnclassified) === 'invalid')) {
+    // saw it, and without this the command would decide on the children that did judge. INVALID
+    // DOMINATES (Alex 2026-11-08, review run #89): the command decides INVALID whatever it decided
+    // before, a negative included. Why: negative is the weaker verdict at two gates. A scored negative
+    // command only caps a workflow phase at `warned`, and a pipeline `ignore` key passes a negative but
+    // fails an invalid, so letting a failing sibling keep the command negative weakened the gate. This
+    // overrides the scored-lens-negative WARN cap too. The score stays as computed (the average of the
+    // children that did judge, R2). A crash or stop (below) still decides over it.
+    if (results.some(r => resolveDecisionCategory(r, this.warnUnclassified) === 'invalid')) {
       decision = INVALID_DECISION;
       decisionCategory = 'invalid';
     }

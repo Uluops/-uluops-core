@@ -19,7 +19,7 @@ import { rollupCost, type CostFields } from '../utils/costRollup.js';
 import { crashMetrics } from '../utils/crashMetrics.js';
 import { topoGroupLevels } from '../utils/topoSort.js';
 import { parseRef } from '../utils/parseRef.js';
-import { resolveDecisionCategory, type DecisionCategory } from './classifyDecision.js';
+import { resolveDecisionCategory, INVALID_DECISION, type DecisionCategory } from './classifyDecision.js';
 import { worstExtractionConfidence } from '../utils/worstExtractionConfidence.js';
 import { containerCompleteness } from './degradationMarkers.js';
 import type { Logger } from '@uluops/sdk-core';
@@ -812,6 +812,14 @@ export class WorkflowExecutor {
         decision = ABORTED_DECISION;
         decisionCategory = 'neutral';
       }
+    } else if (phases.some(p => p.commands.some(c => resolveDecisionCategory(c, this.warnUnclassified) === 'invalid'))) {
+      // INVALID dominates (Alex 2026-11-08, review run #89): a command result that could not judge
+      // makes the workflow INVALID ahead of BLOCK, HOLD and SHIP. Negative is the weaker verdict at
+      // two gates (a `warned` phase cap, a pipeline `ignore` key), so a failing sibling must not
+      // keep it negative. Like ABORTED it is not remappable through aggregation.decision. The score
+      // stays as computed. The stop path above is unchanged.
+      decision = INVALID_DECISION;
+      decisionCategory = 'invalid';
     } else if (hasBlocked) {
       decision = config?.decision?.BLOCK ?? 'BLOCK';
       decisionCategory = 'negative';
