@@ -6,6 +6,8 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) 
 
 ## [Unreleased]
 
+## [0.59.0] - 2026-11-08
+
 ### Added
 - **`INVALID`: a run that could not judge, as its own decision class** (ADL S2b spec v0.3.16, OQ-47a–c, ruled 2026-11-07). Takes `@uluops/sdk-core` 0.20.0, whose register maps the one string `INVALID` to a fifth category, `invalid`. An agent writes it when one of its own `run` auto-fails (a check on its output or inputs, not on the target) fails and cannot be corrected. Before this, the agent's instruction said "give no verdict", but no token existed for that, and every gate passed the run. `INVALID_DECISION` is exported. The verdict reader classifies `INVALID` through the register beside any vocabulary, and saves `score: null` even when the agent wrote one. In that case it warns `INVALID_SCORE_DROPPED` with the score as read, so the drop is visible: a score from a run that could not judge would enter every average downstream.
 
@@ -21,7 +23,8 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) 
 - **Semantics note:** `DecisionCategory` and `DecisionClass` gain a member and `VerdictWarning` gains `INVALID_SCORE_DROPPED`. Code that compares categories with `===` compiles unchanged and treats `invalid` as "none of the above". At a gate that means pass, so read your comparison sites.
 
 ### Dependencies
-- `@uluops/sdk-core` 0.19.0 → **0.20.0** (exact). `@uluops/ops-sdk` 7.3.0 and `@uluops/registry-sdk` 0.64.1 exact-pin sdk-core 0.19.0, so until they re-release, npm nests a 0.19.0 copy under each. Core imports no sdk-core error class and never tests `instanceof SdkApiError` (README, dual-package hazard), so its own behaviour is unaffected. A consumer that tests `instanceof` on sdk-core classes across ops-sdk and core will see two class identities until ops-sdk and registry-sdk take 0.20.0.
+- `@uluops/sdk-core` 0.19.0 → **0.20.0** (exact).
+- `@uluops/ops-sdk` 7.3.0 → **7.3.1** and `@uluops/registry-sdk` 0.64.1 → **0.64.2** (exact). Both are pin-only releases that move their own sdk-core pin to 0.20.0, so npm resolves **one** sdk-core copy (`npm ls @uluops/sdk-core` shows both `deduped`). On the earlier pair it nested a 0.19.0 copy under each, giving two `SdkApiError` class identities in one process. Core never tests `instanceof` on sdk-core classes, so its own behaviour was unaffected either way. A consumer that does, across ops-sdk and core, now sees one identity.
 
 ## [0.58.1] - 2026-11-03
 
