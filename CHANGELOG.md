@@ -6,6 +6,9 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) 
 
 ## [Unreleased]
 
+### Changed
+- **npm description names the registry and tracker, not "Validation services".** "Validation" is the category UluOps retired (messaging foundation §5); the service it named is the tracker. Metadata only: the description npm shows and agents read. Census E10 (`uluops-specifications` `brand/marketing/agent-read-surface-census-2026-11-20.md`).
+
 ## [0.59.0] - 2026-11-08
 
 ### Added
