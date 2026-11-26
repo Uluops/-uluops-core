@@ -191,6 +191,13 @@ export interface UluOpsConfig {
   defaultProject?: string;
 
   /**
+   * Your own writer stamp, `name@version` (0.60.0; effectiveness-analytics D56, D66). Sent
+   * first on every tracked run; core appends `core@<version>` and ops-sdk its own after it.
+   * The CLI sets `cli@<version>`.
+   */
+  writer?: string;
+
+  /**
    * Thinking budget in tokens, used when extended thinking is ON (see `ai.extendedThinking`) on a
    * provider that takes a budget (Google, OpenRouter; not direct Anthropic yet). OpenAI takes an
    * effort instead and ignores it. Capped per provider so the visible answer keeps room (Google: half
@@ -315,6 +322,8 @@ export interface ResolvedConfig {
   onSecurityEvent?: SecurityEventHandler;
   timeout: number;
   defaultProject?: string;
+  /** See {@link UluOpsConfig.writer}. */
+  writer?: string;
   defaultThinkingBudget: number;
   debug: boolean;
   /**

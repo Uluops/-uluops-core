@@ -6,7 +6,19 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) 
 
 ## [Unreleased]
 
+## [0.60.0] - 2026-11-26
+
+### Added
+- **Run artifacts at spawn** (effectiveness-analytics spec v0.4.3 §4.2, D15, D55, D58, D65; checklist P3-5). `ExecutionInput.artifactKind` declares `target` as each review agent's artifact (`kindSource: 'caller'`, `role: 'primary'`), built by `@uluops/sdk-core/artifacts`. The hash is computed in `AgentExecutor.execute` **before the model runs**, so an edit made while the agent works, or by an earlier pipeline stage, does not reach the stored hash: the control is a provider that edits the target mid-run, and a mutant that hashes after the run fails it. A repository root is `path: "."`. A target that cannot be hashed is declared with `hashError`; a target whose repo cannot be read is logged and declared as nothing. Tracking metadata never fails a run.
+  - Only review archetypes (validator, analyst, explorer, forecaster) declare one. An executor's changed files are `modified` artifacts (D17) that core does not name yet; a generator's output is not what it reviewed.
+  - `AgentResult.spawnArtifacts` carries the declarations; `AgentResult.artifacts` is still what the agent produced.
+- **Instance fields on every agent row**: `stageRole` from the archetype (`review`, `execute`, `generate`) and `threshold`, the definition's own pass threshold (`AgentResult.definitionThreshold`: the lowest `min_score` of its positive `decisions.thresholds` bands, rounded to two decimals because the tracker refuses a third with a 400 on the whole save). Distinct from `AgentResult.threshold`, the caller's gating threshold.
+- **Writer stamp** (D56, D66; checklist P3-9). Every save appends `core@<version>` to the caller's stamp, `RunSubmission.writer` or else the new `UluOpsConfig.writer` (the CLI sets `cli@<version>`), and ops-sdk appends its own after it.
+
+- `ArtifactKind` and `ArtifactDeclaration` are re-exported from the package root, so typing `artifactKind` needs no direct `@uluops/sdk-core` import. *(Pre-publish dx-validator run, tracker `-uluops-core` run #129, which also corrected the README's claims about the threshold and the server requirement.)*
+
 ### Changed
+- **`@uluops/ops-sdk` 7.3.1 → 7.4.0, `@uluops/sdk-core` 0.20.0 → 0.21.0 and `@uluops/registry-sdk` 0.64.2 → 0.64.3** (exact pins, together). registry-sdk 0.64.3 only moves its own sdk-core pin, so the tree holds ONE sdk-core: its error guards are `instanceof` checks, and registry-sdk 0.64.2 would have kept a second 0.20.0 copy whose errors fail them.
 - **npm description names the registry and tracker, not "Validation services".** "Validation" is the category UluOps retired (messaging foundation §5); the service it named is the tracker. Metadata only: the description npm shows and agents read. Census E10 (`uluops-specifications` `brand/marketing/agent-read-surface-census-2026-11-20.md`).
 
 ## [0.59.0] - 2026-11-08

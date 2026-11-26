@@ -29,6 +29,9 @@ export { ToolHandler } from './executor/ToolHandler.js';
 export { parseRef } from './utils/parseRef.js';
 export { classifyDecision, buildVocabularyMap, resolveDecisionCategory, INVALID_DECISION } from './executor/classifyDecision.js';
 export type { DecisionCategory, DecisionVocabularyMap } from './executor/classifyDecision.js';
+// Run-artifact types (0.60.0): re-exported so a consumer need not import its transitive dependency
+// @uluops/sdk-core directly (fragile under pnpm and other strict layouts).
+export type { ArtifactKind, ArtifactDeclaration } from '@uluops/sdk-core/artifacts';
 export { deriveCompleteness, resolutionMarkersFromLegacy } from './executor/degradationMarkers.js';
 export type { DegradationMarker, DegradationPhase, DegradationSeverity, Completeness } from './types/degradation.js';
 export {

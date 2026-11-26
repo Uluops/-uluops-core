@@ -2,6 +2,7 @@ import type { AnalysisRejection } from '@uluops/ops-sdk';
 import type { Domain, AgentType, ExecutionMetrics, Recommendation, SubscriptionTier, TrackingError, SubmissionTruncation, TrackedRun } from './execution.js';
 import type { Finding, ArtifactResult } from './command.js';
 import type { DegradationMarker, Completeness } from './degradation.js';
+import type { ArtifactDeclaration } from '@uluops/sdk-core/artifacts';
 
 // ─────────────────────────────────────────────────────────────────────────────
 // Agent Definition — matches ADL v1.6.0 schema
@@ -684,6 +685,22 @@ export interface AgentResult extends AgentResultBase {
 
   /** The pass threshold the run was gated with (`ExecutionOptions.thresholds.pass`, resolved), when thresholds were given. */
   threshold?: number;
+
+  /**
+   * The definition's OWN pass threshold (core 0.60.0, D55): the lowest score of its
+   * `decisions.thresholds` positive band, when it declares one. Distinct from
+   * {@link threshold}, which is what a caller gated with. Sent to the tracker.
+   */
+  definitionThreshold?: number;
+
+  /**
+   * What this agent reviewed, declared when it started (core 0.60.0, D15): built from
+   * `ExecutionInput.target` by `@uluops/sdk-core/artifacts` before the model ran, so the
+   * hash is the revision at spawn. Present only for review agents run with
+   * `ExecutionInput.artifactKind`. Not to be confused with {@link artifacts}, which are
+   * what the agent produced.
+   */
+  spawnArtifacts?: ArtifactDeclaration[];
 
   /** Scored categories with findings */
   categories?: Array<{

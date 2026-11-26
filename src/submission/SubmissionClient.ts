@@ -41,6 +41,9 @@ import { isCanonicalMode, FAILURE_CODE_PATTERN, DOMAINS } from '@uluops/taxonomy
 import { CRASH_PLACEHOLDER_VERSION } from '../utils/crashPlaceholder.js';
 import { verifiedNothingExecuted } from '../utils/executionEvidence.js';
 import { paramsLine } from '../executor/runVerdict.js';
+import { appendWriterStamp, type ArtifactDeclaration, type StageRole } from '@uluops/ops-sdk';
+import { CORE_WRITER_STAMP } from '../version.js';
+import { REVIEW_ARCHETYPES } from '../executor/runArtifacts.js';
 
 /**
  * Ceiling on `analysisRecords` in one `runs.save` payload. Mirrors
@@ -795,6 +798,8 @@ export class SubmissionClient {
       definitionMinSubscription: result.minSubscription,
       analysisSummary,
       analysisRecords,
+      // D56, D66: the caller's stamp (the CLI's, say), then core's; ops-sdk appends its own last.
+      writer: appendWriterStamp(submission.writer ?? this.config.writer, CORE_WRITER_STAMP),
     };
 
     // D7 byte guard (spec v0.2.1): each field is bounded on its own, but together they can pass
@@ -1052,6 +1057,24 @@ export class SubmissionClient {
       harness: result.metrics.harness,
       tokens: this.extractTokens(result.metrics),
       durationMs: result.metrics.durationMs,
+      // Instance fields (core 0.60.0, effectiveness-analytics spec §4.2, D55, D58). Read from the
+      // AgentResult the executor built; a composite's own row (no agentType) carries none.
+      ...this.instanceFields(result),
+    };
+  }
+
+  /**
+   * `stageRole`, the definition's own `threshold` and the spawn `artifacts` of one agent result.
+   * Only an AgentResult carries them. `stageRole` follows the archetype: review archetypes review,
+   * an executor executes, a generator generates (D58).
+   */
+  private instanceFields(result: ExecutionResult | AgentResult): { stageRole?: StageRole; threshold?: number; artifacts?: ArtifactDeclaration[] } {
+    if (!this.isAgentResult(result)) return {};
+    const stageRole: StageRole = REVIEW_ARCHETYPES.has(result.agentType) ? 'review' : result.agentType === 'executor' ? 'execute' : 'generate';
+    return {
+      stageRole,
+      ...(result.definitionThreshold !== undefined && { threshold: result.definitionThreshold }),
+      ...(result.spawnArtifacts && result.spawnArtifacts.length > 0 && { artifacts: result.spawnArtifacts }),
     };
   }
 

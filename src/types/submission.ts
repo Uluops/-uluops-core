@@ -23,6 +23,14 @@ export interface RunSubmission {
   rawMarkdown?: string;
 
   /**
+   * The caller's own writer stamp, `name@version` (core 0.60.0, D56); defaults to
+   * `UluOpsConfig.writer`. Core appends
+   * `core@<version>` and ops-sdk `ops-sdk@<version>` after it, so the CLI passes
+   * `cli@<version>` and the run reads `cli@x core@y ops-sdk@z`.
+   */
+  writer?: string;
+
+  /**
    * An agent definition to take the decision vocabulary and category weights from, for a
    * TOP-LEVEL `AgentResult` that carries no stamp of its own (hand-built, or serialized by core
    * <= 0.56.2). Since core 0.57.0 every result core's executors build carries those two facts

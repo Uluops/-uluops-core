@@ -883,6 +883,7 @@ export function resolveConfig(config: UluOpsConfig, env: NodeJS.ProcessEnv = pro
     // no arithmetic and no threshold in this package.
     timeout: config.timeout ?? DEFAULT_TIMEOUT_MS,
     defaultProject: config.defaultProject ?? env['ULUOPS_PROJECT'],
+    writer: config.writer,
     // EXTERNAL-OK: the raw value is only forwarded here; it is seamed through finitePositive and capped
     // by planThinking (src/ai/thinking.ts) before use, never read arithmetically on this line. Direct
     // Anthropic has no thinking mapping yet (OD-13) — an opt-in there records 'no-mapping',

@@ -1,4 +1,5 @@
 import type { AnalysisRejection } from '@uluops/ops-sdk';
+import type { ArtifactKind } from '@uluops/sdk-core/artifacts';
 /**
  * Definition type discriminator.
  *
@@ -53,6 +54,17 @@ export type AgentType = 'validator' | 'executor' | 'analyst' | 'generator' | 'ex
 export interface ExecutionInput {
   /** Target path to analyze. A relative path resolves against the process's working directory. */
   target: string;
+
+  /**
+   * What `target` is, for the tracker's run artifacts (core 0.60.0; effectiveness-analytics
+   * spec §4.2, checklist P3-5). When set, each review agent (validator, analyst, explorer,
+   * forecaster) declares `target` as its artifact, with `kindSource: 'caller'` and the
+   * hash computed by `@uluops/sdk-core/artifacts` when that agent STARTS, so an edit
+   * made while it runs, or by an earlier pipeline stage, is attributed correctly. A
+   * repository root is `path: '.'`. Absent: no artifact is declared, and the tracker
+   * counts the run as artifact-less (A5).
+   */
+  artifactKind?: ArtifactKind;
 
   /**
    * Operator-provided directive or context for the agent run.

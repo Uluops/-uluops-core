@@ -28,6 +28,10 @@ import type { UsageMetrics } from '../types/ai.js';
 import type { Logger } from '@uluops/sdk-core';
 import { DEFAULT_PASS_THRESHOLD, DEFAULT_WARN_THRESHOLD, DEFAULT_MAX_STEPS, MAX_STEPS_CEILING, DEFAULT_MAX_TOKENS, DEFAULT_MODEL_ALIAS, DEFAULT_TEMPERATURE, EXTRACTION_CONFIDENCE_THRESHOLD, SHELL_COMMAND_TIMEOUT_MS, DEFAULT_REQUEST_TIMEOUT_MS, DEFAULT_CONTEXT_BUDGET } from '../constants.js';
 import type { ProviderOptions } from '@ai-sdk/provider-utils';
+import { ARTIFACT_KINDS, describeArtifact, type ArtifactDeclaration } from '@uluops/sdk-core/artifacts';
+
+import { REVIEW_ARCHETYPES, definitionPassThreshold } from './runArtifacts.js';
+export { REVIEW_ARCHETYPES, definitionPassThreshold };
 import { agentCost } from '../utils/costRollup.js';
 import {
   perRunThinking, buildRunConditions, thinkingNotice, thinkingOutcomeOf, attachThinking, reasonsByDefault,
@@ -107,6 +111,9 @@ export class AgentExecutor {
     // the run-condition record: the decision (here) and what the builder did (AIProvider's carrier).
     // It attaches the full record to the SAME error object and rethrows it unchanged — no wrapping —
     // so runAgent, trackThrownRun and the executor placeholders all still see the original error.
+    // The revision at spawn (D15): computed here, before the model runs, so an edit made while this
+    // agent works (or a later one in the same pipeline) cannot reach the stored hash.
+    const spawnArtifacts = await this.spawnArtifactsFor(resolved, input);
     let result: AgentResult;
     try {
       result = await this.executeInner(resolved, input, options, decision, seen);
@@ -122,7 +129,35 @@ export class AgentExecutor {
       throw error;
     }
     if (result.runConditions) this.emitThinkingNotice(result.runConditions);
+    if (spawnArtifacts) result.spawnArtifacts = spawnArtifacts;
+    const definitionThreshold = definitionPassThreshold(resolved);
+    if (definitionThreshold !== undefined) result.definitionThreshold = definitionThreshold;
     return result;
+  }
+
+  /**
+   * The run artifact for a review agent (effectiveness-analytics spec §4.2, checklist P3-5), or
+   * undefined. Only `review` archetypes declare one: an executor's changed files are `modified`
+   * artifacts (D17) that core cannot name yet, and a generator's output is not what it reviewed.
+   * Never fails the run: tracking metadata is not a reason to lose an execution, so a target whose
+   * repo cannot be read is logged and declared as nothing (A5 counts it). A target that cannot be
+   * HASHED is still declared, with `hashError` (the server accepts it).
+   */
+  private async spawnArtifactsFor(resolved: ResolvedDefinition, input: ExecutionInput): Promise<ArtifactDeclaration[] | undefined> {
+    const kind = input.artifactKind;
+    if (kind === undefined || !REVIEW_ARCHETYPES.has(resolved.agentType ?? 'validator')) return undefined;
+    // An external input (a CLI flag, a library caller): checked here, because a kind the tracker
+    // refuses is a 400 on the whole save, every agent and finding with it. Drop the artifact, not the run.
+    if (!(ARTIFACT_KINDS as readonly string[]).includes(kind)) {
+      this.logger.warn(`Run artifact not declared for ${resolved.name}: artifactKind '${String(kind)}' is not one of ${ARTIFACT_KINDS.join(', ')}`);
+      return undefined;
+    }
+    try {
+      return [await describeArtifact({ target: input.target, kind, kindSource: 'caller' })];
+    } catch (error) {
+      this.logger.warn(`Run artifact not declared for ${resolved.name}: ${error instanceof Error ? error.message : String(error)}`);
+      return undefined;
+    }
   }
 
   /**

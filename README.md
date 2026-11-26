@@ -530,6 +530,14 @@ client.clearCache();
 
 Submit execution results, preview submissions, and query run history:
 
+**What a run reviewed (0.60.0).** Pass `artifactKind` with the target and each review agent (validator, analyst, explorer, forecaster) declares the target as its artifact, hashed when that agent starts. The tracker then knows which revision each verdict was about. `artifactKind` is one of `spec`, `plan`, `code`, `test`, `docs`, `design`, `definition`, `data`, `config`, `analysis` (`ArtifactKind`, exported); any other value is logged as a warning and the run goes ahead without an artifact. A repository root is recorded as `path: "."`. Without `artifactKind` nothing is declared. The result carries what was declared as `result.spawnArtifacts` (not `result.artifacts`, which is what the agent produced).
+
+```typescript
+await client.runAgent('code-validator', { target: './src', artifactKind: 'code' }, { trackResults: true });
+```
+
+Every save also carries the instance's `stageRole`, the definition's own pass threshold when the definition declares one (`result.definitionThreshold`, the lowest `min_score` of its positive `decisions.thresholds`; distinct from `result.threshold`, the one a caller gated with), and a `writer` stamp ending `core@<version> ops-sdk@<version>`. An executor or generator agent declares no artifact (what an executor changed is a later release). The hosted tracker accepts all of this, repository roots included (since 2026-11-26).
+
 ```typescript
 // Automatic tracking: results are submitted automatically when trackingEnabled is true
 const result = await client.runAgent('code-validator', './src', {
